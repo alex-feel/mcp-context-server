@@ -803,20 +803,27 @@ class EmbeddingRepository(BaseRepository):
                     filter_params.append(content_type)
                     filter_count += 1
 
-                # Tag filter (uses subquery with indexed tag table)
+                # Tag filter (uses subquery with indexed tag table). A non-empty
+                # tags list that normalizes to empty (all-blank) raises through
+                # the structured validation-error channel rather than silently
+                # widening the result set.
                 if tags:
-                    normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                    if normalized_tags:
-                        tag_placeholders = ','.join(['?' for _ in normalized_tags])
-                        filter_conditions.append(f'''
-                            id IN (
-                                SELECT DISTINCT context_entry_id
-                                FROM tags
-                                WHERE tag IN ({tag_placeholders})
-                            )
-                        ''')
-                        filter_params.extend(normalized_tags)
-                        filter_count += 1
+                    try:
+                        normalized_tags = self.normalize_tag_filter(tags)
+                    except ValueError as e:
+                        raise MetadataFilterValidationError(
+                            'Metadata filter validation failed', [str(e)],
+                        ) from e
+                    tag_placeholders = ','.join(['?' for _ in normalized_tags])
+                    filter_conditions.append(f'''
+                        id IN (
+                            SELECT DISTINCT context_entry_id
+                            FROM tags
+                            WHERE tag IN ({tag_placeholders})
+                        )
+                    ''')
+                    filter_params.extend(normalized_tags)
+                    filter_count += 1
 
                 # Date range filtering - Use datetime() to normalize ISO 8601 input
                 # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
@@ -1014,23 +1021,30 @@ class EmbeddingRepository(BaseRepository):
                 param_position += 1
                 filter_count += 1
 
-            # Tag filter (uses subquery with indexed tag table)
+            # Tag filter (uses subquery with indexed tag table). A non-empty
+            # tags list that normalizes to empty (all-blank) raises through the
+            # structured validation-error channel rather than silently widening
+            # the result set.
             if tags:
-                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                if normalized_tags:
-                    tag_placeholders = ','.join([
-                        self._placeholder(param_position + i) for i in range(len(normalized_tags))
-                    ])
-                    filter_conditions.append(f'''
-                        ce.id IN (
-                            SELECT DISTINCT context_entry_id
-                            FROM tags
-                            WHERE tag IN ({tag_placeholders})
-                        )
-                    ''')
-                    filter_params.extend(normalized_tags)
-                    param_position += len(normalized_tags)
-                    filter_count += 1
+                try:
+                    normalized_tags = self.normalize_tag_filter(tags)
+                except ValueError as e:
+                    raise MetadataFilterValidationError(
+                        'Metadata filter validation failed', [str(e)],
+                    ) from e
+                tag_placeholders = ','.join([
+                    self._placeholder(param_position + i) for i in range(len(normalized_tags))
+                ])
+                filter_conditions.append(f'''
+                    ce.id IN (
+                        SELECT DISTINCT context_entry_id
+                        FROM tags
+                        WHERE tag IN ({tag_placeholders})
+                    )
+                ''')
+                filter_params.extend(normalized_tags)
+                param_position += len(normalized_tags)
+                filter_count += 1
 
             # Date range filtering - PostgreSQL uses TIMESTAMPTZ comparison
             # asyncpg requires Python datetime objects, not strings, for TIMESTAMPTZ parameters
@@ -1241,6 +1255,8 @@ class EmbeddingRepository(BaseRepository):
             RuntimeError: If the singleton compression provenance row is
                 missing or the query embedding length does not match the
                 stored compression dimension.
+            MetadataFilterValidationError: If a metadata filter fails validation
+                or a non-empty tags filter normalizes to empty (all-blank).
         """
         import time as time_module
 
@@ -1272,9 +1288,16 @@ class EmbeddingRepository(BaseRepository):
             filter_count += 1
         normalized_tags: list[str] = []
         if tags:
-            normalized_tags = [t.strip().lower() for t in tags if t.strip()]
-            if normalized_tags:
-                filter_count += 1
+            # A non-empty tags list that normalizes to empty (all-blank) raises
+            # through the structured validation-error channel rather than
+            # silently widening the result set.
+            try:
+                normalized_tags = self.normalize_tag_filter(tags)
+            except ValueError as e:
+                raise MetadataFilterValidationError(
+                    'Metadata filter validation failed', [str(e)],
+                ) from e
+            filter_count += 1
         if start_date:
             filter_count += 1
         if end_date:

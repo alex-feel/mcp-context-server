@@ -3996,6 +3996,71 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_search_context_blank_tags_returns_error(self) -> bool:
+        """A whitespace-only tags filter is a validation error, not a widened result set.
+
+        A non-empty tags list that normalizes to empty (every tag blank after
+        trimming, e.g. ['   ']) previously dropped the criterion silently and
+        returned every entry in scope. It must instead surface the structured,
+        breaker-exempt validation error on BOTH backends, while a genuinely
+        empty tags list (tags=[]) still means "no tag filter" and returns the
+        matching entries.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'search_context_blank_tags'
+        assert self.client is not None  # Type guard for Pyright
+        thread = f'{self.test_thread_id}_blank_tags'
+        try:
+            for i in range(2):
+                await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': thread,
+                        'source': 'agent',
+                        'text': f'blank-tags entry {i}',
+                        'tags': ['real'],
+                    },
+                )
+
+            # A whitespace-only tags filter must be rejected, NOT silently dropped
+            # (which would return both entries in scope).
+            blank_result = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'tags': ['   ']},
+            )
+            blank_data = self._extract_content(blank_result)
+            if 'error' not in blank_data or not blank_data.get('validation_errors'):
+                self.test_results.append(
+                    (test_name, False, f'Blank tags not rejected as a validation error: {blank_data}'),
+                )
+                return False
+            if blank_data.get('results'):
+                self.test_results.append(
+                    (test_name, False, f'Blank tags returned a widened result set: {blank_data}'),
+                )
+                return False
+
+            # tags=[] means "no tag filter": the two entries are returned.
+            empty_result = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'tags': []},
+            )
+            empty_data = self._extract_content(empty_result)
+            if not empty_data.get('success') or len(empty_data.get('results', [])) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Empty tags list should return all entries, got: {empty_data}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Blank tags rejected; empty tags list unfiltered'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_nul_input_does_not_trip_breaker(self) -> bool:
         """A burst of NUL-bearing client input is rejected without opening the circuit breaker.
 
@@ -12076,6 +12141,7 @@ class MCPServerIntegrationTest:
             ('Semantic Search Date Filtering', self.test_semantic_search_context_with_date_filtering),
             ('Semantic Search Metadata Filtering', self.test_semantic_search_context_with_metadata_filters),
             ('Search Context Invalid Filter Error', self.test_search_context_invalid_filter_returns_error),
+            ('Search Context Blank Tags Error', self.test_search_context_blank_tags_returns_error),
             ('NUL Input Does Not Trip Breaker', self.test_nul_input_does_not_trip_breaker),
             ('Semantic Search Invalid Filter Error', self.test_semantic_search_invalid_filter_returns_error),
             ('FTS Search', self.test_fts_search_context),
