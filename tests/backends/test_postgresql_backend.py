@@ -8,6 +8,7 @@ connection reset behavior.
 
 import asyncio
 import contextlib
+import socket
 import unittest.mock
 from collections.abc import AsyncIterator
 from typing import cast
@@ -17,8 +18,41 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from app.backends.postgresql_backend import ConnectionEstablishmentTimeoutError
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.errors import ControlFlowError
+
+
+def _backend_with_acquire_failure(error: Exception) -> PostgreSQLBackend:
+    """Build a backend whose pool.acquire raises the given error on entry.
+
+    Simulates an acquire-phase failure (the exception surfaces from the
+    ``async with pool.acquire(...)`` entry, before any connection body runs),
+    the shape asyncpg produces for saturation deadlines, typed establishment
+    timeouts, refused ports, DNS failures, and setup-callback failures.
+
+    Args:
+        error: The exception pool.acquire raises on context entry.
+
+    Returns:
+        A backend wired to the failing fake pool.
+    """
+    backend = PostgreSQLBackend(
+        connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+    )
+    backend._shutdown = False
+
+    class _FailOnEnter:
+        async def __aenter__(self) -> object:
+            raise error
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=lambda **_kwargs: _FailOnEnter())
+    backend._pool = pool
+    return backend
 
 
 class TestBackendType:
@@ -465,8 +499,6 @@ class TestTcpKeepaliveSocketConstants:
 
     def test_so_keepalive_available(self) -> None:
         """Verify SO_KEEPALIVE is available on all platforms."""
-        import socket
-
         assert hasattr(socket, 'SO_KEEPALIVE')
         assert hasattr(socket, 'SOL_SOCKET')
         assert hasattr(socket, 'IPPROTO_TCP')
@@ -478,8 +510,6 @@ class TestTcpKeepaliveSocketConstants:
         TCP_KEEPCNT is available on Linux/macOS and Windows 10 v1703+.
         The implementation uses hasattr() checks for cross-platform compatibility.
         """
-        import socket
-
         # These should be available on the test machine
         # but the implementation correctly uses hasattr() for safety
         assert hasattr(socket, 'TCP_KEEPIDLE') or True  # May not be available on all platforms
@@ -786,6 +816,12 @@ class TestInitializeErrorClassification:
         # create_pool's 'timeout' is the ESTABLISHMENT timeout, sourced from
         # the dedicated connect knob -- never from the acquire knob.
         assert create_kwargs['timeout'] == settings.storage.postgresql_connect_timeout_s
+        # New connections must dial through the typed-connect wrapper so an
+        # establishment timeout surfaces as ConnectionEstablishmentTimeoutError,
+        # distinguishable from the bare TimeoutError of the acquire deadline.
+        import app.backends.postgresql_backend as pg_module
+
+        assert create_kwargs['connect'] is pg_module._connect_pool_connection
         # The Pgpool-II detection probe runs during initialize() and must have
         # acquired with the acquire-wait bound.
         assert captured['acquire_timeout'] == settings.storage.postgresql_pool_timeout_s
@@ -1024,15 +1060,16 @@ class TestExecuteWriteDeadlockRetry:
 
 
 class TestExecuteWritePoolAcquireTimeout:
-    """execute_write discriminates acquire-phase TimeoutError by elapsed wait.
+    """execute_write separates acquire-phase timeouts by their exception type.
 
-    A saturated pool waits out (approximately) the full acquire budget before
-    timing out -- a capacity signal, not a database fault, so it stays uncharged.
-    asyncpg's inner connection-establishment timeout raises the SAME bare
-    TimeoutError but fires clearly below the pool budget (an unreachable,
-    blackholed database) and must charge the breaker, or the outage never opens
-    it. A TimeoutError raised AFTER a live connection was obtained (statement
-    exceeded the pool command_timeout) still charges exactly one failure.
+    A saturated pool surfaces the bare TimeoutError of the acquire deadline --
+    a capacity signal, not a database fault, so it stays uncharged. Dialing a
+    new connection to an unreachable (blackholed) database instead surfaces the
+    typed ConnectionEstablishmentTimeoutError raised by the pool's connect
+    callable, which must charge the breaker (with the failure metrics), or the
+    outage never opens it. A TimeoutError raised AFTER a live connection was
+    obtained (statement exceeded the pool command_timeout) still charges
+    exactly one failure.
     """
 
     @staticmethod
@@ -1048,43 +1085,42 @@ class TestExecuteWritePoolAcquireTimeout:
         return backend
 
     @staticmethod
-    def _install_acquire_timeout(
+    def _install_acquire_failure(
         backend: PostgreSQLBackend,
         monkeypatch: pytest.MonkeyPatch,
-        wait_s: float,
+        error: Exception,
     ) -> None:
-        """Make get_connection raise TimeoutError after waiting wait_s seconds."""
+        """Make get_connection raise the given error on context entry.
 
-        class _TimeoutOnEnter:
+        Mirrors the real flow where get_connection re-raises acquire-phase
+        failures uncharged under record_breaker=False, leaving the accounting
+        to execute_write's own arms.
+        """
+
+        class _FailOnEnter:
             async def __aenter__(self) -> object:
-                if wait_s > 0:
-                    await asyncio.sleep(wait_s)
-                raise TimeoutError('pool acquire timed out')
+                raise error
 
             async def __aexit__(self, *_exc: object) -> bool:
                 return False
 
-        def _acquire_times_out(*_args: object, **_kwargs: object) -> _TimeoutOnEnter:
-            return _TimeoutOnEnter()
+        def _acquire_fails(*_args: object, **_kwargs: object) -> _FailOnEnter:
+            return _FailOnEnter()
 
-        monkeypatch.setattr(backend, 'get_connection', _acquire_times_out)
+        monkeypatch.setattr(backend, 'get_connection', _acquire_fails)
 
     @pytest.mark.asyncio
     async def test_saturation_timeout_propagates_uncharged(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A TimeoutError after waiting out the full pool budget stays uncharged."""
-        import app.backends.postgresql_backend as pg_module
-
+        """A bare acquire TimeoutError (pool saturation) stays uncharged."""
         backend = self._make_backend()
         record_failure = AsyncMock()
         monkeypatch.setattr(backend.circuit_breaker, 'record_failure', record_failure)
 
-        # Shrink the pool budget so the fake acquire can wait it out in test time.
-        fake_settings = MagicMock()
-        fake_settings.storage.postgresql_pool_timeout_s = 0.02
-        monkeypatch.setattr(pg_module, 'settings', fake_settings)
-        self._install_acquire_timeout(backend, monkeypatch, wait_s=0.03)
+        self._install_acquire_failure(
+            backend, monkeypatch, TimeoutError('pool acquire timed out'),
+        )
 
         call_count = {'n': 0}
 
@@ -1096,35 +1132,46 @@ class TestExecuteWritePoolAcquireTimeout:
 
         assert call_count['n'] == 0
         record_failure.assert_not_called()
+        assert backend.metrics.failed_queries == 0
 
     @pytest.mark.asyncio
-    async def test_establishment_timeout_below_pool_budget_charges_once(
+    async def test_establishment_timeout_charges_once_with_metrics(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A TimeoutError firing clearly below the pool budget charges the breaker.
+        """The typed establishment timeout charges the breaker and the metrics.
 
-        With the default budgets (connect 60s < pool 120s) an unreachable
-        database always surfaces as an acquire-phase TimeoutError well below the
-        pool budget; leaving it uncharged would keep the breaker closed through
-        the entire outage and repeat the full connect stall on every request.
+        An unreachable database surfaces as ConnectionEstablishmentTimeoutError
+        from the pool's connect callable; leaving it uncharged would keep the
+        breaker closed through the entire outage and repeat the full connect
+        stall on every request, and skipping the metrics would leave dashboards
+        keyed on failed_queries/last_error reporting a healthy database.
         """
         backend = self._make_backend()
         record_failure = AsyncMock()
         monkeypatch.setattr(backend.circuit_breaker, 'record_failure', record_failure)
 
-        # Instant timeout: elapsed wait is far below the real 120s pool budget.
-        self._install_acquire_timeout(backend, monkeypatch, wait_s=0.0)
+        self._install_acquire_failure(
+            backend,
+            monkeypatch,
+            ConnectionEstablishmentTimeoutError(
+                'timed out establishing a new database connection',
+            ),
+        )
 
         call_count = {'n': 0}
 
         async def operation(_conn: object) -> None:
             call_count['n'] += 1
 
-        with pytest.raises(TimeoutError):
+        with pytest.raises(ConnectionEstablishmentTimeoutError):
             await backend.execute_write(operation)
 
         assert call_count['n'] == 0
         record_failure.assert_awaited_once()
+        assert backend.metrics.failed_queries == 1
+        assert backend.metrics.last_error is not None
+        assert 'establishing' in backend.metrics.last_error
+        assert backend.metrics.last_error_time is not None
 
     @pytest.mark.asyncio
     async def test_statement_timeout_after_acquire_charges_once(
@@ -1155,6 +1202,7 @@ class TestExecuteWritePoolAcquireTimeout:
             await backend.execute_write(operation)
 
         record_failure.assert_awaited_once()
+        assert backend.metrics.failed_queries == 1
 
 
 class TestSetupPoolConnectionTimeout:
@@ -1256,92 +1304,282 @@ class TestExecuteWriteFinalAttemptBackoff:
 
 
 class TestAcquireTimeoutBreakerDiscrimination:
-    """get_connection and begin_transaction discriminate acquire-phase timeouts.
+    """get_connection and begin_transaction separate acquire-phase timeouts by type.
 
-    Pool saturation (the acquire waited out the full pool budget) is a capacity
-    signal and stays uncharged; an inner connection-establishment timeout fires
-    clearly below the budget (an unreachable database) and charges the breaker,
-    so read and transaction paths can also open it during a blackholed outage.
+    Pool saturation surfaces as the bare TimeoutError of the acquire deadline --
+    a capacity signal that stays uncharged. An unreachable database surfaces as
+    the typed ConnectionEstablishmentTimeoutError raised by the pool's connect
+    callable and charges the breaker with the failure metrics, so read and
+    transaction paths can also open it during a blackholed outage regardless of
+    how the connect budget compares to the pool budget.
     """
 
-    @staticmethod
-    def _backend_with_acquire_timeout(wait_s: float) -> PostgreSQLBackend:
+    @pytest.mark.asyncio
+    async def test_get_connection_establishment_timeout_charges(self) -> None:
+        """The typed establishment timeout charges once with the failure metrics."""
+        backend = _backend_with_acquire_failure(
+            ConnectionEstablishmentTimeoutError(
+                'timed out establishing a new database connection',
+            ),
+        )
+
+        with pytest.raises(ConnectionEstablishmentTimeoutError):
+            async with backend.get_connection():
+                pass
+
+        assert backend.circuit_breaker.failures == 1
+        assert backend.metrics.failed_queries == 1
+        assert backend.metrics.last_error is not None
+        assert 'establishing' in backend.metrics.last_error
+        assert backend.metrics.last_error_time is not None
+
+    @pytest.mark.asyncio
+    async def test_get_connection_saturation_timeout_uncharged(self) -> None:
+        """A bare acquire TimeoutError (pool saturation) stays uncharged."""
+        backend = _backend_with_acquire_failure(TimeoutError('pool acquire timed out'))
+
+        with pytest.raises(TimeoutError):
+            async with backend.get_connection():
+                pass
+
+        assert backend.circuit_breaker.failures == 0
+        assert backend.metrics.failed_queries == 0
+
+    @pytest.mark.asyncio
+    async def test_get_connection_record_breaker_false_leaves_typed_timeout_uncharged(self) -> None:
+        """record_breaker=False defers typed-timeout accounting to execute_write."""
+        backend = _backend_with_acquire_failure(
+            ConnectionEstablishmentTimeoutError(
+                'timed out establishing a new database connection',
+            ),
+        )
+
+        with pytest.raises(ConnectionEstablishmentTimeoutError):
+            async with backend.get_connection(record_breaker=False):
+                pass
+
+        assert backend.circuit_breaker.failures == 0
+        assert backend.metrics.failed_queries == 0
+
+    @pytest.mark.asyncio
+    async def test_begin_transaction_establishment_timeout_charges(self) -> None:
+        """begin_transaction charges the typed establishment timeout with metrics."""
+        backend = _backend_with_acquire_failure(
+            ConnectionEstablishmentTimeoutError(
+                'timed out establishing a new database connection',
+            ),
+        )
+
+        with pytest.raises(ConnectionEstablishmentTimeoutError):
+            async with backend.begin_transaction():
+                pass
+
+        assert backend.circuit_breaker.failures == 1
+        assert backend.metrics.failed_queries == 1
+        assert backend.metrics.last_error is not None
+        assert backend.metrics.last_error_time is not None
+
+    @pytest.mark.asyncio
+    async def test_begin_transaction_saturation_timeout_uncharged(self) -> None:
+        """A saturation timeout on the transaction acquire stays uncharged."""
+        backend = _backend_with_acquire_failure(TimeoutError('pool acquire timed out'))
+
+        with pytest.raises(TimeoutError):
+            async with backend.begin_transaction():
+                pass
+
+        assert backend.circuit_breaker.failures == 0
+        assert backend.metrics.failed_queries == 0
+
+
+class TestAcquirePhaseConnectionFailureCharging:
+    """Non-timeout acquire-phase connection failures charge the breaker with metrics.
+
+    A refused port (the common container-crash shape), a DNS resolution failure,
+    a connection reset, or a setup-callback failure raised while acquiring a
+    pool connection is a genuine database fault: left uncharged, an outage whose
+    connections fail instantly never opens the breaker even though every request
+    fails, while the blackholed (timeout) form of the same outage does open it.
+    ControlFlowError stays exempt, body failures are not double-charged, and the
+    execute_write-driven acquire (record_breaker=False) leaves accounting to
+    execute_write's own arms.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_connection_refused_port_charges_with_metrics(self) -> None:
+        """A refused connection at acquire time charges once with the metrics."""
+        backend = _backend_with_acquire_failure(ConnectionRefusedError('connection refused'))
+
+        with pytest.raises(ConnectionRefusedError):
+            async with backend.get_connection():
+                pass
+
+        assert backend.circuit_breaker.failures == 1
+        assert backend.metrics.failed_queries == 1
+        assert backend.metrics.last_error is not None
+        assert 'refused' in backend.metrics.last_error
+        assert backend.metrics.last_error_time is not None
+
+    @pytest.mark.asyncio
+    async def test_get_connection_dns_failure_charges(self) -> None:
+        """A DNS resolution failure at acquire time charges the breaker."""
+        backend = _backend_with_acquire_failure(
+            socket.gaierror(socket.EAI_AGAIN, 'temporary failure in name resolution'),
+        )
+
+        with pytest.raises(socket.gaierror):
+            async with backend.get_connection():
+                pass
+
+        assert backend.circuit_breaker.failures == 1
+        assert backend.metrics.failed_queries == 1
+
+    @pytest.mark.asyncio
+    async def test_get_connection_setup_callback_failure_charges(self) -> None:
+        """A setup-callback failure re-raised from pool.acquire charges the breaker."""
+        backend = _backend_with_acquire_failure(
+            asyncpg.exceptions.ConnectionDoesNotExistError(
+                'connection setup timed out; the pooled connection is unusable',
+            ),
+        )
+
+        with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError):
+            async with backend.get_connection():
+                pass
+
+        assert backend.circuit_breaker.failures == 1
+        assert backend.metrics.failed_queries == 1
+
+    @pytest.mark.asyncio
+    async def test_get_connection_record_breaker_false_leaves_refusal_uncharged(self) -> None:
+        """record_breaker=False defers acquire-failure accounting to execute_write."""
+        backend = _backend_with_acquire_failure(ConnectionRefusedError('connection refused'))
+
+        with pytest.raises(ConnectionRefusedError):
+            async with backend.get_connection(record_breaker=False):
+                pass
+
+        assert backend.circuit_breaker.failures == 0
+        assert backend.metrics.failed_queries == 0
+
+    @pytest.mark.asyncio
+    async def test_get_connection_control_flow_error_at_acquire_uncharged(self) -> None:
+        """A ControlFlowError surfacing from the acquire stays uncharged."""
+        backend = _backend_with_acquire_failure(ControlFlowError('client input invalid'))
+
+        with pytest.raises(ControlFlowError):
+            async with backend.get_connection():
+                pass
+
+        assert backend.circuit_breaker.failures == 0
+        assert backend.metrics.failed_queries == 0
+
+    @pytest.mark.asyncio
+    async def test_begin_transaction_refused_port_charges_with_metrics(self) -> None:
+        """begin_transaction charges a refused connection at acquire time."""
+        backend = _backend_with_acquire_failure(ConnectionRefusedError('connection refused'))
+
+        with pytest.raises(ConnectionRefusedError):
+            async with backend.begin_transaction():
+                pass
+
+        assert backend.circuit_breaker.failures == 1
+        assert backend.metrics.failed_queries == 1
+        assert backend.metrics.last_error is not None
+        assert backend.metrics.last_error_time is not None
+
+    @pytest.mark.asyncio
+    async def test_get_connection_body_fault_charged_exactly_once(self) -> None:
+        """A body fault is charged by the inner arm only, never re-charged outside."""
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
         )
         backend._shutdown = False
+        mock_conn = MagicMock()
 
-        class _TimeoutOnEnter:
-            async def __aenter__(self) -> object:
-                if wait_s > 0:
-                    await asyncio.sleep(wait_s)
-                raise TimeoutError('pool acquire timed out')
-
-            async def __aexit__(self, *_exc: object) -> bool:
-                return False
+        @contextlib.asynccontextmanager
+        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
 
         pool = MagicMock()
-        pool.acquire = MagicMock(side_effect=lambda **_kwargs: _TimeoutOnEnter())
+        pool.acquire = MagicMock(side_effect=_fake_acquire)
         backend._pool = pool
-        return backend
 
-    @pytest.mark.asyncio
-    async def test_get_connection_establishment_timeout_charges(self) -> None:
-        """An instant acquire TimeoutError (far below the pool budget) charges once."""
-        backend = self._backend_with_acquire_timeout(wait_s=0.0)
-
-        with pytest.raises(TimeoutError):
+        with pytest.raises(RuntimeError, match='db fault'):
             async with backend.get_connection():
-                pass
+                raise RuntimeError('db fault')
 
         assert backend.circuit_breaker.failures == 1
 
-    @pytest.mark.asyncio
-    async def test_get_connection_saturation_timeout_uncharged(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A TimeoutError after waiting out the full pool budget stays uncharged."""
-        import app.backends.postgresql_backend as pg_module
 
-        backend = self._backend_with_acquire_timeout(wait_s=0.03)
-        fake_settings = MagicMock()
-        fake_settings.storage.postgresql_pool_timeout_s = 0.02
-        monkeypatch.setattr(pg_module, 'settings', fake_settings)
+class TestPoolConnectTypedTimeout:
+    """The pool's connect callable types establishment timeouts distinguishably.
 
-        with pytest.raises(TimeoutError):
-            async with backend.get_connection():
-                pass
-
-        assert backend.circuit_breaker.failures == 0
+    asyncpg's pool re-raises connect failures from pool.acquire() verbatim,
+    where a bare establishment TimeoutError is indistinguishable from the
+    saturation TimeoutError of a full pool. The wrapper re-raises it as
+    ConnectionEstablishmentTimeoutError (still a TimeoutError) so the
+    acquire-phase arms can charge an unreachable database without inferring the
+    fault class from elapsed wall time; every other failure propagates
+    unchanged.
+    """
 
     @pytest.mark.asyncio
-    async def test_begin_transaction_establishment_timeout_charges(self) -> None:
-        """begin_transaction applies the same discrimination on its acquire."""
-        backend = self._backend_with_acquire_timeout(wait_s=0.0)
+    async def test_establishment_timeout_is_typed_with_cause(self) -> None:
+        """A TimeoutError from asyncpg.connect surfaces typed, keeping its cause."""
+        from app.backends.postgresql_backend import _connect_pool_connection
 
-        with pytest.raises(TimeoutError):
-            async with backend.begin_transaction():
-                pass
+        original = TimeoutError('connect timed out')
+        with (
+            unittest.mock.patch(
+                'asyncpg.connect',
+                new_callable=AsyncMock,
+                side_effect=original,
+            ),
+            pytest.raises(ConnectionEstablishmentTimeoutError, match='timed out establishing') as exc_info,
+        ):
+            await _connect_pool_connection('postgresql://localhost:5432/testdb')
 
-        assert backend.circuit_breaker.failures == 1
+        assert exc_info.value.__cause__ is original
+        # Still a member of the broad timeout family for existing handlers.
+        assert isinstance(exc_info.value, TimeoutError)
 
     @pytest.mark.asyncio
-    async def test_begin_transaction_saturation_timeout_uncharged(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A saturation timeout on the transaction acquire stays uncharged."""
-        import app.backends.postgresql_backend as pg_module
+    async def test_non_timeout_failure_propagates_unchanged(self) -> None:
+        """A refused connection propagates as-is, never as the typed timeout."""
+        from app.backends.postgresql_backend import _connect_pool_connection
 
-        backend = self._backend_with_acquire_timeout(wait_s=0.03)
-        fake_settings = MagicMock()
-        fake_settings.storage.postgresql_pool_timeout_s = 0.02
-        monkeypatch.setattr(pg_module, 'settings', fake_settings)
+        with (
+            unittest.mock.patch(
+                'asyncpg.connect',
+                new_callable=AsyncMock,
+                side_effect=ConnectionRefusedError('connection refused'),
+            ),
+            pytest.raises(ConnectionRefusedError),
+        ):
+            await _connect_pool_connection('postgresql://localhost:5432/testdb')
 
-        with pytest.raises(TimeoutError):
-            async with backend.begin_transaction():
-                pass
+    @pytest.mark.asyncio
+    async def test_success_returns_connection_and_forwards_arguments(self) -> None:
+        """The wrapper forwards the pool's arguments verbatim and returns the result."""
+        from app.backends.postgresql_backend import _connect_pool_connection
 
-        assert backend.circuit_breaker.failures == 0
+        fake_conn = MagicMock()
+        connect_mock = AsyncMock(return_value=fake_conn)
+
+        with unittest.mock.patch('asyncpg.connect', connect_mock):
+            result = await _connect_pool_connection(
+                'postgresql://localhost:5432/testdb',
+                timeout=12.5,
+                statement_cache_size=0,
+            )
+
+        assert result is fake_conn
+        connect_mock.assert_awaited_once_with(
+            'postgresql://localhost:5432/testdb',
+            timeout=12.5,
+            statement_cache_size=0,
+        )
 
 
 class TestExecuteReadControlFlowMetricsExemption:
