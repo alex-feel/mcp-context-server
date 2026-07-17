@@ -1218,7 +1218,10 @@ class StorageSettings(BaseSettings):
           exists and reconciliation reports the other permanently missing; PostgreSQL
           quotes the generated identifier and case-preserves it, so the same config
           would again diverge across backends. Rejecting a casefold collision refuses
-          the config identically on both backends.
+          the config identically on both backends. An IDENTICAL repeated name is
+          rejected too, with its own accurate diagnostic (repeated entries can carry
+          conflicting type hints that the dict-collapsing parse would resolve
+          silently).
 
         Only the field name is validated here; the type hint after ``:`` is checked
         when the property parses the value.
@@ -1231,7 +1234,8 @@ class StorageSettings(BaseSettings):
 
         Raises:
             ValueError: If any field name is not a plain SQL identifier, exceeds the
-                length limit, or collides with another name under case folding.
+                length limit, is listed more than once, or collides with another name
+                under case folding.
         """
         if not value or not value.strip():
             return value
@@ -1256,8 +1260,21 @@ class StorageSettings(BaseSettings):
                 )
             folded = field.casefold()
             if folded in seen_casefolded:
+                previous = seen_casefolded[folded]
+                if previous == field:
+                    # An identical repeat needs its own diagnostic: telling the
+                    # operator that two equal names "differ only in case" points at
+                    # a nonexistent casing problem. Rejecting the repeat itself is
+                    # deliberate -- two entries for the same field can carry
+                    # conflicting type hints (e.g. status:string,status:integer)
+                    # that the dict-collapsing parse would resolve silently.
+                    raise ValueError(
+                        f'METADATA_INDEXED_FIELDS lists field name {field!r} more than '
+                        f'once: remove the duplicate entry (repeated entries can carry '
+                        f'conflicting type hints that would be resolved silently)',
+                    )
                 raise ValueError(
-                    f'METADATA_INDEXED_FIELDS contains field names {seen_casefolded[folded]!r} '
+                    f'METADATA_INDEXED_FIELDS contains field names {previous!r} '
                     f'and {field!r} that differ only in case: field names must be unique under '
                     f'case folding (case-differing names collide on SQLite and diverge across '
                     f'backends)',
