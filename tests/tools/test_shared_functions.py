@@ -145,6 +145,31 @@ class TestConnectionErrorClassification:
         assert not is_connection_error(sqlite3.OperationalError('no such table: context_entries'))
         assert not is_connection_error(sqlite3.OperationalError('malformed database schema'))
 
+    def test_pool_saturation_timeout_error_not_retryable(self) -> None:
+        """A pool-acquire TimeoutError is NOT retried despite subclassing OSError.
+
+        TimeoutError is an OSError subclass on Python 3.12, so without an explicit
+        carve-out it would ride the bare-OSError arm and be retried. The pool-acquire
+        TimeoutError begin_transaction re-raises signals a SATURATED connection pool,
+        and retrying it re-runs the full acquire wait each time. It must fail fast at
+        the tool layer, matching execute_write's handling of the same signal.
+        """
+        assert isinstance(TimeoutError(), OSError)
+        # asyncio.TimeoutError is an alias for the builtin TimeoutError on Python
+        # 3.11+, and that builtin is exactly what asyncpg's pool.acquire timeout
+        # surfaces, so excluding TimeoutError covers the pool-saturation shape.
+        assert not is_connection_error(TimeoutError('pool acquire timed out'))
+
+    def test_connection_reset_error_still_retryable_after_timeout_carveout(self) -> None:
+        """The TimeoutError carve-out does not disturb the other OSError members.
+
+        ConnectionResetError is an OSError subclass but not a TimeoutError, so a lost
+        connection stays retryable after the saturation-timeout exclusion.
+        """
+        assert not isinstance(ConnectionResetError('reset'), TimeoutError)
+        assert is_connection_error(ConnectionResetError('connection reset by peer'))
+        assert is_connection_error(OSError('network unreachable'))
+
 
 # ---------------------------------------------------------------------------
 # New: TestValidateAndNormalizeImages
