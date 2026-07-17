@@ -1464,6 +1464,21 @@ class GrepContextSettings(FeatureToggleSettings):
                     'with truncated=True, never aborting the read.',
     )
 
+    max_pattern_chars: int = Field(
+        default=32768,
+        alias='GREP_MAX_PATTERN_CHARS',
+        ge=1,
+        description='Maximum grep_context pattern length in characters, advertised in '
+                    'the wire schema and re-checked in the tool body as a structured '
+                    'validation error. Pattern COMPILATION runs before any matching '
+                    'timeout applies and its cost grows with pattern size, so an '
+                    'unbounded multi-megabyte pattern could stall the request for '
+                    'seconds just to compile. The 32768 (32 KiB) default accommodates '
+                    'any realistic literal or generated alternation (hundreds of '
+                    'OR-joined terms) while keeping a worst-case compile in the low '
+                    'milliseconds.',
+    )
+
 
 class ContextRangeSettings(FeatureToggleSettings):
     """Partial-read tool configuration.

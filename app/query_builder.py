@@ -6,6 +6,7 @@ import re
 import string
 from typing import Any
 
+from app.metadata_types import MAX_METADATA_BIND_PARAMS
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.metadata_types import reject_non_finite
@@ -77,6 +78,32 @@ class MetadataQueryBuilder:
         # PostgreSQL uses $1, $2, $3... with offset
         return f'${self.param_offset + len(self.parameters) + 1}'
 
+    def _enforce_bind_budget(self) -> None:
+        """Reject the clause once its accumulated bind parameters exceed the shared budget.
+
+        Called after each filter is added. The per-dimension caps bound every input
+        list individually, but capped dimensions MULTIPLY (filters times IN-list
+        members), so this aggregate backstop guarantees the built clause can never
+        grow past the backend's per-statement bind limit regardless of how future
+        filter dimensions combine -- see ``MAX_METADATA_BIND_PARAMS``. The count
+        includes ``param_offset`` (the enclosing statement's earlier placeholders on
+        PostgreSQL) so the budget tracks the true statement position. The raised
+        ``ValueError`` is routed by every construction site into the structured,
+        breaker-exempt validation-error channel; the query is then never executed,
+        so the builder's partially-accumulated state is harmless.
+
+        Raises:
+            ValueError: If the accumulated bind-parameter count exceeds
+                MAX_METADATA_BIND_PARAMS.
+        """
+        total = self.param_offset + len(self.parameters)
+        if total > MAX_METADATA_BIND_PARAMS:
+            raise ValueError(
+                f'Metadata filters expand into too many SQL bind parameters: {total} exceeds '
+                f'the budget of {MAX_METADATA_BIND_PARAMS}. Narrow the filters (fewer filters, '
+                f'or shorter in/not_in value lists).',
+            )
+
     def add_simple_filter(self, key: str, value: str | float | bool | None) -> None:
         """Add a simple key=value metadata filter.
 
@@ -85,7 +112,8 @@ class MetadataQueryBuilder:
             value: Value to match (exact equality)
 
         Raises:
-            ValueError: If key is invalid or contains unsafe characters
+            ValueError: If key is invalid or contains unsafe characters, or the
+                accumulated bind parameters exceed MAX_METADATA_BIND_PARAMS
         """
         if not self._is_safe_key(key):
             raise ValueError(f'Invalid metadata key: {key}')
@@ -144,6 +172,7 @@ class MetadataQueryBuilder:
                 self.conditions.append(f'({guard} AND {acc} = {placeholder}::TEXT)')
         self.parameters.append(self._normalize_value(value))
         self._filter_count += 1
+        self._enforce_bind_budget()
 
     def add_advanced_filter(self, filter_spec: MetadataFilter) -> None:
         """Add an advanced metadata filter with operator support.
@@ -152,7 +181,8 @@ class MetadataQueryBuilder:
             filter_spec: MetadataFilter with key, operator, value, and options
 
         Raises:
-            ValueError: If key is invalid or contains unsafe characters
+            ValueError: If key is invalid or contains unsafe characters, or the
+                accumulated bind parameters exceed MAX_METADATA_BIND_PARAMS
         """
         if not self._is_safe_key(filter_spec.key):
             raise ValueError(f'Invalid metadata key: {filter_spec.key}')
@@ -199,6 +229,7 @@ class MetadataQueryBuilder:
             self._add_array_contains_condition(json_path, value, case_sensitive)
 
         self._filter_count += 1
+        self._enforce_bind_budget()
 
     def build_where_clause(self, use_and: bool = True) -> tuple[str, list[Any]]:
         """Build the complete WHERE clause with parameter bindings.
