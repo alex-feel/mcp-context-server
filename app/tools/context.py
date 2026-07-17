@@ -496,7 +496,11 @@ async def get_context_by_ids(
 async def delete_context(
     context_ids: Annotated[
         list[str] | None,
-        Field(min_length=1, description='Specific context entry IDs to delete (mutually exclusive with thread_id)'),
+        Field(
+            min_length=1,
+            max_length=100,
+            description='Specific context entry IDs to delete (max 100 per call; mutually exclusive with thread_id)',
+        ),
     ] = None,
     thread_id: Annotated[
         str | None,
@@ -508,6 +512,11 @@ async def delete_context(
 
     Provide EITHER context_ids OR thread_id (not both). All associated data
     (tags, images) is also removed.
+
+    context_ids accepts at most 100 IDs per call (the same cap as
+    get_context_by_ids and the batch tools); an oversized list is rejected at the
+    tool boundary as a validation error before any database work. Delete larger
+    sets in successive calls, or delete a whole thread via thread_id.
 
     WARNING: This operation cannot be undone. Verify IDs/thread before deletion.
 

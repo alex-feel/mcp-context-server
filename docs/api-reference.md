@@ -95,8 +95,8 @@ Search context entries with powerful filtering including metadata queries and da
 - `source` (str, optional): Filter by source ('user' or 'agent')
 - `tags` (list, optional): Filter by tags (OR logic; at most 100 tags per request)
 - `content_type` (str, optional): Filter by type ('text' or 'multimodal')
-- `metadata` (dict, optional): Simple metadata filters (key=value equality)
-- `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `metadata` (dict, optional): Simple metadata filters (key=value equality; at most 100 keys per request)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators (at most 100 filters per request)
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `limit` (int, optional): Maximum results to return (1-100, default: 30)
@@ -129,7 +129,7 @@ Fetch specific context entries by their IDs.
 Delete context entries by IDs or thread.
 
 **Parameters:**
-- `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID IDs to delete. Both forms are accepted at the tool boundary. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
+- `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID IDs to delete (at most 100 IDs per call). Both forms are accepted at the tool boundary. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
 - `thread_id` (str, optional): Delete all entries in a thread
 
 **Returns:** Dictionary with deletion count
@@ -236,8 +236,8 @@ Note: This tool is available by default (`ENABLE_SEMANTIC_SEARCH=auto`) whenever
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
-- `metadata` (dict, optional): Simple metadata filters (key=value equality)
-- `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `metadata` (dict, optional): Simple metadata filters (key=value equality; at most 100 keys per request)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators (at most 100 filters per request)
 - `include_images` (bool, optional): Include image data in results (default: false)
 - `explain_query` (bool, optional): Include query execution statistics (default: false)
 
@@ -287,8 +287,8 @@ Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=fal
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
-- `metadata` (dict, optional): Simple metadata filters (key=value equality)
-- `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `metadata` (dict, optional): Simple metadata filters (key=value equality; at most 100 keys per request)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators (at most 100 filters per request)
 - `highlight` (bool, optional): Include highlighted snippets in results (default: false)
 - `include_images` (bool, optional): Include image data in results (default: false)
 - `explain_query` (bool, optional): Include query execution statistics (default: false)
@@ -344,8 +344,8 @@ Note: This tool is available by default (`ENABLE_HYBRID_SEARCH=auto`) when at le
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
-- `metadata` (dict, optional): Simple metadata filters (key=value equality)
-- `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `metadata` (dict, optional): Simple metadata filters (key=value equality; at most 100 keys per request)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators (at most 100 filters per request)
 - `include_images` (bool, optional): Include image data in results (default: false)
 - `explain_query` (bool, optional): Include query execution statistics (default: false)
 
@@ -454,14 +454,14 @@ These read-only tools complement search: grep locates exact text, navigate orien
 Server-side grep: literal or regular-expression, line-oriented, UNRANKED pattern matching over stored `text_content`. Unlike `fts_search_context` (stemmed, ranked) it matches raw characters and returns precise match locations. Matching runs in Python — the stdlib `re` engine for literal patterns and the third-party `regex` engine for user regular expressions — so results are identical on SQLite and PostgreSQL.
 
 **Parameters:**
-- `pattern` (str, required): Literal substring (default) or regular expression to match
+- `pattern` (str, required): Literal substring (default) or regular expression to match (at most `GREP_MAX_PATTERN_CHARS` characters, default 32768)
 - `is_regex` (bool, optional): Treat `pattern` as a Python regular expression (default: False — literal substring, auto-escaped)
 - `case_sensitive` (bool, optional): Match case-sensitively (default: False — Unicode-aware case-insensitive)
 - `output_mode` (str, optional): `files_with_matches` (default; context_ids + match_count), `content` (each match with line + offsets + context), or `count` (per-entry tally)
 - `context_lines` (int, optional): Surrounding lines before/after each match in content mode (0-100; effectively clamped to `GREP_MAX_CONTEXT_LINES`, default 20; like `grep -C`)
 - `max_matches` (int, optional): Maximum total matches to return (default 100; clamped to the server cap)
 - `max_entries_scanned` (int, optional): Maximum entries the scan visits (clamped to the server cap)
-- `thread_id` / `source` / `tags` / `metadata_filters` / `content_type` (optional): Reuse the store's filters to scope the scan (the ripgrep glob/type analog); scoping with `thread_id` is recommended; `tags` accepts at most 100 tags per request
+- `thread_id` / `source` / `tags` / `metadata_filters` / `content_type` (optional): Reuse the store's filters to scope the scan (the ripgrep glob/type analog); scoping with `thread_id` is recommended; `tags` accepts at most 100 tags and `metadata_filters` at most 100 filters per request
 
 **Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. `truncated` is True when matches or the scan were capped.
 

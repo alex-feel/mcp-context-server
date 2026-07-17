@@ -1456,3 +1456,35 @@ class TestGrepPatternCap:
         payload = cast('dict[str, Any]', result)
         assert 'error' not in payload
         assert real_compile in offloaded
+
+
+class TestDeleteContextIdsCap:
+    """delete_context.context_ids carries the same 100-ID cap as every sibling ID list.
+
+    Without the cap an unbounded schema-legal list flows into per-ID prefix
+    resolution plus the serial per-ID embedding-delete loop, monopolizing the
+    SQLite write queue or pinning a PostgreSQL pool connection, while the identical
+    operation via delete_context_batch is rejected cleanly at the boundary.
+    """
+
+    def test_context_ids_declares_max_length_cap(self) -> None:
+        """The context_ids Field declares max_length=100 (parity with get_context_by_ids)."""
+        hints = get_type_hints(app.server.delete_context, include_extras=True)
+        field_info = next(
+            meta for meta in get_args(hints['context_ids'])[1:] if isinstance(meta, FieldInfo)
+        )
+        max_values = [constraint.max_length for constraint in field_info.metadata if isinstance(constraint, MaxLen)]
+        assert max_values == [100]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_context_ids_over_cap_rejected_at_boundary(self) -> None:
+        """A context_ids list above the cap is rejected by the wire-schema validation."""
+        from fastmcp.tools import Tool
+        from pydantic import ValidationError
+
+        validated = Tool.from_function(app.server.delete_context)
+        oversized = [f'{i:032x}' for i in range(101)]
+        with pytest.raises(ValidationError) as exc_info:
+            await validated.run({'context_ids': oversized})
+        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()
