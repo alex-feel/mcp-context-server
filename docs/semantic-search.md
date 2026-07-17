@@ -764,7 +764,7 @@ When registered (by default, whenever an embedding provider is available), the `
   "query": "original search query",
   "results": [
     {
-      "id": 123,
+      "id": "0190abcdef1234567890abcdef123456",
       "thread_id": "thread-abc",
       "text_content": "matching context...",
       "summary": "Summary of the matching context entry with key semantic information.",
@@ -784,10 +784,13 @@ When registered (by default, whenever an embedding provider is available), the `
     "embedding_generation_ms": 45.1,
     "filters_applied": 2,
     "rows_returned": 5,
-    "backend": "sqlite"
+    "backend": "sqlite",
+    "query_plan": "..."
   }
 }
 ```
+
+**Note:** The `stats` field is only included when `explain_query=True`. Within the stats block, all keys including `query_plan` are present whenever the block appears, since the repository populates `query_plan` based on the same `explain_query=True` flag.
 
 **Scores Object**:
 - `semantic_distance`: LOWER = more similar. The underlying metric depends on embedding storage: Euclidean L2 (>= 0) for uncompressed/`mse` storage, or a negated inner product (~ -1..0 for normalized embeddings, where more negative = more similar) when the default `ip` compression variant is active. Compare values within a single result set rather than against fixed thresholds, since the numeric range differs by storage variant.
