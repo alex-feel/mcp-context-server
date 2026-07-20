@@ -180,11 +180,17 @@ def check_file_relevance(
     if not file_extensions:
         return True, None
 
-    tool_input = input_data.get('tool_input', {})
-    file_path = tool_input.get('file_path')
+    # tool_input and tool_response are dicts for built-in tools, but the wire
+    # format is not guaranteed (some tools report a plain-string tool_response),
+    # so non-dict values are treated as carrying no file path.
+    tool_input = input_data.get('tool_input')
+    file_path: str | None = None
+    if isinstance(tool_input, dict):
+        file_path = cast(dict[str, Any], tool_input).get('file_path')
     if not file_path:
-        tool_response = input_data.get('tool_response', {})
-        file_path = tool_response.get('filePath')
+        tool_response = input_data.get('tool_response')
+        if isinstance(tool_response, dict):
+            file_path = cast(dict[str, Any], tool_response).get('filePath')
 
     if not file_path:
         return False, None
