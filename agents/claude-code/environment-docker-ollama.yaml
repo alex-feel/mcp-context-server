@@ -145,26 +145,30 @@ hooks:
     # non-blockingly via the SubagentStart context protocol injection above, plus
     # the context-management skills and rules bundled with this environment.
 
-# Permissions configuration
-permissions:
-  defaultMode: default
+# Permissions configuration. Declared under user-settings (raw settings.json
+# content, camelCase keys) because that is the only surface the setup writes
+# to ~/.claude/settings.json; a root-level permissions key is not part of the
+# configuration schema and would be silently ignored at install time.
+user-settings:
+  permissions:
+    defaultMode: default
 
-  allow:
-    - mcp__context-server__search_context
-    - mcp__context-server__get_context_by_ids
-    - mcp__context-server__store_context
-    - mcp__context-server__update_context
-    - mcp__context-server__hybrid_search_context
-    - mcp__context-server__semantic_search_context
-    - mcp__context-server__fts_search_context
-    - mcp__context-server__list_threads
-    - mcp__context-server__get_statistics
+    allow:
+      - mcp__context-server__search_context
+      - mcp__context-server__get_context_by_ids
+      - mcp__context-server__store_context
+      - mcp__context-server__update_context
+      - mcp__context-server__hybrid_search_context
+      - mcp__context-server__semantic_search_context
+      - mcp__context-server__fts_search_context
+      - mcp__context-server__list_threads
+      - mcp__context-server__get_statistics
 
-  ask:
-    - mcp__context-server__store_context_batch
-    - mcp__context-server__update_context_batch
-    - mcp__context-server__delete_context
-    - mcp__context-server__delete_context_batch
+    ask:
+      - mcp__context-server__store_context_batch
+      - mcp__context-server__update_context_batch
+      - mcp__context-server__delete_context
+      - mcp__context-server__delete_context_batch
 
 post-install-notes: |
   MCP Context Server is deploying at: http://localhost:8000/mcp
