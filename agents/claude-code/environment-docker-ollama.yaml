@@ -41,6 +41,11 @@ os-env-variables:
 
 # Skills for context management
 skills:
+  - name: context-metadata-schema
+    base: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/common/skills/context-metadata-schema
+    files:
+      - SKILL.md
+
   - name: context-retrieval-protocol
     base: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/common/skills/context-retrieval-protocol
     files:
@@ -48,6 +53,11 @@ skills:
 
   - name: context-preservation-protocol
     base: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/common/skills/context-preservation-protocol
+    files:
+      - SKILL.md
+
+  - name: issue-tracking-protocol
+    base: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/common/skills/issue-tracking-protocol
     files:
       - SKILL.md
 

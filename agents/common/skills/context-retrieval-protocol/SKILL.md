@@ -97,9 +97,9 @@ hybrid_search_context(query="relevant search terms", thread_id="session-id", lim
 
 Use hybrid search to find conceptually related content when metadata filtering alone may miss relevant entries, when you need conceptual matches beyond exact keyword matches, or when you are uncertain you have retrieved all relevant context.
 
-### Step 4: Navigate References (Optional)
+### Step 4: Navigate Links (Optional)
 
-When entries retrieved in earlier steps contain `references.context_ids` in their metadata, these represent related entries the original author worked with. Retrieve them via `get_context_by_ids(context_ids=[...IDs from metadata.references.context_ids...])` when the current context seems incomplete, when you need to understand the reasoning behind decisions, or when referenced entries appear relevant to your task.
+When entries retrieved in earlier steps carry a typed `links` object in their metadata, those edges name the entries the author actually worked with -- follow them via `get_context_by_ids` when the current context seems incomplete, when you need the reasoning behind decisions, or when a linked entry appears relevant to your task (see Links-Based Navigation below).
 
 ## Complete Example
 
@@ -135,7 +135,7 @@ Derive the project name using the following fallback chain (in priority order) t
 
 1. **Parse from git remote URL** (PREFERRED) -- Try `origin` first: `git remote get-url origin`; parse the repository name from the URL (`https://github.com/user/my-project.git` -> `my-project`; `git@github.com:user/my-project.git` -> `my-project`). If `origin` is unavailable, try `upstream`, then the first available remote
 2. **Git toplevel basename** (FALLBACK for repos without remotes) -- `git rev-parse --show-toplevel`, extract the last path component (`/home/user/projects/my-project` -> `my-project`)
-3. **Current directory basename** (FALLBACK for non-git directories) -- Extract the last directory name from the working directory path (`/home/user/work/my-project` -> `my-project`)
+3. **Current directory basename** (FALLBACK for non-git directories) -- Extract the last directory name from the working directory path (e.g., `/home/user/work/my-project` -> `my-project`)
 
 Why this matters: different worktrees of the same repository have different directory names, so directory-derived names break context isolation across worktrees; the remote URL provides true canonical identity across all worktrees and users.
 
@@ -192,7 +192,7 @@ Exercise caution with context from other worktrees: different worktrees have dif
 Context retrieval operations can interact with environment-level hooks, validation gates, and orchestration workflows:
 
 - **Hook-aware retrieval:** Environment hooks may verify that agents retrieve context before starting work (enforcing retrieval discipline), compare retrieved context against task instructions to detect discrepancies, or log which context entries were retrieved by which agent for traceability. In such environments, follow the documented sequence (Quick Recall or Comprehensive Multi-Agent Pattern) to avoid triggering validation failures.
-- **Metadata patterns for multi-agent coordination:** Filter by `agent_name` to find prior work from a specific agent role, by `status: "done"` or `status: "pending"` to find completed work or work requiring continuation, and by `report_type` to find all validation, research, or implementation reports regardless of which agent produced them; follow `references.context_ids` to reconstruct the full workflow chain (research -> plan -> implementation -> validation).
+- **Metadata patterns for multi-agent coordination:** Filter by `kind` to find records by type (`report`, `plan`, `handoff`, `checkpoint`) regardless of author, by `agent_name` to find prior work from a specific agent role, by `kind` plus `status` to find completed work or work requiring continuation (never filter `status` without `kind` -- the same token can mean different things in different kind vocabularies), and by `report_type` to find validation, research, or implementation reports; follow typed `links` edges to reconstruct the full workflow chain (research -> plan -> implementation -> validation).
 - **Orchestrated workflows:** Context retrieval serves as the shared memory layer -- agents retrieve prior agent reports to understand completed work before continuing (task handoff), retrieve implementation plans and compare against current task instructions (plan verification), and retrieve user messages to verify orchestrator instructions match user intent (conflict detection; see Orchestrator Verification section).
 
 These patterns are generic and apply to any environment with multi-agent coordination capabilities.
@@ -253,20 +253,21 @@ Each search tool returns a `scores` object with different fields:
 
 ## Metadata Filtering
 
-When filtering search results, use the metadata fields documented by the context server itself. Common fields include `agent_name`, `task_name`, `status`, `project`, `report_type`, `technologies`, and `references` (an object that may contain a `context_ids` array). Supported filter operators include direct equality (via the `metadata` parameter) and the `metadata_filters` advanced operators such as `eq`, `ne`, `gt`, `lt`, `contains`, `array_contains`, `starts_with`, `exists`, and similar comparators.
+The metadata vocabulary you filter on is defined normatively by the schema skill -- before composing non-trivial metadata queries, invoke `Skill(skill="context-metadata-schema")` for the full field tables, kind registry, status vocabularies, and filter recipes. Supported filter operators include direct equality (via the `metadata` parameter) and the `metadata_filters` advanced operators such as `eq`, `ne`, `gt`, `lt`, `contains`, `array_contains`, `starts_with`, `exists`, and similar comparators.
 
 **Quick Reference for Filtering:**
 
-| Filter By   | Use Parameter                            | Example                                                                                  |
-|-------------|------------------------------------------|------------------------------------------------------------------------------------------|
-| Agent       | `metadata: {"agent_name": "..."}`        | Find all implementation-guide reports                                                    |
-| Status      | `metadata: {"status": "done"}`           | Find completed work                                                                      |
-| Project     | `metadata: {"project": "..."}`           | Scope to current project                                                                 |
-| Report type | `metadata: {"report_type": "research"}`  | Find all research reports                                                                |
-| Technology  | Use `array_contains` or tags             | `metadata_filters: [{key: "technologies", operator: "array_contains", value: "python"}]` |
-| References  | `metadata_filters` with `array_contains` | `[{key: "references.context_ids", operator: "array_contains", value: 2322}]`             |
+| Filter By      | Use Parameter                                             | Example                                                                                                   |
+|----------------|-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| Record kind    | `metadata: {"kind": "report"}`                            | Find records by type regardless of author                                                                 |
+| Kind + status  | `metadata: {"kind": "plan", "status": "pending"}`         | Find work requiring continuation (NEVER filter `status` without `kind`)                                   |
+| Agent          | `metadata: {"agent_name": "..."}`                         | Find all reports from one agent role                                                                      |
+| Project        | `metadata: {"project": "..."}`                            | Scope to current project                                                                                  |
+| Report type    | `metadata: {"kind": "report", "report_type": "research"}` | Find all research reports                                                                                 |
+| Technology     | `array_contains` or tags                                  | `metadata_filters: [{key: "technologies", operator: "array_contains", value: "python"}]`                  |
+| Incoming links | `metadata_filters` with `array_contains`                  | `[{key: "links.derived_from", operator: "array_contains", value: 2322}]` finds entries that build on 2322 |
 
-**Note:** For technology filtering, use the `array_contains` operator for exact element match (see table) or the `tags` parameter for OR logic: `tags: ["python", "fastapi"]`.
+**Notes:** Entries stored before the schema existed carry no `kind`/`schema_version`; filtering on those fields excludes the legacy corpus by construction, so fall back to `source`, `tags`, and text search when older context matters. When a links filter value is a STRING ID (hex), add `"case_sensitive": true` for exact, index-friendly matching; integer ID values need no flag. For technology filtering, use `array_contains` for exact element match or the `tags` parameter for OR logic: `tags: ["python", "fastapi"]`.
 
 </metadata_reference>
 
@@ -296,7 +297,7 @@ When you need to update your own prior work but the context_id is not provided:
 search_context(
   thread_id="session-id",
   source="agent",
-  metadata={"agent_name": "[your-agent-name]", "report_type": "research"},
+  metadata={"agent_name": "[your-agent-name]", "kind": "report", "report_type": "research"},
   limit=15
 )
 ```
@@ -305,37 +306,42 @@ Then use `update_context(context_id=...)` with the most recent matching entry. O
 
 </revision_context_detection>
 
-<references_navigation>
+<links_navigation>
 
-## References-Based Navigation
+## Links-Based Navigation
 
-When you retrieve context entries, check for `metadata.references.context_ids`. These IDs are NOT random - they represent entries the original agent actually WORKED WITH: implementation guides reference the research plans they are based on, validation reports reference the implementation reports they validated, and research reports reference prior work they built upon. These connections form a knowledge graph that you can navigate.
+When you retrieve context entries, check for a typed `links` object in metadata. Its edges are NOT random -- each key states WHY the author connected the entries: `derived_from` names the entries the work builds upon, `evidence` names the entries backing specific claims, `commissioned_by` names the user message that spawned the work, `supersedes` names the entries this one replaces, and `parent` attaches a sub-issue to its issue or a comment to its target. These connections form a typed knowledge graph you can navigate in both directions.
 
-**CONSIDER following references when:** you need deeper understanding of WHY decisions were made; the current entry references a plan or research you have not yet retrieved; you want to trace the full history of a task (research -> implementation -> validation); or the truncated preview suggests related context would be valuable. You do NOT need to follow references when you already have sufficient context for your task.
+**Outgoing (follow the entry's own edges):** retrieve the IDs stored under the relevant key via `get_context_by_ids`. Follow `derived_from` for the reasoning behind decisions, `commissioned_by` for the authoritative user intent, `evidence` to verify claims.
 
-**How to navigate:** identify references in the retrieved entry's metadata, retrieve the related entries using `get_context_by_ids`, and evaluate relevance -- not all referenced entries may be needed for the current task:
+**Incoming (query the reverse direction):** edges are stored once, on the active side, so the reverse question is an `array_contains` query. Who built on entry X: `metadata_filters=[{"key": "links.derived_from", "operator": "array_contains", "value": X}]`. Is plan X still current: the same query on `links.supersedes` -- a hit means a newer entry replaced X, and the edge outranks a stale `status`. Comments on X vs sub-issues of X: `array_contains` on `links.parent` with value X, paired with `kind: "comment"` or `kind: "issue"` respectively (always pair a `links.parent` query with `kind`). For `related`, which is symmetric and stored once, the complete answer is the union of X's own `links.related` array and the reverse `array_contains` query.
+
+**Legacy entries:** records stored before this schema carry an untyped `references` object (typically `references.context_ids`). READ it during navigation exactly as you would `derived_from` -- the pointers are real, only untyped -- but never write `references` in new entries.
+
+**How to navigate:** identify the relevant edges in the retrieved entry's metadata, retrieve the linked entries with `get_context_by_ids`, and evaluate relevance -- not all linked entries may be needed for the current task:
 
 ```json
 "metadata": {
-  "references": {
-    "context_ids": [3348, 3349, 3352]
+  "links": {
+    "derived_from": [3348, 3349],
+    "commissioned_by": [3340]
   }
 }
 ```
 
 ```text
-get_context_by_ids(context_ids=[3348, 3349, 3352])
+get_context_by_ids(context_ids=[3348, 3349, 3340])
 ```
 
 ### Navigation Depth Guidance
 
-| Scenario                   | Recommended Depth                       |
-|----------------------------|-----------------------------------------|
-| Understanding current task | 1 level (direct references)             |
-| Tracing decision history   | 2 levels (references of references)     |
-| Comprehensive research     | Follow until pattern emerges            |
+| Scenario                   | Recommended Depth            |
+|----------------------------|------------------------------|
+| Understanding current task | 1 level (direct links)       |
+| Tracing decision history   | 2 levels (links of links)    |
+| Comprehensive research     | Follow until pattern emerges |
 
-</references_navigation>
+</links_navigation>
 
 <context_continuity>
 
@@ -347,19 +353,20 @@ These patterns help agents maintain coherence across context window boundaries a
 
 Apply these patterns by default in all sessions:
 
-- **Status tracking:** Always set `status: "done"` or `status: "pending"` in metadata to indicate work completion state
+- **Status tracking:** Always read `kind` together with `status` to interpret completion state -- `pending`/`done`/`superseded` for work artifacts, the issue lifecycle vocabulary for tracker entries
 - **Session handoff notes:** Before stopping, store a brief summary of work performed, decisions made, and next steps, so the next session (or agent) can resume without re-discovering context
-- **Task completion markers:** Use `references.context_ids` to link new work to the prior entries it builds upon, creating a navigable chain of work history
+- **Task completion markers:** Typed `links` edges (`derived_from`, `commissioned_by`, `supersedes`) connect new work to the prior entries it builds upon, creating a navigable chain of work history
 - **Re-retrieval after context loss:** After any context compaction or window reset, re-read key context entries (plans, requirements, prior decisions) from the server to restore working memory. Do not rely on compacted summaries or search-truncated previews for critical details -- always retrieve full content via `get_context_by_ids`
 
 ### Advanced: Long-Running Task Continuity (Optional)
 
 For tasks spanning multiple context windows or requiring extended multi-step execution, consider these additional patterns:
 
-- **Progressive summarization:** Periodically condense accumulated context into structured summaries stored on the context server, preserving critical information (architectural decisions, unresolved issues, implementation progress) while reducing context window pressure. Store summaries as new context entries with `references.context_ids` pointing to the original detailed entries
-- **Checkpoints:** At defined milestones during multi-step tasks, store intermediate state as a context entry -- current progress (what is completed, what remains), key decisions and their rationale, active blockers or dependencies, and files modified and their purpose. This enables recovery if a session is interrupted and provides a clear starting point for the next session
+- **Progressive summarization:** Periodically condense accumulated context into structured summaries stored on the context server, preserving critical information (architectural decisions, unresolved issues, implementation progress) while reducing context window pressure. Store summaries as new entries whose `links.derived_from` points at the original detailed entries
+- **Checkpoints:** At defined milestones during multi-step tasks, retrieve and update the `kind: "checkpoint"` entries that record current progress (what is completed, what remains), key decisions and their rationale, active blockers or dependencies, and files modified and their purpose. This enables recovery if a session is interrupted and provides a clear starting point for the next session
+- **Plan currency check:** Before resuming any plan, verify it has not been superseded: query `array_contains` on `links.supersedes` with the plan's ID, and prefer the replacing entry when one exists
 - **Context window monitoring:** If approaching context limits, proactively store current progress before compaction occurs; after compaction, immediately retrieve critical context entries (plans, requirements) from the server. Treat the context server as persistent memory that survives compaction -- store anything that must not be lost
-- **Multi-agent handoff:** For clean agent-to-agent transitions in orchestrated workflows, the completing agent stores a comprehensive handoff report with clear next steps; the receiving agent retrieves the handoff report and referenced context before starting; both agents use consistent metadata (`references.context_ids`) to maintain the work chain; and disagreements between orchestrator instructions and stored context are resolved in favor of stored user messages (see Orchestrator Verification)
+- **Multi-agent handoff:** For clean agent-to-agent transitions in orchestrated workflows, the completing agent stores a comprehensive handoff report with clear next steps; the receiving agent retrieves the handoff report and its linked context before starting; both agents use consistent typed links to maintain the work chain; and disagreements between orchestrator instructions and stored context are resolved in favor of stored user messages (see Orchestrator Verification)
 
 </context_continuity>
 
@@ -411,15 +418,15 @@ Precise keyword matching with `fts_search_context`:
 2. Use `phrase` mode for exact matches: `"error handling"`
 3. Enable `highlight: true` to see matching snippets
 
-## Pattern 5 - References Navigation (Optional)
+## Pattern 5 - Links Navigation (Optional)
 
-Follow knowledge graph links when deeper context is needed -- research plans reference prior research you need to understand, validation reports reference implementations you need to verify, or you see a chain of work and need the full picture, including the full user intent:
+Follow the typed knowledge graph when deeper context is needed -- a plan's `derived_from` names the research behind it, a validation report's `evidence` names what it verified, `commissioned_by` restores the full user intent, and reverse `array_contains` queries answer who-builds-on-this and is-this-superseded:
 
 1. Retrieve entries using the retrieval sequence (Steps 1-2, optionally 3-4)
-2. Use `get_context_by_ids` to retrieve selected referenced entries
-3. Repeat if those entries have further relevant references (depth limit: 2-3 levels)
+2. Follow outgoing edges via `get_context_by_ids`; answer reverse questions with `array_contains` queries on the relevant `links.<key>`
+3. Repeat if those entries have further relevant links (depth limit: 2-3 levels)
 
-**Example:** a retrieved validation report (entry 3357) has `metadata.references.context_ids: [3349, 3352]` -- potentially the implementation plan and implementation report. Retrieve them for the complete picture: `get_context_by_ids(context_ids=[3349, 3352])`.
+**Example:** a retrieved validation report (entry 3357) has `links.evidence: [3349, 3352]` -- the implementation plan and implementation report it verified. Retrieve them for the complete picture: `get_context_by_ids(context_ids=[3349, 3352])`.
 
 </patterns>
 
@@ -452,10 +459,10 @@ Follow knowledge graph links when deeper context is needed -- research plans ref
 **Correct Action:** Execute retrieval Steps 1-2 before examining any task
 </example>
 
-<example scenario="references_navigation">
-**Input:** Agent retrieves an implementation report whose metadata shows `references.context_ids: [3322, 3323]`
-**Correct Approach:** Call `get_context_by_ids(context_ids=[3322, 3323])` to retrieve BOTH referenced entries
-**Result:** Agent has the complete context chain (3322) -> (3323) -> current entry, enabling full traceability and verification of decisions
+<example scenario="links_navigation">
+**Input:** Agent retrieves an implementation report whose metadata shows `links.derived_from: [3322]` and `links.commissioned_by: [3310]`
+**Correct Approach:** Call `get_context_by_ids(context_ids=[3322, 3310])` to read the plan the implementation was built from AND the user message that commissioned it; if the report's currency matters, additionally run `metadata_filters=[{"key": "links.supersedes", "operator": "array_contains", "value": <report-id>}]` to confirm nothing replaced it
+**Result:** Agent has the complete typed chain (user intent -> plan -> implementation), enabling full traceability and verification of decisions
 </example>
 
 </examples>
@@ -470,7 +477,7 @@ Before proceeding with your task, consider verifying the following:
 - [ ] **Agent reports retrieved**: Called `search_context(source="agent")`
 - [ ] **Full content retrieved**: Called `get_context_by_ids` for full content of relevant entries
 - [ ] **Hybrid search considered**: Evaluated whether `hybrid_search_context` is needed for additional context
-- [ ] **References considered**: Checked `metadata.references.context_ids` in retrieved entries; followed references when deeper context was needed
+- [ ] **Links considered**: Checked the typed `links` object in retrieved entries (and legacy `references` on old entries); followed edges when deeper context was needed
 
 Completing this checklist is a best practice for reliable results.
 

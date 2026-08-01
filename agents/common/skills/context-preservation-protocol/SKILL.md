@@ -14,6 +14,14 @@ Storing work documentation and context before stopping is MANDATORY whenever you
 
 </overview>
 
+<schema_directive>
+
+# Mandatory First Step: Load the Metadata Schema
+
+Before composing the metadata of ANY entry you store or update, invoke `Skill(skill="context-metadata-schema")`. That skill is the single normative source for the metadata contract: the universal core fields (`schema_version`, `kind`, `project`, `links`), the kind registry (`report`, `plan`, `handoff`, `checkpoint`, `note`, `issue`, `comment`, `user_message`), the kind-scoped status vocabularies, the typed `links` registry with its design rules, the filter recipes, and the operational rules for link appends, supersession, deduplication, and concurrency. This skill covers the storage WORKFLOW; the metadata examples below show the contract in action but do not redefine it -- on any discrepancy, the schema skill wins.
+
+</schema_directive>
+
 <thread_id>
 
 # How to Obtain Thread ID
@@ -22,7 +30,7 @@ The thread ID is used as `thread_id` for context server queries. Obtain it using
 
 1. **Already available** -- If the thread ID is provided via context or prompt, use it directly
 2. **Thread ID file** -- Check `.context_server/.thread_id` in the project working directory
-3. **Project directory name** -- If no thread ID file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain described below. Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
+3. **Project directory name** -- If no thread ID file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain (remote URL repository name preferred, then git toplevel basename, then current directory basename). Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
 
 </thread_id>
 
@@ -49,9 +57,11 @@ Use `store_context_batch` ONLY when storing multiple independent entries in a si
 
 **Protocol requirements:**
 
-- `metadata`: Recommended - enables filtering by agent_name, task_name, status, project
-- `tags`: Recommended - enables search and categorization
+- `metadata`: Required for schema-v1 entries -- the universal core enables every filter recipe other agents rely on
+- `tags`: Recommended -- the kind token plus labels enables search and categorization
 - `images`: optional
+
+**Deduplication caution:** `store_context` collapses an entry whose (thread, source, text) exactly matches an existing entry into an update of that entry, shallow-overriding metadata. Give every stored body distinguishing content early (concrete specifics, not reusable boilerplate alone) so unrelated records never collapse.
 
 </tools>
 
@@ -75,6 +85,16 @@ Use `update_context` when revising a previously stored plan based on user feedba
 
 **Important:** Use `metadata_patch` (not `metadata`) for revisions to preserve fields you do not want to change. The `updated_at` timestamp is set automatically by the server, and embeddings are regenerated when text changes.
 
+### Metadata Merge Semantics (RFC 7396)
+
+With `metadata_patch`: new keys are ADDED, existing keys are UPDATED with new values, keys set to `null` are DELETED, omitted keys are PRESERVED unchanged, and nested objects deep-merge key-by-key -- but ARRAYS are always replaced whole, never merged element-wise.
+
+**Appending to a links array is therefore read-modify-write:** retrieve the entry with `get_context_by_ids`, append the new ID client-side to the touched key's array, then patch ONLY that key with its complete new array (for example `metadata_patch={"links": {"derived_from": [3348, 3349, 3401]}}`). Sibling keys inside `links` survive the deep merge untouched. Never hand-construct an array you did not first read.
+
+**Superseding an earlier entry is a two-write sequence:** FIRST store the replacing entry with `links.supersedes` naming the old ID, THEN patch the old entry to `status: "superseded"`. If the second write is lost, the edge wins -- readers trust `links.supersedes` over a stale status, and any session noticing the mismatch repairs it.
+
+**Concurrency:** `update_context` uses compare-and-set versioning and fails with a version-conflict error when the entry changed underneath you. On conflict, refetch, reapply your change to the fresh state, and retry once.
+
 ### Update Protocol for Plan Revisions
 
 When updating an existing entry for plan revision:
@@ -82,7 +102,7 @@ When updating an existing entry for plan revision:
 1. **Extract context_id** from the prompt (e.g., `PREVIOUS CONTEXT ID: 123`)
 2. **Retrieve previous entry:** `get_context_by_ids([context_id])`
 3. **Verify ownership:** Check that `agent_name` in metadata matches your agent identifier
-4. **Create revised content:** Generate the updated plan
+4. **Create revised content:** Generate the updated plan as one coherent revision (never an appended addendum)
 5. **Call update_context:**
    ```text
    update_context(
@@ -97,168 +117,26 @@ When updating an existing entry for plan revision:
    ```
 6. **Return SAME context_id** in status message
 
-### Metadata Merge Semantics (RFC 7396)
-
-With `metadata_patch`: new keys are ADDED, existing keys are UPDATED with new values, keys set to `null` are DELETED, and omitted keys are PRESERVED unchanged.
-
-**Example:**
-```python
-# Original metadata: {"agent_name": "implementation-guide", "status": "pending", "revision_count": 0}
-# Patch: {"status": "done", "revision_count": 1}
-# Result: {"agent_name": "implementation-guide", "status": "done", "revision_count": 1}
-```
-
 </update_strategy>
 
 <environment_integration>
 
 ## Environment Integration Patterns
 
-Context preservation operations can interact with environment-level hooks, validation gates, and orchestration workflows. Environment hooks may validate that stored context includes required metadata fields, correct tagging, and proper references; log storage operations for traceability, verifying that agents store work results before session completion; or reject entries lacking required structure (e.g., missing `status`, `agent_name`, or `references`). In such environments, follow the metadata schema and compliance checklist rigorously to avoid validation failures.
+Context preservation operations can interact with environment-level hooks, validation gates, and orchestration workflows. Environment hooks may validate that stored context includes required metadata fields, correct tagging, and proper typed links; log storage operations for traceability, verifying that agents store work results before session completion; or reject entries lacking required structure (e.g., missing `kind`, `status`, or `agent_name`). In such environments, follow the metadata contract and compliance checklist rigorously to avoid validation failures.
 
 ### Metadata Patterns for Multi-Agent Coordination
 
 Structured metadata enables sophisticated workflows across multiple agents. These patterns are generic and apply to any environment with multi-agent coordination capabilities:
 
-- **Work chain linking:** Always populate `references.context_ids` with IDs of entries your work builds upon. This creates navigable chains that other agents and orchestrators can follow and that survive context window resets; incomplete references break the traceability chain
+- **Work chain linking:** Always populate `links.derived_from` with the IDs of entries your work builds upon, `links.commissioned_by` with the user message that spawned the work, and `links.evidence` with entries backing specific claims. Typed edges create navigable chains that other agents and orchestrators can follow and that survive context window resets; the meaning of each pointer is its key, so readers never guess
 - **Agent identification:** Always set `agent_name` to enable filtering by agent role. This is critical for orchestrators that need to find specific agent outputs
-- **Status signaling:** Use `status: "pending"` to signal that work requires continuation, and `status: "done"` to signal completion. Future sessions, other agents, and orchestrators use this to determine workflow progression
-- **Report type classification:** Use `report_type` consistently to enable cross-agent discovery (e.g., finding all validation reports regardless of which validator produced them)
+- **Status signaling:** Use `status: "pending"` to signal that work requires continuation, `status: "done"` to signal completion, and `status: "superseded"` (set by the supersession sequence) to signal replacement. Future sessions, other agents, and orchestrators use this to determine workflow progression -- always alongside `kind`, never as a bare status filter
+- **Kind classification:** Set `kind` accurately (`report`, `plan`, `handoff`, `checkpoint`, `note`) so cross-agent discovery works by record type regardless of which agent produced the record; `report_type` further classifies reports
 - **Handoff readiness:** In multi-agent orchestrated environments, structure every stored report so that another agent can understand the work without additional context. Include goals, work performed, results, and explicit next steps
-- **Tag consistency:** Use consistent tags across related entries to enable grouped retrieval (e.g., all entries tagged with a specific feature or task name)
+- **Tag consistency:** Include the kind token in `tags` plus consistent labels across related entries to enable grouped retrieval (e.g., all entries tagged with a specific feature or task name)
 
 </environment_integration>
-
-<metadata_schema>
-
-## Metadata Schema
-
-### Core Fields (Recommended)
-
-| Field          | Type   | Recommended | Description                                                                                                                          |
-|----------------|--------|-------------|--------------------------------------------------------------------------------------------------------------------------------------|
-| `agent_name`   | string | Yes         | Your agent identifier (defined in your instructions)                                                                                 |
-| `task_name`    | string | Yes         | Human-readable task description                                                                                                      |
-| `status`       | enum   | Yes         | Completion state: `done` or `pending`                                                                                                |
-| `project`      | string | Yes         | Canonical project name (from git remote URL, see Worktree Metadata Fields section)                                                   |
-| `technologies` | array  | Yes         | List of technologies involved                                                                                                        |
-| `report_type`  | enum   | Yes         | Type of work report                                                                                                                  |
-| `references`   | object | Yes         | Cross-system identifiers linking to external resources (use `{}` if none). See [References Field](#references-field) for sub-fields. |
-
-### Standardized Values
-
-#### `status` Field
-
-| Value     | Use When                                                             |
-|-----------|----------------------------------------------------------------------|
-| `done`    | Work complete, no follow-up required                                 |
-| `pending` | Work incomplete, requires continuation (e.g., Research Continuation) |
-
-#### `report_type` Field
-
-| Value            | Description                                 |
-|------------------|---------------------------------------------|
-| `research`       | Research, analysis, implementation planning |
-| `implementation` | Code implementation work                    |
-| `validation`     | Quality validation, testing results         |
-| `documentation`  | Documentation creation/updates              |
-
-#### `technologies` Field
-
-Array of lowercase technology identifiers representing the **SUBJECT MATTER of the task itself**. The following distinction is **CRITICAL**:
-
-| Include (Task Subject)                 | Exclude (Execution Tools)                       |
-|----------------------------------------|-------------------------------------------------|
-| Technologies the task is ABOUT         | Tools used to execute the task                  |
-| Languages/frameworks being implemented | Linters, formatters, type checkers              |
-| Databases being configured or queried  | Version control operations                      |
-| APIs being developed or integrated     | Testing frameworks (unless testing IS the task) |
-| Infrastructure being designed          | CI/CD tools (unless CI/CD IS the task)          |
-
-**Examples of Correct Usage:**
-
-| Task Description                        | Correct `technologies`       | Why                                  |
-|-----------------------------------------|------------------------------|--------------------------------------|
-| Fix bug in FastAPI endpoint             | `["python", "fastapi"]`      | Task is about Python/FastAPI code    |
-| Fix markdown typo in README             | `["markdown"]`               | Task is about markdown content       |
-| Configure PostgreSQL connection pooling | `["postgresql"]`             | Task is about database configuration |
-| Write pytest tests for auth module      | `["python", "pytest"]`       | Testing IS the task subject          |
-| Set up GitHub Actions CI pipeline       | `["github-actions"]`         | CI/CD IS the task subject            |
-| Research LangGraph checkpointing        | `["langchain", "langgraph"]` | Research topic is LangGraph          |
-
-**INCORRECT:** `["python", "pre-commit", "markdown"]` for a markdown typo fix, or `["python", "pytest", "mypy"]` for a hook logic update -- execution, validation, and development tools (pre-commit, pytest, mypy, git, vscode) are not the task subject.
-
-**Example values (illustrative, not exhaustive):** use any lowercase identifier that describes your task's subject matter -- e.g. languages (`python`, `typescript`, `go`, `rust`), frameworks (`fastapi`, `react`, `django`), databases (`postgresql`, `mongodb`, `redis`), infrastructure (`docker`, `kubernetes`, `terraform`).
-
-### Optional Fields
-
-| Field    | Type | Description                                                                                   |
-|----------|------|-----------------------------------------------------------------------------------------------|
-| `domain` | enum | Technical domain: `backend`, `frontend`, `fullstack`, `devops`, `data`, `security`, `general` |
-
-### Advanced: Worktree Metadata Fields
-
-This section is relevant only for environments that use git worktrees; skip it otherwise. In a git worktree environment, include these fields for proper context isolation:
-
-| Field                | Type    | Required    | Description                                  |
-|----------------------|---------|-------------|----------------------------------------------|
-| `worktree_id`        | string  | RECOMMENDED | Current worktree directory name              |
-| `worktree_path`      | string  | RECOMMENDED | Absolute path to worktree root               |
-| `is_linked_worktree` | boolean | OPTIONAL    | True if linked worktree, false for main      |
-
-**Project Name Derivation:**
-
-The `project` field MUST be derived using this fallback chain to ensure consistency across git worktrees. Different worktrees of the same repository have different directory names, so using the directory name breaks context isolation across worktrees; the remote URL provides true canonical identity across all worktrees and users:
-
-1. **Parse from git remote URL** (PREFERRED) -- Try `origin` first (`git remote get-url origin`) and parse the repository name from the URL (`https://github.com/user/my-project.git` -> `my-project`; `git@github.com:user/my-project.git` -> `my-project`). If `origin` is unavailable, try `upstream`, then the first available remote
-2. **Git toplevel basename** (FALLBACK for repos without remotes) -- `git rev-parse --show-toplevel` -> extract the last path component (e.g., `/home/user/projects/my-project` -> `my-project`)
-3. **Current directory basename** (FALLBACK for non-git directories) -- Extract the last directory name from the working directory path (e.g., `/home/user/work/my-project` -> `my-project`)
-
-**Example with worktree fields:**
-
-```json
-{
-  "agent_name": "developer",
-  "task_name": "Implement feature X",
-  "status": "done",
-  "project": "my-project",
-  "worktree_id": "feature-branch",
-  "worktree_path": "/home/user/projects/feature-branch",
-  "is_linked_worktree": true,
-  "technologies": ["python", "fastapi"],
-  "report_type": "implementation",
-  "references": {}
-}
-```
-
-### References Field
-
-The `references` field stores cross-system identifiers for traceability. All values are arrays. Include relevant references when storing context; use an empty object `{}` if no external references exist.
-
-**Core Reference Types:**
-
-| Key           | Value Type | Format                     | Example                                        |
-|---------------|------------|----------------------------|------------------------------------------------|
-| `context_ids` | integer[]  | Numeric                    | `[2322, 2325]`                                 |
-| `urls`        | string[]   | Full URL                   | `["https://github.com/org/repo/pull/445"]`     |
-| `git_commits` | string[]   | Full SHA (40/64 hex chars) | `["abc1234def5678901234567890abcdef12345678"]` |
-
-Open for extension following the `{system}_{entity_type}s` convention (e.g., `github_prs`, `jira_issues`).
-
-- `context_ids`: Reference related entries in the same or other threads
-- `urls`: Store any external reference as a full URL (issues, PRs, documentation pages, commit URLs, etc.)
-- `git_commits`: Use FULL SHA only (40 characters for SHA-1, 64 characters for SHA-256). Within a single-project session where `project` metadata identifies the repository, bare SHAs are unambiguous and directly usable with `git show`
-
-**Cross-Repository Disambiguation:** When context spans multiple repositories (e.g., changes across a backend and frontend repo), bare SHAs in `git_commits` are ambiguous because the hash provides no indication of which repository it belongs to. In such cases, supplement `git_commits` with platform URLs in `urls`. The two fields are complementary: `git_commits` provides typed, validated commit identifiers usable across any git platform (including local repos without hosting); `urls` provides human-readable, clickable links with full repository context:
-
-```json
-"references": {
-  "git_commits": ["abc1234def5678901234567890abcdef12345678"],
-  "urls": ["https://github.com/org/backend-repo/commit/abc1234def5678901234567890abcdef12345678"]
-}
-```
-
-</metadata_schema>
 
 <strategy>
 
@@ -296,19 +174,24 @@ When you have context-server store capability and produced substantive work this
    - `thread_id`: Your thread ID (REQUIRED)
    - `source`: `agent` (REQUIRED)
    - `text`: Your complete Markdown report (REQUIRED)
-   - `metadata`: **Recommended - include these fields for best discoverability.** Each enables metadata filtering so other agents and sessions can find your context: by agent (`agent_name`), task (`task_name`), completion state (`status`), project (`project`), tech stack (`technologies`, via the `array_contains` operator or tags), and work type (`report_type`):
+   - `metadata`: Compose per the schema skill loaded above -- the universal core plus the fields for your kind. A completed work report looks like:
      ```json
      {
+       "schema_version": 1,
+       "kind": "report",
+       "project": "[canonical project name]",
        "agent_name": "[your agent name]",
-       "task_name": "[human-readable task description, e.g., 'Implement authentication', 'Fix login bug']",
-       "status": "done | pending",
-       "project": "[current directory name]",
-       "technologies": ["list", "of", "technologies"],
+       "task_name": "[human-readable task description]",
+       "status": "done",
        "report_type": "research | implementation | validation | documentation",
-       "references": {}
+       "technologies": ["list", "of", "technologies"],
+       "links": {
+         "derived_from": [],
+         "commissioned_by": []
+       }
      }
      ```
-   - `tags`: **Recommended** - `["report", ...relevant tags]` for search and categorization
+   - `tags`: The kind token plus relevant labels (e.g., `["report", ...]`)
 
 4. **After successfully saving**, capture the `context_id` from the `store_context` response and include it in your brief completion status to the calling party -- format: `"[Brief status summary]. Report ID: [context_id]"` (e.g., `"Implementation complete. 3 features implemented. Report ID: 2510"`). The caller can use this ID to retrieve the full report via `get_context_by_ids([context_id])`
 
@@ -320,23 +203,24 @@ This ensures your work is documented, preserved, and **retrievable by other agen
 
 ## Context Continuity Patterns
 
-These patterns help agents preserve state across context window boundaries and long-running tasks. They are the storage-side patterns; the symmetric retrieval-side patterns (search, re-read after compaction, references navigation) belong to the retrieval workflow and follow the same principles applied to retrieval tools.
+These patterns help agents preserve state across context window boundaries and long-running tasks. They are the storage-side patterns; the symmetric retrieval-side patterns (search, re-read after compaction, links navigation) belong to the retrieval workflow and follow the same principles applied to retrieval tools.
 
 ### Basic Continuity (Default)
 
 Apply these by default when storing context:
 
-- **Status and reference chains:** Always set `status` and populate `references.context_ids` per the multi-agent coordination patterns above
-- **Session handoff notes:** Before ending a session, store a summary entry describing work completed, key decisions, unresolved issues, and recommended next steps -- a briefing document for the next session
+- **Status and link chains:** Always set `status` and populate the typed `links` keys (`derived_from`, `commissioned_by`, `evidence`) per the multi-agent coordination patterns above
+- **Session handoff notes:** Before ending a session, store a `kind: "handoff"` entry describing work completed, key decisions, unresolved issues, and recommended next steps -- a briefing document for the next session
 - **Pre-compaction preservation:** If approaching context window limits during extended work, proactively store current progress to the context server before compaction occurs. Critical details stored externally survive compaction intact
 
 ### Advanced: Long-Running Task Continuity (Optional)
 
 For tasks spanning multiple context windows or extended multi-step execution:
 
-- **Checkpoint storage:** At defined milestones, store a checkpoint entry containing a summary of completed steps and remaining work, key decisions and their rationale, active blockers or dependencies, and the list of modified files and their purpose. Set `status: "pending"` and include `references.context_ids` linking to the task plan
-- **Progressive summarization:** For tasks generating large volumes of context, periodically store condensed summary entries distilling key findings, decisions, and progress. Reference the original detailed entries via `references.context_ids` and tag summaries consistently (e.g., with task name) for easy retrieval
-- **Multi-agent handoff reports:** When another agent will continue your work, store a comprehensive handoff report that the receiving agent can understand without additional context: clear sections (Summary, Work Performed, Results, Next Steps, and others) covering goals, work performed, results, and explicit next steps; all relevant `references.context_ids` so the receiving agent can trace the full work chain; and `report_type` and `agent_name` set accurately for precise filtering
+- **Checkpoint storage:** At defined milestones, store a `kind: "checkpoint"` entry containing a summary of completed steps and remaining work, key decisions and their rationale, active blockers or dependencies, and the list of modified files and their purpose. Set `status: "pending"` and point `links.derived_from` at the task plan
+- **Progressive summarization:** For tasks generating large volumes of context, periodically store condensed summary entries distilling key findings, decisions, and progress. Point `links.derived_from` at the original detailed entries and tag summaries consistently (e.g., with task name) for easy retrieval
+- **Plan supersession:** When a revised plan replaces an earlier one as a NEW entry, follow the supersession sequence (store the new plan with `links.supersedes`, then patch the old plan to `status: "superseded"`) so later sessions can always answer "is there a newer plan"
+- **Multi-agent handoff reports:** When another agent will continue your work, store a comprehensive handoff report that the receiving agent can understand without additional context: clear sections (Summary, Work Performed, Results, Next Steps, and others) covering goals, work performed, results, and explicit next steps; all relevant typed links so the receiving agent can trace the full work chain; and `kind`, `report_type`, and `agent_name` set accurately for precise filtering
 
 </context_continuity>
 
@@ -346,12 +230,13 @@ For tasks spanning multiple context windows or extended multi-step execution:
 
 Before returning to the calling party, verify the following whenever you had store capability and produced substantive work; completing this checklist is mandatory for reliable context preservation:
 
+- [ ] **Schema loaded**: Invoked `Skill(skill="context-metadata-schema")` before composing metadata
 - [ ] **Report created**: Comprehensive Markdown report documenting your work
 - [ ] **Report saved**: Called `store_context` with thread_id, source="agent", text, metadata, and tags
-- [ ] **Metadata complete**: Included agent_name, task_name, status, and project fields
-- [ ] **Technologies and report_type**: Populated correctly per task subject (not execution tools)
-- [ ] **References included**: Populated `references` field with relevant identifiers (use `{}` if none)
-- [ ] **Tags included**: Added "report" tag plus relevant categorization tags
+- [ ] **Universal core complete**: Included `schema_version`, `kind`, `project` (plus `agent_name` and `status` for your kind)
+- [ ] **Kind-specific fields**: Populated correctly (e.g., `report_type` and `technologies` per task subject, not execution tools)
+- [ ] **Links typed**: Populated `links` with typed keys (`derived_from`, `commissioned_by`, `evidence`, ...); omitted or `{}` if none; never wrote a legacy untyped reference list
+- [ ] **Tags included**: Added the kind token plus relevant categorization tags
 - [ ] **Storage verified**: Confirmed `store_context` call succeeded before returning
 - [ ] **Report ID returned**: Included `context_id` from `store_context` response in status message
 
@@ -363,7 +248,7 @@ Before returning to the calling party, verify the following whenever you had sto
 
 <example scenario="successful_preservation">
 **Input:** Agent completed implementation task successfully
-**Correct Approach:** (1) Create Markdown report following skill format; (2) Call `store_context(thread_id="session-id", source="agent", text="## Summary\n...", metadata={"agent_name": "developer", "task_name": "Implement authentication feature", "status": "done", "project": "my-project"}, tags=["report", "implementation"])` and capture returned `context_id`; (3) Verify storage succeeded; (4) Return brief status with Report ID to caller
+**Correct Approach:** (1) Invoke `Skill(skill="context-metadata-schema")`; (2) Create Markdown report following skill format; (3) Call `store_context(thread_id="session-id", source="agent", text="## Summary\n...", metadata={"schema_version": 1, "kind": "report", "project": "my-project", "agent_name": "developer", "task_name": "Implement authentication feature", "status": "done", "report_type": "implementation", "technologies": ["python", "fastapi"], "links": {"commissioned_by": [2481]}}, tags=["report", "implementation"])` and capture returned `context_id`; (4) Verify storage succeeded; (5) Return brief status with Report ID to caller
 **store_context Response:** `{"success": true, "context_id": 2510, "thread_id": "session-id", "message": "..."}`
 **Returned Status:** "Implementation complete. Auth feature implemented with 3 endpoints. Report ID: 2510"
 </example>

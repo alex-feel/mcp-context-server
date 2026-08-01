@@ -842,8 +842,12 @@ class SyncMCPClient:
                                 f'({len(chunk)} chars, {chunk_byte_size} bytes)',
                             )
 
-                            # Add metadata to track chunks
+                            # Add metadata to track chunks. Chunk entries are user
+                            # messages too, so they carry the same universal schema
+                            # v1 discriminator as the single-store path.
                             metadata = {
+                                'schema_version': 1,
+                                'kind': 'user_message',
                                 'chunk': chunk_num,
                                 'total_chunks': len(chunks),
                                 'chunk_size_chars': len(chunk),
@@ -1687,8 +1691,13 @@ def main() -> None:
         # Create client based on transport configuration (stdio or http)
         client = create_mcp_client(config)
 
-        # Build metadata with worktree fields for context isolation
+        # Build metadata with worktree fields for context isolation.
+        # kind and schema_version follow the universal context-server metadata
+        # schema v1: every entry carries a record-kind discriminator so filters
+        # and future server-side schema enforcement can rely on it.
         metadata: dict[str, Any] = {
+            'schema_version': 1,
+            'kind': 'user_message',
             'project': worktree_info['project'],
         }
         # Add optional worktree fields if available (git repository detected)
