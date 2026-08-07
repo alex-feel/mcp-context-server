@@ -122,7 +122,7 @@ mcp_client:
   # Retry attempts for actual MCP connection (inside async with Client)
   max_connection_retries: 3
   # Timeout per connection attempt (seconds)
-  connection_timeout: 30.0
+  connection_timeout: 60.0
   # Timeout in seconds for first run (may need package download)
   timeout_first_run: 240.0
   # Timeout in seconds for subsequent runs
