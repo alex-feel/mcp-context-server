@@ -11,6 +11,7 @@ import contextlib
 import socket
 import unittest.mock
 from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -550,7 +551,21 @@ class TestInitializeErrorClassification:
     DependencyError (exit code 69, retryable) or ConfigurationError
     (exit code 78, non-retryable) to enable proper Docker/Kubernetes
     restart policy behavior.
+
+    Each case targets the fault raised by POOL CREATION, so the vector-provision
+    probe that runs before it is stubbed out. The probe opens a real connection of
+    its own and, since it can no longer swallow a connect fault (a probe must not
+    answer a question it never got to ask), an unstubbed probe would fail first with
+    its own error and mask the fault under test.
     """
+
+    @pytest.fixture(autouse=True)
+    def _skip_vector_provision_probe(self) -> Iterator[None]:
+        """Stub the boot-time vector-provision probe for every case in this class."""
+        with unittest.mock.patch.object(
+            PostgreSQLBackend, '_resolve_provision_vector', AsyncMock(return_value=False),
+        ):
+            yield
 
     @pytest.mark.asyncio
     async def test_connection_refused_raises_dependency_error(self) -> None:
@@ -1848,14 +1863,21 @@ class TestResolveProvisionVector:
             assert await self._backend()._resolve_provision_vector() is False
 
     @pytest.mark.asyncio
-    async def test_probe_connection_failure_defers_to_pool(self) -> None:
-        """A generation-off probe connection failure returns False; pool init surfaces it."""
+    async def test_probe_connection_failure_propagates(self) -> None:
+        """A probe that never reached the database must not answer the question.
+
+        Returning False here means "the fp32 layout is not needed", so the boot skips
+        CREATE EXTENSION vector and the vector codec -- while a later
+        `CREATE TABLE ... vector(dim)` still runs and fails unclassified. The fault is
+        raised instead, and initialize()'s classification ladder turns it into the
+        right exit code.
+        """
         with unittest.mock.patch(
             'app.backends.postgresql_backend.settings', self._settings(compression=True, generation=False),
         ), unittest.mock.patch(
             'app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(side_effect=OSError('unreachable')),
-        ):
-            assert await self._backend()._resolve_provision_vector() is False
+        ), pytest.raises(OSError, match='unreachable'):
+            await self._backend()._resolve_provision_vector()
 
 
 class TestProvisionVectorOverride:

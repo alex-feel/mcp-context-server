@@ -449,44 +449,44 @@ class StorageBackend(Protocol):
         Returns a dictionary containing backend-specific health metrics,
         connection pool statistics, and performance indicators.
 
+        The mapping is published to MCP clients verbatim as ``connection_metrics``
+        (app/tools/discovery.py), and its declared shape is
+        ``ConnectionMetricsDict`` in app/types.py, which FastMCP turns into the
+        advertised ``get_statistics`` outputSchema. A key an implementation emits
+        but that TypedDict does not declare is DROPPED for every client consuming
+        the typed output, so a new backend must either restrict itself to the
+        keys below or extend ``ConnectionMetricsDict`` in the same change.
+
         Returns:
-            Dictionary with metrics. Common keys:
-                - backend_type: str - Backend identifier (sqlite, postgresql)
-                - pool_size: int - Total connections in pool
-                - active_connections: int - Connections currently in use
-                - circuit_breaker_state: str - Circuit breaker status
-                - total_operations: int - Lifetime operation count
-                - failed_operations: int - Failed operation count
-                - avg_operation_time_ms: float - Average operation latency
+            Dictionary with metrics. The cross-backend contract guarantees exactly
+            two keys, so a client can identify the backend and read one pool bound
+            without branching:
+                - backend_type: str - Backend identifier ('sqlite', 'postgresql')
+                - pool_size: int - A pool bound whose meaning is backend-specific
+                  (PostgreSQL: the pool's CURRENT size, present only once the pool
+                  exists; SQLite: the reader-pool BOUND, since writes are
+                  serialized onto one writer connection)
 
-        For SQLite:
-            {
-                'backend_type': 'sqlite',
-                'pool_size': 8,
-                'active_readers': 2,
-                'writer_busy': False,
-                'write_queue_size': 0,
-                'circuit_breaker_state': 'HEALTHY',
-                'total_writes': 1234,
-                'total_reads': 5678,
-                'failed_writes': 0,
-                'failed_reads': 0,
-            }
+        Keys the shipped implementations add on top of that contract, all declared
+        in ``ConnectionMetricsDict``:
 
-        For PostgreSQL:
-            {
-                'backend_type': 'postgresql',
-                'pool_size': 20,
-                'pool_idle': 15,
-                'pool_free': 10,
-                'total_queries': 9999,
-                'failed_queries': 5,
-            }
+        SQLite (SQLiteBackend.get_metrics, all always present):
+            total_connections, active_connections, failed_connections,
+            total_queries, failed_queries, write_queue_size, circuit_state,
+            consecutive_failures, last_error, last_error_time
+
+        PostgreSQL (PostgreSQLBackend.get_metrics):
+            always: total_queries, failed_queries, last_error, last_error_time,
+                circuit_state, consecutive_failures
+            only while a pool exists: pool_size, pool_idle, pool_min_size,
+                pool_max_size
+            only after detection ran: pgpool_detected, pgpool_version,
+                session_mode_pooler_detected
 
         Example:
             metrics = backend.get_metrics()
             print(f"Backend: {metrics['backend_type']}")
-            print(f"Active connections: {metrics.get('active_connections', 0)}")
+            print(f"Circuit state: {metrics.get('circuit_state', 'unknown')}")
         """
         ...
 
