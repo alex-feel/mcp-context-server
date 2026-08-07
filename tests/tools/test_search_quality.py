@@ -2,6 +2,8 @@
 
 import logging
 from typing import Any
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 import pytest
 
@@ -66,6 +68,120 @@ class TestLimitClamping:
         assert 'results' in result
         assert 'count' in result
         assert isinstance(result['results'], list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_semantic_search_context_clamping_over_max(self) -> None:
+        """semantic_search_context clamps limit > 100 and reports the hint.
+
+        The clamp is duplicated per tool. Only exercising it through search_context
+        left the other three copies indistinguishable from a plain pass-through, so
+        dropping any of them would have kept the suite green while a client asking
+        for 10000 results got them.
+        """
+        from app.tools.search import semantic_search_context
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
+            ),
+        ):
+            result = await semantic_search_context(query='anything', limit=200)
+
+        assert result['clamped_limit'] == {'requested': 200, 'applied': 100}
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_semantic_search_context_no_clamping_at_max(self) -> None:
+        """semantic_search_context does NOT clamp when limit == 100."""
+        from app.tools.search import semantic_search_context
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
+            ),
+        ):
+            result = await semantic_search_context(query='anything', limit=100)
+
+        assert 'clamped_limit' not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_fts_search_context_clamping_over_max(self) -> None:
+        """fts_search_context clamps limit > 100 and reports the hint."""
+        from app.tools.search import fts_search_context
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
+            ),
+        ):
+            result = await fts_search_context(query='anything', limit=200)
+
+        assert result['clamped_limit'] == {'requested': 200, 'applied': 100}
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_fts_search_context_no_clamping_at_max(self) -> None:
+        """fts_search_context does NOT clamp when limit == 100."""
+        from app.tools.search import fts_search_context
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
+            ),
+        ):
+            result = await fts_search_context(query='anything', limit=100)
+
+        assert 'clamped_limit' not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_hybrid_search_context_clamping_over_max(self) -> None:
+        """hybrid_search_context clamps limit > 100 and reports the hint."""
+        from app.tools.search import hybrid_search_context
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
+            ),
+        ):
+            result = await hybrid_search_context(query='anything', limit=200)
+
+        assert result['clamped_limit'] == {'requested': 200, 'applied': 100}
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_hybrid_search_context_no_clamping_at_max(self) -> None:
+        """hybrid_search_context does NOT clamp when limit == 100."""
+        from app.tools.search import hybrid_search_context
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
+            ),
+        ):
+            result = await hybrid_search_context(query='anything', limit=100)
+
+        assert 'clamped_limit' not in result
 
 
 # ============================================================

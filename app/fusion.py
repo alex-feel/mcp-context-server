@@ -5,7 +5,6 @@ for combining results from multiple search methods (FTS, semantic).
 """
 
 
-import operator
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -36,7 +35,9 @@ def reciprocal_rank_fusion(
         limit: Maximum number of results to return.
 
     Returns:
-        Combined results sorted by RRF score (descending), with scores breakdown.
+        Combined results sorted by RRF score (descending), ties broken by ascending
+        context id so the fused order is reproducible across executions, with scores
+        breakdown.
 
     Example:
         >>> fts = [{'id': '0190abcdef1234567890abcdef123401', 'score': 2.5}]
@@ -95,13 +96,21 @@ def reciprocal_rank_fusion(
         doc_registry[doc_id]['semantic_distance'] = result.get('distance')
         doc_registry[doc_id]['rrf_score'] += 1.0 / (k + rank)
 
-    # Sort by RRF score (descending) and apply limit
-
-    sorted_docs = sorted(
-        doc_registry.values(),
-        key=operator.itemgetter('rrf_score'),
-        reverse=True,
-    )[:limit]
+    # Sort by RRF score (descending) with the context id as an explicit, unique
+    # secondary key. RRF ties are common rather than exotic -- a document ranked 1
+    # in the FTS leg only and a different document ranked 1 in the semantic leg only
+    # both score 1/(k+1) -- and a score-only sort leaves their relative order at the
+    # mercy of dict insertion order, which follows the two legs' (themselves
+    # write-order sensitive) result orders. Without the tiebreak the same query run
+    # twice can emit tied documents in different positions, so a client paging with
+    # limit/offset silently skips or duplicates one.
+    sorted_docs = [
+        doc
+        for _doc_id, doc in sorted(
+            doc_registry.items(),
+            key=lambda item: (-float(item[1]['rrf_score']), item[0]),
+        )
+    ][:limit]
 
     # Build result list with scores breakdown
     results: list[HybridSearchResultDict] = []

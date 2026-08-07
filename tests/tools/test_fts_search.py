@@ -1509,6 +1509,11 @@ class TestFtsValidationErrorStats:
         assert stats['execution_time_ms'] == 0.0
         assert stats['filters_applied'] == 0
         assert stats['rows_returned'] == 0
+        # query_plan is present as an explicit null rather than omitted: the docs let a
+        # client read stats['query_plan'] unconditionally under explain_query, so dropping
+        # the key on the rejection path would make that documented access raise KeyError.
+        assert 'query_plan' in stats
+        assert stats['query_plan'] is None
 
     @pytest.mark.asyncio
     async def test_validation_error_omits_stats_without_explain_query(self) -> None:

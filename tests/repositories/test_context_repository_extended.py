@@ -304,6 +304,58 @@ class TestContextRepositorySearch:
         assert rows[0]['source'] == 'user'
 
     @pytest.mark.asyncio
+    async def test_filters_applied_counts_every_applied_condition(
+        self,
+        repos: RepositoryContainer,
+    ) -> None:
+        """stats.filters_applied counts ALL applied filters, not only the metadata ones.
+
+        The shared clause builder emits the thread/source/content_type, date-range and tag
+        conditions itself, so reporting only the metadata count told a client using
+        explain_query that its other filters had been dropped -- and disagreed with
+        fts_search_context and semantic_search_context, which report the full tally for the
+        identical arguments.
+        """
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='count_thread',
+            source='agent',
+            content_type='text',
+            text_content='counted entry',
+            metadata=json.dumps({'project': 'p'}),
+        )
+        await repos.tags.store_tags(context_id, ['x'])
+
+        _rows, stats = await repos.context.search_contexts(
+            thread_id='count_thread',
+            source='agent',
+            content_type='text',
+            tags=['x'],
+            metadata={'project': 'p'},
+            start_date='2020-01-01',
+            end_date='2999-01-01',
+        )
+
+        # thread_id + source + content_type + tags + start_date + end_date + one metadata key.
+        assert stats['filters_applied'] == 7
+
+    @pytest.mark.asyncio
+    async def test_filters_applied_is_zero_without_filters(
+        self,
+        repos: RepositoryContainer,
+    ) -> None:
+        """An unfiltered browse still reports zero applied filters."""
+        await repos.context.store_with_deduplication(
+            thread_id='no_filter_thread',
+            source='user',
+            content_type='text',
+            text_content='entry',
+        )
+
+        _rows, stats = await repos.context.search_contexts()
+
+        assert stats['filters_applied'] == 0
+
+    @pytest.mark.asyncio
     async def test_search_validation_error_stats_include_backend_sqlite(
         self,
         context_repo: ContextRepository,
@@ -1635,3 +1687,46 @@ class TestComputeContentHash:
         hash1 = compute_content_hash('content A')
         hash2 = compute_content_hash('content B')
         assert hash1 != hash2
+
+
+class TestCountAppliedFilters:
+    """The shared filters_applied tally used by every search repository.
+
+    search_context, fts_search_context, semantic_search_context and the compressed semantic
+    path all publish this number as stats.filters_applied, so it must be computed in exactly
+    one place: re-deriving it per repository is what let the browse tool report a different
+    count than its siblings for identical arguments.
+    """
+
+    def test_counts_each_dimension_once(self) -> None:
+        """Every emitted condition contributes exactly one, tags counting as one subquery."""
+        from app.repositories.context_repository import count_applied_filters
+
+        assert count_applied_filters() == 0
+        assert count_applied_filters(thread_id='t') == 1
+        assert count_applied_filters(source='agent') == 1
+        assert count_applied_filters(content_type='text') == 1
+        assert count_applied_filters(tags=['a', 'b', 'c']) == 1
+        assert count_applied_filters(start_date='2020-01-01') == 1
+        assert count_applied_filters(end_date='2020-01-01') == 1
+        assert count_applied_filters(metadata_filter_count=3) == 3
+
+    def test_ignores_empty_values(self) -> None:
+        """Empty strings and empty lists are not applied conditions."""
+        from app.repositories.context_repository import count_applied_filters
+
+        assert count_applied_filters(thread_id='', source='', content_type='', tags=[]) == 0
+
+    def test_sums_all_dimensions(self) -> None:
+        """A fully specified request counts every condition plus the metadata filters."""
+        from app.repositories.context_repository import count_applied_filters
+
+        assert count_applied_filters(
+            thread_id='t',
+            source='agent',
+            content_type='text',
+            tags=['x'],
+            start_date='2020-01-01',
+            end_date='2999-01-01',
+            metadata_filter_count=2,
+        ) == 8

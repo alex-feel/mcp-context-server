@@ -8,7 +8,6 @@ FlashRank supports multiple models with different size/quality tradeoffs.
 
 import asyncio
 import logging
-import operator
 from typing import Any
 from typing import TypedDict
 
@@ -298,14 +297,21 @@ class FlashRankProvider:
             score_map[original_idx] = float(item['score'])
 
         # Add rerank_score to original results and sort
-        scored_results: list[dict[str, Any]] = []
+        indexed_results: list[tuple[int, dict[str, Any]]] = []
         for i, result in enumerate(results):
             result_copy = result.copy()
             result_copy['rerank_score'] = score_map.get(i, 0.0)
-            scored_results.append(result_copy)
+            indexed_results.append((i, result_copy))
 
-        # Sort by rerank_score descending
-        scored_results.sort(key=operator.itemgetter('rerank_score'), reverse=True)
+        # Sort by rerank_score descending, with the incoming position as an EXPLICIT
+        # unique secondary key. This is the last ranked sort before the client sees the
+        # results and the `limit` slice below is a top-N window over it, so tied scores
+        # must not be ordered by anything undefined. Cross-encoder ties are ordinary
+        # (near-identical passages score identically), and the incoming order is the
+        # retrieval ranking -- itself deterministically ordered upstream -- so it is both
+        # a meaningful and a reproducible tiebreak, unlike an arbitrary id ordering.
+        indexed_results.sort(key=lambda item: (-float(item[1]['rerank_score']), item[0]))
+        scored_results: list[dict[str, Any]] = [result for _index, result in indexed_results]
 
         # Apply limit if specified
         if limit is not None:

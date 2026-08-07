@@ -201,16 +201,19 @@ class StatisticsRepository(BaseRepository):
                 result = cursor.fetchone()
                 stats['avg_entries_per_thread'] = _to_float(result['avg_entries'])
 
+                # The grouping key is the unique secondary sort key: without it a
+                # tie in `count` leaves the LIMIT window computed over an undefined
+                # ordering, so which rows make the top-N flaps under unrelated writes.
                 cursor.execute('''
                     SELECT thread_id, COUNT(*) as count FROM context_entries
-                    GROUP BY thread_id ORDER BY count DESC LIMIT 5
+                    GROUP BY thread_id ORDER BY count DESC, thread_id ASC LIMIT 5
                 ''')
                 most_active: list[dict[str, Any]] = [
                     {'thread_id': row['thread_id'], 'count': row['count']} for row in cursor.fetchall()
                 ]
                 stats['most_active_threads'] = most_active
 
-                cursor.execute('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC LIMIT 10')
+                cursor.execute('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, tag ASC LIMIT 10')
                 top_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
                 stats['top_tags'] = top_tags
 
@@ -253,14 +256,20 @@ class StatisticsRepository(BaseRepository):
                 ''')
                 stats['avg_entries_per_thread'] = _to_float(row['avg_entries'] if row else None)
 
+                # The grouping key is the unique secondary sort key: without it a
+                # tie in `count` leaves the LIMIT window computed over an undefined
+                # ordering, and PostgreSQL MVCC rewrites heap order on every unrelated
+                # UPDATE, so which rows make the top-N flaps between calls.
                 rows = await conn.fetch('''
                     SELECT thread_id, COUNT(*) as count FROM context_entries
-                    GROUP BY thread_id ORDER BY count DESC LIMIT 5
+                    GROUP BY thread_id ORDER BY count DESC, thread_id ASC LIMIT 5
                 ''')
                 most_active: list[dict[str, Any]] = [{'thread_id': row['thread_id'], 'count': row['count']} for row in rows]
                 stats['most_active_threads'] = most_active
 
-                rows = await conn.fetch('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC LIMIT 10')
+                rows = await conn.fetch(
+                    'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, tag ASC LIMIT 10',
+                )
                 top_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
                 stats['top_tags'] = top_tags
 
@@ -439,7 +448,10 @@ class StatisticsRepository(BaseRepository):
                 cursor.execute('SELECT COUNT(DISTINCT tag) as count FROM tags')
                 stats['unique_tags'] = cursor.fetchone()['count']
 
-                cursor.execute('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC')
+                # `tag` is the unique secondary sort key: top_10_tags below slices the
+                # first ten rows, so a tie in `count` would otherwise decide the slice
+                # membership over an undefined ordering.
+                cursor.execute('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, tag ASC')
                 all_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
                 stats['all_tags'] = all_tags
                 stats['top_10_tags'] = all_tags[:10] if all_tags else []
@@ -466,7 +478,10 @@ class StatisticsRepository(BaseRepository):
             row = await conn.fetchrow('SELECT COUNT(DISTINCT tag) as count FROM tags')
             stats['unique_tags'] = row['count'] if row else 0
 
-            rows = await conn.fetch('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC')
+            # `tag` is the unique secondary sort key: top_10_tags below slices the
+            # first ten rows, so a tie in `count` would otherwise decide the slice
+            # membership over an undefined ordering.
+            rows = await conn.fetch('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, tag ASC')
             all_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
             stats['all_tags'] = all_tags
             stats['top_10_tags'] = all_tags[:10] if all_tags else []

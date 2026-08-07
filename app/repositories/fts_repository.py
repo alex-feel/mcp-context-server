@@ -18,6 +18,7 @@ from app.backends.base import StorageBackend
 from app.errors import ControlFlowError
 from app.metadata_types import pg_bind_reject_reason
 from app.repositories.base import BaseRepository
+from app.repositories.context_repository import count_applied_filters
 
 # Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
 # Matches word characters connected by one or more hyphens
@@ -52,9 +53,28 @@ def sanitize_sqlite_fts_terms(tokens: list[str], language: str = 'english') -> l
       ``_ENGLISH_STOPWORD_FTS_LANGUAGES``); for every other language it is KEPT as a literal term,
       because PostgreSQL keeps it as a required lexeme and dropping it on SQLite alone would make
       the two backends return different rows.
-    - Every other bare term is wrapped as an FTS5 string literal (embedded quotes doubled), so
-      an operator-cased NEAR or a special char ( ( ) " : * ^ ) is a LITERAL term, never syntax.
-      A quoted single word is still tokenized/stemmed, so ordinary-word recall is unchanged.
+    - A bare term carrying an embedded double quote is SPLIT on that quote into one FTS5 string
+      literal per fragment (``cat"dog`` -> ``"cat" "dog"``), which FTS5 ANDs. Escaping the quote by
+      doubling it instead (``"cat""dog"``) does NOT neutralize it: FTS5 re-tokenizes the content of
+      a string literal, the escape decodes back to a literal ``"``, and the tokenizer treats it as
+      a word boundary -- silently turning an ordinary token into a strict two-word ADJACENCY
+      phrase. PostgreSQL's plainto_tsquery splits the same input into independently-ANDed lexemes
+      with no adjacency requirement, so only the split form keeps the backends returning the same
+      rows.
+    - A HYPHEN inside a bare term stays a space inside ONE literal (``full-text`` ->
+      ``"full text"``, an adjacency phrase) on purpose: PostgreSQL emits the compound lexeme
+      ``full-text`` plus its parts, which requires the two words to be adjacent in the document.
+      FTS5's unicode61/porter tokenizer drops hyphens entirely, so the document side cannot
+      distinguish ``full-text`` from ``full text`` at all; the adjacency phrase is the closest
+      expressible approximation, and ANDing the parts separately would widen recall further.
+      This rule is scoped to the modes THIS function serves (match and the hybrid OR join),
+      where PostgreSQL's compound lexeme is what sets the adjacency target. PREFIX mode has a
+      different target -- ``_handle_hyphenated_prefix_postgresql`` emits AND-ed prefix lexemes
+      (``full:* & text:*``) with no adjacency requirement -- so the prefix branch of
+      ``_transform_query_sqlite`` splits hyphens into separate wildcarded literals instead.
+    - Every other bare term is wrapped as an FTS5 string literal, so an operator-cased NEAR or a
+      special char ( ( ) : * ^ ) is a LITERAL term, never syntax. A quoted single word is still
+      tokenized/stemmed, so ordinary-word recall is unchanged.
 
     Shared by the standalone FTS transform (``_transform_query_sqlite`` match/prefix modes) and
     the hybrid adaptive query builder so the two never diverge.
@@ -74,16 +94,17 @@ def sanitize_sqlite_fts_terms(tokens: list[str], language: str = 'english') -> l
         # Require >= 2 chars: a LONE '"' satisfies both startswith AND endswith (they test the
         # SAME character), so without the length check it would pass through as a "balanced
         # phrase" and produce an unterminated FTS5 string literal (MATCH syntax error). With the
-        # check it falls through to the doubling path below -> '""""' (a balanced empty literal).
+        # check it falls through to the splitting path below, which yields no fragment at all.
         if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
             terms.append(token)
             continue
-        clean = token.replace('-', ' ').strip()
-        if not clean:
-            continue
-        if drop_operator_barewords and clean.lower() in ('and', 'or', 'not'):
-            continue
-        terms.append('"' + clean.replace('"', '""') + '"')
+        for fragment in token.replace('-', ' ').split('"'):
+            clean = fragment.strip()
+            if not clean:
+                continue
+            if drop_operator_barewords and clean.lower() in ('and', 'or', 'not'):
+                continue
+            terms.append(f'"{clean}"')
     return terms
 
 
@@ -460,14 +481,15 @@ class FtsRepository(BaseRepository):
             # under explain_query, a `query_plan` key the PostgreSQL path emits, so the stats
             # shape stays backend-consistent for the all-stopword case.
             def _empty_result(plan_note: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-                empty_filter_count = sum([
-                    1 if thread_id else 0,
-                    1 if source else 0,
-                    1 if content_type else 0,
-                    1 if tags else 0,
-                    1 if start_date else 0,
-                    1 if end_date else 0,
-                ]) + metadata_filter_count
+                empty_filter_count = count_applied_filters(
+                    thread_id=thread_id,
+                    source=source,
+                    content_type=content_type,
+                    tags=tags,
+                    start_date=start_date,
+                    end_date=end_date,
+                    metadata_filter_count=metadata_filter_count,
+                )
                 empty_stats: dict[str, Any] = {
                     'execution_time_ms': round((time_module.time() - start_time) * 1000, 2),
                     'filters_applied': empty_filter_count,
@@ -495,6 +517,13 @@ class FtsRepository(BaseRepository):
             # Build main query with FTS5 join
             # bm25() returns negative scores where more negative = better match
             # We negate it to get positive scores where higher = better match
+            # ``ce.id DESC`` is an explicit, UNIQUE secondary sort key: equal-score rows are
+            # common (identical or near-identical documents), and a score-only ORDER BY leaves
+            # their relative order up to the scan, which is not stable across executions. The
+            # LIMIT/OFFSET window would then be computed over an undefined ordering, so a client
+            # paging a tied result set silently skips or duplicates rows. Matches the browse
+            # path's ``created_at DESC, id DESC`` contract (newest-first on ties); the id is
+            # lowercase hex on SQLite and a UUID on PostgreSQL, which order identically.
             sql_query = f'''
                 SELECT
                     ce.id,
@@ -512,7 +541,7 @@ class FtsRepository(BaseRepository):
                 JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 {where_clause}
                 {'AND' if where_clause else 'WHERE'} fts.text_content MATCH ?
-                ORDER BY score DESC
+                ORDER BY score DESC, ce.id DESC
                 LIMIT ? OFFSET ?
             '''
 
@@ -575,17 +604,17 @@ class FtsRepository(BaseRepository):
             # Calculate execution time
             execution_time_ms = (time_module.time() - start_time) * 1000
 
-            # Count filters applied
-            filter_count = sum([
-                1 if thread_id else 0,
-                1 if source else 0,
-                1 if content_type else 0,
-                1 if tags else 0,
-                1 if start_date else 0,
-                1 if end_date else 0,
-            ])
-            # Add metadata filter count
-            filter_count += metadata_filter_count
+            # Count filters applied (shared tally, so every search tool reports the same
+            # number for the same arguments).
+            filter_count = count_applied_filters(
+                thread_id=thread_id,
+                source=source,
+                content_type=content_type,
+                tags=tags,
+                start_date=start_date,
+                end_date=end_date,
+                metadata_filter_count=metadata_filter_count,
+            )
 
             # Build statistics
             stats: dict[str, Any] = {
@@ -784,6 +813,12 @@ class FtsRepository(BaseRepository):
 
             # Inner subquery: filter, rank, and LIMIT without ts_headline.
             # Outer query: apply ts_headline only to the final rows.
+            # BOTH ORDER BY clauses carry the unique ``id`` secondary key: ts_rank_cd ties are
+            # common (identical or near-identical documents), and PostgreSQL MVCC writes a new
+            # physical tuple on every UPDATE, so heap/scan order for equal-score rows changes
+            # under unrelated concurrent writes. Without the tiebreak the LIMIT/OFFSET window is
+            # computed over an undefined ordering and a client paging a tied result set silently
+            # skips or duplicates rows; the outer re-sort would also be free to permute the page.
             sql_query = f'''
                 SELECT
                     sub.id,
@@ -812,10 +847,10 @@ class FtsRepository(BaseRepository):
                     FROM context_entries ce
                     WHERE {where_clause}
                     AND ce.text_search_vector @@ {tsquery_func}{self._placeholder(query_param_pos)})
-                    ORDER BY score DESC
+                    ORDER BY score DESC, ce.id DESC
                     LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
                 ) sub
-                ORDER BY sub.score DESC
+                ORDER BY sub.score DESC, sub.id DESC
             '''
 
             # Transform query based on mode (for prefix mode, adds :* suffix)
@@ -831,17 +866,17 @@ class FtsRepository(BaseRepository):
             # Calculate execution time
             execution_time_ms = (time_module.time() - start_time) * 1000
 
-            # Count filters applied
-            filter_count = sum([
-                1 if thread_id else 0,
-                1 if source else 0,
-                1 if content_type else 0,
-                1 if tags else 0,
-                1 if start_date else 0,
-                1 if end_date else 0,
-            ])
-            # Add metadata filter count
-            filter_count += metadata_filter_count
+            # Count filters applied (shared tally, so every search tool reports the same
+            # number for the same arguments).
+            filter_count = count_applied_filters(
+                thread_id=thread_id,
+                source=source,
+                content_type=content_type,
+                tags=tags,
+                start_date=start_date,
+                end_date=end_date,
+                metadata_filter_count=metadata_filter_count,
+            )
 
             # Build statistics
             stats: dict[str, Any] = {
@@ -954,6 +989,15 @@ class FtsRepository(BaseRepository):
             # are dropped and special chars neutralized (so 'cat(' / 'foo:bar' are literal
             # prefixes, never an FTS5 syntax error); a user-supplied trailing '*' is stripped so
             # it is not doubled. A quoted-phrase token keeps its phrase and gets the wildcard.
+            # An embedded double quote SPLITS the token into separate wildcarded literals, exactly
+            # like sanitize_sqlite_fts_terms and PostgreSQL's AND-ed prefix lexemes ('cat:* &
+            # dog:*'): doubling the quote instead leaves it a word boundary inside the literal,
+            # which FTS5 reads as an adjacency phrase (see sanitize_sqlite_fts_terms).
+            # A HYPHEN splits the same way HERE, unlike the match-mode sanitizer: PostgreSQL's
+            # prefix transform emits AND-ed prefix lexemes ('full:* & text:*') with no adjacency
+            # requirement, so keeping the parts in one literal ('"full text"*') would make SQLite
+            # demand adjacency for a query PostgreSQL answers without it -- a divergence that has
+            # no match-mode counterpart, where PostgreSQL's own compound lexeme does require it.
             prefix_terms: list[str] = []
             for token in _FTS_TOKEN_RE.findall(query):
                 # >= 2 chars so a lone '"' is not mistaken for a balanced phrase (see
@@ -961,12 +1005,11 @@ class FtsRepository(BaseRepository):
                 if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
                     prefix_terms.append(f'{token}*')
                     continue
-                clean = token.replace('-', ' ').rstrip('*').strip()
-                if not clean:
-                    continue
-                if drop_operator_barewords and clean.lower() in ('and', 'or', 'not'):
-                    continue
-                prefix_terms.append('"' + clean.replace('"', '""') + '"*')
+                for fragment in token.rstrip('*').split('"'):
+                    for word in fragment.replace('-', ' ').split():
+                        if drop_operator_barewords and word.lower() in ('and', 'or', 'not'):
+                            continue
+                        prefix_terms.append(f'"{word}"*')
             if not prefix_terms:
                 # Every token was an operator bareword: match NOTHING (empty result), in
                 # parity with PostgreSQL's empty to_tsquery for the same input. '' is the
@@ -1207,49 +1250,56 @@ class FtsRepository(BaseRepository):
     async def is_available(self) -> bool:
         """Check if FTS functionality is available.
 
+        Both probes test the ABSENCE CONDITION directly and let every operational fault
+        propagate. A blanket ``except Exception: return False`` here would report lock
+        contention (SQLITE_BUSY held by an external VACUUM/backup), a malformed database
+        image, or a permission failure as "FTS not migrated" -- consumed before
+        ``execute_read``'s bounded locked-retry loop could retry it, stripped of circuit-
+        breaker accounting, and surfaced to the operator as a "restart the server to apply
+        migrations" instruction for a self-clearing transient. Neither handler was needed for
+        its stated purpose either: ``sqlite_master`` always exists and yields ZERO ROWS for a
+        missing table, and ``to_regclass`` yields NULL (never an error) for a missing relation.
+
         Returns:
             True if FTS is properly configured and available
         """
         if self.backend.backend_type == 'sqlite':
 
             def _check_sqlite(conn: sqlite3.Connection) -> bool:
-                try:
-                    # Check if FTS5 table exists
-                    cursor = conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='context_entries_fts'",
-                    )
-                    return cursor.fetchone() is not None
-                except Exception:
-                    return False
+                # Check if FTS5 table exists. sqlite_master is a catalog table present in
+                # every database, so a missing context_entries_fts is simply an empty result.
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='context_entries_fts'",
+                )
+                return cursor.fetchone() is not None
 
             return await self.backend.execute_read(_check_sqlite)
 
         # postgresql
         async def _check_postgresql(conn: 'asyncpg.Connection') -> bool:
-            try:
-                # Resolve context_entries through the connection search_path
-                # (to_regclass), then check THAT relation for the column via
-                # pg_attribute. A schema-blind information_schema.columns query
-                # (no table_schema filter) reported the column present when it
-                # existed in ANY visible schema -- e.g. a colliding
-                # public.context_entries -- so the FTS backstop believed the
-                # configured target schema already had FTS and no-oped, leaving
-                # migrated rows without full-text search under a non-default
-                # POSTGRESQL_SCHEMA. Resolving by regclass matches exactly where
-                # the FTS reads/writes and get_current_language() resolve.
-                result = await conn.fetchval(
-                    '''
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_attribute
-                        WHERE attrelid = to_regclass('context_entries')
-                          AND attname = 'text_search_vector'
-                          AND NOT attisdropped
-                    )
-                    ''',
+            # Resolve context_entries through the connection search_path
+            # (to_regclass), then check THAT relation for the column via
+            # pg_attribute. A schema-blind information_schema.columns query
+            # (no table_schema filter) reported the column present when it
+            # existed in ANY visible schema -- e.g. a colliding
+            # public.context_entries -- so the FTS backstop believed the
+            # configured target schema already had FTS and no-oped, leaving
+            # migrated rows without full-text search under a non-default
+            # POSTGRESQL_SCHEMA. Resolving by regclass matches exactly where
+            # the FTS reads/writes and get_current_language() resolve.
+            # to_regclass returns NULL for a missing/invisible relation, so the
+            # EXISTS is false without raising -- the absence case needs no handler.
+            result = await conn.fetchval(
+                '''
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('context_entries')
+                      AND attname = 'text_search_vector'
+                      AND NOT attisdropped
                 )
-                return bool(result)
-            except Exception:
-                return False
+                ''',
+            )
+            return bool(result)
 
         return await self.backend.execute_read(cast(Any, _check_postgresql))
 

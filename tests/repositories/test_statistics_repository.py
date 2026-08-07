@@ -1274,3 +1274,94 @@ class TestGetThreadListPagination:
 
         walked = [t['thread_id'] for t in (*page1, *page2, *page3)]
         assert walked == self._EXPECTED_ORDER
+
+
+class TestTopNTiebreakDeterminism:
+    """Ranked top-N windows carry a unique secondary sort key.
+
+    ``most_active_threads`` (LIMIT 5) and ``top_tags`` (LIMIT 10) rank by a COUNT
+    that ties easily -- a real database returned ten tags all at count 2 inside a
+    LIMIT 10 window, so which ten appeared was decided by an undefined ordering and
+    could change under unrelated writes. ``get_tag_statistics`` slices the first ten
+    of its full list for the same reason. Adding the grouping key as a secondary
+    sort makes each window a function of the data alone.
+    """
+
+    @staticmethod
+    def _insert_tied_data(conn: sqlite3.Connection) -> None:
+        """Seed threads and tags whose counts are entirely tied."""
+        cursor = conn.cursor()
+        entry_id = 0
+        # Twelve threads, two entries each: every thread ties at count 2, so the
+        # LIMIT 5 window is decided purely by the tiebreak.
+        for thread_index in range(12):
+            for _ in range(2):
+                entry_id += 1
+                cursor.execute(
+                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                    'VALUES (?, ?, ?, ?, ?)',
+                    (
+                        f'0190abcdef1234567890abcd{entry_id:08d}',
+                        f'thread-{thread_index:02d}',
+                        'user',
+                        'text',
+                        'tied entry',
+                    ),
+                )
+                # Twelve tags, each used twice: the same full tie inside LIMIT 10.
+                cursor.execute(
+                    'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                    (f'0190abcdef1234567890abcd{entry_id:08d}', f'tag-{thread_index:02d}'),
+                )
+
+    @pytest.mark.asyncio
+    async def test_top_windows_are_ordered_by_the_grouping_key_on_a_full_tie(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """A complete tie yields the lexicographically first rows, not an arbitrary set."""
+        await stats_test_db.execute_write(self._insert_tied_data)
+
+        stats = await stats_repo.get_database_statistics()
+
+        assert [t['thread_id'] for t in stats['most_active_threads']] == [
+            f'thread-{i:02d}' for i in range(5)
+        ]
+        assert [t['tag'] for t in stats['top_tags']] == [f'tag-{i:02d}' for i in range(10)]
+
+    @pytest.mark.asyncio
+    async def test_repeated_calls_return_the_same_window(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """The window is a function of the data: unrelated writes cannot reshuffle it."""
+        await stats_test_db.execute_write(self._insert_tied_data)
+
+        first = await stats_repo.get_database_statistics()
+
+        def _unrelated_update(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE context_entries SET metadata = '{\"touched\": true}' "
+                "WHERE thread_id = 'thread-00'",
+            )
+
+        await stats_test_db.execute_write(_unrelated_update)
+        second = await stats_repo.get_database_statistics()
+
+        assert second['most_active_threads'] == first['most_active_threads']
+        assert second['top_tags'] == first['top_tags']
+
+    @pytest.mark.asyncio
+    async def test_tag_statistics_top_ten_slice_is_deterministic(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """top_10_tags slices a fully tied list, so the list itself must be ordered."""
+        await stats_test_db.execute_write(self._insert_tied_data)
+
+        stats = await stats_repo.get_tag_statistics()
+
+        assert [t['tag'] for t in stats['top_10_tags']] == [f'tag-{i:02d}' for i in range(10)]
