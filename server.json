@@ -312,7 +312,7 @@
           "name": "POSTGRESQL_POOL_TIMEOUT_S"
         },
         {
-          "description": "PostgreSQL connection ESTABLISHMENT timeout in seconds (default: 60.0, the asyncpg default; must be > 0): TCP connect plus startup handshake for each new connection the pool or the pgvector pre-check opens. Distinct from POSTGRESQL_POOL_TIMEOUT_S, which bounds waiting for a free pooled connection.",
+          "description": "PostgreSQL connection ESTABLISHMENT timeout in seconds (default: 60.0, the asyncpg default; must be > 0): TCP connect plus startup handshake for each new connection the pool or the pgvector pre-check opens. Distinct from POSTGRESQL_POOL_TIMEOUT_S, which bounds waiting for a free pooled connection, and must be strictly below it: asyncpg bounds the dial by the acquire deadline, so an equal or larger connect budget can never elapse and the pair is refused at startup.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -744,6 +744,20 @@
           "format": "number",
           "isSecret": false,
           "name": "INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT"
+        },
+        {
+          "description": "Maximum heading sections summarized per entry; bounds TOTAL per-node summary work (the shallowest and longest sections are summarized first). Default 200.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_NODES"
+        },
+        {
+          "description": "Aggregate wall-clock budget in seconds for the whole per-node summary pass of one entry; on expiry the pass keeps what it produced and never aborts the store. Default 600.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S"
         },
         {
           "description": "RRF smoothing constant for hybrid search (default 60)",
@@ -1431,7 +1445,7 @@
           "name": "POSTGRESQL_POOL_TIMEOUT_S"
         },
         {
-          "description": "PostgreSQL connection ESTABLISHMENT timeout in seconds (default: 60.0, the asyncpg default; must be > 0): TCP connect plus startup handshake for each new connection the pool or the pgvector pre-check opens. Distinct from POSTGRESQL_POOL_TIMEOUT_S, which bounds waiting for a free pooled connection.",
+          "description": "PostgreSQL connection ESTABLISHMENT timeout in seconds (default: 60.0, the asyncpg default; must be > 0): TCP connect plus startup handshake for each new connection the pool or the pgvector pre-check opens. Distinct from POSTGRESQL_POOL_TIMEOUT_S, which bounds waiting for a free pooled connection, and must be strictly below it: asyncpg bounds the dial by the acquire deadline, so an equal or larger connect budget can never elapse and the pair is refused at startup.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1863,6 +1877,20 @@
           "format": "number",
           "isSecret": false,
           "name": "INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT"
+        },
+        {
+          "description": "Maximum heading sections summarized per entry; bounds TOTAL per-node summary work (the shallowest and longest sections are summarized first). Default 200.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_NODES"
+        },
+        {
+          "description": "Aggregate wall-clock budget in seconds for the whole per-node summary pass of one entry; on expiry the pass keeps what it produced and never aborts the store. Default 600.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S"
         },
         {
           "description": "RRF smoothing constant for hybrid search (default 60)",

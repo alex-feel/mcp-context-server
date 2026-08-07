@@ -88,6 +88,7 @@ def mock_repositories():
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
+    repos.context.touch_updated_at = AsyncMock(return_value=True)
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
 
     # Mock tags repository
@@ -214,6 +215,53 @@ class TestUpdateContext:
             mock_repositories.tags.replace_tags_for_context.assert_called_once_with(
                 '0190abcdef1234567890abcd00000315', tags, txn=ANY,
             )
+
+    @pytest.mark.asyncio
+    async def test_tags_only_update_advances_updated_at(self, mock_context, mock_repositories):
+        """A tags-only update must still advance the entry's public mutation timestamp.
+
+        ``updated_at`` is documented as auto-managed and is the only mutation
+        timestamp the API exposes, so clients key incremental sync and cache
+        invalidation on it. It rides on writes to context_entries itself; a
+        tags-only update writes only the child `tags` table, so it reported
+        success while leaving the timestamp untouched and such a client never
+        observed the change. The auto-managed block now issues the
+        context_entries write that carries the stamp.
+        """
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id='0190abcdef1234567890abcd00000316',
+                tags=['alpha'],
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        assert 'tags' in result['updated_fields']
+        # No other branch wrote context_entries, so the auto-managed block must.
+        mock_repositories.context.update_context_entry.assert_not_called()
+        mock_repositories.context.patch_metadata.assert_not_called()
+        # content_type is already correct, so the timestamp is stamped explicitly
+        # rather than by rewriting content_type back to its own value.
+        mock_repositories.context.update_content_type.assert_not_called()
+        mock_repositories.context.touch_updated_at.assert_called_once()
+        assert 'content_type' not in result['updated_fields']
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_only_update_does_not_double_stamp(
+        self, mock_context, mock_repositories,
+    ):
+        """patch_metadata already writes context_entries, so no extra stamping write."""
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id='0190abcdef1234567890abcd00000317',
+                metadata_patch={'k': 'v'},
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        mock_repositories.context.patch_metadata.assert_called_once()
+        mock_repositories.context.update_content_type.assert_not_called()
+        mock_repositories.context.touch_updated_at.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_update_images_with_content_type_change(self, mock_context, mock_repositories):
@@ -1205,3 +1253,42 @@ class TestContextIdLoggingNormalization:
             mock_context.info.assert_called_once_with(
                 "Deleting context: ids=['0190abcdef1234567890abcd00000d05'], thread=None",
             )
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestUpdatedAtAutoManagement:
+    """updated_at advances for every update variant, against a real database."""
+
+    @pytest.mark.asyncio
+    async def test_tags_only_update_advances_stored_updated_at(self) -> None:
+        """End-to-end: a tags-only update moves the stored updated_at forward.
+
+        SQLite CURRENT_TIMESTAMP has second granularity, so the test waits past a
+        second boundary before the update; without the auto-managed stamping write
+        the value would stay at its original second no matter how long it waited.
+        """
+        import asyncio
+
+        from app.tools.context import store_context
+
+        stored = await store_context(
+            thread_id='updated-at-tags-only',
+            source='user',
+            text='Original body',
+        )
+        context_id = stored['context_id']
+
+        before = (await get_context_by_ids(context_ids=[context_id]))[0].get('updated_at')
+        assert before is not None
+
+        # Cross a whole-second boundary so a genuine re-stamp is observable.
+        await asyncio.sleep(1.1)
+
+        result = await update_context(context_id=context_id, tags=['fresh-tag'])
+        assert result['success'] is True
+
+        after_entry = (await get_context_by_ids(context_ids=[context_id]))[0]
+        assert after_entry.get('tags') == ['fresh-tag']
+        after_updated = after_entry.get('updated_at')
+        assert after_updated is not None
+        assert after_updated > before

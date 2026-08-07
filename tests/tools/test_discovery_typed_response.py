@@ -217,3 +217,93 @@ async def test_embeddings_size_reported_when_generation_or_compression_enabled(
     assert 'embeddings_size_estimated' in stats
     assert isinstance(stats['embeddings_size_estimated'], bool)
     assert 'database_size_mb' in stats
+
+
+def _declared_connection_metric_keys() -> set[str]:
+    """Return the keys ConnectionMetricsDict declares.
+
+    Returns:
+        The declared key names of the connection_metrics sub-block TypedDict.
+    """
+    types_module = importlib.import_module('app.types')
+    return set(types_module.ConnectionMetricsDict.__annotations__)
+
+
+@pytest.mark.asyncio
+async def test_connection_metrics_keys_are_all_declared(
+    fresh_backend: StorageBackend,
+) -> None:
+    """Every key get_statistics emits under connection_metrics must be declared.
+
+    FastMCP derives the tool's advertised outputSchema from the TypedDict, and a
+    client reading the tool through that schema drops any key the schema does not
+    declare. An under-declared ConnectionMetricsDict therefore silently hides the
+    operator-critical health fields (circuit-breaker state, failure counters, last
+    error) from exactly the monitoring clients that consume structured output.
+    """
+    del fresh_backend  # Implicit via set_backend
+    stats = cast(dict[str, Any], await discovery_module.get_statistics(ctx=None))
+    emitted = set(cast(dict[str, Any], stats['connection_metrics']))
+
+    assert emitted, 'connection_metrics must not be empty'
+    undeclared = emitted - _declared_connection_metric_keys()
+    assert not undeclared, (
+        f'connection_metrics keys missing from ConnectionMetricsDict: {sorted(undeclared)}'
+    )
+
+
+def test_postgresql_connection_metric_keys_are_all_declared() -> None:
+    """The PostgreSQL metric shape must also be fully declared.
+
+    The pool and pooler-detection keys only appear once the pool is built and the
+    detection probes have run, so they are forced on here: they are part of the
+    published shape and must not drift out of the declaration.
+    """
+    from app.backends.postgresql_backend import PostgreSQLBackend
+
+    backend = PostgreSQLBackend(connection_string='postgresql://u:p@localhost:5432/db')
+
+    class _StubPool:
+        """Minimal asyncpg pool stand-in exposing only the size accessors."""
+
+        def get_size(self) -> int:
+            """Return the current pool size.
+
+            Returns:
+                A fixed placeholder size.
+            """
+            return 3
+
+        def get_idle_size(self) -> int:
+            """Return the idle connection count.
+
+            Returns:
+                A fixed placeholder count.
+            """
+            return 1
+
+        def get_min_size(self) -> int:
+            """Return the configured minimum size.
+
+            Returns:
+                A fixed placeholder minimum.
+            """
+            return 1
+
+        def get_max_size(self) -> int:
+            """Return the configured maximum size.
+
+            Returns:
+                A fixed placeholder maximum.
+            """
+            return 5
+
+    backend._pool = cast(Any, _StubPool())
+    backend._pgpool_version = None
+    backend._session_mode_pooler = False
+
+    emitted = set(backend.get_metrics())
+    undeclared = emitted - _declared_connection_metric_keys()
+    assert not undeclared, (
+        f'PostgreSQL get_metrics keys missing from ConnectionMetricsDict: {sorted(undeclared)}'
+    )

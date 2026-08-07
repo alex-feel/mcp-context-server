@@ -21,6 +21,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Literal
@@ -37,10 +38,13 @@ from app.backends.sqlite_backend import is_sqlite_locked_error
 from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import ControlFlowError
 from app.errors import format_exception_message
-from app.metadata_types import non_finite_metadata_error
 from app.metadata_types import sanitize_pg_unstorable_text
 from app.metadata_types import unstorable_string_error
 from app.models import MAX_IMAGES_PER_ENTRY
+from app.models import MAX_INDEXED_METADATA_VALUE_LENGTH
+from app.models import MAX_TAG_LENGTH
+from app.models import MAX_TAGS_PER_ENTRY
+from app.models import MAX_THREAD_ID_LENGTH
 from app.models import normalize_base64_image_data
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -87,6 +91,182 @@ def reject_unstorable_input(**fields: object) -> None:
         message = unstorable_string_error(value)
         if message is not None:
             raise ToolError(f'{name}: {message}')
+
+
+def tag_limits_error(tags: list[str] | None) -> str | None:
+    """Return an error message when a tag list breaches a per-entry write cap.
+
+    Two dimensions are checked, both of which the write path previously left
+    unbounded:
+
+    * COUNT -- every tag is a separate INSERT issued inside the open store /
+      update transaction (on SQLite that is the single writer), and every later
+      search response re-hydrates the entry's full tag list, so one oversized
+      list stalls the write path once and inflates every subsequent read
+      forever.
+    * PER-TAG LENGTH -- ``idx_tags_tag`` is a PostgreSQL btree index whose
+      index-tuple ceiling (~2704 bytes) rejects an oversized tag inside the
+      transaction, AFTER a full generation pass and while charging the circuit
+      breaker, while SQLite stores the same value happily. Capping at the tool
+      boundary makes both backends accept and reject identically, and keeps the
+      value migratable between them.
+
+    This is the single source of truth shared by the typed single-entry tools
+    (whose ``Field`` declarations advertise the same bounds in the MCP wire
+    schema) and the untyped batch tools (whose per-entry lists never pass
+    through a Pydantic model), mirroring how ``MAX_IMAGES_PER_ENTRY`` is
+    enforced by :func:`validate_and_normalize_images`.
+
+    Args:
+        tags: The client-supplied tag list, or ``None`` when absent.
+
+    Returns:
+        An error message describing the first breach, or ``None`` when the list
+        is within both caps.
+    """
+    if tags is None:
+        return None
+    if len(tags) > MAX_TAGS_PER_ENTRY:
+        return f'Too many tags: {len(tags)} provided, maximum is {MAX_TAGS_PER_ENTRY} per entry'
+    for idx, tag in enumerate(tags):
+        if len(tag) > MAX_TAG_LENGTH:
+            return (
+                f'Tag {idx} is too long: {len(tag)} characters, maximum is '
+                f'{MAX_TAG_LENGTH} characters per tag'
+            )
+    return None
+
+
+def reject_oversized_tags(tags: list[str] | None) -> None:
+    """Raise ``ToolError`` when a tag list breaches a per-entry write cap.
+
+    The raising wrapper used by the single-entry tools; the batch tools call
+    :func:`tag_limits_error` directly so they can record a per-entry failure
+    instead of aborting the whole request.
+
+    Args:
+        tags: The client-supplied tag list, or ``None`` when absent.
+
+    Raises:
+        ToolError: When the list exceeds the count or per-tag length cap.
+    """
+    message = tag_limits_error(tags)
+    if message is not None:
+        raise ToolError(message)
+
+
+def indexed_value_limits_error(
+    thread_id: str | None = None,
+    metadata: object = None,
+) -> str | None:
+    """Return an error message when a client value that lands in a btree index is too long.
+
+    ``tags`` is not the only write-path value PostgreSQL indexes with a btree whose
+    index-tuple ceiling (~2704 bytes) rejects an oversized entry INSIDE the store
+    transaction -- after a full generation pass, and while charging the circuit
+    breaker -- where SQLite stores it happily:
+
+    * ``thread_id`` feeds ``idx_thread_id``, ``idx_thread_source``,
+      ``idx_context_entries_dedup_hash`` and ``idx_thread_created``.
+    * every value stored under a ``METADATA_INDEXED_FIELDS`` key feeds that field's
+      expression index ``idx_metadata_<field>`` on ``metadata->>'<field>'``.
+
+    Values under NON-indexed metadata keys are deliberately not capped: jsonb imposes
+    no such limit and the always-present GIN index uses ``jsonb_path_ops``, which
+    hashes its entries. Only the top level of ``metadata`` is inspected, because
+    ``metadata->>'<field>'`` addresses top-level keys only.
+
+    Args:
+        thread_id: The client-supplied thread identifier, or None when absent.
+        metadata: The client-supplied metadata mapping, or None when absent.
+
+    Returns:
+        An error message describing the first breach, or None when every indexed
+        value is within its cap.
+    """
+    if thread_id is not None and len(thread_id) > MAX_THREAD_ID_LENGTH:
+        return (
+            f'thread_id is too long: {len(thread_id)} characters, maximum is '
+            f'{MAX_THREAD_ID_LENGTH} characters'
+        )
+    if isinstance(metadata, dict):
+        indexed_fields = settings.storage.metadata_indexed_fields
+        for key, value in cast('dict[object, object]', metadata).items():
+            if not isinstance(key, str) or key not in indexed_fields:
+                continue
+            if isinstance(value, str) and len(value) > MAX_INDEXED_METADATA_VALUE_LENGTH:
+                return (
+                    f'metadata field {key!r} is indexed and its value is too long: '
+                    f'{len(value)} characters, maximum is '
+                    f'{MAX_INDEXED_METADATA_VALUE_LENGTH} characters'
+                )
+    return None
+
+
+def entry_boundary_error(
+    *,
+    thread_id: str | None = None,
+    text: str | None = None,
+    tags: object = None,
+    metadata: object = None,
+    metadata_patch: object = None,
+) -> str | None:
+    """Return the first cross-backend boundary error for one client-supplied entry.
+
+    The single chokepoint the UNTYPED batch paths use where the typed single-entry
+    tools rely on their wire schema plus the individual raising guards. It bundles
+    both families of "SQLite accepts it, PostgreSQL rejects it" input so the batch
+    loops carry one call instead of a long boolean chain: PostgreSQL-unstorable
+    strings (embedded NUL, unpaired UTF-16 surrogate) and the length caps on the
+    values that land in a PostgreSQL btree index.
+
+    Every argument is optional so a call site passes only the fields that shape
+    exists (``update`` has no ``thread_id``; ``store`` has no ``metadata_patch``).
+    Absent values are skipped, and a non-string / non-container value is ignored by
+    the underlying checks rather than raising.
+
+    Args:
+        thread_id: The client-supplied thread identifier, when the shape has one.
+        text: The client-supplied text content, when provided.
+        tags: The client-supplied tag list, when provided.
+        metadata: The client-supplied metadata mapping (full replacement).
+        metadata_patch: The client-supplied merge-patch mapping, when provided.
+
+    Returns:
+        The first error message found, or None when the entry is acceptable on both
+        backends.
+    """
+    return (
+        unstorable_string_error(thread_id)
+        or unstorable_string_error(text)
+        or unstorable_string_error(tags)
+        or unstorable_string_error(metadata)
+        or unstorable_string_error(metadata_patch)
+        or indexed_value_limits_error(thread_id=thread_id, metadata=metadata)
+        or indexed_value_limits_error(metadata=metadata_patch)
+    )
+
+
+def reject_oversized_indexed_values(
+    thread_id: str | None = None,
+    metadata: object = None,
+) -> None:
+    """Raise ``ToolError`` when an indexed client value breaches its write cap.
+
+    The raising wrapper used by the single-entry tools; the batch tools call
+    :func:`indexed_value_limits_error` directly so they can record a per-entry
+    failure instead of aborting the whole request.
+
+    Args:
+        thread_id: The client-supplied thread identifier, or None when absent.
+        metadata: The client-supplied metadata mapping, or None when absent.
+
+    Raises:
+        ToolError: When an indexed value exceeds its length cap.
+    """
+    message = indexed_value_limits_error(thread_id=thread_id, metadata=metadata)
+    if message is not None:
+        raise ToolError(message)
 
 
 class EmbeddingsReconcileRequiredError(ControlFlowError):
@@ -222,14 +402,44 @@ def _reset_node_summary_semaphore() -> None:
     _node_summary_semaphore = asyncio.Semaphore(settings.index_tree.max_concurrent)
 
 
-# The code-derived outline parse (parse_outline) is CPU-bound and O(text) over
-# UNBOUNDED stored entry text, and the index_tree node leg runs it on the store/
-# update (and batch) write path. A large entry is offloaded to a worker thread so
-# the parse cannot pin the event loop and starve every other concurrent MCP
-# request -- the same discipline the read paths apply (navigation._OFFLOAD_MIN_CHARS,
-# grep_service._OFFLOAD_MIN_CHARS). Small entries stay inline to avoid a per-call
-# thread hop. Unicode code points, not bytes.
+# Size half of the line-scan offload predicate below: a text this large is offloaded
+# regardless of how few lines it has, because even the cheapest per-character pass
+# over it is no longer negligible. The line-count half carries the rest of the
+# decision. Small entries stay inline to avoid a per-call thread hop. Unicode code
+# points, not bytes. Mirrors grep_service._OFFLOAD_MIN_CHARS, where size genuinely
+# IS the whole cost driver.
 _OFFLOAD_MIN_CHARS = 1_000_000
+
+# Line-oriented scans over stored text -- outline parsing (parse_outline /
+# resolve_node_span, several regexes per line) and line splitting
+# (split_lines_with_offsets, one slice and one list append per line) -- cost time
+# proportional to LINE COUNT, not character count. A million characters on ONE line
+# parses in about two milliseconds; the same million characters split into short
+# heading lines takes about two seconds to parse and about a tenth of a second to
+# split. A size-only threshold is blind to that three-order-of-magnitude spread,
+# which is how a dense sub-threshold entry ends up processed inline and pins the
+# event loop on every navigate/read call. Counting newlines is a single C-level scan
+# (microseconds even for megabytes), so the extra signal is effectively free. At
+# roughly five microseconds per heading line for the costlier of the two workloads,
+# this bound keeps an inline pass in the single-digit-millisecond range.
+_OFFLOAD_MIN_LINES = 1_000
+
+
+def should_offload_line_scan(text: str) -> bool:
+    """Whether a line-oriented scan over ``text`` must run in a worker thread.
+
+    Covers every CPU-bound pass whose cost tracks line count: the outline parse
+    (``parse_outline`` / ``resolve_node_span``) and the offset-preserving line
+    split (``split_lines_with_offsets``).
+
+    Args:
+        text: The entry text about to be scanned.
+
+    Returns:
+        True when the text is large enough OR line-dense enough that scanning it
+        inline would block the event loop noticeably.
+    """
+    return len(text) > _OFFLOAD_MIN_CHARS or text.count('\n') >= _OFFLOAD_MIN_LINES
 
 
 # Explicit re-export so type checkers do NOT flag the reset helpers as unused.
@@ -279,13 +489,17 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
 
         if chunking_service is not None and chunking_service.is_enabled:
             # Chunked embedding for long documents. split_text (->
-            # RecursiveCharacterTextSplitter.create_documents) is O(text) pure CPU
-            # over unbounded entry text; offload a large entry to a worker thread so
-            # it cannot pin the event loop on the store/update embedding leg (see
-            # _OFFLOAD_MIN_CHARS), matching the read-path and index_tree node-leg
-            # offloads. split_text's own len<=chunk_size fast path keeps small
-            # entries inline regardless, so the threshold only spares the thread hop.
-            if len(text) > _OFFLOAD_MIN_CHARS:
+            # RecursiveCharacterTextSplitter.create_documents) is pure CPU over
+            # unbounded entry text and is EXPENSIVE per character -- roughly a
+            # microsecond each, so a plain 1MB document costs the better part of a
+            # second. Gating on a large fixed character threshold left exactly that
+            # case running inline on the event loop. The real cost switch is the
+            # splitter's own fast path: at or below chunk_size split_text returns
+            # immediately (one chunk, no recursion), and above it the recursive
+            # split runs in full. Offload precisely when that recursion happens --
+            # the thread hop is negligible next to the provider round trip this leg
+            # is about to await anyway.
+            if len(text) > chunking_service.chunk_size:
                 chunks = await asyncio.to_thread(chunking_service.split_text, text)
             else:
                 chunks = chunking_service.split_text(text)
@@ -511,6 +725,12 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
     store -- the deliberate contrast with the abort-mandatory
     embedding/summary/compression helpers above.
 
+    TOTAL work is bounded, not just concurrency: at most
+    INDEX_TREE_NODE_SUMMARY_MAX_NODES sections are summarized (the shallowest and
+    longest first, so the outline degrades gracefully), they are processed in
+    bounded chunks rather than one unbounded gather, and the whole pass runs under
+    the INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S aggregate budget.
+
     Args:
         text: The entry's full text content.
 
@@ -533,10 +753,10 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
         return None
 
     try:
-        # parse_outline is O(text) pure CPU over unbounded entry text; offload a
-        # large entry to a worker thread so it cannot pin the event loop (see
-        # _OFFLOAD_MIN_CHARS), matching the read-path offload discipline.
-        if len(text) > _OFFLOAD_MIN_CHARS:
+        # parse_outline is pure CPU whose cost tracks LINE count over unbounded entry
+        # text; offload a large OR line-dense entry to a worker thread so it cannot pin
+        # the event loop (see should_offload_line_scan), matching the read-path discipline.
+        if should_offload_line_scan(text):
             root = await asyncio.to_thread(parse_outline, text)
         else:
             root = parse_outline(text)
@@ -559,18 +779,43 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
     prompt = resolve_index_tree_node_summary_prompt()
 
     # A summary is ATTEMPTED only for sections that clear the minimum length;
-    # shorter sections are deliberately skipped (not a failure). Counting attempts
-    # lets us tell "nothing qualified" (attempted == 0 -> return [], legitimately
-    # clearing stale rows) apart from "every attempt failed" (attempted > 0,
-    # zero rows -> return None), so a transient provider outage cannot wipe
-    # previously-good stored rows. len(section) == char_end - char_start (offsets
-    # are code points), so this mirrors _summarize_node's own eligibility check.
-    attempted = sum(1 for node in nodes if (node.char_end - node.char_start) >= min_len)
+    # shorter sections are deliberately skipped (not a failure). Filtering here
+    # rather than inside the worker means an entry with hundreds of thousands of
+    # tiny headings never materializes a task per heading just to return None.
+    # len(section) == char_end - char_start (offsets are code points).
+    eligible = [node for node in nodes if (node.char_end - node.char_start) >= min_len]
+    if not eligible:
+        # Nothing qualified: return [] so a replace legitimately clears stale rows.
+        return []
+
+    # Bound TOTAL work, not just concurrency. The semaphores cap how many calls run
+    # at once and asyncio.wait_for caps each one, but neither bounds HOW MANY happen:
+    # a heading-dense entry would otherwise hold the single summary model for one
+    # store_context request for as long as its section count demands. When more
+    # sections qualify than the cap, prefer the shallowest (most structurally
+    # significant) and, within a level, the longest sections, then restore the
+    # original traversal order so the stored rows stay deterministic.
+    max_nodes = settings.index_tree.max_nodes
+    if len(eligible) > max_nodes:
+        logger.info(
+            'Index-tree node summaries: %d eligible section(s) exceeds the cap of %d; '
+            'summarizing the shallowest and longest sections only.',
+            len(eligible), max_nodes,
+        )
+        # Rank by POSITION, never by node identity: OutlineNode is a frozen
+        # dataclass holding its children, so hashing one hashes the whole subtree
+        # and a set membership test over a large outline would be quadratic.
+        ranked = sorted(
+            range(len(eligible)),
+            key=lambda i: (eligible[i].level, -(eligible[i].char_end - eligible[i].char_start)),
+        )
+        eligible = [eligible[i] for i in sorted(ranked[:max_nodes])]
+
+    attempted = len(eligible)
 
     async def _summarize_node(node: OutlineNode) -> IndexNodeRow | None:
+        # Eligibility (section length >= min_content_length) is pre-filtered above.
         section = text[node.char_start:node.char_end]
-        if len(section) < min_len:
-            return None
         try:
             # Outer acquire = node-task fan-out cap (bounds how many node
             # coroutines run at once). Inner acquire = the SHARED summary-model
@@ -600,10 +845,30 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
             char_end=node.char_end,
         )
 
+    # Process in bounded chunks under an aggregate wall-clock deadline instead of one
+    # mega-gather: the chunking keeps the number of live tasks proportional to the
+    # fan-out cap rather than to the section count, and the deadline stops a
+    # pathological entry from stretching a single store indefinitely (each per-node
+    # wait_for bounds ONE call, and their sum is unbounded without this). Whatever was
+    # produced before the deadline is kept -- this leg never aborts a store.
     # _summarize_node never raises; return_exceptions is a defensive backstop so a
     # surprise (e.g. cancellation of a child) cannot turn into a store-aborting raise.
-    results = await asyncio.gather(*[_summarize_node(node) for node in nodes], return_exceptions=True)
-    rows = [result for result in results if isinstance(result, IndexNodeRow)]
+    chunk_size = max(settings.index_tree.max_concurrent * 4, 16)
+    deadline = time.monotonic() + settings.index_tree.total_timeout_s
+    rows: list[IndexNodeRow] = []
+    for start in range(0, attempted, chunk_size):
+        if time.monotonic() >= deadline:
+            logger.warning(
+                'Index-tree node summaries: aggregate budget of %.0fs expired after %d of '
+                '%d section(s); keeping the summaries produced so far.',
+                settings.index_tree.total_timeout_s, start, attempted,
+            )
+            break
+        chunk = eligible[start:start + chunk_size]
+        results = await asyncio.gather(
+            *[_summarize_node(node) for node in chunk], return_exceptions=True,
+        )
+        rows.extend(result for result in results if isinstance(result, IndexNodeRow))
 
     # TOTAL degradation: sections were eligible and summaries attempted, but every
     # one failed/timed out. Return None so callers PRESERVE existing stored rows
@@ -821,6 +1086,90 @@ async def run_generation(
 
 
 # ---------------------------------------------------------------------------
+# Delete-path embedding cleanup
+# ---------------------------------------------------------------------------
+
+
+def sqlite_embedding_cleanup_required() -> bool:
+    """Whether a SQLite delete still needs the explicit per-entry embedding cleanup.
+
+    The cleanup exists for ONE reason: the fp32 ``vec_context_embeddings`` vec0
+    VIRTUAL table carries no foreign key and is reachable only through the
+    ``embedding_chunks`` bridge, so once that bridge cascades away with the
+    context row its vectors orphan permanently.
+
+    With embedding compression enabled that table does not exist at all -- the
+    compression migration drops it and the payload table
+    ``vec_context_embeddings_compressed`` is an ordinary table with
+    ``ON DELETE CASCADE`` on ``context_id``, exactly like ``embedding_metadata``.
+    A single ``DELETE FROM context_entries`` then removes every embedding row
+    atomically, and the per-entry loop degenerates into one redundant write round
+    trip per deleted entry -- which on a thread-wide or criteria-wide delete is
+    unbounded and holds the single SQLite writer while every other client stalls.
+
+    Cascade only fires while ``PRAGMA foreign_keys`` is ON, so an operator who
+    set ``SQLITE_FOREIGN_KEYS=false`` keeps the explicit cleanup.
+
+    Returns:
+        True when the explicit per-entry cleanup is still required on SQLite.
+    """
+    return not (settings.compression.enabled and settings.storage.sqlite_foreign_keys)
+
+
+async def cleanup_embeddings_for_delete(
+    repos: 'RepositoryContainer',
+    txn: 'TransactionContext',
+    context_ids: list[str],
+) -> None:
+    """Delete FK-less SQLite embedding rows for entries about to be removed.
+
+    Runs on the caller's transaction connection so the cleanup and the row
+    delete commit or roll back together: without that, a failure between them
+    (a client disconnect cancelling the request, a lock-wait timeout, a dropped
+    connection) leaves entries stripped of their vectors while their rows
+    survive, silently absent from semantic and hybrid search with nothing to
+    regenerate them.
+
+    A no-op on PostgreSQL, where ``ON DELETE CASCADE`` removes the embedding
+    rows inside the same statement, and a no-op on SQLite whenever cascade
+    already covers them (see :func:`sqlite_embedding_cleanup_required`).
+
+    The ids are cleaned in bounded MULTI-ROW statements
+    (``delete_all_chunks_bulk``), not one write per entry: the thread-wide and
+    criteria-wide delete paths take an id list no client parameter caps, and a
+    per-entry loop would hold the single SQLite writer for one round trip per
+    matched row while every other client's writes stall behind it.
+
+    A cleanup failure is logged and skipped rather than aborting: deleting an
+    entry must stay possible even when its embedding rows are unreadable (a
+    missing vec0 module, a corrupted row). On SQLite an error inside a statement
+    does not poison the open transaction, so the row delete proceeds normally.
+    Because the statements are batched, such a failure leaves the batch's
+    remaining vectors orphaned instead of only the offending entry's -- the same
+    fail-open direction (never a blocked delete, never lost user data), traded
+    for a write path that no longer scales with the number of matched rows.
+
+    Args:
+        repos: Repository container.
+        txn: The open transaction that will also issue the row delete.
+        context_ids: The exact ids the delete will remove.
+    """
+    if not context_ids or txn.backend_type != 'sqlite':
+        return
+    if not sqlite_embedding_cleanup_required():
+        return
+    # Gate on whether the embedding tables were ever PROVISIONED, NOT on the
+    # runtime ENABLE_EMBEDDING_GENERATION toggle: a prior session may have
+    # written embeddings a now-disabled toggle would skip cleaning.
+    if not await repos.embeddings.embedding_tables_exist(txn=txn):
+        return
+    try:
+        await repos.embeddings.delete_all_chunks_bulk(context_ids, txn=txn)
+    except Exception as exc:
+        logger.warning('Failed to delete embeddings for %d contexts: %s', len(context_ids), exc)
+
+
+# ---------------------------------------------------------------------------
 # Transaction utilities
 # ---------------------------------------------------------------------------
 
@@ -958,7 +1307,11 @@ def validate_and_normalize_images(
       non-base64 input fails loudly instead of being silently mangled
     - Enforces per-image size limit (MAX_IMAGE_SIZE_MB)
     - Enforces total size limit (MAX_TOTAL_SIZE_MB)
-    - Rejects a non-finite-float per-image 'metadata' value (invalid jsonb)
+    - Rejects a per-image 'metadata' value that is neither absent/null nor a
+      JSON-encoded string (the canonical per-image metadata wire shape). This
+      subsumes the non-finite-float check entry metadata needs: only a bare
+      float can serialize to the invalid-JSON NaN/Infinity tokens PostgreSQL's
+      jsonb parser rejects, and a JSON-encoded string carries no bare float
     - Uses enumerate() for indexed error messages
 
     Args:
@@ -1059,15 +1412,21 @@ def validate_and_normalize_images(
                 errors.append(msg)
                 return images, 'text', errors
 
-        # A per-image 'metadata' value carrying a non-finite float (NaN/Infinity) serializes
-        # to invalid JSON that PostgreSQL's jsonb image_metadata column REJECTS while SQLite
-        # stores it -- a cross-backend parity divergence, and a wasted generation pass on the
-        # PostgreSQL failure, the same non_finite_metadata_error guards for entry metadata.
-        # Reachable on the untyped batch path, whose image dicts are not constrained to string
-        # values; a string (JSON-encoded) metadata value has no bare float and passes cleanly.
-        metadata_error = non_finite_metadata_error(cast(object, img.get('metadata')))
-        if metadata_error is not None:
-            msg = f'Image {idx} metadata: {metadata_error}'
+        # Per-image 'metadata' crosses the boundary as a JSON-ENCODED STRING: the
+        # typed single-entry tools declare images as list[dict[str, str]], the write
+        # path json.dumps that already-stringified value, and the read path json.loads
+        # it back to the same string. The untyped batch path (list[dict[str, Any]])
+        # bypasses that contract, so a dict/number/list slips through and is stored in
+        # a shape the single-entry tool would have refused -- and which then fails the
+        # strict get_context_by_ids output schema, making the entry permanently
+        # unreadable. Enforce the same shape here, at the chokepoint both paths share.
+        # A JSON null is treated as "no metadata" (it stores as SQL NULL either way).
+        metadata_value = cast(object, img.get('metadata'))
+        if metadata_value is not None and not isinstance(metadata_value, str):
+            msg = (
+                f'Image {idx} metadata must be a JSON-encoded string '
+                f'(got {type(metadata_value).__name__})'
+            )
             if error_mode == 'raise':
                 raise ToolError(msg)
             errors.append(msg)
@@ -1523,7 +1882,9 @@ async def execute_update_in_transaction(
     2. Apply metadata_patch via patch_metadata (CHECK success)
     3. Replace tags if provided
     4. Replace images if provided (update content_type accordingly)
-    5. Auto-correct content_type based on actual image presence
+    5. Maintain the auto-managed fields: recompute content_type from actual image
+       presence, and guarantee updated_at advanced for this update (a tags-only
+       change writes no context_entries row of its own)
     6. Delete old + store new embeddings if text changed
 
     Args:
@@ -1540,6 +1901,10 @@ async def execute_update_in_transaction(
         validated_images: Validated image list (empty if images is None).
         chunk_embeddings: Regenerated embeddings or None.
         embedding_model: Model name for embedding storage.
+        index_nodes: Replacement index_tree node rows; None leaves the stored
+            rows untouched, an empty list clears them.
+        expected_version: Optimistic-concurrency token captured before
+            generation; None skips the compare-and-set.
 
     Returns:
         Tuple of (updated_fields, summary_cleared):
@@ -1554,6 +1919,15 @@ async def execute_update_in_transaction(
             transaction and converts it to a not-found ToolError.
     """
     updated_fields: list[str] = []
+
+    # ``updated_at`` is an auto-managed PUBLIC field: get_context_by_ids and every
+    # search tool return it, and it is the only mutation timestamp the API exposes,
+    # so clients key incremental sync and cache invalidation on it. It is stamped
+    # ONLY by a write to context_entries itself (update_context_entry,
+    # patch_metadata, update_content_type) -- a branch that touches just a child
+    # table leaves it stale. Track whether such a write happened so the auto-managed
+    # block below can stamp it exactly once for every update variant.
+    entry_row_stamped = False
 
     # Update text content and/or metadata (full replacement) if provided
     if text is not None or metadata is not None:
@@ -1578,6 +1952,7 @@ async def execute_update_in_transaction(
             raise EntryNotFoundError(context_id)
 
         updated_fields.extend(fields)
+        entry_row_stamped = True
 
     # Apply metadata patch (partial update) if provided
     if metadata_patch is not None:
@@ -1592,6 +1967,7 @@ async def execute_update_in_transaction(
             raise EntryNotFoundError(context_id)
 
         updated_fields.extend(fields)
+        entry_row_stamped = True
 
     # A tags-only or images-only update issues no write that first confirms the
     # parent exists: the text/metadata and metadata_patch branches each SELECT the
@@ -1640,11 +2016,28 @@ async def execute_update_in_transaction(
                     context_id, 'multimodal', txn=txn,
                 )
                 updated_fields.extend(['images', 'content_type'])
+            # update_content_type writes context_entries, so it carried the stamp.
+            entry_row_stamped = True
     except asyncpg.exceptions.ForeignKeyViolationError as exc:
         raise EntryNotFoundError(context_id) from exc
 
-    # Auto-correct content_type when images not explicitly changed
-    if images is None and (text is not None or metadata is not None):
+    # Enforce the two auto-managed fields centrally, for EVERY update variant that
+    # changed something, instead of relying on whichever data write a branch happens
+    # to issue:
+    #   * content_type is recomputed from the entry's ACTUAL image rows (the explicit
+    #     images branch above already wrote the matching value, so this only runs when
+    #     the caller left images untouched);
+    #   * updated_at is advanced whenever no branch has written context_entries yet --
+    #     the tags-only variant writes only the child `tags` table, so without this it
+    #     would report success while leaving the entry's public mutation timestamp at
+    #     its previous value, and a client syncing or invalidating caches on
+    #     updated_at would never observe the change.
+    # The recomputed content_type is derived from the image rows inside this same
+    # transaction, so it is correct by construction rather than a read-modify-write
+    # of a field a concurrent writer could have moved. When it is already correct,
+    # the timestamp is stamped EXPLICITLY (touch_updated_at) instead of rewriting an
+    # unrelated column back to its own value just to carry the stamp along.
+    if images is None and updated_fields:
         image_count = await repos.images.count_images_for_context(context_id, txn=txn)
         current_content_type = 'multimodal' if image_count > 0 else 'text'
         stored_content_type = await repos.context.get_content_type(context_id, txn=txn)
@@ -1652,7 +2045,11 @@ async def execute_update_in_transaction(
             await repos.context.update_content_type(
                 context_id, current_content_type, txn=txn,
             )
+            entry_row_stamped = True
             updated_fields.append('content_type')
+        elif not entry_row_stamped:
+            await repos.context.touch_updated_at(context_id, txn=txn)
+            entry_row_stamped = True
 
     # Embeddings describe text_content, so a text change invalidates the stored vectors.
     if chunk_embeddings is not None:

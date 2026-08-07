@@ -50,6 +50,7 @@ from app.services.text_lines import split_lines_with_offsets
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.tools._shared import reject_unstorable_input
+from app.tools._shared import should_offload_line_scan
 from app.tools.search import MAX_FILTER_TAGS
 from app.tools.search import MAX_METADATA_FILTERS
 from app.tools.search import filter_caps_error
@@ -64,13 +65,13 @@ from app.types import ReadContextRangeDict
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Outline parsing and line splitting are CPU-bound and O(text), and the stored
-# entry text is unbounded, so for a large entry the work is offloaded to a worker
-# thread -- otherwise a single multi-megabyte parse would pin the event loop and
-# starve every other concurrent MCP request. Mirrors the same discipline the
-# sibling grep matcher applies (grep_service._OFFLOAD_MIN_CHARS); small entries
-# stay inline to avoid a per-call thread hop. Unicode code points, not bytes.
-_OFFLOAD_MIN_CHARS = 1_000_000
+# Both CPU-bound passes this module runs over unbounded stored entry text -- the
+# outline parse and the offset-preserving line split -- are LINE-oriented, so both
+# gate on should_offload_line_scan (app.tools._shared) rather than on a size-only
+# threshold. The grep matcher keeps its own size-based gate
+# (grep_service._OFFLOAD_MIN_CHARS) because its literal path is a single C-level
+# whole-text scan and its regex path offloads unconditionally, so there size really
+# is the cost driver.
 
 
 def _shape_grep_output(
@@ -561,10 +562,10 @@ async def navigate_context(
             built = parse_outline(text, max_depth=max_depth)
             return _outline_to_dict(built, stored_nodes), count_nodes(built)
 
-        # parse_outline + serialization are O(text) CPU work over unbounded entry
-        # text; a large entry is offloaded to a worker thread so it cannot pin the
-        # event loop (see _OFFLOAD_MIN_CHARS).
-        if len(text) > _OFFLOAD_MIN_CHARS:
+        # parse_outline + serialization are CPU work whose cost tracks LINE count
+        # over unbounded entry text; a large OR line-dense entry is offloaded to a
+        # worker thread so it cannot pin the event loop (see should_offload_line_scan).
+        if should_offload_line_scan(text):
             root_dict, node_count = await asyncio.to_thread(_build_outline)
         else:
             root_dict, node_count = _build_outline()
@@ -662,9 +663,13 @@ async def read_context_range(
         text_value = rows[0]['text_content']
         text = text_value if text_value is not None else ''
         length = len(text)
-        # Line splitting is O(text); offload a large entry so it cannot pin the
-        # event loop (see _OFFLOAD_MIN_CHARS).
-        if length > _OFFLOAD_MIN_CHARS:
+        # Line splitting costs one slice and one list append PER LINE, so like the
+        # outline parse its cost tracks LINE count rather than text size: a
+        # line-dense entry well under the size threshold still blocks the loop for
+        # a tenth of a second on EVERY read_context_range call, in every addressing
+        # mode. Gate it on the same line-aware predicate (see
+        # should_offload_line_scan).
+        if should_offload_line_scan(text):
             lines, line_starts = await asyncio.to_thread(split_lines_with_offsets, text)
         else:
             lines, line_starts = split_lines_with_offsets(text)
@@ -692,9 +697,11 @@ async def read_context_range(
         else:
             # node_id mode: resolve against the on-demand outline (node_id is not
             # None here because exactly one mode is active). resolve_node_span
-            # re-parses the outline (O(text)); offload a large entry so the parse
-            # cannot pin the event loop (see _OFFLOAD_MIN_CHARS).
-            if length > _OFFLOAD_MIN_CHARS:
+            # re-parses the outline, whose cost tracks LINE count; offload a large
+            # OR line-dense entry so the parse cannot pin the event loop -- even a
+            # request returning a five-character slice pays the full parse (see
+            # should_offload_line_scan).
+            if should_offload_line_scan(text):
                 span = await asyncio.to_thread(resolve_node_span, text, node_id or '')
             else:
                 span = resolve_node_span(text, node_id or '')

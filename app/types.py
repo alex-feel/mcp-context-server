@@ -24,11 +24,20 @@ class ImageDict(TypedDict):
     ``mime_type`` is always present; ``data`` is present only when images are fetched
     with ``include_data=True``; ``metadata`` is present only when the image carries
     metadata.
+
+    Per-image ``metadata`` crosses the tool boundary as a JSON-ENCODED STRING (the
+    write tools type ``images`` as ``list[dict[str, str]]``), so the read path
+    round-trips that string back verbatim and the canonical returned shape is a
+    ``str``. It is declared as an open ``JsonValue`` rather than ``str`` because
+    this TypedDict is what FastMCP derives the strict ``get_context_by_ids``
+    outputSchema from, and rows stored before the write-path shape check existed
+    can hold any JSON value; a narrower declaration would make those entries
+    permanently unreadable through the tool instead of merely unusual.
     """
 
     mime_type: str
     data: NotRequired[str]
-    metadata: NotRequired[dict[str, str] | None]
+    metadata: NotRequired[JsonValue]
 
 
 class ContextEntryDict(TypedDict, total=False):
@@ -199,16 +208,48 @@ class ThreadListDict(TypedDict):
 class ConnectionMetricsDict(TypedDict, total=False):
     """Type definition for backend connection metrics.
 
-    Shape varies by backend; the only fields guaranteed across backends are
-    ``backend_type`` and ``pool_size``. SQLite adds active_readers,
-    writer_busy, write_queue_size, circuit_breaker_state, total_writes,
-    total_reads, failed_writes, failed_reads. PostgreSQL adds pool_idle,
-    pool_free, total_queries, failed_queries. Treated as an open-shape
-    dict; per-backend keys are documented here for reference only.
+    This TypedDict is what FastMCP derives the advertised ``connection_metrics``
+    portion of the ``get_statistics`` outputSchema from, so every key either
+    backend can emit MUST be declared here -- a key that is missing is dropped by
+    any client reading the tool through its declared schema, which is exactly how
+    operator-critical health data (circuit-breaker state, failure counters, last
+    error) becomes invisible while the database is unhealthy.
+
+    Fields are the UNION of what both backends return, all optional because the
+    shape is backend-dependent:
+
+    - Emitted by BOTH backends: ``backend_type``, ``pool_size``,
+      ``total_queries``, ``failed_queries``, ``circuit_state``,
+      ``consecutive_failures``, ``last_error``, ``last_error_time``.
+      ``pool_size`` is the asyncpg pool's current size on PostgreSQL and the
+      reader-pool bound on SQLite (which serializes writes onto one writer).
+    - SQLite only: ``total_connections``, ``active_connections``,
+      ``failed_connections``, ``write_queue_size``.
+    - PostgreSQL only: ``pool_idle``, ``pool_min_size``, ``pool_max_size``, and
+      -- once the corresponding detection has run -- ``pgpool_detected``,
+      ``pgpool_version``, ``session_mode_pooler_detected``.
     """
 
     backend_type: str
     pool_size: int
+    total_queries: int
+    failed_queries: int
+    circuit_state: str
+    consecutive_failures: int
+    last_error: str | None
+    last_error_time: float | None
+    # SQLite-only
+    total_connections: int
+    active_connections: int
+    failed_connections: int
+    write_queue_size: int
+    # PostgreSQL-only
+    pool_idle: int
+    pool_min_size: int
+    pool_max_size: int
+    pgpool_detected: bool
+    pgpool_version: str | None
+    session_mode_pooler_detected: bool
 
 
 class MostActiveThreadDict(TypedDict):

@@ -18,6 +18,8 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+import app.tools._shared as shared_module
+from app.settings import AppSettings
 from app.startup import ensure_repositories
 from app.tools.batch import delete_context_batch
 from app.tools.batch import store_context_batch
@@ -26,6 +28,22 @@ from app.tools.context import delete_context
 from app.tools.context import store_context
 from app.tools.context import update_context
 from app.types import JsonValue
+
+
+def _fp32_settings() -> AppSettings:
+    """Build a settings object with embedding compression turned off.
+
+    The explicit per-entry embedding cleanup on the delete paths is only needed
+    for the fp32 layout, whose vec0 virtual table has no foreign key; the
+    compressed payload table cascades with the context row instead. A test that
+    asserts the cleanup RUNS therefore has to select the fp32 layout.
+
+    Returns:
+        An AppSettings instance with compression disabled.
+    """
+    settings = AppSettings()
+    compression = settings.compression.model_copy(update={'enabled': False})
+    return settings.model_copy(update={'compression': compression})
 
 
 def _require_context_id(value: str | None) -> str:
@@ -627,14 +645,17 @@ class TestDeleteConformance:
         nb_id = nb_r['context_id']
         b_id = _require_context_id(b_r['results'][0]['context_id'])
 
-        mock_delete = AsyncMock()
+        mock_delete = AsyncMock(return_value=0)
         repos = await ensure_repositories()
 
-        # The explicit cleanup is gated on whether the embedding tables were
-        # provisioned (embedding_tables_exist), not on the runtime toggles. Force
-        # that signal True for both paths and assert each calls delete().
+        # The explicit per-entry cleanup is gated on TWO things: the embedding
+        # tables having been provisioned (embedding_tables_exist), and the active
+        # layout still needing it. Compression replaces the FK-less fp32 vec0 table
+        # with a cascading one, so force the fp32 layout to exercise the loop, and
+        # force the table signal True, then assert BOTH paths clean up.
         with (
-            patch.object(repos.embeddings, 'delete', mock_delete),
+            patch.object(shared_module, 'settings', _fp32_settings()),
+            patch.object(repos.embeddings, 'delete_all_chunks_bulk', mock_delete),
             patch.object(
                 repos.embeddings, 'embedding_tables_exist', AsyncMock(return_value=True),
             ),
@@ -642,9 +663,9 @@ class TestDeleteConformance:
             await delete_context(context_ids=[nb_id])
             await delete_context_batch(context_ids=[b_id])
 
-        delete_calls = [call.args[0] for call in mock_delete.call_args_list]
-        assert nb_id in delete_calls, f'Non-batch did not clean up embeddings for {nb_id}'
-        assert b_id in delete_calls, f'Batch did not clean up embeddings for {b_id}'
+        cleaned = [cid for call in mock_delete.call_args_list for cid in call.args[0]]
+        assert nb_id in cleaned, f'Non-batch did not clean up embeddings for {nb_id}'
+        assert b_id in cleaned, f'Batch did not clean up embeddings for {b_id}'
 
     @pytest.mark.asyncio
     async def test_delete_conformance_nonexistent_id(self) -> None:

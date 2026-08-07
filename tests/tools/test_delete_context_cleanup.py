@@ -1,29 +1,35 @@
-"""Tests for the cleanup-gate predicate on delete_context / delete_context_batch.
+"""Tests for the embedding cleanup on delete_context / delete_context_batch.
 
-``delete_context`` and ``delete_context_batch`` run the explicit
-``repos.embeddings.delete(...)`` cleanup when the embedding tables were ever
-PROVISIONED (``repos.embeddings.embedding_tables_exist()`` is true), NOT when
-the runtime ``ENABLE_EMBEDDING_GENERATION`` / ``ENABLE_EMBEDDING_COMPRESSION``
-toggles are on.
+Three properties are pinned here:
 
-The durable table-presence signal is the correct gate because a prior session
-may have written embeddings that a now-disabled toggle would skip cleaning: on
-SQLite the vec0 virtual table has no FK CASCADE and is reachable only through
-the ``embedding_chunks`` bridge, so once that bridge cascades away with the
-context row the orphaned vectors can never be found or deleted. Gating on the
-runtime toggles instead left those rows behind permanently when generation and
-compression were both turned off at delete time. The update path already gates
-the structurally identical stale-embedding cleanup on the same
-``embedding_tables_exist()`` signal (see ``app/tools/_shared.py``); the delete
-paths now mirror it.
+1. The cleanup gate keys on whether the embedding tables were ever PROVISIONED
+   (``repos.embeddings.embedding_tables_exist()``), NOT on the runtime
+   ``ENABLE_EMBEDDING_GENERATION`` / ``ENABLE_EMBEDDING_COMPRESSION`` toggles. A
+   prior session may have written embeddings that a now-disabled toggle would
+   skip cleaning: on SQLite the fp32 vec0 virtual table has no FK CASCADE and is
+   reachable only through the ``embedding_chunks`` bridge, so once that bridge
+   cascades away with the context row the orphaned vectors can never be found or
+   deleted.
+2. The explicit per-entry cleanup is SKIPPED whenever CASCADE already covers the
+   embedding rows -- with compression enabled the fp32 vec0 table does not exist
+   and the compressed payload table carries ``ON DELETE CASCADE``, so the loop
+   would only add one write round trip per deleted entry. On a thread-wide or
+   criteria-wide delete that loop is unbounded and holds the single SQLite
+   writer while every other client stalls.
+3. Cleanup and the row delete share ONE transaction, so a failure between them
+   can never leave entries stripped of their vectors while their rows survive.
 """
 
+from collections.abc import AsyncIterator
 from collections.abc import Callable
 from collections.abc import Generator
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+import app.tools._shared as shared_module
 import app.tools.batch as batch_module
 import app.tools.context as context_module
 from app.settings import get_settings
@@ -41,41 +47,75 @@ def clear_settings_cache() -> Generator[None, None, None]:
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def fp32_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run these tests in fp32 mode, where the explicit cleanup is required.
+
+    With compression enabled (the default) the compressed payload table cascades
+    with the context row, so the explicit loop is correctly skipped; the tests
+    that assert the loop RUNS therefore need the fp32 layout. The dedicated
+    cascade tests below re-enable compression explicitly.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    monkeypatch.setattr(shared_module, 'settings', get_settings())
+
+
 VALID_ID = '0190abcdef1234567890abcdef123456'
+
+
+class _FakeTransaction:
+    """Stand-in for TransactionContext exposing only what the tools read."""
+
+    def __init__(self, backend_type: str) -> None:
+        self.connection = object()
+        self.backend_type = backend_type
+
+
+class _FakeBackend:
+    """Backend stub whose begin_transaction yields a recording fake transaction."""
+
+    def __init__(self, backend_type: str) -> None:
+        self.backend_type = backend_type
+        self.transactions: list[_FakeTransaction] = []
+
+    @asynccontextmanager
+    async def begin_transaction(self) -> AsyncIterator[_FakeTransaction]:
+        """Yield a fake transaction and record it for assertions.
+
+        Yields:
+            The fake transaction context handed to the tool body.
+        """
+        txn = _FakeTransaction(self.backend_type)
+        self.transactions.append(txn)
+        yield txn
 
 
 class _FakeRepos:
     """Minimal repositories stub exposing only the methods exercised by the tests.
 
     Mirrors the RepositoryContainer shape closely enough for delete_context and
-    delete_context_batch to run without a real backend. ``embeddings.delete`` and
-    ``embeddings.embedding_tables_exist`` are AsyncMocks so the test can drive the
-    gate and assert the cleanup call presence/absence.
+    delete_context_batch to run without a real backend.
     """
 
-    def __init__(self, *, tables_exist: bool) -> None:
-        self.embeddings = type(
-            '_Embeddings', (),
-            {
-                'delete': AsyncMock(return_value=None),
-                'embedding_tables_exist': AsyncMock(return_value=tables_exist),
-            },
-        )()
-        self.context = type(
-            '_Context', (),
-            {
-                'delete_by_ids': AsyncMock(return_value=1),
-                'delete_by_thread': AsyncMock(return_value=0),
-                'backend': type('_Backend', (), {'backend_type': 'sqlite'})(),
-                'search_contexts': AsyncMock(return_value=([], None)),
-                # The criteria query returns the SNAPSHOT of ids the combined
-                # criteria match; for these single-id tests that is exactly
-                # VALID_ID. On SQLite the cleanup deletes embeddings for this
-                # subset and the destructive step (delete_by_ids) deletes exactly
-                # the same subset.
-                'get_ids_matching_batch_criteria': AsyncMock(return_value=[VALID_ID]),
-            },
-        )()
+    def __init__(self, *, tables_exist: bool, backend_type: str = 'sqlite') -> None:
+        self.embeddings = SimpleNamespace(
+            delete_all_chunks_bulk=AsyncMock(return_value=0),
+            embedding_tables_exist=AsyncMock(return_value=tables_exist),
+        )
+        self.context = SimpleNamespace(
+            delete_by_ids=AsyncMock(return_value=1),
+            delete_by_thread=AsyncMock(return_value=0),
+            delete_contexts_batch=AsyncMock(return_value=(1, ['context_ids: 1 ids'])),
+            backend=_FakeBackend(backend_type),
+            search_contexts=AsyncMock(return_value=([], None)),
+            # The criteria query returns the SNAPSHOT of ids the combined
+            # criteria match; for these single-id tests that is exactly
+            # VALID_ID. On SQLite the cleanup deletes embeddings for this
+            # subset and the destructive step (delete_by_ids) deletes exactly
+            # the same subset.
+            get_ids_matching_batch_criteria=AsyncMock(return_value=[VALID_ID]),
+        )
 
 
 @pytest.fixture
@@ -83,13 +123,13 @@ def make_fake_repos(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _FakeRepos
     """Return a factory that injects a fake repos container with a chosen gate state.
 
     Returns:
-        A callable ``(*, tables_exist: bool) -> _FakeRepos`` that patches
-        ``ensure_repositories`` in both tool modules to return the fake and
-        hands the fake back so the test can assert on its mock interactions.
+        A callable ``(*, tables_exist: bool, backend_type: str) -> _FakeRepos``
+        that patches ``ensure_repositories`` in both tool modules to return the
+        fake and hands the fake back so the test can assert on its mocks.
     """
 
-    def _factory(*, tables_exist: bool) -> _FakeRepos:
-        fake = _FakeRepos(tables_exist=tables_exist)
+    def _factory(*, tables_exist: bool, backend_type: str = 'sqlite') -> _FakeRepos:
+        fake = _FakeRepos(tables_exist=tables_exist, backend_type=backend_type)
 
         async def _ensure_repositories() -> _FakeRepos:
             return fake
@@ -110,7 +150,9 @@ async def test_delete_context_cleanup_runs_when_embedding_tables_exist(
 
     await context_module.delete_context(context_ids=[VALID_ID])
 
-    fake.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
+    assert fake.embeddings.delete_all_chunks_bulk.await_args is not None
+    assert fake.embeddings.delete_all_chunks_bulk.await_args.args[0] == [VALID_ID]
 
 
 @pytest.mark.asyncio
@@ -122,7 +164,9 @@ async def test_delete_context_batch_cleanup_runs_when_embedding_tables_exist(
 
     await batch_module.delete_context_batch(context_ids=[VALID_ID])
 
-    fake.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
+    assert fake.embeddings.delete_all_chunks_bulk.await_args is not None
+    assert fake.embeddings.delete_all_chunks_bulk.await_args.args[0] == [VALID_ID]
 
 
 @pytest.mark.asyncio
@@ -131,14 +175,13 @@ async def test_delete_context_cleanup_skipped_when_embedding_tables_absent(
 ) -> None:
     """When embeddings were never provisioned, the cleanup is a no-op (skipped).
 
-    A database that never created the embedding tables has nothing to clean, so
-    the explicit ``embeddings.delete`` is not called.
+    A database that never created the embedding tables has nothing to clean.
     """
     fake = make_fake_repos(tables_exist=False)
 
     await context_module.delete_context(context_ids=[VALID_ID])
 
-    fake.embeddings.delete.assert_not_awaited()
+    fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -159,13 +202,14 @@ async def test_delete_context_cleanup_runs_after_generation_disabled(
     get_settings.cache_clear()
     monkeypatch.setattr(context_module, 'settings', get_settings())
     monkeypatch.setattr(batch_module, 'settings', get_settings())
+    monkeypatch.setattr(shared_module, 'settings', get_settings())
 
     # Tables exist (prior session provisioned + wrote embeddings).
     fake = make_fake_repos(tables_exist=True)
 
     await context_module.delete_context(context_ids=[VALID_ID])
 
-    fake.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -186,7 +230,9 @@ async def test_delete_context_batch_cleanup_respects_combined_criteria(
     await batch_module.delete_context_batch(context_ids=[VALID_ID, other_id], source='user')
 
     # Embeddings deleted ONLY for the matching id, never the excluded one.
-    fake.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
+    assert fake.embeddings.delete_all_chunks_bulk.await_args is not None
+    assert fake.embeddings.delete_all_chunks_bulk.await_args.args[0] == [VALID_ID]
     # The criteria query received BOTH context_ids and the source filter.
     fake.context.get_ids_matching_batch_criteria.assert_awaited_once()
     await_args = fake.context.get_ids_matching_batch_criteria.await_args
@@ -194,3 +240,128 @@ async def test_delete_context_batch_cleanup_respects_combined_criteria(
     call_kwargs = await_args.kwargs
     assert call_kwargs.get('context_ids') == [VALID_ID, other_id]
     assert call_kwargs.get('source') == 'user'
+
+
+@pytest.mark.asyncio
+async def test_delete_context_cleanup_and_row_delete_share_one_transaction(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """Cleanup and the row delete must run inside the SAME transaction.
+
+    Without the shared transaction, a failure or cancellation after the cleanup
+    loop leaves entries whose vectors were removed while their rows survive:
+    permanently missing from semantic and hybrid search, with nothing that
+    regenerates embeddings for an unchanged entry.
+    """
+    fake = make_fake_repos(tables_exist=True)
+
+    await context_module.delete_context(context_ids=[VALID_ID])
+
+    assert len(fake.context.backend.transactions) == 1
+    txn = fake.context.backend.transactions[0]
+    assert fake.embeddings.delete_all_chunks_bulk.await_args is not None
+    assert fake.embeddings.delete_all_chunks_bulk.await_args.kwargs['txn'] is txn
+    assert fake.context.delete_by_ids.await_args is not None
+    assert fake.context.delete_by_ids.await_args.kwargs['txn'] is txn
+
+
+@pytest.mark.asyncio
+async def test_delete_context_batch_cleanup_and_row_delete_share_one_transaction(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """Same single-transaction guarantee for the batch criteria delete."""
+    fake = make_fake_repos(tables_exist=True)
+
+    await batch_module.delete_context_batch(thread_ids=['thread-abc'])
+
+    assert len(fake.context.backend.transactions) == 1
+    txn = fake.context.backend.transactions[0]
+    assert fake.embeddings.delete_all_chunks_bulk.await_args is not None
+    assert fake.embeddings.delete_all_chunks_bulk.await_args.kwargs['txn'] is txn
+    assert fake.context.delete_by_ids.await_args is not None
+    assert fake.context.delete_by_ids.await_args.kwargs['txn'] is txn
+
+
+@pytest.mark.asyncio
+async def test_delete_context_skips_per_entry_cleanup_under_compression(
+    monkeypatch: pytest.MonkeyPatch, make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """With compression on, CASCADE covers the embedding rows: no per-entry loop.
+
+    The compressed payload table is an ordinary table with ON DELETE CASCADE on
+    context_id (the fp32 vec0 virtual table, the only FK-less one, is dropped by
+    the compression migration), so a single DELETE removes every embedding row.
+    Issuing one extra write round trip per entry would be pure overhead -- and on
+    a thread-wide or criteria-wide delete an unbounded one that monopolizes the
+    single SQLite writer.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'true')
+    get_settings.cache_clear()
+    monkeypatch.setattr(shared_module, 'settings', get_settings())
+
+    fake = make_fake_repos(tables_exist=True)
+
+    await context_module.delete_context(context_ids=[VALID_ID])
+
+    fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
+    fake.context.delete_by_ids.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_batch_skips_per_entry_cleanup_under_compression(
+    monkeypatch: pytest.MonkeyPatch, make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """The criteria-wide SQLite delete skips the loop under compression too."""
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'true')
+    get_settings.cache_clear()
+    monkeypatch.setattr(shared_module, 'settings', get_settings())
+
+    fake = make_fake_repos(tables_exist=True)
+
+    # older_than_days alone is refused (it would reach the whole database), so the
+    # age criterion is combined with a source filter here.
+    await batch_module.delete_context_batch(older_than_days=30, source='agent')
+
+    fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
+    fake.context.delete_by_ids.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_context_keeps_cleanup_when_foreign_keys_disabled(
+    monkeypatch: pytest.MonkeyPatch, make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """Compression alone is not enough: CASCADE needs PRAGMA foreign_keys ON.
+
+    An operator who turned foreign keys off gets no cascade, so the explicit
+    cleanup must still run or the compressed payload rows orphan.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'false')
+    get_settings.cache_clear()
+    monkeypatch.setattr(shared_module, 'settings', get_settings())
+
+    fake = make_fake_repos(tables_exist=True)
+
+    await context_module.delete_context(context_ids=[VALID_ID])
+
+    fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_context_by_ids_skips_cleanup_on_postgresql(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """On PostgreSQL the context_ids branch relies on ON DELETE CASCADE.
+
+    The explicit pre-delete was redundant there (its two sibling branches were
+    already SQLite-gated), so the branch now behaves symmetrically: one atomic
+    delete, no per-entry embedding round trips.
+    """
+    fake = make_fake_repos(tables_exist=True, backend_type='postgresql')
+
+    await context_module.delete_context(context_ids=[VALID_ID])
+
+    fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
+    fake.context.delete_by_ids.assert_awaited_once()

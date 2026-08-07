@@ -13,6 +13,7 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 from unittest.mock import patch
@@ -31,10 +32,13 @@ from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummaries
 from app.services.grep_service import GrepEntryResult
 from app.startup import ensure_repositories
-from app.tools.navigation import _OFFLOAD_MIN_CHARS
+from app.tools._shared import _OFFLOAD_MIN_CHARS
 from app.tools.navigation import grep_context
 from app.tools.navigation import navigate_context
 from app.tools.navigation import read_context_range
+
+if TYPE_CHECKING:
+    from app.settings import AppSettings
 
 
 @pytest_asyncio.fixture
@@ -682,3 +686,227 @@ class TestLargeEntryOffloadNonBlocking:
             result = await read_context_range(context_id=cid, node_id='root')
         assert seen['on_main'] is False  # node-span re-parse offloaded to a worker thread
         assert result['text']  # root span returned
+
+
+class TestOutlineOffloadKeysOnLineDensity:
+    """The outline offload predicate must track PARSE COST, not input size.
+
+    parse_outline walks the text line by line running several regexes per line,
+    so its cost tracks LINE COUNT: a million characters on one line parses in
+    about two milliseconds, while the same million characters split into short
+    heading lines takes about two seconds. A size-only threshold is blind to that
+    spread, so a dense entry well under the size threshold parsed inline and
+    pinned the event loop for seconds on every navigate / read_context_range
+    call -- even one returning a five-character slice.
+    """
+
+    def test_dense_sub_threshold_text_is_offloaded(self) -> None:
+        """A heading-dense entry far below the size threshold still offloads."""
+        from app.tools._shared import should_offload_line_scan
+
+        dense = '# h\n' * 5_000  # 20k characters, 5k lines
+        assert len(dense) < _OFFLOAD_MIN_CHARS
+        assert should_offload_line_scan(dense) is True
+
+    def test_single_long_line_stays_inline(self) -> None:
+        """A huge single line is cheap to parse and must not pay a thread hop."""
+        from app.tools._shared import should_offload_line_scan
+
+        assert should_offload_line_scan('x' * (_OFFLOAD_MIN_CHARS - 1)) is False
+
+    def test_oversized_text_is_offloaded_regardless_of_density(self) -> None:
+        """The original size signal still applies on its own."""
+        from app.tools._shared import should_offload_line_scan
+
+        assert should_offload_line_scan('x' * (_OFFLOAD_MIN_CHARS + 1)) is True
+
+    @pytest.mark.asyncio
+    async def test_navigate_offloads_dense_sub_threshold_entry(
+        self, nav_backend: StorageBackend,
+    ) -> None:
+        """navigate_context offloads the parse for a dense, sub-threshold entry."""
+        from app.services.outline_service import OutlineNode
+        from app.services.outline_service import parse_outline as real_parse
+
+        dense = '# h\n' * 5_000
+        assert len(dense) < _OFFLOAD_MIN_CHARS
+        cid = await _store(nav_backend, dense)
+        seen: dict[str, bool] = {}
+
+        def spy(text: str, max_depth: int = 6) -> OutlineNode:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_parse(text, max_depth=max_depth)
+
+        with patch('app.tools.navigation.parse_outline', spy):
+            await navigate_context(context_id=cid)
+        assert seen['on_main'] is False
+
+    @pytest.mark.asyncio
+    async def test_read_node_range_offloads_dense_sub_threshold_entry(
+        self, nav_backend: StorageBackend,
+    ) -> None:
+        """read_context_range(node_id=...) offloads the re-parse for a dense entry."""
+        from app.services.outline_service import resolve_node_span as real_resolve
+
+        dense = '# h\n' * 5_000
+        cid = await _store(nav_backend, dense)
+        seen: dict[str, bool] = {}
+
+        def spy(text: str, node_id: str) -> tuple[int, int] | None:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_resolve(text, node_id)
+
+        with patch('app.tools.navigation.resolve_node_span', spy):
+            result = await read_context_range(context_id=cid, node_id='root')
+        assert seen['on_main'] is False
+        assert result['text']
+
+    @pytest.mark.asyncio
+    async def test_read_range_offloads_dense_sub_threshold_line_split(
+        self, nav_backend: StorageBackend,
+    ) -> None:
+        """The line split is line-count-driven too, so it needs the same predicate.
+
+        Every read_context_range call splits lines, in every addressing mode, and one
+        slice plus one list append per line makes a dense sub-threshold entry cost a
+        tenth of a second inline -- on each call, even one returning five characters.
+        """
+        from app.services.text_lines import split_lines_with_offsets as real_split
+
+        dense = '# h\n' * 5_000
+        assert len(dense) < _OFFLOAD_MIN_CHARS
+        cid = await _store(nav_backend, dense)
+        seen: dict[str, bool] = {}
+
+        def spy(text: str) -> tuple[list[str], list[int]]:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_split(text)
+
+        with patch('app.tools.navigation.split_lines_with_offsets', spy):
+            result = await read_context_range(context_id=cid, start_char=0, end_char=4)
+        assert seen['on_main'] is False
+        assert result['text'] == '# h\n'
+
+    @pytest.mark.asyncio
+    async def test_read_range_single_long_line_stays_inline(
+        self, nav_backend: StorageBackend,
+    ) -> None:
+        """One huge line splits into one entry, so it must not pay a thread hop."""
+        from app.services.text_lines import split_lines_with_offsets as real_split
+
+        single_line = 'a' * 50_000
+        cid = await _store(nav_backend, single_line)
+        seen: dict[str, bool] = {}
+
+        def spy(text: str) -> tuple[list[str], list[int]]:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_split(text)
+
+        with patch('app.tools.navigation.split_lines_with_offsets', spy):
+            result = await read_context_range(context_id=cid, start_char=0, end_char=5)
+        assert seen['on_main'] is True
+        assert result['text'] == 'aaaaa'
+
+
+class TestGrepServerSideClamps:
+    """grep_context clamps client-requested bounds to the configured server caps.
+
+    The wire schema deliberately admits values far above the defaults
+    (max_matches up to 10000, context_lines up to 100, max_entries_scanned up to
+    1000000) so an operator can raise the caps; the tool body then clamps every
+    request to whatever the server is actually configured for. Without a test
+    passing an ABOVE-CAP value, pass-through and clamping are indistinguishable,
+    and dropping a clamp would let one call return ten thousand matches.
+    """
+
+    @staticmethod
+    def _settings_with_grep_caps(
+        *, max_matches: int, context_lines: int, entries_scanned: int,
+    ) -> 'AppSettings':
+        """Build a settings copy with tightened grep caps.
+
+        Returns:
+            An AppSettings copy whose grep_context caps are the given values.
+        """
+        from app.settings import get_settings
+
+        base = get_settings()
+        return base.model_copy(update={
+            'grep_context': base.grep_context.model_copy(update={
+                'max_matches_cap': max_matches,
+                'max_context_lines': context_lines,
+                'max_entries_scanned': entries_scanned,
+            }),
+        })
+
+    @pytest.mark.asyncio
+    async def test_above_cap_request_is_clamped_to_server_caps(
+        self, nav_backend: StorageBackend,
+    ) -> None:
+        """max_matches and context_lines are clamped down to their configured caps."""
+        import app.tools.navigation as navigation_module
+
+        # Five entries, each with five matching lines separated by filler lines.
+        for _ in range(5):
+            await _store(nav_backend, '\n'.join(['needle', 'filler'] * 5))
+
+        tightened = self._settings_with_grep_caps(
+            max_matches=3, context_lines=1, entries_scanned=100,
+        )
+        captured: dict[str, Any] = {}
+        from app.services.grep_service import match_entry as real_match_entry
+
+        async def spy_match_entry(*args: Any, **kwargs: Any) -> GrepEntryResult:
+            captured.setdefault('context_lines', kwargs['context_lines'])
+            return await real_match_entry(*args, **kwargs)
+
+        with (
+            patch.object(navigation_module, 'settings', tightened),
+            patch.object(navigation_module, 'match_entry', spy_match_entry),
+        ):
+            result = await grep_context(
+                pattern='needle',
+                thread_id='t',
+                output_mode='content',
+                max_matches=10000,
+                context_lines=100,
+                max_entries_scanned=1000000,
+            )
+
+        payload = cast('dict[str, Any]', result)
+        # Clamped to the cap, not the requested 10000.
+        assert payload['total_matches'] == 3
+        assert payload['truncated'] is True
+        assert len(payload['results']) == 3
+        # context_lines clamped to the cap before reaching the matcher.
+        assert captured['context_lines'] == 1
+        for row in payload['results']:
+            assert len(row['before']) <= 1
+            assert len(row['after']) <= 1
+
+    @pytest.mark.asyncio
+    async def test_max_entries_scanned_is_clamped(self, nav_backend: StorageBackend) -> None:
+        """The scan-width request is clamped before it reaches the repository."""
+        import app.tools.navigation as navigation_module
+
+        for _ in range(5):
+            await _store(nav_backend, 'needle here')
+
+        tightened = self._settings_with_grep_caps(
+            max_matches=1000, context_lines=20, entries_scanned=2,
+        )
+        captured: dict[str, Any] = {}
+        repos = await ensure_repositories()
+        real_scan = repos.context.grep_scan_text_contents
+
+        async def spy_scan(**kwargs: Any) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+            captured['max_entries_scanned'] = kwargs['max_entries_scanned']
+            return await real_scan(**kwargs)
+
+        with (
+            patch.object(navigation_module, 'settings', tightened),
+            patch.object(repos.context, 'grep_scan_text_contents', spy_scan),
+        ):
+            await grep_context(pattern='needle', thread_id='t', max_entries_scanned=1000000)
+
+        assert captured['max_entries_scanned'] == 2
