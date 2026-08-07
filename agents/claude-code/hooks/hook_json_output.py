@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Shared utility for emitting structured JSON output from Claude Code hooks.
 
-Provides three emitter functions for the three documented JSON output schemas:
+Provides four emitter functions for the four documented JSON output schemas:
 
 - emit_additional_context: injects context into the model (UserPromptSubmit,
   SessionStart, SubagentStart, and non-blocking PreToolUse/PostToolUse).
 - emit_pre_tool_use_deny: denies a PreToolUse tool call via
   hookSpecificOutput.permissionDecision=deny with permissionDecisionReason.
+- emit_pre_tool_use_updated_input: rewrites a PreToolUse tool call's arguments
+  via hookSpecificOutput.updatedInput, without issuing a permission decision.
 - emit_decision_block: blocks via top-level decision=block with reason
   (PostToolUse, Stop, SubagentStop).
 
@@ -62,6 +64,34 @@ def emit_pre_tool_use_deny(reason: str) -> None:
             'hookEventName': 'PreToolUse',
             'permissionDecision': 'deny',
             'permissionDecisionReason': reason,
+        },
+    }
+    sys.stdout.write(json.dumps(hook_output))
+    sys.stdout.flush()
+
+
+def emit_pre_tool_use_updated_input(updated_input: dict[str, object]) -> None:
+    """Emit a JSON hookSpecificOutput that REWRITES a PreToolUse tool call's input.
+
+    Writes the structured JSON output that Claude Code interprets as a
+    replacement for the tool's arguments. No permission decision is issued,
+    so the call proceeds through the normal permission pipeline with the
+    rewritten arguments; the hook neither approves nor denies anything.
+
+    updated_input REPLACES the original tool input wholesale rather than
+    merging into it, so callers MUST pass the complete argument set (the
+    original arguments plus their changes), not only the changed keys.
+
+    The caller MUST exit with status 0 after calling this function;
+    Claude Code only processes JSON output when the exit code is 0.
+
+    Args:
+        updated_input: The complete replacement tool input.
+    """
+    hook_output: dict[str, object] = {
+        'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'updatedInput': updated_input,
         },
     }
     sys.stdout.write(json.dumps(hook_output))
