@@ -84,6 +84,12 @@ uv run pytest -m "not integration"
 uv run pre-commit run --all-files
 ```
 
+### Continuous Integration Gates
+
+Every pull request runs `Test` and `Test Summary` (`.github/workflows/test.yml`) plus `Run Pre-Commit Checks`, `MCP Checks` and `Security Scan` (`.github/workflows/lint.yml`). The only exemption is Release Please's own version-bump PR, recognized by BOTH the `release-please--branches--` head-branch prefix AND the PR author being the repository owner; the branch prefix alone is contributor-controlled and never sufficient on its own.
+
+**Repository setting maintainers must keep in place:** these five jobs belong on the `main` branch ruleset as REQUIRED status checks. Without that, a job that is skipped rather than run shows up as neutral in the Checks tab, so a pull request whose CI never executed presents as having nothing failing. The workflow conditions decide *when* a job runs; only the ruleset makes a green result a merge requirement. This is a repository-settings change and cannot be made from the working tree.
+
 ## Commit Conventions
 
 We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification for all commit messages. This enables automated versioning and changelog generation.
