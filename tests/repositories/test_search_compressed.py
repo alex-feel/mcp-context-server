@@ -475,3 +475,153 @@ async def test_search_compressed_small_candidate_decode_inline(
     # Neither O(N) half is offloaded for a small candidate set (no thread hop).
     assert '_decode_and_concat' not in offloaded
     assert '_rank_from_gemm' not in offloaded
+
+
+# Ids chosen so the INSERT order (and therefore the ORDER BY-less candidate read that feeds
+# the Python ranking) differs from the ascending id order: an ordering that merely inherits
+# row order fails the assertions below.
+_TIE_ID_LOW = '11111111111111111111111111111111'
+_TIE_ID_MID = '22222222222222222222222222222222'
+_TIE_ID_HIGH = '33333333333333333333333333333333'
+_TIE_INSERT_ORDER = (_TIE_ID_MID, _TIE_ID_LOW, _TIE_ID_HIGH)
+
+
+async def _seed_identical_compressed_entries(
+    backend: StorageBackend,
+    repo: EmbeddingRepository,
+    *,
+    variant: VariantT = 'mse',
+) -> NDArray[np.float32]:
+    """Insert three entries carrying the SAME vector, so their distances tie exactly.
+
+    Args:
+        backend: Backend already prepared for compressed storage.
+        repo: Repository used to write the compressed payloads.
+        variant: Compression variant the backend was provisioned with.
+
+    Returns:
+        The shared unit-norm vector, usable directly as the query.
+    """
+    rng = np.random.default_rng(SEED)
+    vec = rng.standard_normal(DIM).astype(np.float32)
+    vec /= np.linalg.norm(vec)
+    payload = _encode_vector(vec, variant=variant, bits=4)
+
+    def _insert(conn: sqlite3.Connection) -> None:
+        for entry_id in _TIE_INSERT_ORDER:
+            conn.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                'VALUES (?, ?, ?, ?, ?)',
+                (entry_id, 't-tied', 'user', 'text', 'identical text'),
+            )
+
+    await backend.execute_write(_insert)
+
+    for entry_id in _TIE_INSERT_ORDER:
+        await repo.store_chunked(
+            entry_id,
+            [
+                ChunkEmbedding(
+                    embedding=vec.tolist(),
+                    start_index=0,
+                    end_index=14,
+                    payload=payload,
+                ),
+            ],
+            model='test-model',
+        )
+    return vec.astype(np.float32)
+
+
+@pytest.mark.asyncio
+async def test_search_compressed_tied_distances_order_by_context_id(
+    compressed_backend_factory: BackendFactory,
+) -> None:
+    """Equal estimated distances resolve on the context id, not on stored row order.
+
+    The candidate and payload reads carry no ORDER BY, so a distance-only sort is stable
+    over whatever order the rows happened to come back in. Slicing that list by
+    offset/limit then makes paging non-idempotent: a client reading page 1 and page 2
+    across an unrelated write can miss a tied entry entirely. SQLite happens to serve the
+    payload read from the primary-key index (id order) today, but that is a query-plan
+    accident: PostgreSQL returns heap order, which an UPDATE rewrites. Pinning the id order
+    here keeps the two backends returning the same page for the same tied query.
+    """
+    # The mse variant decodes each stored payload independently, so byte-identical payloads
+    # yield bitwise-identical distances; the ip variant scores every row in ONE matmul, whose
+    # per-row accumulation order can differ in the last float bit.
+    backend, _repos = await compressed_backend_factory('mse', 4)
+    repo = EmbeddingRepository(backend)
+    vec = await _seed_identical_compressed_entries(backend, repo)
+
+    results, _stats = await repo.search_compressed(query_embedding=vec.tolist(), limit=10)
+
+    distances = [r['distance'] for r in results]
+    assert len(set(distances)) == 1, 'seeded payloads must tie for this test to mean anything'
+    assert [r['id'] for r in results] == [_TIE_ID_LOW, _TIE_ID_MID, _TIE_ID_HIGH]
+
+
+@pytest.mark.asyncio
+async def test_search_compressed_tied_distances_paginate_exactly_once(
+    compressed_backend_factory: BackendFactory,
+) -> None:
+    """Paging one tied entry at a time returns the full set with no gap and no duplicate."""
+    backend, _repos = await compressed_backend_factory('mse', 4)
+    repo = EmbeddingRepository(backend)
+    vec = await _seed_identical_compressed_entries(backend, repo)
+
+    unpaginated, _ = await repo.search_compressed(query_embedding=vec.tolist(), limit=10)
+    expected = [r['id'] for r in unpaginated]
+
+    paged: list[str] = []
+    for offset in range(len(expected)):
+        page, _ = await repo.search_compressed(
+            query_embedding=vec.tolist(), limit=1, offset=offset,
+        )
+        assert len(page) == 1
+        paged.append(page[0]['id'])
+
+    assert paged == expected
+    assert len(set(paged)) == len(expected)
+
+
+@pytest.mark.asyncio
+async def test_search_compressed_best_chunk_tie_resolves_on_start_index(
+    compressed_backend_factory: BackendFactory,
+) -> None:
+    """Two equidistant chunks of one entry always report the SAME matched span.
+
+    matched_chunk_start/end feed rerank passage extraction, so letting the stored row order
+    decide would make the response text for an unchanged entry vary between identical
+    queries.
+    """
+    backend, repos = await compressed_backend_factory('mse', 4)
+    repo = EmbeddingRepository(backend)
+
+    rng = np.random.default_rng(SEED)
+    vec = rng.standard_normal(DIM).astype(np.float32)
+    vec /= np.linalg.norm(vec)
+    payload = _encode_vector(vec, variant='mse', bits=4)
+
+    cid, _ = await repos.context.store_with_deduplication(
+        thread_id='t-chunk-tie',
+        source='user',
+        content_type='text',
+        text_content='chunk one chunk two',
+        metadata=None,
+    )
+    # Identical payloads at two different spans, stored later-span-first.
+    await repo.store_chunked(
+        cid,
+        [
+            ChunkEmbedding(embedding=vec.tolist(), start_index=10, end_index=19, payload=payload),
+            ChunkEmbedding(embedding=vec.tolist(), start_index=0, end_index=9, payload=payload),
+        ],
+        model='test-model',
+    )
+
+    results, _ = await repo.search_compressed(query_embedding=vec.tolist(), limit=10)
+
+    assert len(results) == 1
+    assert results[0]['matched_chunk_start'] == 0
+    assert results[0]['matched_chunk_end'] == 9

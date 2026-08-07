@@ -40,7 +40,6 @@ from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
 from app.metadata_types import non_finite_metadata_error
-from app.metadata_types import unstorable_string_error
 from app.repositories.context_repository import VersionConflictError
 from app.repositories.context_repository import describe_batch_delete_criteria
 from app.repositories.embedding_repository import ChunkEmbedding
@@ -53,6 +52,8 @@ from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import EntryNotFoundError
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
+from app.tools._shared import cleanup_embeddings_for_delete
+from app.tools._shared import entry_boundary_error
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
 from app.tools._shared import generate_compression_with_timeout
@@ -62,6 +63,7 @@ from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import node_layer_active
 from app.tools._shared import reject_unstorable_input
+from app.tools._shared import tag_limits_error
 from app.tools._shared import transaction_heartbeat
 from app.tools._shared import validate_and_normalize_images
 from app.types import BulkDeleteResponseDict
@@ -115,6 +117,9 @@ async def store_context_batch(
     Size limits:
     - Maximum 100 entries per batch
     - Image limits per entry: 10MB each, 100MB total
+    - Tag limits per entry: 100 tags, each at most 128 characters
+    - thread_id: at most 256 characters
+    - Value under an indexed metadata field: at most 512 characters
     - Standard tag normalization (lowercase)
 
     Returns:
@@ -217,20 +222,32 @@ async def store_context_batch(
             ):
                 validation_errors.append((idx, 'tags must be a list of strings'))
                 continue
+            # Per-entry tag count / per-tag length caps. The single-entry
+            # store_context advertises both bounds in its wire schema; the batch
+            # path takes untyped dicts, so the shared chokepoint enforces them
+            # here for parity (an over-long tag otherwise stores on SQLite and
+            # aborts the PostgreSQL INSERT on idx_tags_tag inside the transaction).
+            tag_error = tag_limits_error(cast('list[str] | None', tags))
+            if tag_error is not None:
+                validation_errors.append((idx, tag_error))
+                continue
 
             # Reject an embedded NUL or unpaired UTF-16 surrogate in any user string
             # (thread_id, text, tags, metadata) before generation: PostgreSQL cannot
             # store it, so the entry would store on SQLite but hard-fail on PostgreSQL
             # after a wasted generation pass, charging the circuit breaker inside the
             # transaction. Mirrors the single-entry store_context boundary guard.
-            unstorable_error = (
-                unstorable_string_error(thread_id)
-                or unstorable_string_error(text)
-                or unstorable_string_error(cast('object', tags))
-                or unstorable_string_error(cast('object', metadata))
+            # The same chokepoint also enforces the LENGTH caps on the values that land
+            # in a PostgreSQL btree index (thread_id, and every INDEXED metadata field):
+            # an oversized value aborts the PostgreSQL INSERT where SQLite stores it.
+            entry_error = entry_boundary_error(
+                thread_id=thread_id,
+                text=text,
+                tags=cast('object', tags),
+                metadata=cast('object', metadata),
             )
-            if unstorable_error is not None:
-                validation_errors.append((idx, unstorable_error))
+            if entry_error is not None:
+                validation_errors.append((idx, entry_error))
                 continue
 
             # Prepare validated entry. tags/images keep their None-ness so the
@@ -979,6 +996,8 @@ async def update_context_batch(
     Size limits:
     - Maximum 100 entries per batch
     - Image limits per entry: 10MB each, 100MB total
+    - Tag limits per entry: 100 tags, each at most 128 characters
+    - Value under an indexed metadata field: at most 512 characters
 
     Returns:
         BulkUpdateResponseDict with success (bool), total (int), succeeded (int),
@@ -1066,6 +1085,13 @@ async def update_context_batch(
             ):
                 validation_errors.append((idx, context_id, 'tags must be a list of strings'))
                 continue
+            # Per-entry tag count / per-tag length caps (see the store batch for
+            # the full rationale): the untyped batch path must reject exactly what
+            # the wire-schema-bounded single-entry update_context rejects.
+            tag_error = tag_limits_error(cast('list[str] | None', tags_field))
+            if tag_error is not None:
+                validation_errors.append((idx, context_id, tag_error))
+                continue
 
             # Validate images if provided
             images = update.get('images')
@@ -1109,14 +1135,17 @@ async def update_context_batch(
             # single-entry update_context boundary guard: PostgreSQL cannot store it,
             # so the update would succeed on SQLite but hard-fail on PostgreSQL after a
             # wasted generation pass, charging the circuit breaker inside the transaction.
-            unstorable_error = (
-                unstorable_string_error(text)
-                or unstorable_string_error(cast('object', tags_field))
-                or unstorable_string_error(cast('object', metadata_field))
-                or unstorable_string_error(cast('object', metadata_patch_field))
+            # The same chokepoint also enforces the length cap on every INDEXED metadata
+            # field, in both the replacement and the merge-patch form: an oversized value
+            # aborts the PostgreSQL UPDATE on idx_metadata_<field> where SQLite stores it.
+            entry_error = entry_boundary_error(
+                text=text,
+                tags=cast('object', tags_field),
+                metadata=cast('object', metadata_field),
+                metadata_patch=cast('object', metadata_patch_field),
             )
-            if unstorable_error is not None:
-                validation_errors.append((idx, context_id, unstorable_error))
+            if entry_error is not None:
+                validation_errors.append((idx, context_id, entry_error))
                 continue
 
             # Prepare validated update
@@ -1754,7 +1783,7 @@ async def delete_context_batch(
     ] = None,
     older_than_days: Annotated[
         int | None,
-        Field(description='Delete entries older than N days', gt=0),
+        Field(description='Delete entries older than N days (combine with other criteria)', gt=0),
     ] = None,
     ctx: Context | None = None,
 ) -> BulkDeleteResponseDict:
@@ -1767,7 +1796,9 @@ async def delete_context_batch(
     - older_than_days: Delete entries created more than N days ago
 
     At least one criterion must be provided.
-    Note: source filter alone is insufficient; it must be combined with another criterion.
+    Note: source alone and older_than_days alone are each insufficient; either must be
+    combined with another criterion, because on its own each one matches essentially the
+    whole database.
     All associated data (tags, images) is also removed.
     The context_ids and thread_ids lists each accept at most 100 items per call
     (the same cap as the other batch tools); oversized lists are rejected at the
@@ -1795,6 +1826,17 @@ async def delete_context_batch(
             raise ToolError(
                 'source filter must be combined with another criterion '
                 '(context_ids, thread_ids, or older_than_days)',
+            )
+
+        # older_than_days alone carries the same blast radius as source alone: on any
+        # database older than the window, one scalar matches essentially every row, so
+        # a single call reaches the whole table irreversibly. Require it to be combined
+        # for the same reason source already is; a retention purge stays expressible as
+        # older_than_days plus source or thread_ids.
+        if older_than_days is not None and not any([context_ids, thread_ids, source]):
+            raise ToolError(
+                'older_than_days must be combined with another criterion '
+                '(context_ids, thread_ids, or source)',
             )
 
         # Reject an embedded NUL or unpaired UTF-16 surrogate in any thread_id before it
@@ -1829,7 +1871,7 @@ async def delete_context_batch(
         # surviving vec table for the active compression mode), so the
         # criteria-based delete needs no snapshot and no explicit cleanup.
         #
-        # On SQLite the vec0 virtual embedding tables lack FK CASCADE, so the
+        # On SQLite the fp32 vec0 virtual embedding table lacks FK CASCADE, so the
         # embedding cleanup pre-queries the exact ids the COMBINED criteria match
         # (combining context_ids with source/older_than_days never cleans an
         # excluded, surviving entry). Re-running the criteria in the destructive
@@ -1844,6 +1886,14 @@ async def delete_context_batch(
         # Mirrors delete_context's thread branch; delete_by_ids chunks the id
         # list, so a criteria match of any size stays under the per-statement
         # bound-parameter limit.
+        #
+        # Cleanup and delete share ONE transaction so a failure between them can
+        # never leave entries stripped of their vectors while their rows survive.
+        # cleanup_embeddings_for_delete costs nothing at all whenever CASCADE
+        # already covers the embedding rows, and in the fp32 layout that still
+        # needs it, issues bounded multi-row statements instead of one write round
+        # trip per matched entry -- so a criteria-wide delete no longer holds the
+        # single SQLite writer for a scan proportional to the match count.
         backend = repos.context.backend
         if backend.backend_type == 'sqlite':
             affected_ids = await repos.context.get_ids_matching_batch_criteria(
@@ -1852,18 +1902,11 @@ async def delete_context_batch(
                 source=source,
                 older_than_days=older_than_days,
             )
-            # Gate embedding cleanup on table PRESENCE (embedding_tables_exist),
-            # NOT the runtime generation/compression toggles: a prior session's
-            # embeddings must still be cleaned after the toggles flip off, or the
-            # FK-less vec0 rows orphan. Mirrors the stale-embedding cleanup on the
-            # update path.
-            if affected_ids and await repos.embeddings.embedding_tables_exist():
-                for cid in affected_ids:
-                    try:
-                        await repos.embeddings.delete(cid)
-                    except Exception as e:
-                        logger.warning(f'Failed to delete embedding for context {cid}: {e}')
-            deleted_count = await repos.context.delete_by_ids(affected_ids)
+            deleted_count = 0
+            if affected_ids:
+                async with backend.begin_transaction() as txn:
+                    await cleanup_embeddings_for_delete(repos, txn, affected_ids)
+                    deleted_count = await repos.context.delete_by_ids(affected_ids, txn=txn)
             criteria_used = describe_batch_delete_criteria(
                 context_ids=context_ids,
                 thread_ids=thread_ids,

@@ -6,6 +6,7 @@ protocol with asyncpg connection pooling, circuit breaker pattern, retry logic, 
 
 
 import asyncio
+import contextvars
 import logging
 import random
 import socket
@@ -13,7 +14,9 @@ import time
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -188,15 +191,138 @@ class ConnectionEstablishmentTimeoutError(TimeoutError):
     signal the backend deliberately leaves uncharged on the circuit breaker.
     Typing the establishment timeout keeps the two fault classes separable
     WITHOUT inferring them from elapsed wall time (which misclassifies whenever
-    the connect budget is configured close to the pool budget): an unreachable
-    (blackholed) database charges the breaker under every legal budget
-    combination, and every bare TimeoutError an acquire surfaces is genuinely
-    saturation. Subclasses TimeoutError so broad timeout handling still sees it.
+    the connect budget is configured close to the pool budget). Subclasses
+    TimeoutError so broad timeout handling still sees it.
+
+    It covers only the case where the CONNECT budget wins the race. When the
+    ACQUIRE budget wins first, asyncpg cancels the in-flight dial instead
+    (``Pool._acquire`` wraps the queue wait AND the connect callable in ONE
+    ``wait_for``), so no establishment TimeoutError is ever constructed and the
+    acquire raises a BARE TimeoutError. That case is covered by the
+    ``_AcquireTracker`` recorded out of band around the dial, which the
+    bare-TimeoutError arms consult so an unreachable database still charges the
+    breaker under every budget combination.
     """
 
 
+@dataclass
+class _AcquireTracker:
+    """Out-of-band record of what one pool acquire's connection preparation did.
+
+    Published through the ``_acquire_tracker`` ContextVar by ``_track_acquire()``
+    around a ``pool.acquire()``, and written by all three pool callbacks asyncpg
+    invokes INLINE in the acquiring task (so each reads the acquirer's own
+    tracker, never a concurrent acquirer's): the ``connect`` dial, the ``init``
+    callback and the ``setup`` callback.
+
+    The acquire-phase handlers cannot infer the fault class from the exception
+    alone: when the acquire deadline expires while any of those phases is in
+    flight, asyncpg cancels it, so the phase receives CancelledError rather than
+    TimeoutError and the acquire surfaces a BARE TimeoutError identical in type
+    to genuine pool saturation. Recording the interruption here keeps the two
+    apart: a bare TimeoutError with ``interrupted`` set means the acquire was
+    talking to an unresponsive database (charged), and one without it is real
+    saturation (uncharged capacity signal). Covering ``init``/``setup`` and not
+    just the dial matters because a WARM pool blackholed mid-flight never dials
+    at all -- it reuses a holder and hangs in one of those two callbacks.
+
+    The same tracker also carries the RELEASE outcome back to a caller that
+    suppressed ``get_connection``'s own breaker accounting (``execute_write``
+    passes ``record_breaker=False`` so a retried write records exactly one
+    outcome). ``get_connection`` charges a release fault and then SWALLOWS it,
+    because the body's work -- including a COMMITted write -- already completed;
+    without this flag the caller could not tell a clean release from a swallowed
+    one and would credit a breaker SUCCESS that cancels the charge out (in the
+    HEALTHY state ``record_success`` also decrements accumulated failures), so a
+    connection dying on release moved the health counter the wrong way.
+
+    Attributes:
+        interrupted: True once connection preparation for this acquire (the dial,
+            the init callback or the setup callback) was cancelled before the
+            connection could be handed to the caller.
+        release_failed: True once a release-phase fault after a clean body was
+            charged and swallowed, so the caller must not credit a success for
+            this acquire.
+    """
+
+    interrupted: bool = False
+    release_failed: bool = False
+
+
+_acquire_tracker: contextvars.ContextVar[_AcquireTracker | None] = contextvars.ContextVar(
+    'mcp_context_server_acquire_tracker',
+    default=None,
+)
+
+
+def _record_preparation_interrupted() -> None:
+    """Record on the current acquire's tracker that connection preparation was cut off.
+
+    Called from every pool callback that runs INSIDE ``pool.acquire()`` and can be
+    cancelled by the acquire deadline: the ``connect`` dial, the ``init`` callback
+    (whose pgvector probe and codec registration are real server round-trips) and
+    the ``setup`` callback (whose ``SET statement_timeout`` is one more). All three
+    mean the acquire was talking to the database rather than waiting in the queue,
+    so the resulting BARE TimeoutError is an unreachable database (charged), not
+    pool saturation (uncharged capacity signal).
+    """
+    tracker = _acquire_tracker.get()
+    if tracker is not None:
+        tracker.interrupted = True
+
+
+def _charge_cancelled_preparation(
+    callback: 'Callable[[asyncpg.Connection], Awaitable[None]]',
+) -> 'Callable[[asyncpg.Connection], Awaitable[None]]':
+    """Wrap a pool connection callback so a cancellation is recorded before it re-raises.
+
+    The CancelledError itself is re-raised UNCHANGED: swallowing it would corrupt
+    the cancellation bookkeeping ``asyncio.wait_for`` relies on to convert it into
+    the acquire's TimeoutError.
+
+    Args:
+        callback: The pool ``init``/``setup`` callable to wrap.
+
+    Returns:
+        A callable with identical behavior that also records the interruption.
+    """
+
+    async def _wrapped(conn: 'asyncpg.Connection') -> None:
+        try:
+            await callback(conn)
+        except asyncio.CancelledError:
+            _record_preparation_interrupted()
+            raise
+
+    return _wrapped
+
+
+@contextmanager
+def _track_acquire() -> Iterator[_AcquireTracker]:
+    """Publish a ``_AcquireTracker`` for the acquire performed inside the block.
+
+    An already-published tracker is REUSED rather than shadowed, so an outer
+    scope (``execute_write``, which acquires through ``get_connection``) and the
+    inner scope observe the same dial instead of the inner one hiding the
+    interruption from the arm that must charge it.
+
+    Yields:
+        The tracker covering dials made inside the block.
+    """
+    existing = _acquire_tracker.get()
+    if existing is not None:
+        yield existing
+        return
+    tracker = _AcquireTracker()
+    token = _acquire_tracker.set(tracker)
+    try:
+        yield tracker
+    finally:
+        _acquire_tracker.reset(token)
+
+
 async def _connect_pool_connection(*args: Any, **kwargs: Any) -> asyncpg.Connection:
-    """Establish a new pooled connection, typing an establishment timeout.
+    """Establish a new pooled connection, recording establishment faults.
 
     Passed as ``asyncpg.create_pool(connect=...)`` so every NEW connection the
     pool dials goes through this wrapper. Delegates to ``asyncpg.connect``
@@ -209,6 +335,13 @@ async def _connect_pool_connection(*args: Any, **kwargs: Any) -> asyncpg.Connect
     failure (refused port, DNS resolution, connection reset) propagates
     unchanged.
 
+    A dial CANCELLED by the enclosing acquire deadline cannot be typed the same
+    way: swallowing the CancelledError would corrupt the cancellation
+    bookkeeping ``asyncio.timeout`` relies on to convert it into the acquire's
+    TimeoutError. It is therefore recorded on the acquire's ``_AcquireTracker``
+    and re-raised unchanged, which is what lets the bare-TimeoutError arms tell
+    an unreachable database from a saturated pool.
+
     Args:
         *args: Positional arguments the pool forwards (the DSN).
         **kwargs: Keyword arguments the pool forwards to ``asyncpg.connect``.
@@ -219,6 +352,8 @@ async def _connect_pool_connection(*args: Any, **kwargs: Any) -> asyncpg.Connect
     Raises:
         ConnectionEstablishmentTimeoutError: When establishing the connection
             exceeded the connect timeout.
+        asyncio.CancelledError: Re-raised unchanged when the enclosing acquire
+            deadline cancelled the dial, after recording the interruption.
     """
     try:
         conn: asyncpg.Connection = await asyncpg.connect(*args, **kwargs)
@@ -226,6 +361,9 @@ async def _connect_pool_connection(*args: Any, **kwargs: Any) -> asyncpg.Connect
         raise ConnectionEstablishmentTimeoutError(
             f'timed out establishing a new database connection: {e}',
         ) from e
+    except asyncio.CancelledError:
+        _record_preparation_interrupted()
+        raise
     return conn
 
 
@@ -247,9 +385,20 @@ async def _setup_pool_connection(conn: asyncpg.Connection) -> None:
     get_connection and begin_transaction charge it, and the uncharged
     saturation arm cannot swallow it.
 
+    When the ACQUIRE budget wins the race instead, this callback is CANCELLED
+    rather than timed out (asyncpg wraps the queue wait, the dial, ``init`` and
+    ``setup`` in ONE ``wait_for``), so no typed exception is constructed and the
+    acquire surfaces a BARE TimeoutError. That is the phase which dominates the
+    most common outage onset -- a warm pool blackholed by a firewall DROP reuses
+    an existing connection, skipping the dial entirely and hanging here -- so the
+    interruption is recorded on the acquire's ``_AcquireTracker`` before the
+    CancelledError is re-raised unchanged.
+
     Raises:
         asyncpg.exceptions.ConnectionDoesNotExistError: When the setup statement
             timed out (the connection is unusable; asyncpg closes it).
+        asyncio.CancelledError: Re-raised unchanged when the enclosing acquire
+            deadline cancelled the setup, after recording the interruption.
     """
     try:
         # Set statement timeout to prevent infinite hangs.
@@ -262,6 +411,9 @@ async def _setup_pool_connection(conn: asyncpg.Connection) -> None:
         raise asyncpg.exceptions.ConnectionDoesNotExistError(
             f'connection setup timed out; the pooled connection is unusable: {e}',
         ) from e
+    except asyncio.CancelledError:
+        _record_preparation_interrupted()
+        raise
     except Exception as e:
         logger.warning(f'Connection setup failed: {e}')
         raise  # asyncpg will close connection and create new one
@@ -589,11 +741,14 @@ class PostgreSQLBackend:
                 'Ensure PostgreSQL is running and accessible.',
             ) from e
 
-        except asyncpg.exceptions.InvalidPasswordError as e:
+        except asyncpg.exceptions.InvalidAuthorizationSpecificationError as e:
+            # SQLSTATE class 28 as a whole (InvalidPasswordError 28P01 is a subclass):
+            # 28000 covers 'no pg_hba.conf entry for host ...', equally permanent, so
+            # both must reach exit 78 instead of the retryable terminal handler.
             logger.error(f'PostgreSQL authentication failed: {e}')
             raise ConfigurationError(
                 f'PostgreSQL authentication failed: {e}. '
-                'Check POSTGRESQL_USER and POSTGRESQL_PASSWORD.',
+                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
             ) from e
 
         except asyncpg.exceptions.InvalidCatalogNameError as e:
@@ -656,8 +811,12 @@ class PostgreSQLBackend:
         (BYTEA-only) server -- the default configuration -- to create the unused pgvector extension,
         crashing boot on a pgvector-less PostgreSQL host. Keying on ``embedding_metadata`` presence
         alone could not tell the two payload formats apart (that table exists under both), which is
-        why the fp32 table itself is probed. A connection failure returns False; the pool creation
-        that follows surfaces the same error with proper classification.
+        why the fp32 table itself is probed. A connection failure PROPAGATES rather than answering
+        False: a probe cannot tell a connect fault from a negative answer, and a wrong False
+        silently skips the extension and codec that a later ``vector(dim)`` DDL needs.
+        ``initialize()`` calls this inside its classification ladder, so the propagated fault
+        becomes ConfigurationError (exit 78) or DependencyError (exit 69) instead of a silently
+        wrong provisioning decision.
 
         Returns:
             True when the pgvector extension and vector codec must be provisioned.
@@ -666,15 +825,20 @@ class PostgreSQLBackend:
             return True
         compression_enabled = settings.compression.enabled
         connect_kwargs = build_asyncpg_connect_kwargs()
-        try:
-            conn = await asyncpg.connect(
-                self.connection_string,
-                timeout=settings.storage.postgresql_connect_timeout_s,
-                **connect_kwargs,
-            )
-        except Exception as e:
-            logger.debug('vector-provision probe could not connect (deferring to pool init): %s', e)
-            return False
+        # A connect fault propagates DELIBERATELY. Swallowing it and returning False
+        # would answer a question the probe never got to ask: on a
+        # generation-off/compression-off database that already carries
+        # embedding_metadata, False means the boot skips CREATE EXTENSION vector and
+        # the vector codec, and the semantic migration's `CREATE TABLE ... vector(dim)`
+        # then fails unclassified. initialize() calls this INSIDE its classification
+        # ladder, so a wrong password becomes ConfigurationError (exit 78) and a
+        # transient outage becomes DependencyError (exit 69, retried by the supervisor
+        # with the probe re-run) instead of a silently wrong provisioning decision.
+        conn = await asyncpg.connect(
+            self.connection_string,
+            timeout=settings.storage.postgresql_connect_timeout_s,
+            **connect_kwargs,
+        )
         try:
             fp32_present = bool(
                 await conn.fetchval("SELECT to_regclass('vec_context_embeddings') IS NOT NULL"),
@@ -891,7 +1055,14 @@ class PostgreSQLBackend:
                 'max_cached_statement_lifetime': settings.storage.postgresql_max_cached_statement_lifetime_s,
                 'max_cacheable_statement_size': settings.storage.postgresql_max_cacheable_statement_size,
                 # Connection lifecycle callbacks
-                'init': _init_connection,  # TCP keepalive + type registration
+                #
+                # ``init`` awaits real server round-trips (the pg_extension probe,
+                # register_vector, the uuid codec's type introspection) inside the SAME
+                # acquire deadline as the dial, so it is wrapped to record a cancellation
+                # on the acquire's dial tracker; without that, an acquire whose budget
+                # expires during init surfaces a bare TimeoutError that the uncharged
+                # saturation arm would swallow.
+                'init': _charge_cancelled_preparation(_init_connection),  # TCP keepalive + type registration
                 'setup': _setup_pool_connection,  # Session config before acquire
                 'reset': _reset_connection,  # Health check before pool return
             }
@@ -927,6 +1098,15 @@ class PostgreSQLBackend:
                 **pool_kwargs,
             )
 
+            # Prove the pool can actually reach the database BEFORE reporting
+            # success. asyncpg's create_pool() contacts the server only to
+            # pre-connect min_size connections, so with POSTGRESQL_POOL_MIN=0 (an
+            # explicitly supported cold-pool choice) it succeeds against an
+            # unreachable host, a wrong password or a nonexistent database, and
+            # the classification ladder below -- which turns those into exit 78
+            # instead of a supervisor restart loop -- never observes a real dial.
+            await self._verify_connectivity()
+
             # Detect Pgpool-II and log result
             await self._detect_pgpool_ii()
 
@@ -944,7 +1124,7 @@ class PostgreSQLBackend:
             # InterfaceError match would misclassify as a retryable
             # DependencyError and restart-loop on.
             logger.error(f'PostgreSQL client configuration invalid: {e}')
-            await self.circuit_breaker.record_failure()
+            await self._record_charged_failure(e)
             raise ConfigurationError(
                 f'PostgreSQL client configuration invalid: {e}. '
                 'Check POSTGRESQL_CONNECTION_STRING and the POSTGRESQL_* '
@@ -958,23 +1138,40 @@ class PostgreSQLBackend:
             asyncpg.exceptions.TooManyConnectionsError,
         ) as e:
             logger.error(f'Failed to initialize PostgreSQL backend: {e}')
-            await self.circuit_breaker.record_failure()
+            await self._record_charged_failure(e)
             raise DependencyError(
                 f'PostgreSQL connection failed: {e}. '
                 'Ensure PostgreSQL is running and accessible.',
             ) from e
 
-        except asyncpg.exceptions.InvalidPasswordError as e:
+        except asyncpg.exceptions.InvalidAuthorizationSpecificationError as e:
+            # SQLSTATE class 28 as a WHOLE, not only InvalidPasswordError (28P01, a
+            # subclass of this): 28000 invalid_authorization_specification is what
+            # PostgreSQL returns for 'no pg_hba.conf entry for host ...', an equally
+            # permanent credential/authorization misconfiguration. Matching only the
+            # password subclass sent it to the terminal handler below as a retryable
+            # DependencyError (exit 69) and the supervisor restart-looped forever.
             logger.error(f'PostgreSQL authentication failed: {e}')
-            await self.circuit_breaker.record_failure()
+            await self._record_charged_failure(e)
             raise ConfigurationError(
                 f'PostgreSQL authentication failed: {e}. '
-                'Check POSTGRESQL_USER and POSTGRESQL_PASSWORD.',
+                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+            ) from e
+
+        except asyncpg.exceptions.InsufficientPrivilegeError as e:
+            # SQLSTATE 42501 raised by the boot dial means the role may not CONNECT
+            # to the database (a revoked grant): permanent, so exit 78 rather than a
+            # restart loop. Mirrors the same arm in _ensure_pgvector_extension.
+            logger.error(f'PostgreSQL permission denied: {e}')
+            await self._record_charged_failure(e)
+            raise ConfigurationError(
+                f'PostgreSQL permission denied: {e}. '
+                'Grant the configured POSTGRESQL_USER access to POSTGRESQL_DATABASE.',
             ) from e
 
         except asyncpg.exceptions.InvalidCatalogNameError as e:
             logger.error(f'PostgreSQL database does not exist: {e}')
-            await self.circuit_breaker.record_failure()
+            await self._record_charged_failure(e)
             raise ConfigurationError(
                 f'PostgreSQL database does not exist: {e}. '
                 'Create the database or check POSTGRESQL_DATABASE.',
@@ -995,7 +1192,7 @@ class PostgreSQLBackend:
             # permanent misconfigurations: exit 78 so the supervisor
             # does not restart-loop on them.
             logger.error(f'PostgreSQL configuration invalid: {e}')
-            await self.circuit_breaker.record_failure()
+            await self._record_charged_failure(e)
             raise ConfigurationError(
                 f'PostgreSQL configuration invalid: {e}. '
                 'Check POSTGRESQL_POOL_* values and the connection string.',
@@ -1003,12 +1200,36 @@ class PostgreSQLBackend:
 
         except Exception as e:
             logger.error(f'Failed to initialize PostgreSQL backend: {e}')
-            await self.circuit_breaker.record_failure()
+            await self._record_charged_failure(e)
             # Default to DependencyError for unknown errors (safer - allows retry)
             raise DependencyError(
                 f'PostgreSQL initialization failed: {e}. '
                 'Ensure PostgreSQL is running and accessible.',
             ) from e
+
+    async def _verify_connectivity(self) -> None:
+        """Dial the database once through the pool and let faults classify.
+
+        The unconditional boot-time reachability check. It exists because
+        ``asyncpg.create_pool()`` is not one: ``Pool._initialize`` guards every
+        pre-connect behind ``if self._minsize:``, so with POSTGRESQL_POOL_MIN=0
+        the pool is created without ever contacting the server. Boot validation
+        must not depend on a diagnostic probe either -- a probe swallows failures
+        by design -- so this acquire deliberately lets EVERY failure propagate to
+        ``initialize()``'s classification ladder, which turns a wrong password,
+        a nonexistent database or an invalid client configuration into
+        ConfigurationError (exit 78, no supervisor restart loop) and an
+        unreachable host into DependencyError (exit 69, retryable). Without it a
+        permanent credential misconfiguration surfaced much later as a raw,
+        unclassified schema-statement error.
+        """
+        assert self._pool is not None, 'Pool not initialized'
+
+        async with self._pool.acquire(
+            timeout=settings.storage.postgresql_pool_timeout_s,
+        ) as conn:
+            await conn.fetchval('SELECT 1')
+        logger.debug('PostgreSQL connectivity verified')
 
     async def _detect_pgpool_ii(self) -> None:
         """Detect if connected through Pgpool-II and log result.
@@ -1016,30 +1237,43 @@ class PostgreSQLBackend:
         Uses SHOW POOL_VERSION command which is Pgpool-II specific.
         On direct PostgreSQL connections, this command raises UndefinedObjectError
         (error code 42704: unrecognized configuration parameter).
+
+        Only the detection QUERY is diagnostic: its failure is swallowed. The
+        ACQUIRE sits outside that handling on purpose, so an establishment,
+        authentication or connection-init fault reaches ``initialize()``'s
+        classification ladder instead of being logged at WARNING (invisible at
+        the default LOG_LEVEL=ERROR, and with an EMPTY message for a bare
+        TimeoutError, whose ``str()`` is '') and followed by
+        'initialized successfully'.
         """
         assert self._pool is not None, 'Pool not initialized'
 
-        try:
-            async with self._pool.acquire(
-                timeout=settings.storage.postgresql_pool_timeout_s,
-            ) as conn:
+        async with self._pool.acquire(
+            timeout=settings.storage.postgresql_pool_timeout_s,
+        ) as conn:
+            try:
                 version = await conn.fetchval('SHOW POOL_VERSION')
-                if version:
-                    logger.warning(
-                        f'Pgpool-II detected: version {version}. '
-                        f'Recommended to set POSTGRESQL_STATEMENT_CACHE_SIZE=0.',
-                    )
-                    self._pgpool_version = str(version)
-                else:
-                    logger.info('Looks like direct PostgreSQL connection (at least, no Pgpool-II)')
-                    self._pgpool_version = None
-        except asyncpg.exceptions.UndefinedObjectError:
-            # Expected when not behind Pgpool-II - pool_version is not a known parameter
+            except asyncpg.exceptions.UndefinedObjectError:
+                # Expected when not behind Pgpool-II - pool_version is not a known parameter
+                logger.info('Looks like direct PostgreSQL connection (at least, no Pgpool-II)')
+                self._pgpool_version = None
+                return
+            except Exception as e:
+                # Log but do not fail initialization. Name the exception type too:
+                # several exceptions relevant here (TimeoutError above all) have an
+                # empty str(), which would otherwise log a warning with no cause.
+                logger.warning(f'Pgpool-II detection check failed ({type(e).__name__}): {e}')
+                self._pgpool_version = None
+                return
+
+        if version:
+            logger.warning(
+                f'Pgpool-II detected: version {version}. '
+                f'Recommended to set POSTGRESQL_STATEMENT_CACHE_SIZE=0.',
+            )
+            self._pgpool_version = str(version)
+        else:
             logger.info('Looks like direct PostgreSQL connection (at least, no Pgpool-II)')
-            self._pgpool_version = None
-        except Exception as e:
-            # Log but do not fail initialization
-            logger.warning(f'Pgpool-II detection check failed: {e}')
             self._pgpool_version = None
 
     def _detect_session_mode_pooler(self) -> None:
@@ -1136,10 +1370,12 @@ class PostgreSQLBackend:
             readonly: Advisory flag (PostgreSQL handles via transactions)
             allow_write: Advisory flag (PostgreSQL handles via transactions)
             record_breaker: When True (default), record a circuit-breaker success
-                on a clean exit and a failure on an exception. execute_write sets
-                this False so its retry loop records at most ONE breaker outcome
-                per logical write (matching the SQLite backend) instead of one per
-                retry attempt.
+                on a clean exit and a charged failure on an exception. execute_write
+                sets this False so its retry loop records at most ONE breaker
+                outcome per logical write (matching the SQLite backend) instead of
+                one per retry attempt. It does NOT cover the release phase: a
+                release failure is swallowed here, so no caller could account for
+                it, and it is therefore always charged (see the note below).
 
         Yields:
             asyncpg.Connection from the pool
@@ -1152,7 +1388,20 @@ class PostgreSQLBackend:
                 acquire timed out (an unreachable database; charged so the outage
                 can open the breaker)
             TimeoutError: If the pool stayed saturated past the acquire deadline (a
-                capacity signal, re-raised uncharged)
+                capacity signal, re-raised uncharged), or if the acquire deadline
+                cancelled an in-flight dial (an unreachable database, charged)
+
+        Note:
+            A RELEASE-phase failure after a clean body (asyncpg runs the pool's
+            reset callback when the connection goes back to the pool and re-raises
+            if it fails, e.g. against a connection killed by a failover) is
+            charged, logged, and SWALLOWED: the body's work already completed, so
+            propagating it would report a finished operation -- including a
+            COMMITTED write -- as failed and send the caller into a retry that
+            re-runs it. Because the swallow returns normally, a caller running
+            with ``record_breaker=False`` is told about it out of band through the
+            acquire tracker's ``release_failed`` flag, so it does not credit a
+            breaker success that would cancel this charge out.
         """
         # Parameters readonly and allow_write are part of StorageBackend protocol
         # but not used in PostgreSQL implementation (handled via transactions)
@@ -1174,57 +1423,82 @@ class PostgreSQLBackend:
         # pool exhaustion surfaces as a TimeoutError instead of an unbounded
         # hang (asyncpg's Pool.acquire waits forever with timeout=None).
         acquired = False
-        try:
-            async with self._pool.acquire(
-                timeout=settings.storage.postgresql_pool_timeout_s,
-            ) as conn:
-                acquired = True
-                try:
-                    yield conn
-                    if record_breaker:
-                        await self.circuit_breaker.record_success()
-                except ControlFlowError:
-                    # Normal control flow (e.g. a client-input validation error raised
-                    # inside the connection scope), NOT a database fault: do not record
-                    # a breaker failure, or a client repeatedly sending invalid input
-                    # opens the breaker and rejects every caller's healthy requests.
-                    raise
-                except Exception:
-                    # Breaker only, no failed-query metrics: the execute_read wrapper
-                    # counts body faults into metrics.failed_queries itself, so
-                    # recording them here as well would double-count each fault.
-                    if record_breaker:
-                        await self.circuit_breaker.record_failure()
-                    raise
-        except ControlFlowError:
-            # Already exempted by the inner arm; never a database fault, so the
-            # acquire-phase arms below must not observe it either.
-            raise
-        except ConnectionEstablishmentTimeoutError as e:
-            # Dialing a NEW connection for this acquire timed out: an unreachable
-            # (blackholed) database, a genuine fault that must charge the breaker --
-            # or the outage never opens it and every request repeats the full
-            # connect stall. Typed by the pool's connect callable, so no
-            # elapsed-time inference is needed.
-            if not acquired and record_breaker:
-                await self._record_charged_failure(e)
-            raise
-        except TimeoutError:
-            # With establishment timeouts typed above, a bare acquire TimeoutError
-            # means the pool stayed saturated for the full acquire budget: a
-            # capacity signal, NOT a database fault -- re-raise uncharged. A body
-            # TimeoutError (acquired) was already accounted for by the inner arm.
-            raise
-        except Exception as e:
-            # Acquire-phase connection failure (refused port, DNS resolution,
-            # connection reset, setup-callback failure): a genuine database fault
-            # that charges the breaker, mirroring execute_write's generic arm. The
-            # acquired guard excludes body failures the inner arms already
-            # accounted for; record_breaker=False (the execute_write-driven
-            # acquire) leaves accounting to that caller so nothing double-charges.
-            if not acquired and record_breaker:
-                await self._record_charged_failure(e)
-            raise
+        body_ok = False
+        with _track_acquire() as acquire_state:
+            try:
+                async with self._pool.acquire(
+                    timeout=settings.storage.postgresql_pool_timeout_s,
+                ) as conn:
+                    acquired = True
+                    try:
+                        yield conn
+                        body_ok = True
+                    except ControlFlowError:
+                        # Normal control flow (e.g. a client-input validation error raised
+                        # inside the connection scope), NOT a database fault: do not record
+                        # a breaker failure, or a client repeatedly sending invalid input
+                        # opens the breaker and rejects every caller's healthy requests.
+                        raise
+                    except Exception as e:
+                        # The single accounting site for a body fault: execute_read
+                        # deliberately records nothing itself, so counting the fault
+                        # here keeps failed_queries, last_error and last_error_time
+                        # moving together with the breaker charge instead of leaving
+                        # a failure count with no diagnostic message.
+                        if record_breaker:
+                            await self._record_charged_failure(e)
+                        raise
+                # Success is credited only HERE, after the pooled connection has
+                # actually been released: asyncpg runs the reset callback during
+                # release and re-raises on failure, so crediting inside the acquire
+                # block let a connection dying mid-request move the health counter
+                # the WRONG way (a success, which also decrements accumulated
+                # failures) while the caller still received an error.
+                if body_ok and record_breaker:
+                    await self.circuit_breaker.record_success()
+            except ControlFlowError:
+                # Already exempted by the inner arm; never a database fault, so the
+                # acquire-phase arms below must not observe it either.
+                raise
+            except ConnectionEstablishmentTimeoutError as e:
+                # Dialing a NEW connection for this acquire timed out: an unreachable
+                # (blackholed) database, a genuine fault that must charge the breaker --
+                # or the outage never opens it and every request repeats the full
+                # connect stall. Typed by the pool's connect callable, so no
+                # elapsed-time inference is needed.
+                if not acquired and record_breaker:
+                    await self._record_charged_failure(e)
+                raise
+            except TimeoutError as e:
+                # A bare acquire TimeoutError is saturation ONLY when no dial was
+                # interrupted: if the acquire deadline cancelled an in-flight dial,
+                # asyncpg destroyed the typed establishment signal and this is an
+                # unreachable database, which must charge or the outage never opens
+                # the breaker. A release-phase timeout after a clean body is a
+                # genuine fault too (and is swallowed below).
+                if body_ok or (not acquired and acquire_state.interrupted and record_breaker):
+                    await self._record_charged_failure(e)
+                if body_ok:
+                    acquire_state.release_failed = True
+                    self._log_swallowed_release_failure(e)
+                    return
+                raise
+            except Exception as e:
+                # Acquire-phase connection failure (refused port, DNS resolution,
+                # connection reset, setup-callback failure): a genuine database fault
+                # that charges the breaker, mirroring execute_write's generic arm.
+                # record_breaker=False (the execute_write-driven acquire) leaves
+                # acquire/body accounting to that caller so nothing double-charges.
+                # A release-phase failure after a clean body is charged
+                # UNCONDITIONALLY: the caller cannot account for it, because it is
+                # swallowed here and never reaches the caller's arms.
+                if body_ok or (not acquired and record_breaker):
+                    await self._record_charged_failure(e)
+                if body_ok:
+                    acquire_state.release_failed = True
+                    self._log_swallowed_release_failure(e)
+                    return
+                raise
 
     async def _validate_connection_state(self, conn: asyncpg.Connection) -> bool:
         """Validate connection is in healthy state before critical operations.
@@ -1249,6 +1523,23 @@ class PostgreSQLBackend:
             # result, so per-attempt accounting would over-count under retries.
             logger.warning(f'Connection validation failed: {e}')
             return False
+
+    @staticmethod
+    def _log_swallowed_release_failure(error: BaseException) -> None:
+        """Log a release-phase failure that follows a completed operation.
+
+        Returning the pooled connection runs the pool's reset callback, and
+        asyncpg terminates the connection and re-raises when that fails (a
+        failover, a server restart, ``pg_terminate_backend``, a partition). The
+        body's work has ALREADY completed at that point -- including a COMMITted
+        transaction -- so the exception is charged and swallowed rather than
+        propagated: reporting a landed write as failed sends the caller into a
+        retry that re-runs it.
+
+        Args:
+            error: The release-phase failure being swallowed.
+        """
+        logger.warning(f'Releasing the pooled connection failed after the operation completed: {error}')
 
     async def _record_charged_failure(self, error: BaseException) -> None:
         """Record one charged failure: the breaker charge plus the failure metrics.
@@ -1341,8 +1632,9 @@ class PostgreSQLBackend:
                 established within the connect timeout during the acquire (charged --
                 an unreachable database must be able to open the breaker)
             TimeoutError: If the connection pool stays saturated past the acquire
-                deadline (re-raised uncharged) or a statement exceeds the pool
-                command_timeout (charged)
+                deadline (re-raised uncharged), if the acquire deadline cancelled an
+                in-flight dial (an unreachable database, charged), or if a statement
+                exceeds the pool command_timeout (charged)
 
         Note:
             PostgreSQLBackend expects ASYNC callables (not sync). The operation is executed
@@ -1368,110 +1660,134 @@ class PostgreSQLBackend:
             # statement ran on a live connection and exceeded the pool's
             # command_timeout).
             acquired = False
-            try:
-                async with self.get_connection(readonly=False, record_breaker=False) as conn:
-                    acquired = True
-                    # Validate connection state before critical operations
-                    if validate_connection and not await self._validate_connection_state(conn):
-                        raise asyncpg.exceptions.ConnectionDoesNotExistError(
-                            'Connection validation failed - connection may be corrupted',
-                        )
+            # Track the dials this attempt makes so a bare acquire TimeoutError
+            # whose deadline cancelled an in-flight dial is charged as the
+            # unreachable database it is, instead of being mistaken for pool
+            # saturation. A fresh tracker per attempt keeps the observation
+            # scoped to the attempt that raised.
+            with _track_acquire() as acquire_state:
+                try:
+                    async with self.get_connection(readonly=False, record_breaker=False) as conn:
+                        acquired = True
+                        # Validate connection state before critical operations
+                        if validate_connection and not await self._validate_connection_state(conn):
+                            raise asyncpg.exceptions.ConnectionDoesNotExistError(
+                                'Connection validation failed - connection may be corrupted',
+                            )
 
-                    async with conn.transaction():
-                        # Cast to async callable since PostgreSQLBackend only uses async operations
-                        async_operation = cast(Callable[..., Awaitable[T]], operation)
-                        result = await async_operation(conn, *args, **kwargs)
-                        self.metrics.total_queries += 1
+                        async with conn.transaction():
+                            # Cast to async callable since PostgreSQLBackend only uses async operations
+                            async_operation = cast(Callable[..., Awaitable[T]], operation)
+                            result = await async_operation(conn, *args, **kwargs)
+                            self.metrics.total_queries += 1
                     # Record exactly ONE breaker success per logical write, AFTER the
-                    # transaction commits (record_breaker=False above suppresses the
-                    # per-attempt accounting so a retried write is not counted N times).
-                    await self.circuit_breaker.record_success()
+                    # transaction commits AND the pooled connection is released
+                    # (record_breaker=False above suppresses the per-attempt accounting
+                    # so a retried write is not counted N times). Crediting inside the
+                    # connection scope would credit a success for a connection that
+                    # then died on release; get_connection charges that release fault
+                    # itself and swallows it, since the write already committed.
+                    #
+                    # A SWALLOWED release fault still returns normally here, so the
+                    # tracker flag is the only way this arm can see it. Crediting a
+                    # success for it would cancel get_connection's charge out (in the
+                    # HEALTHY state record_success also decrements accumulated
+                    # failures), leaving a net breaker delta of zero for a connection
+                    # that just died -- the same wrong-direction accounting the credit
+                    # was moved out of the acquire block to prevent. The write itself
+                    # still succeeded, so the result is returned either way.
+                    if not acquire_state.release_failed:
+                        await self.circuit_breaker.record_success()
                     return result
 
-            except asyncpg.exceptions.TransactionRollbackError as e:
-                # Transaction-rollback failure (SQLSTATE class 40: serialization_failure
-                # 40001, deadlock_detected 40P01, and siblings). PostgreSQL aborted one
-                # transaction to break a serialization cycle or a deadlock; the loser is
-                # expected to retry, and the retry succeeds once the competing transaction
-                # commits. Catching the class-40 base (not only SerializationError) means a
-                # deadlock -- e.g. two atomic update batches locking the same rows in
-                # opposite order -- retries here instead of falling through to the generic
-                # arm and charging the breaker for a routine, self-clearing lock cycle.
-                last_error = e
-                await self._backoff_before_next_attempt(
-                    attempt, 'Transaction rollback (serialization/deadlock) on write',
-                )
+                except asyncpg.exceptions.TransactionRollbackError as e:
+                    # Transaction-rollback failure (SQLSTATE class 40: serialization_failure
+                    # 40001, deadlock_detected 40P01, and siblings). PostgreSQL aborted one
+                    # transaction to break a serialization cycle or a deadlock; the loser is
+                    # expected to retry, and the retry succeeds once the competing transaction
+                    # commits. Catching the class-40 base (not only SerializationError) means a
+                    # deadlock -- e.g. two atomic update batches locking the same rows in
+                    # opposite order -- retries here instead of falling through to the generic
+                    # arm and charging the breaker for a routine, self-clearing lock cycle.
+                    last_error = e
+                    await self._backoff_before_next_attempt(
+                        attempt, 'Transaction rollback (serialization/deadlock) on write',
+                    )
 
-            except asyncpg.exceptions.ConnectionDoesNotExistError as e:
-                # Connection error (including a setup-callback timeout re-raised by
-                # _setup_pool_connection) - retry
-                last_error = e
-                await self._backoff_before_next_attempt(attempt, 'Connection error on write')
+                except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+                    # Connection error (including a setup-callback timeout re-raised by
+                    # _setup_pool_connection) - retry
+                    last_error = e
+                    await self._backoff_before_next_attempt(attempt, 'Connection error on write')
 
-            except asyncpg.exceptions.InternalClientError as e:
-                # Protocol state corruption - retry with fresh connection
-                last_error = e
-                await self._backoff_before_next_attempt(attempt, f'Protocol state error on write: {e}')
+                except asyncpg.exceptions.InternalClientError as e:
+                    # Protocol state corruption - retry with fresh connection
+                    last_error = e
+                    await self._backoff_before_next_attempt(attempt, f'Protocol state error on write: {e}')
 
-            except asyncpg.exceptions.QueryCanceledError as e:
-                # Statement / lock-wait timeout (SQLSTATE 57014): PostgreSQL
-                # cancelled the statement after it exceeded statement_timeout
-                # (~0.9 * POSTGRESQL_COMMAND_TIMEOUT_S, set in _setup_pool_connection).
-                # Retry on a fresh connection with bounded backoff. This helps
-                # only a TRANSIENT lock-WAIT that has since cleared; a write
-                # fundamentally slower than the ceiling (e.g. fp32 in-transaction
-                # HNSW maintenance with ENABLE_EMBEDDING_COMPRESSION=false) needs
-                # a higher POSTGRESQL_COMMAND_TIMEOUT_S or compression left ON.
-                # Safe to retry: every write operation reaching execute_write is
-                # idempotent (deduplicating store / keyed update) and all
-                # generation completed outside the transaction.
-                last_error = e
-                await self._backoff_before_next_attempt(attempt, f'Statement timeout on write: {e}')
+                except asyncpg.exceptions.QueryCanceledError as e:
+                    # Statement / lock-wait timeout (SQLSTATE 57014): PostgreSQL
+                    # cancelled the statement after it exceeded statement_timeout
+                    # (~0.9 * POSTGRESQL_COMMAND_TIMEOUT_S, set in _setup_pool_connection).
+                    # Retry on a fresh connection with bounded backoff. This helps
+                    # only a TRANSIENT lock-WAIT that has since cleared; a write
+                    # fundamentally slower than the ceiling (e.g. fp32 in-transaction
+                    # HNSW maintenance with ENABLE_EMBEDDING_COMPRESSION=false) needs
+                    # a higher POSTGRESQL_COMMAND_TIMEOUT_S or compression left ON.
+                    # Safe to retry: every write operation reaching execute_write is
+                    # idempotent (deduplicating store / keyed update) and all
+                    # generation completed outside the transaction.
+                    last_error = e
+                    await self._backoff_before_next_attempt(attempt, f'Statement timeout on write: {e}')
 
-            except ConnectionEstablishmentTimeoutError as e:
-                # Dialing a NEW connection for the acquire timed out (typed by the
-                # pool's connect callable): an unreachable, blackholed database -- a
-                # genuine fault that must charge the breaker, or the outage never
-                # opens it and every request repeats the full connect stall. Fail
-                # fast with exactly one charged failure (get_connection left it
-                # uncharged under record_breaker=False).
-                await self._record_charged_failure(e)
-                raise
-
-            except TimeoutError as e:
-                # Not acquired -> with establishment timeouts typed above, a bare
-                # acquire TimeoutError means the pool stayed saturated for
-                # POSTGRESQL_POOL_TIMEOUT_S: a capacity signal, NOT a database
-                # fault -- re-raise WITHOUT charging, matching
-                # get_connection/begin_transaction. Acquired -> the statement
-                # exceeded the pool command_timeout (a genuine operation stall the
-                # server-side statement_timeout did not cancel first); charge
-                # exactly one breaker failure, as before.
-                if not acquired:
+                except ConnectionEstablishmentTimeoutError as e:
+                    # Dialing a NEW connection for the acquire timed out (typed by the
+                    # pool's connect callable): an unreachable, blackholed database -- a
+                    # genuine fault that must charge the breaker, or the outage never
+                    # opens it and every request repeats the full connect stall. Fail
+                    # fast with exactly one charged failure (get_connection left it
+                    # uncharged under record_breaker=False).
+                    await self._record_charged_failure(e)
                     raise
-                await self._record_charged_failure(e)
-                raise
 
-            except Exception as e:
-                # A circuit-breaker rejection raised by get_connection mid-loop (e.g.
-                # a concurrent writer opened the breaker after the up-front check) is
-                # NOT a write attempt. Recording a breaker failure for it would reset
-                # last_failure_time and perpetuate the open state (self-lockout), so
-                # re-raise that control-flow RuntimeError WITHOUT recording -- is_open()
-                # matches get_connection's own recovery-aware gate.
-                if isinstance(e, RuntimeError) and await self.circuit_breaker.is_open():
+                except TimeoutError as e:
+                    # Not acquired, no dial interrupted -> with establishment timeouts
+                    # typed above, a bare acquire TimeoutError means the pool stayed
+                    # saturated for POSTGRESQL_POOL_TIMEOUT_S: a capacity signal, NOT a
+                    # database fault -- re-raise WITHOUT charging, matching
+                    # get_connection/begin_transaction. Not acquired but a dial WAS
+                    # interrupted -> the acquire deadline cancelled the dial, so asyncpg
+                    # never constructed the typed establishment error: this is an
+                    # unreachable database and must charge, or a total outage keeps the
+                    # breaker closed and every request repeats the full stall. Acquired
+                    # -> the statement exceeded the pool command_timeout (a genuine
+                    # operation stall the server-side statement_timeout did not cancel
+                    # first); charge exactly one breaker failure, as before.
+                    if not acquired and not acquire_state.interrupted:
+                        raise
+                    await self._record_charged_failure(e)
                     raise
-                # Control-flow signals (optimistic-concurrency VersionConflictError,
-                # post-dedup EmbeddingsReconcileRequiredError) are normal write contention,
-                # NOT a database fault: roll back and propagate WITHOUT tripping the breaker,
-                # mirroring begin_transaction's exemption (else routine contention could open
-                # the breaker and lock out writes).
-                if isinstance(e, ControlFlowError):
+
+                except Exception as e:
+                    # A circuit-breaker rejection raised by get_connection mid-loop (e.g.
+                    # a concurrent writer opened the breaker after the up-front check) is
+                    # NOT a write attempt. Recording a breaker failure for it would reset
+                    # last_failure_time and perpetuate the open state (self-lockout), so
+                    # re-raise that control-flow RuntimeError WITHOUT recording -- is_open()
+                    # matches get_connection's own recovery-aware gate.
+                    if isinstance(e, RuntimeError) and await self.circuit_breaker.is_open():
+                        raise
+                    # Control-flow signals (optimistic-concurrency VersionConflictError,
+                    # post-dedup EmbeddingsReconcileRequiredError) are normal write contention,
+                    # NOT a database fault: roll back and propagate WITHOUT tripping the breaker,
+                    # mirroring begin_transaction's exemption (else routine contention could open
+                    # the breaker and lock out writes).
+                    if isinstance(e, ControlFlowError):
+                        raise
+                    # Non-retryable write failure -- record the single breaker failure for
+                    # this logical write (get_connection's per-attempt accounting is off).
+                    await self._record_charged_failure(e)
                     raise
-                # Non-retryable write failure -- record the single breaker failure for
-                # this logical write (get_connection's per-attempt accounting is off).
-                await self._record_charged_failure(e)
-                raise
 
         # Max retries exceeded -- record exactly one breaker failure for the write.
         final_error = last_error if last_error is not None else Exception('Max retries exceeded for write operation')
@@ -1512,33 +1828,25 @@ class PostgreSQLBackend:
         Returns:
             Result of the operation (type preserved via TypeVar)
 
-        Raises:
-            ControlFlowError: Re-raised from the read callable without counting a
-                failed query (client-input validation is normal control flow, not a
-                database fault)
-
         Note:
             PostgreSQLBackend expects ASYNC callables (not sync). The operation is executed
             with await.
+
+            Every fault raised by the read callable propagates unchanged; failure
+            ACCOUNTING belongs to the enclosing ``get_connection`` body arms, which
+            exempt ControlFlowError (client-input validation is normal control flow,
+            not a database fault) and route a genuine fault through
+            ``_record_charged_failure`` so failed_queries, last_error and
+            last_error_time move together with the breaker charge. Counting a fault
+            here as well would double-count it, and counting it here INSTEAD would
+            report a failure count with no diagnostic message.
         """
         async with self.get_connection(readonly=True) as conn:
-            try:
-                # Cast to async callable since PostgreSQLBackend only uses async operations
-                async_operation = cast(Callable[..., Awaitable[T]], operation)
-                result = await async_operation(conn, *args, **kwargs)
-                self.metrics.total_queries += 1
-                return result
-            except ControlFlowError:
-                # A client-input validation rejection raised inside a read callable
-                # (e.g. an invalid metadata filter) is normal control flow, not a
-                # database fault: keep it out of failed_queries so the operator-facing
-                # health metric reflects database health only, mirroring
-                # execute_write's exemption. get_connection already exempts it from
-                # circuit-breaker accounting.
-                raise
-            except Exception:
-                self.metrics.failed_queries += 1
-                raise
+            # Cast to async callable since PostgreSQLBackend only uses async operations
+            async_operation = cast(Callable[..., Awaitable[T]], operation)
+            result = await async_operation(conn, *args, **kwargs)
+            self.metrics.total_queries += 1
+            return result
 
     @asynccontextmanager
     async def begin_transaction(self) -> AsyncGenerator[PostgreSQLTransactionContext, None]:
@@ -1567,7 +1875,16 @@ class PostgreSQLBackend:
                 acquire timed out (an unreachable database; charged so the outage
                 can open the breaker)
             TimeoutError: If the pool stayed saturated past the acquire deadline (a
-                capacity signal, re-raised uncharged)
+                capacity signal, re-raised uncharged), or if the acquire deadline
+                cancelled an in-flight dial (an unreachable database, charged)
+
+        Note:
+            A RELEASE-phase failure after a COMMITTED transaction (asyncpg runs the
+            pool's reset callback when the connection goes back to the pool and
+            re-raises if it fails, e.g. against a connection killed by a failover)
+            is charged, logged, and SWALLOWED: the write already landed, so
+            propagating it would report a committed store as failed and send the
+            caller into a retry that writes it again.
 
         Example:
             async with backend.begin_transaction() as txn:
@@ -1602,83 +1919,112 @@ class PostgreSQLBackend:
         # only AFTER the inner context exits cleanly (COMMIT succeeded); a COMMIT failure
         # now flows through the same except as a body failure.
         acquired = False
-        try:
-            async with self._pool.acquire(
-                timeout=settings.storage.postgresql_pool_timeout_s,
-            ) as conn:
-                acquired = True
-                # Create transaction context
-                txn_context = PostgreSQLTransactionContext(_connection=conn)
+        committed = False
+        with _track_acquire() as acquire_state:
+            try:
+                async with self._pool.acquire(
+                    timeout=settings.storage.postgresql_pool_timeout_s,
+                ) as conn:
+                    acquired = True
+                    # Create transaction context
+                    txn_context = PostgreSQLTransactionContext(_connection=conn)
 
-                try:
-                    async with conn.transaction():
-                        yield txn_context
-                        # Body succeeded; asyncpg COMMITs on exiting this inner context.
-                    # Reaching here means the COMMIT itself also succeeded.
+                    try:
+                        async with conn.transaction():
+                            yield txn_context
+                            # Body succeeded; asyncpg COMMITs on exiting this inner context.
+                        # Reaching here means the COMMIT itself also succeeded.
+                        committed = True
+
+                    except Exception as e:
+                        # Rolled back automatically on a body error, OR the COMMIT failed on exit.
+                        if isinstance(e, ControlFlowError):
+                            # Normal control flow (optimistic-concurrency conflict / post-dedup
+                            # embedding reconciliation), NOT a database fault: rolled back
+                            # automatically, but do NOT record a circuit-breaker failure, so
+                            # normal write contention cannot open the breaker.
+                            raise
+                        if isinstance(e, asyncpg.exceptions.TransactionRollbackError):
+                            # PostgreSQL aborted this transaction to break a deadlock or a
+                            # serialization cycle (SQLSTATE class 40) -- routine, self-clearing
+                            # write contention, not a database fault. The tool layer classifies
+                            # these as retryable and re-runs the transaction, so charging the
+                            # breaker per aborted attempt would let normal contention open it
+                            # and reject every caller's healthy requests. Rolled back
+                            # automatically; propagate uncharged for the caller to retry.
+                            logger.warning(
+                                f'Transaction rolled back by the server (deadlock/serialization), retry expected: {e}',
+                            )
+                            raise
+                        logger.warning(f'Transaction failed or commit failed, rolling back: {e}')
+                        # Charged failure with metrics: no execute_read/execute_write
+                        # wrapper observes transactional flows, so this is the only
+                        # site that can count the fault into failed_queries/last_error.
+                        await self._record_charged_failure(e)
+                        raise
+                # Success is credited only HERE, after the pooled connection has
+                # actually been released: asyncpg runs the reset callback during
+                # release and re-raises on failure, so crediting inside the acquire
+                # block let a connection dying mid-request move the health counter
+                # the WRONG way (a success, which also decrements accumulated
+                # failures) while the caller still received an error.
+                if committed:
                     await self.circuit_breaker.record_success()
                     logger.debug('Transaction committed successfully')
-
-                except Exception as e:
-                    # Rolled back automatically on a body error, OR the COMMIT failed on exit.
-                    if isinstance(e, ControlFlowError):
-                        # Normal control flow (optimistic-concurrency conflict / post-dedup
-                        # embedding reconciliation), NOT a database fault: rolled back
-                        # automatically, but do NOT record a circuit-breaker failure, so
-                        # normal write contention cannot open the breaker.
-                        raise
-                    if isinstance(e, asyncpg.exceptions.TransactionRollbackError):
-                        # PostgreSQL aborted this transaction to break a deadlock or a
-                        # serialization cycle (SQLSTATE class 40) -- routine, self-clearing
-                        # write contention, not a database fault. The tool layer classifies
-                        # these as retryable and re-runs the transaction, so charging the
-                        # breaker per aborted attempt would let normal contention open it
-                        # and reject every caller's healthy requests. Rolled back
-                        # automatically; propagate uncharged for the caller to retry.
-                        logger.warning(
-                            f'Transaction rolled back by the server (deadlock/serialization), retry expected: {e}',
-                        )
-                        raise
-                    logger.warning(f'Transaction failed or commit failed, rolling back: {e}')
-                    # Charged failure with metrics: no execute_read/execute_write
-                    # wrapper observes transactional flows, so this is the only
-                    # site that can count the fault into failed_queries/last_error.
+            except ControlFlowError:
+                # Already exempted by the inner arm; never a database fault, so the
+                # acquire-phase arms below must not observe it either.
+                raise
+            except ConnectionEstablishmentTimeoutError as e:
+                # Dialing a NEW connection for this acquire timed out: an unreachable
+                # (blackholed) database, a genuine fault that must charge the breaker
+                # -- mirroring get_connection and execute_write, so transactional
+                # writes can also open the breaker during a blackholed outage. Typed
+                # by the pool's connect callable, so no elapsed-time inference is
+                # needed.
+                if not acquired:
                     await self._record_charged_failure(e)
-                    raise
-        except ControlFlowError:
-            # Already exempted by the inner arm; never a database fault, so the
-            # acquire-phase arms below must not observe it either.
-            raise
-        except ConnectionEstablishmentTimeoutError as e:
-            # Dialing a NEW connection for this acquire timed out: an unreachable
-            # (blackholed) database, a genuine fault that must charge the breaker
-            # -- mirroring get_connection and execute_write, so transactional
-            # writes can also open the breaker during a blackholed outage. Typed
-            # by the pool's connect callable, so no elapsed-time inference is
-            # needed.
-            if not acquired:
-                await self._record_charged_failure(e)
-            raise
-        except TimeoutError:
-            # With establishment timeouts typed above, a bare acquire TimeoutError
-            # means the pool stayed saturated for the full acquire budget: a
-            # capacity signal, NOT a database fault -- re-raise uncharged. A body
-            # TimeoutError (acquired) was already accounted for by the inner arm.
-            raise
-        except Exception as e:
-            # Acquire-phase connection failure (refused port, DNS resolution,
-            # connection reset, setup-callback failure): a genuine database fault
-            # that charges the breaker, mirroring execute_write's generic arm. The
-            # acquired guard excludes body failures the inner arms already
-            # accounted for.
-            if not acquired:
-                await self._record_charged_failure(e)
-            raise
+                raise
+            except TimeoutError as e:
+                # A bare acquire TimeoutError is saturation ONLY when no dial was
+                # interrupted: if the acquire deadline cancelled an in-flight dial,
+                # asyncpg destroyed the typed establishment signal and this is an
+                # unreachable database, which must charge or the outage never opens
+                # the breaker. A release-phase timeout after a COMMITTED transaction
+                # is a genuine fault too (and is swallowed below).
+                if committed or (not acquired and acquire_state.interrupted):
+                    await self._record_charged_failure(e)
+                if committed:
+                    self._log_swallowed_release_failure(e)
+                    return
+                raise
+            except Exception as e:
+                # Acquire-phase connection failure (refused port, DNS resolution,
+                # connection reset, setup-callback failure): a genuine database fault
+                # that charges the breaker, mirroring execute_write's generic arm. The
+                # acquired guard excludes body failures the inner arms already
+                # accounted for; a release-phase failure after a COMMITTED transaction
+                # is charged here because no other arm can observe it.
+                if not acquired or committed:
+                    await self._record_charged_failure(e)
+                if committed:
+                    self._log_swallowed_release_failure(e)
+                    return
+                raise
 
     def get_metrics(self) -> dict[str, Any]:
         """Get backend health metrics and statistics.
 
         Returns:
-            Dictionary with metrics including pool stats and circuit breaker state
+            Mapping published to clients as ``connection_metrics``. ``backend_type``
+            and ``pool_size`` are the two keys the shared cross-backend contract
+            guarantees; here ``pool_size`` is the pool's CURRENT size and is
+            therefore present only once the pool exists (before initialize(), and
+            after shutdown, there is no pool to size). ``pool_idle``,
+            ``pool_min_size`` and ``pool_max_size`` share that condition, and the
+            pgpool / session-pooler keys appear only once their detection ran. The
+            rest are always present. Every key is declared in
+            ``ConnectionMetricsDict``, which drives the advertised outputSchema.
         """
         pool_metrics: dict[str, Any] = {
             'backend_type': self.backend_type,

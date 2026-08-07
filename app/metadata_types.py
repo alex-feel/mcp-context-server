@@ -56,6 +56,24 @@ MAX_IN_LIST_MEMBERS = 100
 # channel on both backends.
 MAX_METADATA_BIND_PARAMS = 30_000
 
+# Aggregate budget for the SQL TEXT one built metadata WHERE clause may occupy,
+# enforced incrementally by MetadataQueryBuilder alongside MAX_METADATA_BIND_PARAMS.
+# Bind COUNT and statement SIZE are independent dimensions: on PostgreSQL a single
+# bind can carry a multi-kilobyte comparison expression (the exact/double numeric
+# discriminator inlines two long decimal literals), and a metadata key path is
+# repeated ~10 times inside one numeric comparison, so a request that satisfies every
+# per-dimension cap AND the bind budget can still assemble a statement orders of
+# magnitude larger than its own payload -- a cross-backend amplification that costs
+# event-loop time to build and full parse+plan time on every call, because a statement
+# this large also exceeds asyncpg's cacheable-statement size. The largest legal
+# combination under the current caps (100 filters times 100 float IN members, with
+# ordinary short keys) builds roughly 0.6 MB, so this budget leaves meaningful headroom
+# for longer key paths while bounding the pathological cases (very long key paths, or a
+# future expression change that grows the per-filter SQL). Exceeding it raises
+# ValueError from the builder, which every construction site routes into the
+# structured, breaker-exempt validation-error channel on both backends.
+MAX_METADATA_CLAUSE_CHARS = 1_000_000
+
 
 def reject_out_of_int64(
     value: str | float | bool | list[str | int | float | bool] | None,

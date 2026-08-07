@@ -15,10 +15,21 @@ permissions:
 jobs:
   pre-commit:
     name: Run Pre-Commit Checks
+    # Skip only the release bot's own version-bump PR, and only when the PR was
+    # opened by the repository owner. Release Please runs with a user PAT, so its
+    # PRs are authored by the owner account; if that token is ever replaced with a
+    # GitHub App or a different account, this comparison stops matching and full CI
+    # simply runs on the bump PR (fail-closed).
+    #
+    # There is deliberately NO equivalent skip on the push-to-main event. The only
+    # value available there is the commit message, which a contributor controls
+    # through the fork branch name, the PR title, or a squashed commit body,
+    # depending on the repository's merge-message settings -- so no string match on
+    # it can authenticate the release bot. Running full lint and security on the
+    # merge commit is cheap and closes that hole outright.
     if: >-
       ${{
-        ! startsWith(github.head_ref, 'release-please--branches--')
-        && ! (github.event_name == 'push' && contains(github.event.head_commit.message, 'release-please--branches--main'))
+        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.user.login == github.repository_owner)
       }}
     runs-on: ubuntu-latest
 
@@ -52,10 +63,21 @@ jobs:
 
   mcp:
     name: MCP Checks
+    # Skip only the release bot's own version-bump PR, and only when the PR was
+    # opened by the repository owner. Release Please runs with a user PAT, so its
+    # PRs are authored by the owner account; if that token is ever replaced with a
+    # GitHub App or a different account, this comparison stops matching and full CI
+    # simply runs on the bump PR (fail-closed).
+    #
+    # There is deliberately NO equivalent skip on the push-to-main event. The only
+    # value available there is the commit message, which a contributor controls
+    # through the fork branch name, the PR title, or a squashed commit body,
+    # depending on the repository's merge-message settings -- so no string match on
+    # it can authenticate the release bot. Running full lint and security on the
+    # merge commit is cheap and closes that hole outright.
     if: >-
       ${{
-        ! startsWith(github.head_ref, 'release-please--branches--')
-        && ! (github.event_name == 'push' && contains(github.event.head_commit.message, 'release-please--branches--main'))
+        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.user.login == github.repository_owner)
       }}
     runs-on: ubuntu-latest
     env:
@@ -93,10 +115,21 @@ jobs:
 
   security:
     name: Security Scan
+    # Skip only the release bot's own version-bump PR, and only when the PR was
+    # opened by the repository owner. Release Please runs with a user PAT, so its
+    # PRs are authored by the owner account; if that token is ever replaced with a
+    # GitHub App or a different account, this comparison stops matching and full CI
+    # simply runs on the bump PR (fail-closed).
+    #
+    # There is deliberately NO equivalent skip on the push-to-main event. The only
+    # value available there is the commit message, which a contributor controls
+    # through the fork branch name, the PR title, or a squashed commit body,
+    # depending on the repository's merge-message settings -- so no string match on
+    # it can authenticate the release bot. Running full lint and security on the
+    # merge commit is cheap and closes that hole outright.
     if: >-
       ${{
-        ! startsWith(github.head_ref, 'release-please--branches--')
-        && ! (github.event_name == 'push' && contains(github.event.head_commit.message, 'release-please--branches--main'))
+        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.user.login == github.repository_owner)
       }}
     runs-on: ubuntu-latest
 

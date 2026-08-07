@@ -215,3 +215,115 @@ class TestLargeEntryWritePathOffloadNonBlocking:
         finally:
             _set_provider(None)
             get_settings.cache_clear()
+
+
+class TestTotalWorkBounds:
+    """Total node-summary work per store is bounded, not just its concurrency.
+
+    The semaphores cap how many calls run at once and each call carries its own
+    timeout, but neither bounds HOW MANY calls happen. A heading-dense entry
+    therefore issued one model call per qualifying section and held the single
+    summary model for that one store_context request for as long as the section
+    count demanded, with no aggregate deadline to stop it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_node_count_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """More qualifying sections than the cap means exactly cap-many calls."""
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '3')
+        _refresh_shared_settings(monkeypatch)
+        provider = _FakeProvider(value='gist')
+        _set_provider(provider)
+        text = ''.join(f'# Section {i}\nbody {i}\n' for i in range(20))
+        try:
+            rows = await generate_index_nodes_with_timeout(text)
+            assert rows is not None
+            assert len(rows) == 3
+            assert provider.calls == 3
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_cap_prefers_shallowest_then_longest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the cap bites, the structurally significant sections survive."""
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '1')
+        _refresh_shared_settings(monkeypatch)
+        _set_provider(_FakeProvider(value='gist'))
+        # One level-1 section containing a level-2 subsection: the parent is both
+        # shallower and longer, so it is the one that keeps its summary.
+        text = '# Parent\nparent body text\n## Child\nchild body\n'
+        try:
+            rows = await generate_index_nodes_with_timeout(text)
+            assert rows is not None
+            assert len(rows) == 1
+            assert rows[0].level == 1
+            assert rows[0].title == 'Parent'
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_ineligible_sections_never_become_tasks(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sections below the minimum length are filtered out before the fan-out.
+
+        Materializing a task per heading only to return None immediately is pure
+        overhead on a document with very many tiny headings.
+        """
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '10000')
+        _refresh_shared_settings(monkeypatch)
+        provider = _FakeProvider(value='gist')
+        _set_provider(provider)
+        text = ''.join(f'# Section {i}\nbody\n' for i in range(50))
+        try:
+            rows = await generate_index_nodes_with_timeout(text)
+            # Nothing qualified: an empty list legitimately clears stale rows.
+            assert rows == []
+            assert provider.calls == 0
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_aggregate_deadline_stops_the_pass(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An expired aggregate budget stops further chunks and keeps what was produced.
+
+        The per-node timeout bounds ONE call; their sum was unbounded, so a
+        pathological entry could stretch a single store indefinitely.
+        """
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT', '4')
+        _refresh_shared_settings(monkeypatch)
+        provider = _FakeProvider(value='gist')
+        _set_provider(provider)
+        text = ''.join(f'# Section {i}\nbody {i}\n' for i in range(80))
+
+        # Chunk size is max_concurrent * 4 == 16, so the first chunk completes and
+        # the clock then jumps past the budget before the second chunk starts.
+        ticks = iter([0.0, 0.0, 10_000.0])
+
+        def fake_monotonic() -> float:
+            try:
+                return next(ticks)
+            except StopIteration:
+                return 10_000.0
+
+        try:
+            with patch('app.tools._shared.time.monotonic', fake_monotonic):
+                rows = await generate_index_nodes_with_timeout(text)
+            assert rows is not None
+            assert len(rows) == 16
+            assert provider.calls == 16
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()

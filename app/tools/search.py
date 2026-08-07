@@ -217,7 +217,11 @@ def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> 
     The uniform error-path stats shape under ``explain_query``: zeroed counters plus
     the always-present ``backend`` key (the active storage backend type), so a
     client sees the same stats keys whether the search executed or failed
-    validation. ``include_embedding_ms`` adds the semantic shape's
+    validation. ``query_plan`` is included as an explicit ``None``: no plan exists
+    for a query that never ran, but omitting the key entirely would break the very
+    uniformity this shape promises and make the documented
+    ``stats['query_plan']`` access raise ``KeyError`` on the rejection path.
+    ``include_embedding_ms`` adds the semantic shape's
     ``embedding_generation_ms`` counter (see ``HybridSemanticStatsDict``).
 
     Args:
@@ -231,6 +235,7 @@ def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> 
         'filters_applied': 0,
         'rows_returned': 0,
         'backend': settings.storage.backend_type,
+        'query_plan': None,
     }
     if include_embedding_ms:
         stats['embedding_generation_ms'] = 0.0
@@ -1383,11 +1388,11 @@ def _prepare_hybrid_fts_query(
         # crash), so the surviving significant terms are OR-joined for partial-match recall.
         #
         # The match case must NOT pre-sanitize: _transform_query_sqlite('match') re-runs
-        # sanitize_sqlite_fts_terms, and the two passes are NOT idempotent for a token with an
-        # embedded double-quote -- the first pass escapes `ab"cd` into the single phrase
-        # `"ab""cd"`, which _FTS_TOKEN_RE then re-tokenizes into two phrases `"ab" "cd"`, so a
-        # pre-sanitized match query would make hybrid recall diverge from standalone for the
-        # same input. Returning the raw query defers all escaping to the one downstream pass.
+        # sanitize_sqlite_fts_terms over whatever it is handed, so pre-sanitizing here would
+        # send an ALREADY-QUOTED term list through a second wrapping pass. Returning the raw
+        # query keeps exactly one transform between the user's text and MATCH, which is what
+        # guarantees hybrid recall is identical to standalone fts_search_context for the same
+        # input rather than merely similar.
         if not use_or:
             return query, 'match'
         terms = sanitize_sqlite_fts_terms(significant, language)
@@ -1412,26 +1417,29 @@ def _prepare_hybrid_fts_query(
         if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
             sanitized.append(token)
             continue
-        clean = token.replace('-', ' ').strip()
-        if not clean:
-            continue
-        if ' ' in clean:
-            # A hyphenated token becomes a QUOTED PHRASE so its parts keep
-            # ordered-adjacency semantics (websearch_to_tsquery parses "a b"
-            # as a <-> b), matching the SQLite branch where
-            # sanitize_sqlite_fts_terms wraps the same token as the FTS5
-            # phrase literal "a b". Left unquoted, websearch_to_tsquery ANDs
-            # the parts (unordered), so the two backends would return
-            # different recall for the identical hybrid query. The token
-            # itself contains no whitespace (re.findall '\\S+'), so a space
-            # here can only come from the hyphen replacement. Embedded double
-            # quotes are dropped: inside the wrapper they would terminate the
-            # phrase mid-token.
-            phrase_body = clean.replace('"', ' ').strip()
-            if phrase_body:
-                sanitized.append(f'"{phrase_body}"')
-            continue
-        sanitized.append(clean)
+        # SPLIT a bare token on an embedded double quote, exactly as
+        # sanitize_sqlite_fts_terms does, instead of emitting it raw. The fragments are
+        # joined into the server-synthesized ' or ' string below, so an unbalanced quote
+        # passed through verbatim would open a websearch_to_tsquery phrase that swallows
+        # every following OR term into an adjacency phrase -- collapsing hybrid recall to
+        # near zero for ordinary input such as don"t or a pasted KeyError: "foo".
+        for fragment in token.replace('-', ' ').split('"'):
+            clean = fragment.strip()
+            if not clean:
+                continue
+            if ' ' in clean:
+                # A hyphenated fragment becomes a QUOTED PHRASE so its parts keep
+                # ordered-adjacency semantics (websearch_to_tsquery parses "a b"
+                # as a <-> b), matching the SQLite branch where
+                # sanitize_sqlite_fts_terms wraps the same fragment as the FTS5
+                # phrase literal "a b". Left unquoted, websearch_to_tsquery ANDs
+                # the parts (unordered), so the two backends would return
+                # different recall for the identical hybrid query. The token
+                # itself contains no whitespace (re.findall '\\S+'), so a space
+                # here can only come from the hyphen replacement.
+                sanitized.append(f'"{clean}"')
+                continue
+            sanitized.append(clean)
     if not sanitized:
         return query, 'match'
     return ' or '.join(sanitized), 'boolean'  # websearch_to_tsquery 'or' is lowercase

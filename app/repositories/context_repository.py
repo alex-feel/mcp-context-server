@@ -66,6 +66,50 @@ CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, meta
 _ID_CHUNK_SIZE = 900
 
 
+def count_applied_filters(
+    *,
+    thread_id: str | None = None,
+    source: str | None = None,
+    content_type: str | None = None,
+    tags: list[str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    metadata_filter_count: int = 0,
+) -> int:
+    """Count the filters a search actually applied, for the ``filters_applied`` statistic.
+
+    Single source of truth for the tally, shared by the browse path
+    (:meth:`ContextRepository.search_contexts` via
+    :meth:`ContextRepository._build_context_filter_clause`), the FTS repository and both
+    semantic paths (fp32 and compressed), so the identical arguments always report the
+    identical count. Re-implementing the sum per repository is what let ``search_context``
+    report only the metadata filters while its sibling tools reported all of them for the
+    same request, which misleads an operator using ``explain_query`` to verify that a
+    filter took effect.
+
+    Args:
+        thread_id: Thread filter, counted when set.
+        source: Source filter, counted when set.
+        content_type: Content-type filter, counted when set.
+        tags: Tag filter, counted as ONE filter when non-empty (a single OR-ed subquery).
+        start_date: Lower date bound, counted when set.
+        end_date: Upper date bound, counted when set.
+        metadata_filter_count: Number of metadata conditions the query builder emitted
+            (simple equality filters plus advanced operator filters).
+
+    Returns:
+        Total number of applied filter conditions.
+    """
+    return sum([
+        1 if thread_id else 0,
+        1 if source else 0,
+        1 if content_type else 0,
+        1 if tags else 0,
+        1 if start_date else 0,
+        1 if end_date else 0,
+    ]) + metadata_filter_count
+
+
 def _chunk_ids(ids: list[str]) -> list[list[str]]:
     """Split an id list into bounded chunks for per-statement IN (...) binds.
 
@@ -720,9 +764,14 @@ class ContextRepository(BaseRepository):
                 clause, so PostgreSQL ``$n`` positions continue correctly.
 
         Returns:
-            ``(where_sql, params, filter_count, validation_errors)``. When
-            ``validation_errors`` is non-empty the caller MUST short-circuit;
-            ``where_sql``/``params`` are then empty.
+            ``(where_sql, params, filter_count, validation_errors)``, where
+            ``filter_count`` is the TOTAL number of conditions this clause emitted
+            (indexed scalars + date bounds + the tag subquery + the metadata
+            conditions) as counted by :func:`count_applied_filters` -- the same tally
+            the FTS and semantic repositories publish, so ``search_context`` cannot
+            report a different ``filters_applied`` than its sibling search tools for
+            identical arguments. When ``validation_errors`` is non-empty the caller
+            MUST short-circuit; ``where_sql``/``params`` are then empty.
         """
         from app.metadata_types import MetadataFilter
         from app.query_builder import MetadataQueryBuilder
@@ -825,7 +874,16 @@ class ContextRepository(BaseRepository):
             )
             params.extend(normalized_tags)
 
-        return ''.join(clauses), params, metadata_builder.get_filter_count(), validation_errors
+        filter_count = count_applied_filters(
+            thread_id=thread_id,
+            source=source,
+            content_type=content_type,
+            tags=tags,
+            start_date=start_date,
+            end_date=end_date,
+            metadata_filter_count=metadata_builder.get_filter_count(),
+        )
+        return ''.join(clauses), params, filter_count, validation_errors
 
     async def search_contexts(
         self,
@@ -882,8 +940,9 @@ class ContextRepository(BaseRepository):
                     end_date=end_date,
                 )
                 if validation_errors:
-                    # Mirror the success-path stats shape (including 'backend') so a
-                    # validation rejection and a successful search expose the same keys.
+                    # Mirror the success-path stats shape (including 'backend' and an
+                    # explicit null 'query_plan') so a validation rejection and a
+                    # successful search expose the same keys.
                     return [], {
                         'error': 'Metadata filter validation failed',
                         'validation_errors': validation_errors,
@@ -891,6 +950,7 @@ class ContextRepository(BaseRepository):
                         'filters_applied': 0,
                         'rows_returned': 0,
                         'backend': 'sqlite',
+                        'query_plan': None,
                     }
                 query += where_sql
 
@@ -955,8 +1015,9 @@ class ContextRepository(BaseRepository):
                 end_date=end_date,
             )
             if validation_errors:
-                # Mirror the success-path stats shape (including 'backend') so a
-                # validation rejection and a successful search expose the same keys.
+                # Mirror the success-path stats shape (including 'backend' and an
+                # explicit null 'query_plan') so a validation rejection and a
+                # successful search expose the same keys.
                 return [], {
                     'error': 'Metadata filter validation failed',
                     'validation_errors': validation_errors,
@@ -964,6 +1025,7 @@ class ContextRepository(BaseRepository):
                     'filters_applied': 0,
                     'rows_returned': 0,
                     'backend': 'postgresql',
+                    'query_plan': None,
                 }
             query += where_sql
 
@@ -1691,6 +1753,60 @@ class ContextRepository(BaseRepository):
         if txn is not None:
             return await _get_content_type_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_get_content_type_postgresql)
+
+    async def touch_updated_at(
+        self,
+        context_id: str,
+        txn: 'TransactionContext | None' = None,
+    ) -> bool:
+        """Advance an entry's public mutation timestamp without changing any other field.
+
+        ``updated_at`` is auto-managed and PUBLIC: ``get_context_by_ids`` and every
+        search tool return it, and clients key incremental sync and cache
+        invalidation on it. Most update variants advance it as a side effect of the
+        ``context_entries`` write they happen to issue, but a variant that touches
+        only a CHILD table (the tags-only and images-only paths) issues no such
+        write. This is the explicit stamp for those cases, so the contract is
+        enforced by intent rather than by re-writing an unrelated column back to its
+        own value to carry the timestamp along.
+
+        Args:
+            context_id: ID of the context entry.
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
+
+        Returns:
+            True when a row was stamped, False when the entry does not exist.
+        """
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
+
+            def _touch_sqlite(conn: sqlite3.Connection) -> bool:
+                cursor = conn.cursor()
+                query = (
+                    f'UPDATE context_entries SET updated_at = CURRENT_TIMESTAMP '
+                    f'WHERE id = {self._placeholder(1)}'
+                )
+                cursor.execute(query, (context_id,))
+                return cursor.rowcount > 0
+
+            if txn:
+                return await self._run_sqlite_txn(_touch_sqlite, cast(sqlite3.Connection, txn.connection))
+            return await self.backend.execute_write(_touch_sqlite)
+
+        async def _touch_postgresql(conn: 'asyncpg.Connection') -> bool:
+            query = (
+                f'UPDATE context_entries SET updated_at = CURRENT_TIMESTAMP '
+                f'WHERE id = {self._placeholder(1)}::uuid'
+            )
+            result = await conn.execute(query, context_id)
+            return int(result.split()[-1]) > 0 if result else False
+
+        if txn:
+            return await _touch_postgresql(cast('asyncpg.Connection', txn.connection))
+        return await self.backend.execute_write(cast(Any, _touch_postgresql))
 
     async def update_content_type(
         self,

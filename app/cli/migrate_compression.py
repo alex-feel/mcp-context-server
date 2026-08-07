@@ -61,6 +61,7 @@ from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations._pg_ddl import fetch_migration
 from app.migrations._pg_ddl import fetchval_migration
 from app.migrations._pg_ddl import migration_statement_timeout_ms
+from app.migrations.compression import ensure_sqlite_codebook_fingerprint_column
 from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
 from app.pgvector_limits import exceeds_pgvector_index_dim_limit
 from app.settings import AppSettings
@@ -1039,6 +1040,14 @@ async def _execute_compress_sqlite(
             ''',
         )
 
+        # This CLI creates the table itself -- deliberately, because the migration
+        # loader's leading DROP would remove the fp32 source table mid-stream -- so
+        # it shares the loader's idempotent fingerprint-column add rather than
+        # repeating it. Without it, a table created by a build predating the column
+        # would reach the seven-column provenance INSERT below and fail with 'no
+        # such column' AFTER the entire encode pass had already run.
+        ensure_sqlite_codebook_fingerprint_column(conn)
+
         # Take the write lock BEFORE the first streamed read: sqlite3's
         # legacy transaction control would otherwise open the implicit
         # transaction only at the first INSERT, so a concurrent-process
@@ -1257,6 +1266,18 @@ async def _execute_compress_postgresql(
             '  codebook_fingerprint TEXT,'
             '  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP'
             ')',
+        )
+        # CREATE TABLE IF NOT EXISTS never ADDS a column to an existing table, so a
+        # compression_metadata table created by a build predating
+        # codebook_fingerprint (a documented in-place-upgrade shape the provenance
+        # reader tolerates) survives the statement above unchanged and the
+        # six-parameter provenance INSERT below would fail with UndefinedColumnError
+        # AFTER the entire encode pass had already run. This CLI creates the table
+        # itself -- deliberately, because the migration loader would drop the fp32
+        # source table mid-stream -- so it must also mirror that loader's idempotent
+        # add. The ALTER is a no-op on a current-shape table.
+        await conn.execute(
+            'ALTER TABLE compression_metadata ADD COLUMN IF NOT EXISTS codebook_fingerprint TEXT',
         )
 
         # Idempotency check: skip work if provenance already populated.

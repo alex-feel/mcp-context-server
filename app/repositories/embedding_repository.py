@@ -19,6 +19,7 @@ from typing import cast
 from app.backends.base import StorageBackend
 from app.errors import ControlFlowError
 from app.repositories.base import BaseRepository
+from app.repositories.context_repository import count_applied_filters
 
 if TYPE_CHECKING:
     import asyncpg
@@ -705,6 +706,91 @@ class EmbeddingRepository(BaseRepository):
         logger.debug(f'Deleted {deleted_count} chunk embeddings for context {context_id} (PostgreSQL)')
         return deleted_count
 
+    async def delete_all_chunks_bulk(
+        self,
+        context_ids: list[str],
+        txn: 'TransactionContext | None' = None,
+    ) -> int:
+        """Delete chunk embeddings for many context entries in bounded multi-row statements.
+
+        The bulk counterpart to :meth:`delete_all_chunks`, for the delete paths whose
+        id list is not client-capped (a thread-wide delete, a criteria-wide batch
+        delete). Calling the per-id method in a loop costs one write round trip per
+        entry -- on SQLite each one hops onto the single writer, so a large thread
+        occupies the exclusive writer continuously while every other client stalls.
+        Here each bounded chunk of ids costs ONE executor hop issuing multi-row
+        statements, turning O(entries) round trips into O(chunks).
+
+        Only the SQLite fp32 layout actually needs bulk statements: it is the one
+        configuration whose vectors live in the FK-less ``vec_context_embeddings``
+        vec0 virtual table, reachable only through the ``embedding_chunks`` bridge.
+        Every other configuration either cascades automatically or is never reached
+        with an uncapped list, so it delegates to the per-id method rather than
+        carrying a second, unexercised bulk implementation.
+
+        Args:
+            context_ids: The ids whose embedding rows must be removed.
+            txn: Optional transaction context so the cleanup commits with the row
+                delete. When None, each chunk runs as its own write.
+
+        Returns:
+            Number of chunk embedding rows deleted.
+        """
+        if not context_ids:
+            return 0
+
+        from app.settings import get_settings
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if get_settings().compression.enabled or backend_type != 'sqlite':
+            total = 0
+            for context_id in context_ids:
+                total += await self.delete_all_chunks(context_id, txn=txn)
+            return total
+
+        deleted_total = 0
+        for start in range(0, len(context_ids), _SQLITE_IN_CLAUSE_BATCH):
+            chunk = context_ids[start : start + _SQLITE_IN_CLAUSE_BATCH]
+
+            def _delete_chunk_sqlite(conn: sqlite3.Connection, ids: list[str] = chunk) -> int:
+                placeholders = ', '.join('?' * len(ids))
+                cursor = conn.execute(
+                    f'SELECT vec_rowid FROM embedding_chunks WHERE context_id IN ({placeholders})',
+                    ids,
+                )
+                vec_rowids = [row[0] for row in cursor.fetchall()]
+                if vec_rowids:
+                    # vec0 accepts an ordinary IN (...) predicate on rowid; batch it in
+                    # the same bounded slices so one oversized thread cannot exceed
+                    # SQLITE_MAX_VARIABLE_NUMBER.
+                    for rowid_start in range(0, len(vec_rowids), _SQLITE_IN_CLAUSE_BATCH):
+                        rowid_chunk = vec_rowids[rowid_start : rowid_start + _SQLITE_IN_CLAUSE_BATCH]
+                        rowid_placeholders = ', '.join('?' * len(rowid_chunk))
+                        conn.execute(
+                            f'DELETE FROM vec_context_embeddings WHERE rowid IN ({rowid_placeholders})',
+                            rowid_chunk,
+                        )
+                conn.execute(
+                    f'DELETE FROM embedding_chunks WHERE context_id IN ({placeholders})',
+                    ids,
+                )
+                conn.execute(
+                    f'DELETE FROM embedding_metadata WHERE context_id IN ({placeholders})',
+                    ids,
+                )
+                return len(vec_rowids)
+
+            if txn:
+                deleted_total += await self._run_sqlite_txn(
+                    _delete_chunk_sqlite, cast(sqlite3.Connection, txn.connection),
+                )
+            else:
+                deleted_total += await self.backend.execute_write(_delete_chunk_sqlite)
+
+        logger.debug(
+            f'Deleted {deleted_total} chunk embeddings for {len(context_ids)} contexts (SQLite bulk)',
+        )
+        return deleted_total
+
     async def search(
         self,
         query_embedding: list[float],
@@ -785,23 +871,17 @@ class EmbeddingRepository(BaseRepository):
                 filter_conditions: list[str] = []
                 filter_params: list[Any] = []
 
-                # Count filters applied
-                filter_count = 0
-
                 if thread_id:
                     filter_conditions.append('thread_id = ?')
                     filter_params.append(thread_id)
-                    filter_count += 1
 
                 if source:
                     filter_conditions.append('source = ?')
                     filter_params.append(source)
-                    filter_count += 1
 
                 if content_type:
                     filter_conditions.append('content_type = ?')
                     filter_params.append(content_type)
-                    filter_count += 1
 
                 # Tag filter (uses subquery with indexed tag table). A non-empty
                 # tags list that normalizes to empty (all-blank) raises through
@@ -823,7 +903,6 @@ class EmbeddingRepository(BaseRepository):
                         )
                     ''')
                     filter_params.extend(normalized_tags)
-                    filter_count += 1
 
                 # Date range filtering - Use datetime() to normalize ISO 8601 input
                 # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
@@ -832,12 +911,10 @@ class EmbeddingRepository(BaseRepository):
                 if start_date:
                     filter_conditions.append('created_at >= datetime(?)')
                     filter_params.append(start_date)
-                    filter_count += 1
 
                 if end_date:
                     filter_conditions.append('created_at <= datetime(?)')
                     filter_params.append(end_date)
-                    filter_count += 1
 
                 # Metadata filtering using MetadataQueryBuilder
                 metadata_filter_count = 0
@@ -893,9 +970,20 @@ class EmbeddingRepository(BaseRepository):
                     if metadata_clause:
                         filter_conditions.append(metadata_clause)
                         filter_params.extend(metadata_params)
-                        filter_count += metadata_filter_count
 
                 where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
+
+                # Count filters applied (shared tally, so every search tool reports the same
+                # number for the same arguments).
+                filter_count = count_applied_filters(
+                    thread_id=thread_id,
+                    source=source,
+                    content_type=content_type,
+                    tags=tags,
+                    start_date=start_date,
+                    end_date=end_date,
+                    metadata_filter_count=metadata_filter_count,
+                )
 
                 # Use CTE with deduplication by context_id - preserves best chunk boundaries
                 # Uses subquery JOIN to identify which chunk had MIN(distance)
@@ -920,7 +1008,10 @@ class EmbeddingRepository(BaseRepository):
                         -- single chunk even when two chunks tie at the minimum
                         -- distance, matching the PostgreSQL DISTINCT ON path; the old
                         -- MIN-equality join emitted duplicate rows for one context on
-                        -- a tie.
+                        -- a tie. start_index is the unique per-context tiebreak, so
+                        -- two equidistant chunks always resolve to the SAME reported
+                        -- matched_chunk_start/end instead of whichever the scan
+                        -- happened to visit first.
                         SELECT context_id, start_index, end_index, best_distance
                         FROM (
                             SELECT
@@ -929,7 +1020,8 @@ class EmbeddingRepository(BaseRepository):
                                 cd.end_index,
                                 cd.distance as best_distance,
                                 ROW_NUMBER() OVER (
-                                    PARTITION BY cd.context_id ORDER BY cd.distance
+                                    PARTITION BY cd.context_id
+                                    ORDER BY cd.distance, cd.start_index
                                 ) as rn
                             FROM chunk_distances cd
                         )
@@ -950,7 +1042,13 @@ class EmbeddingRepository(BaseRepository):
                         bc.end_index as matched_chunk_end
                     FROM best_chunks bc
                     JOIN context_entries ce ON ce.id = bc.context_id
-                    ORDER BY bc.best_distance
+                    -- context_id is the explicit UNIQUE secondary key: equal distances are
+                    -- reachable (duplicate or near-duplicate text embeds identically), and a
+                    -- distance-only ORDER BY leaves tied rows in scan order, which is not
+                    -- stable across executions. The LIMIT/OFFSET window would then be computed
+                    -- over an undefined ordering, so a client paging a tied result set silently
+                    -- skips or duplicates rows.
+                    ORDER BY bc.best_distance ASC, bc.context_id ASC
                     LIMIT ? OFFSET ?
                 '''
 
@@ -1000,26 +1098,20 @@ class EmbeddingRepository(BaseRepository):
             filter_params: list[Any] = [query_embedding]
             param_position = 2  # Start at 2 because $1 is embedding
 
-            # Count filters applied
-            filter_count = 0
-
             if thread_id:
                 filter_conditions.append(f'ce.thread_id = {self._placeholder(param_position)}')
                 filter_params.append(thread_id)
                 param_position += 1
-                filter_count += 1
 
             if source:
                 filter_conditions.append(f'ce.source = {self._placeholder(param_position)}')
                 filter_params.append(source)
                 param_position += 1
-                filter_count += 1
 
             if content_type:
                 filter_conditions.append(f'ce.content_type = {self._placeholder(param_position)}')
                 filter_params.append(content_type)
                 param_position += 1
-                filter_count += 1
 
             # Tag filter (uses subquery with indexed tag table). A non-empty
             # tags list that normalizes to empty (all-blank) raises through the
@@ -1044,7 +1136,6 @@ class EmbeddingRepository(BaseRepository):
                 ''')
                 filter_params.extend(normalized_tags)
                 param_position += len(normalized_tags)
-                filter_count += 1
 
             # Date range filtering - PostgreSQL uses TIMESTAMPTZ comparison
             # asyncpg requires Python datetime objects, not strings, for TIMESTAMPTZ parameters
@@ -1052,13 +1143,11 @@ class EmbeddingRepository(BaseRepository):
                 filter_conditions.append(f'ce.created_at >= {self._placeholder(param_position)}')
                 filter_params.append(self._parse_date_for_postgresql(start_date))
                 param_position += 1
-                filter_count += 1
 
             if end_date:
                 filter_conditions.append(f'ce.created_at <= {self._placeholder(param_position)}')
                 filter_params.append(self._parse_date_for_postgresql(end_date))
                 param_position += 1
-                filter_count += 1
 
             # Metadata filtering using MetadataQueryBuilder
             metadata_filter_count = 0
@@ -1124,12 +1213,25 @@ class EmbeddingRepository(BaseRepository):
                     filter_conditions.append(metadata_clause)
                     filter_params.extend(metadata_params)
                     param_position += len(metadata_params)
-                    filter_count += metadata_filter_count
 
             where_clause = ' AND '.join(filter_conditions)
 
+            # Count filters applied (shared tally, so every search tool reports the same
+            # number for the same arguments).
+            filter_count = count_applied_filters(
+                thread_id=thread_id,
+                source=source,
+                content_type=content_type,
+                tags=tags,
+                start_date=start_date,
+                end_date=end_date,
+                metadata_filter_count=metadata_filter_count,
+            )
+
             # Use CTE with DISTINCT ON to preserve best chunk boundaries
-            # DISTINCT ON selects first row per context_id when ordered by distance
+            # DISTINCT ON selects first row per context_id when ordered by distance;
+            # start_index breaks a tie between two equidistant chunks of the same
+            # context so the reported matched_chunk_start/end is deterministic.
             query = f'''
                     WITH chunk_distances AS (
                         SELECT
@@ -1148,7 +1250,7 @@ class EmbeddingRepository(BaseRepository):
                             end_index,
                             distance as best_distance
                         FROM chunk_distances
-                        ORDER BY context_id, distance
+                        ORDER BY context_id, distance, start_index
                     )
                     SELECT
                         ce.id,
@@ -1165,7 +1267,13 @@ class EmbeddingRepository(BaseRepository):
                         bc.end_index as matched_chunk_end
                     FROM best_chunks bc
                     JOIN context_entries ce ON ce.id = bc.context_id
-                    ORDER BY bc.best_distance
+                    -- context_id is the explicit UNIQUE secondary key. Equal distances are
+                    -- reachable (duplicate or near-duplicate text embeds identically) and
+                    -- PostgreSQL MVCC writes a new physical tuple on every UPDATE, so heap/scan
+                    -- order for tied rows changes under unrelated concurrent writes; without the
+                    -- tiebreak the LIMIT/OFFSET window is computed over an undefined ordering and
+                    -- a client paging a tied result set silently skips or duplicates rows.
+                    ORDER BY bc.best_distance ASC, bc.context_id ASC
                     LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
                 '''
 
@@ -1222,11 +1330,13 @@ class EmbeddingRepository(BaseRepository):
                result ordering.
             5. For ``variant='mse'`` decode each payload and compute the L2
                distance to the query.
-            6. Aggregate per ``context_id`` (MIN distance per context,
-               matches the best-chunk-per-context semantics of the fp32
-               read path).
-            7. Sort ASC by distance, slice ``[offset : offset + limit]``,
-               hydrate from ``context_entries``.
+            6. Aggregate per ``context_id`` (MIN distance per context, ties
+               broken on the unique chunk ``start_index``, matching the
+               best-chunk-per-context semantics of the fp32 read path).
+            7. Sort ASC by ``(distance, context_id)`` -- the id is the unique
+               secondary key that keeps a tied ordering reproducible across
+               executions -- slice ``[offset : offset + limit]``, hydrate from
+               ``context_entries``.
 
         Return shape is IDENTICAL to :meth:`search` so the calling tool
         layer needs no compression-specific branching.
@@ -1277,15 +1387,6 @@ class EmbeddingRepository(BaseRepository):
         start_time = time_module.time()
         query_matrix = np.asarray([query_embedding], dtype=np.float32)
 
-        # Compute filter count for the stats dict in the same way the fp32
-        # search does so external observers see a consistent shape.
-        filter_count = 0
-        if thread_id:
-            filter_count += 1
-        if source:
-            filter_count += 1
-        if content_type:
-            filter_count += 1
         normalized_tags: list[str] = []
         if tags:
             # A non-empty tags list that normalizes to empty (all-blank) raises
@@ -1297,11 +1398,18 @@ class EmbeddingRepository(BaseRepository):
                 raise MetadataFilterValidationError(
                     'Metadata filter validation failed', [str(e)],
                 ) from e
-            filter_count += 1
-        if start_date:
-            filter_count += 1
-        if end_date:
-            filter_count += 1
+
+        # Compute the non-metadata filter count through the shared tally so this path
+        # reports the same number as the fp32 search and every other search tool; the
+        # metadata count is added below once the candidate query has built its filters.
+        filter_count = count_applied_filters(
+            thread_id=thread_id,
+            source=source,
+            content_type=content_type,
+            tags=tags,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
         # Build the candidate-id query against context_entries reusing the
         # same building blocks as :meth:`search` (tags, dates, metadata).
@@ -1687,9 +1795,20 @@ class EmbeddingRepository(BaseRepository):
                 payload_rows, distances, strict=True,
             ):
                 current = best_by_context.get(context_id)
-                if current is None or dist < current[0]:
+                # Tie between two equidistant chunks of the SAME context resolves on the
+                # unique start_index, mirroring the fp32 paths' ROW_NUMBER/DISTINCT ON
+                # tiebreak. A bare `dist < current[0]` would instead keep whichever chunk
+                # the ORDER BY-less candidate read returned first, so the reported
+                # matched_chunk_start/end could differ between two identical queries.
+                if current is None or (dist, start_index) < (current[0], current[1]):
                     best_by_context[context_id] = (dist, start_index, end_index)
-            return sorted(best_by_context.items(), key=lambda kv: kv[1][0])
+            # Sort on (distance, context_id): context_id is the explicit UNIQUE secondary
+            # key, so equal-distance contexts get a reproducible order instead of
+            # inheriting dict insertion order from an ORDER BY-less candidate fetch. The
+            # page slice below is a LIMIT/OFFSET window over this list, so without the
+            # tiebreak a client paging tied results silently skips or duplicates rows.
+            # Ascending id matches the fp32 paths' ORDER BY best_distance ASC, context_id ASC.
+            return sorted(best_by_context.items(), key=lambda kv: (kv[1][0], kv[0]))
 
         if len(payload_rows) > _COMPRESSED_OFFLOAD_MIN_ROWS:
             ranked = await asyncio.to_thread(_rank_from_gemm)

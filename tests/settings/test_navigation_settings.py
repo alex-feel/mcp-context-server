@@ -140,6 +140,8 @@ class TestIndexTreeNodeSummarySettings:
             'INDEX_TREE_NODE_SUMMARY_PROMPT',
             'INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH',
             'INDEX_TREE_NODE_SUMMARY_TIMEOUT_S',
+            'INDEX_TREE_NODE_SUMMARY_MAX_NODES',
+            'INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S',
         ):
             monkeypatch.delenv(name, raising=False)
         get_settings.cache_clear()
@@ -148,13 +150,41 @@ class TestIndexTreeNodeSummarySettings:
         assert index_tree.min_content_length == 500
         assert index_tree.timeout_s == 240.0
         assert index_tree.max_concurrent >= 1
+        # Total-work bounds: the concurrency caps limit how much runs at once,
+        # these limit how much runs in total for one entry.
+        assert index_tree.max_nodes == 200
+        assert index_tree.total_timeout_s == 600.0
 
     def test_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '50')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TIMEOUT_S', '12.5')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT', '7')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '25')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '90')
         get_settings.cache_clear()
         index_tree = get_settings().index_tree
         assert index_tree.min_content_length == 50
         assert index_tree.timeout_s == 12.5
         assert index_tree.max_concurrent == 7
+        assert index_tree.max_nodes == 25
+        assert index_tree.total_timeout_s == 90.0
+
+    @pytest.mark.parametrize(
+        ('name', 'value'),
+        [
+            ('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '0'),
+            ('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '10001'),
+            ('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '0'),
+            ('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '3601'),
+        ],
+    )
+    def test_total_work_bounds_are_range_checked(
+        self, monkeypatch: pytest.MonkeyPatch, name: str, value: str,
+    ) -> None:
+        """Out-of-range values are refused rather than silently disabling the bound."""
+        from pydantic import ValidationError
+
+        monkeypatch.setenv(name, value)
+        get_settings.cache_clear()
+        with pytest.raises(ValidationError):
+            get_settings()

@@ -1,4 +1,13 @@
-"""The PostgreSQL compression CLI runs its heavy DDL under the migration budget.
+"""Statement-level assertions on the PostgreSQL compression CLI branches.
+
+The PostgreSQL branches are driven here with a recording mock connection so the
+assertions run in the fast unit gate without Docker; live coverage runs against the
+pgvector container in the integration suite. Two properties are pinned: every heavy
+statement runs under the migration budget, and the inline provenance-table DDL brings
+a pre-existing table up to the current column shape before writing it.
+
+Migration budget
+----------------
 
 The ``--compress`` / ``--decompress`` PostgreSQL paths borrow the server
 ``PostgreSQLBackend`` pool, whose ``command_timeout`` (~60s) asyncpg applies as the
@@ -10,9 +19,13 @@ statement budget via ``SET LOCAL statement_timeout`` and that every heavy statem
 carries an explicit per-call deadline matching the migration budget (so it is NOT
 capped at the pool ``command_timeout``).
 
-The PostgreSQL branches are driven here with a recording mock connection so the
-assertions run in the fast unit gate without Docker; live coverage runs against the
-pgvector container in the integration suite.
+Provenance-table shape
+----------------------
+
+The CLI creates ``compression_metadata`` itself (the migration loader would drop the
+fp32 source table mid-stream), and ``CREATE TABLE IF NOT EXISTS`` never adds a column
+to an existing table, so a table predating ``codebook_fingerprint`` must be brought up
+to shape with an idempotent ``ADD COLUMN IF NOT EXISTS`` before the provenance INSERT.
 """
 
 import asyncio
@@ -198,6 +211,44 @@ def test_compress_postgresql_runs_heavy_ddl_under_migration_budget() -> None:
     # Sanity: the empty-table CREATE statements stay bare (timeout None), so the
     # recording distinguishes budgeted statements from un-budgeted ones.
     assert any(t is None for stmt, t in conn.execute_calls if stmt.startswith('CREATE TABLE'))
+
+
+def test_compress_postgresql_adds_missing_fingerprint_column_before_insert() -> None:
+    """The compress transaction upgrades a pre-fingerprint provenance table in place.
+
+    Without the idempotent ADD COLUMN, a ``compression_metadata`` table created by a
+    build predating ``codebook_fingerprint`` -- whose row a prior ``--decompress``
+    cleared, so the CLI does not early-return -- survives the ``CREATE TABLE IF NOT
+    EXISTS`` unchanged and the six-parameter provenance INSERT fails with
+    ``UndefinedColumnError`` after the whole encode pass has already run.
+    """
+    conn = _RecordingConn()
+    backend = _FakeBackend(conn)
+    asyncio.run(
+        _execute_compress_postgresql(
+            cast(Any, backend),
+            Mock(),
+            _provenance(),
+        ),
+    )
+
+    statements = [stmt for stmt, _ in conn.execute_calls]
+    create_idx = next(
+        i for i, stmt in enumerate(statements)
+        if stmt.startswith('CREATE TABLE IF NOT EXISTS compression_metadata')
+    )
+    alter_idx = next(
+        i for i, stmt in enumerate(statements)
+        if stmt.startswith('ALTER TABLE compression_metadata')
+    )
+    insert_idx = next(
+        i for i, stmt in enumerate(statements)
+        if stmt.startswith('INSERT INTO compression_metadata')
+    )
+    assert statements[alter_idx] == (
+        'ALTER TABLE compression_metadata ADD COLUMN IF NOT EXISTS codebook_fingerprint TEXT'
+    )
+    assert create_idx < alter_idx < insert_idx
 
 
 def test_decompress_postgresql_runs_heavy_ddl_under_migration_budget() -> None:

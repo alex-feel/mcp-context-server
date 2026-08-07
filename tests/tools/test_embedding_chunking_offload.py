@@ -1,11 +1,17 @@
-"""The store/update embedding leg offloads a large entry's chunking off the loop.
+"""The store/update embedding leg offloads a splitting entry's chunking off the loop.
 
 ``_generate_embeddings_for_text`` calls ``ChunkingService.split_text`` ->
-``RecursiveCharacterTextSplitter.create_documents``, which is O(text) pure CPU
-over UNBOUNDED stored entry text and runs on the embedding leg of
-``run_generation`` (the store/update/batch write path). A large entry is offloaded
-to a worker thread so a multi-megabyte store cannot pin the single event loop and
-starve concurrent MCP requests; a small entry stays inline to avoid a thread hop.
+``RecursiveCharacterTextSplitter.create_documents``, which is pure CPU over
+UNBOUNDED stored entry text and runs on the embedding leg of ``run_generation``
+(the store/update/batch write path). The recursive split costs roughly a
+microsecond per character, so a plain one-megabyte document takes the better part
+of a second -- far too long to run inline on the single event loop, where it would
+starve every concurrent MCP request.
+
+The cost switch is the splitter's own fast path: at or below ``chunk_size``
+``split_text`` returns one chunk immediately, and above it the recursive split runs
+in full. The offload gate therefore keys on ``chunk_size``, not on a large fixed
+character threshold that left exactly the expensive plain-text case inline.
 Mirrors the read-path (test_navigation_tools.py::TestLargeEntryOffloadNonBlocking),
 the index_tree node leg (test_index_node_generation.py::TestLargeEntryWritePathOffloadNonBlocking),
 and the grep matcher (test_grep_matcher.py).
@@ -36,6 +42,7 @@ class _SpyChunkingService:
     """Enabled chunking service whose split_text records its executing thread."""
 
     is_enabled = True
+    chunk_size = 1500
 
     def __init__(self) -> None:
         self.on_main: bool | None = None
@@ -46,9 +53,9 @@ class _SpyChunkingService:
 
 
 @pytest.mark.asyncio
-async def test_large_entry_chunking_offloaded() -> None:
+async def test_splitting_entry_chunking_offloaded() -> None:
     spy = _SpyChunkingService()
-    big = 'a' * (shared_module._OFFLOAD_MIN_CHARS + 10)  # exceeds the offload threshold
+    big = 'a' * (spy.chunk_size + 10)  # long enough that the recursive split runs
     with (
         patch.object(shared_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
         patch.object(shared_module, 'get_chunking_service', lambda: spy),
@@ -60,6 +67,25 @@ async def test_large_entry_chunking_offloaded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_plain_text_below_the_old_size_threshold_is_still_offloaded() -> None:
+    """A plain document under a megabyte splits for ~0.8s inline, so it must offload.
+
+    The previous gate gave this exact shape a pass: no line density to trip a
+    line-count signal, and a size comfortably below a one-megabyte threshold, while
+    the recursive split still ran for hundreds of milliseconds on the event loop.
+    """
+    spy = _SpyChunkingService()
+    text = 'a' * 999_000
+    assert len(text) < 1_000_000
+    with (
+        patch.object(shared_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
+        patch.object(shared_module, 'get_chunking_service', lambda: spy),
+    ):
+        await _generate_embeddings_for_text(text)
+    assert spy.on_main is False
+
+
+@pytest.mark.asyncio
 async def test_small_entry_chunking_inline() -> None:
     spy = _SpyChunkingService()
     with (
@@ -67,4 +93,4 @@ async def test_small_entry_chunking_inline() -> None:
         patch.object(shared_module, 'get_chunking_service', lambda: spy),
     ):
         await _generate_embeddings_for_text('short text body')
-    assert spy.on_main is True  # small entry stays inline (no thread hop)
+    assert spy.on_main is True  # split_text short-circuits below chunk_size; no thread hop

@@ -785,7 +785,12 @@ class TestAdaptiveFtsMode:
         assert pg_query.replace(' or ', ' OR ') == sqlite_query
 
     def test_hyphenated_token_with_embedded_quote_stays_wrappable(self) -> None:
-        """An embedded double quote cannot terminate the generated phrase early."""
+        """An embedded double quote splits the token instead of leaking into the OR join.
+
+        Left raw, the quote opens a websearch_to_tsquery phrase that swallows every
+        following ' or ' term into an adjacency phrase, collapsing recall to near zero.
+        Splitting on it yields the same fragments the SQLite sanitizer produces.
+        """
         from app.tools.search import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
@@ -794,9 +799,31 @@ class TestAdaptiveFtsMode:
             backend_type='postgresql',
         )
         assert mode == 'boolean'
-        # The embedded quote is dropped; the phrase wrapper stays balanced.
+        # Every quote belongs to a phrase wrapper this builder emitted, so they balance.
         assert query.count('"') % 2 == 0
-        assert '"al pha beta"' in query
+        assert query == 'al or "pha beta" or gamma or delta or epsilon'
+
+    def test_unbalanced_quote_does_not_swallow_following_or_terms(self) -> None:
+        """A stray quote in one term must not phrase-capture the rest of the OR join."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        pg_query, pg_mode = _prepare_hybrid_fts_query(
+            query='quo"kkazz wombatzz alpha beta',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert pg_mode == 'boolean'
+        assert pg_query == 'quo or kkazz or wombatzz or alpha or beta'
+
+        sqlite_query, sqlite_mode = _prepare_hybrid_fts_query(
+            query='quo"kkazz wombatzz alpha beta',
+            or_threshold=4,
+            backend_type='sqlite',
+        )
+        assert sqlite_mode == 'boolean'
+        assert sqlite_query == '"quo" OR "kkazz" OR "wombatzz" OR "alpha" OR "beta"'
+        # Both backends split into the same five independent terms.
+        assert sqlite_query.replace('"', '').replace(' OR ', ' or ') == pg_query
 
     def test_threshold_boundary_below(self) -> None:
         """Query with exactly threshold-1 significant words stays in match mode."""
@@ -894,13 +921,14 @@ class TestAdaptiveFtsMode:
         assert query == 'python async'  # raw; the single downstream transform does the escaping
 
     def test_sqlite_embedded_quote_token_not_double_mangled(self) -> None:
-        """An embedded-double-quote token yields the SAME single-phrase FTS5 form via the hybrid
-        path as via standalone fts_search_context -- no non-idempotent double sanitize.
+        """An embedded-double-quote token yields the SAME FTS5 form via the hybrid path as via
+        standalone fts_search_context -- exactly one sanitize pass, never two.
 
-        Pre-sanitizing in the hybrid builder AND re-sanitizing in _transform_query_sqlite split
-        the escaped phrase ``"ab""cd"`` into two phrases ``"ab" "cd"`` (because _FTS_TOKEN_RE
-        re-tokenizes the escaped run), diverging hybrid recall from standalone for the same
-        input. Deferring all escaping to the one downstream transform keeps them identical.
+        The hybrid builder must hand the RAW query to the single downstream transform. Running
+        its own sanitize first would send an already-quoted term list through a second wrapping
+        pass, so hybrid recall would merely resemble standalone recall for the same input
+        instead of matching it. The expected form splits the token on the embedded quote into
+        independently AND-ed literals, mirroring PostgreSQL's independently AND-ed lexemes.
         """
         from typing import cast
 
@@ -920,9 +948,10 @@ class TestAdaptiveFtsMode:
         # Standalone fts_search_context passes the raw query straight to the same transform.
         standalone_fts = repo._transform_query_sqlite(raw, 'match')
         assert hybrid_fts == standalone_fts
-        # The correct single-phrase escaped form, NOT the split-into-two-phrases mangling.
-        assert hybrid_fts == '"ab""cd" "ef"'
-        assert hybrid_fts != '"ab" "cd" "ef"'
+        # Split on the embedded quote into separate AND-ed literals: doubling the quote
+        # instead would leave it a word boundary inside one literal, which FTS5 reads as a
+        # strict two-word adjacency phrase that PostgreSQL never requires.
+        assert hybrid_fts == '"ab" "cd" "ef"'
 
 
 class TestHybridAllModesFailedValidationResponse:

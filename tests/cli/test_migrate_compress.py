@@ -1021,3 +1021,112 @@ def test_compress_invalid_env_surfaces_clean_cli_error(
     err = capsys.readouterr().err
     assert 'Configuration invalid' in err
     assert 'pgvector index limit' in err
+
+
+# ---------------------------------------------------------------------------
+# compression_metadata table shape predating the codebook_fingerprint column
+# ---------------------------------------------------------------------------
+
+
+_PRE_FINGERPRINT_PROVENANCE_DDL = '''
+CREATE TABLE IF NOT EXISTS compression_metadata (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    provider TEXT NOT NULL,
+    bits INTEGER NOT NULL CHECK (bits BETWEEN 2 AND 4),
+    variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),
+    seed INTEGER NOT NULL CHECK (seed >= 0),
+    dim INTEGER NOT NULL CHECK (dim > 0),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+'''
+
+
+def _provenance_columns(path: Path) -> list[str]:
+    """Return the column names of the ``compression_metadata`` table at ``path``.
+
+    Returns:
+        Column names in declaration order.
+    """
+    conn = sqlite3.connect(str(path))
+    try:
+        return [str(row[1]) for row in conn.execute('PRAGMA table_info(compression_metadata)')]
+    finally:
+        conn.close()
+
+
+@requires_numpy
+def test_compress_upgrades_provenance_table_missing_fingerprint_column(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--compress`` adds ``codebook_fingerprint`` to a table created before the column.
+
+    A database whose ``compression_metadata`` table was created by a build predating
+    the column, and whose provenance ROW was later cleared by ``--decompress`` (which
+    deletes the row but keeps the table), reaches ``--compress`` with a six-column
+    table. ``CREATE TABLE IF NOT EXISTS`` never adds a column, so the seven-column
+    provenance INSERT failed with 'no such column' AFTER the whole encode pass had
+    run -- and the state was a dead end, because re-running failed identically while
+    a compression-enabled boot refused to start before the server migration could add
+    the column. The CLI now mirrors that migration's idempotent add.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('COMPRESSION_SEED', '42')
+    monkeypatch.setenv('COMPRESSION_BITS', '4')
+    monkeypatch.setenv('COMPRESSION_VARIANT', 'ip')
+    monkeypatch.setenv('EMBEDDING_DIM', '64')
+    get_settings.cache_clear()
+
+    db = tmp_path / 'pre_fingerprint.db'
+    _bootstrap_schema(db)
+    _create_fp32_vec_table(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(_PRE_FINGERPRINT_PROVENANCE_DDL)
+        conn.commit()
+    finally:
+        conn.close()
+    assert 'codebook_fingerprint' not in _provenance_columns(db)
+
+    rc = run_compress(f'sqlite:///{db}', dry_run=False)
+
+    assert rc == 0
+    assert 'codebook_fingerprint' in _provenance_columns(db)
+
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            'SELECT bits, variant, seed, dim, codebook_fingerprint '
+            'FROM compression_metadata WHERE id = 1',
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert (row[0], row[1], row[2], row[3]) == (4, 'ip', 42, 64)
+    # The realized rotation digest is recorded, not left NULL.
+    assert isinstance(row[4], str)
+    assert len(row[4]) == 64
+
+
+@requires_numpy
+def test_compress_leaves_current_shape_provenance_table_intact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The idempotent add is a no-op when the table already carries the column."""
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('COMPRESSION_SEED', '42')
+    monkeypatch.setenv('COMPRESSION_BITS', '4')
+    monkeypatch.setenv('COMPRESSION_VARIANT', 'ip')
+    monkeypatch.setenv('EMBEDDING_DIM', '64')
+    get_settings.cache_clear()
+
+    db = tmp_path / 'current_shape.db'
+    _bootstrap_schema(db)
+    _create_fp32_vec_table(db)
+
+    rc = run_compress(f'sqlite:///{db}', dry_run=False)
+
+    assert rc == 0
+    columns = _provenance_columns(db)
+    assert columns.count('codebook_fingerprint') == 1

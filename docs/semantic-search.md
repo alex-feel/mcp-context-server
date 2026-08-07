@@ -790,7 +790,7 @@ When registered (by default, whenever an embedding provider is available), the `
 }
 ```
 
-**Note:** The `stats` field is only included when `explain_query=True`. Within the stats block, all keys including `query_plan` are present whenever the block appears, since the repository populates `query_plan` based on the same `explain_query=True` flag.
+**Note:** The `stats` field is only included when `explain_query=True`. Every key of the block is then present, including `backend` (the active storage backend type) and `query_plan`. A request that fails parameter validation (for example an invalid `metadata_filters` operator) returns the same keys with the counters zeroed and `query_plan` set to `null`, since no query ran, so a client can read `stats["query_plan"]` unconditionally and only has to handle the null.
 
 **Scores Object**:
 - `semantic_distance`: LOWER = more similar. The underlying metric depends on embedding storage: Euclidean L2 (>= 0) for uncompressed/`mse` storage, or a negated inner product (~ -1..0 for normalized embeddings, where more negative = more similar) when the default `ip` compression variant is active. Compare values within a single result set rather than against fixed thresholds, since the numeric range differs by storage variant.

@@ -1049,17 +1049,21 @@ result = search_context(
 print(result["stats"])
 # {
 #     "execution_time_ms": 12.34,
-#     "filters_applied": 2,
+#     "filters_applied": 4,
 #     "rows_returned": 15,
+#     "backend": "sqlite",
 #     "query_plan": "..."
 # }
 ```
 
 **Statistics Provided:**
 - `execution_time_ms`: Query execution time in milliseconds
-- `filters_applied`: Number of metadata filters in the query
+- `filters_applied`: Total number of filter conditions the query applied (thread, source, content type, date bounds and the tag subquery, plus every metadata condition)
 - `rows_returned`: Number of matching entries
-- `query_plan`: SQLite query execution plan (when explain_query=True)
+- `backend`: Active storage backend (`"sqlite"` or `"postgresql"`)
+- `query_plan`: Backend query execution plan
+
+Every key above is present whenever the `stats` block is (that is, whenever `explain_query=True`). A request rejected by parameter validation -- an invalid `metadata_filters` operator, for example -- returns the same keys with the counters zeroed and `query_plan` set to `null`, because no query ran.
 
 ### Performance Optimization Tips
 
@@ -1457,7 +1461,7 @@ async def get_next_task():
         ],
         limit=1
     )
-    return result["entries"][0] if result["entries"] else None
+    return result["results"][0] if result["results"] else None
 
 # Mark task as completed (preserves existing metadata like priority, task_name)
 async def complete_task(context_id):
@@ -1528,7 +1532,7 @@ stalled = await search_context(
    ```python
    # Use exact field names
    result = search_context(thread_id="test", include_images=False)
-   print(result["entries"][0]["metadata"])  # Check actual field names
+   print(result["results"][0]["metadata"])  # Check actual field names
    ```
 
 3. **Check for null vs missing fields:**

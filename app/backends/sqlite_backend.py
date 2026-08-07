@@ -680,15 +680,37 @@ class SQLiteBackend:
             conn.row_factory = sqlite3.Row
 
             # Apply optimized PRAGMAs for production.
+            #
+            # DATABASE-FILE properties, applied on WRITABLE connections ONLY. A
+            # mode=ro connection cannot establish them, so issuing them there can
+            # only be a no-op or an error: when the on-disk journal mode differs
+            # from SQLITE_JOURNAL_MODE -- another process (a second server
+            # instance, the migration CLI, a bare sqlite3 shell) moved the shared
+            # file into WAL, or the setting was changed -- SQLite answers
+            # `PRAGMA journal_mode` on a read-only connection with SQLITE_IOERR
+            # ('disk I/O error') or SQLITE_READONLY ('attempt to write a readonly
+            # database'). Neither is in the self-clearing BUSY/LOCKED family the
+            # creation-fault wrapper exempts, so EVERY reader creation would
+            # charge the process-global circuit breaker until it opened and
+            # rejected healthy writes too. The journal mode is established by the
+            # writer at initialize(); a reader re-asserting it can never help.
+            #
             # page_size MUST precede journal_mode. Switching to WAL (like any write)
             # finalizes the database header's page size; a later `PRAGMA page_size` is
             # then silently ignored on the existing file (it would need a VACUUM).
             # Applying it first lets a FRESH database honor SQLITE_PAGE_SIZE; on an
             # already-initialized database the pragma is a harmless no-op.
-            pragmas = [
+            file_pragmas: list[tuple[str, str]] = []
+            if not readonly:
+                file_pragmas = [
+                    ('page_size', str(settings.storage.sqlite_page_size)),
+                    ('journal_mode', settings.storage.sqlite_journal_mode),
+                ]
+
+            # Connection-scoped properties: safe and meaningful on readers and
+            # writers alike, since each only configures the open handle.
+            connection_pragmas: list[tuple[str, str]] = [
                 ('foreign_keys', 'ON' if settings.storage.sqlite_foreign_keys else 'OFF'),
-                ('page_size', str(settings.storage.sqlite_page_size)),
-                ('journal_mode', settings.storage.sqlite_journal_mode),
                 ('synchronous', settings.storage.sqlite_synchronous),
                 ('temp_store', settings.storage.sqlite_temp_store),
                 ('mmap_size', str(settings.storage.sqlite_mmap_size)),
@@ -697,11 +719,12 @@ class SQLiteBackend:
                 ('busy_timeout', str(settings.storage.resolved_busy_timeout_ms)),
             ]
 
+            # Writer-specific optimizations
+            writer_pragmas: list[tuple[str, str]] = []
             if not readonly:
-                # Writer-specific optimizations
-                pragmas.append(('wal_checkpoint', settings.storage.sqlite_wal_checkpoint))
+                writer_pragmas = [('wal_checkpoint', settings.storage.sqlite_wal_checkpoint)]
 
-            for pragma, value in pragmas:
+            for pragma, value in (*file_pragmas, *connection_pragmas, *writer_pragmas):
                 conn.execute(f'PRAGMA {pragma} = {value}')
 
             # Load sqlite-vec extension if semantic search enabled
@@ -781,6 +804,44 @@ class SQLiteBackend:
                 self._safe_close_connection(orphan)
             raise
 
+    def _record_query_failure(self, error: BaseException) -> None:
+        """Record the failure METRICS for a database fault, without the breaker charge.
+
+        Counts the fault in ``metrics.failed_queries`` and stores its text and
+        timestamp in ``metrics.last_error`` / ``metrics.last_error_time`` -- the
+        three fields ``get_metrics()`` publishes as ``connection_metrics``. A
+        fault that moves the failure count but leaves ``last_error`` untouched
+        gives an operator a count with no diagnostic text, or (worse) an OLD
+        message beside fresh failures, actively misdirecting diagnosis.
+
+        Args:
+            error: The fault being recorded; its string form becomes
+                ``metrics.last_error``.
+        """
+        self.metrics.failed_queries += 1
+        self.metrics.last_error = str(error)
+        self.metrics.last_error_time = time.time()
+
+    def _record_charged_failure(self, error: BaseException) -> None:
+        """Record one charged failure: the failure metrics plus the breaker charge.
+
+        The single bookkeeping site for a charged database fault, shared by the
+        write-queue arm, the connection-establishment wrapper, both arms of
+        ``get_connection`` and ``begin_transaction`` so the sites cannot drift.
+        The PostgreSQL backend carries the same helper under the same name: a
+        charged fault that moves the circuit breaker but skips
+        ``metrics.failed_queries`` / ``last_error`` / ``last_error_time`` leaves
+        dashboards keyed on those fields reporting a healthy, error-free database
+        while the breaker is counting the outage -- and on SQLite (the default
+        backend) that gap covered the main store/update write path.
+
+        Args:
+            error: The exception being charged; its string form becomes
+                ``metrics.last_error``.
+        """
+        self._record_query_failure(error)
+        self.circuit_breaker.record_failure()
+
     async def _acquire_connection_charging_faults(
         self,
         create: Callable[[], Awaitable[sqlite3.Connection]],
@@ -820,7 +881,7 @@ class SQLiteBackend:
             raise
         except Exception as e:
             if not is_sqlite_locked_error(e):
-                self.circuit_breaker.record_failure()
+                self._record_charged_failure(e)
             raise
 
     async def _close_all_connections(self) -> None:
@@ -881,8 +942,19 @@ class SQLiteBackend:
 
         # Use shorter timeout in test environment
         queue_timeout = settings.storage.queue_timeout_test_s if is_test_environment() else settings.storage.queue_timeout_s
-        wait_task = None
-        shutdown_task = None
+        # Long-lived waiters, created once and kept ACROSS loop iterations. The
+        # getter is recreated ONLY after it has actually yielded a request.
+        # Cancelling and recreating the Queue.get() task every iteration lost
+        # writes: cancelling an already-completed getter is a no-op, so an
+        # iteration that timed out while a request landed in the same scheduling
+        # window resolved the getter, saw a stale done/pending partition, and
+        # dropped the dequeued WriteRequest on the floor -- its execute_write
+        # caller then awaited a future nobody would ever resolve, and the entry
+        # was never written. A getter that outlives the iteration cannot orphan a
+        # request by construction: whatever it dequeues is still owned by the
+        # task the next iteration inspects.
+        wait_task: asyncio.Task[WriteRequest] | None = None
+        shutdown_task: asyncio.Task[bool] | None = None
         # The request currently being serviced. Tracked at function scope so
         # the cancellation handler and the finally block can terminally
         # resolve its future: once dequeued, a request is invisible to the
@@ -894,92 +966,83 @@ class SQLiteBackend:
             while not self._shutdown:
                 try:
                     # Wait for write request with timeout or shutdown
-                    wait_task = asyncio.create_task(self._write_queue.get())
-                    shutdown_task = asyncio.create_task(self._shutdown_event.wait())
-                    done, pending = await asyncio.wait(
+                    if wait_task is None:
+                        wait_task = asyncio.create_task(self._write_queue.get())
+                    if shutdown_task is None:
+                        shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+                    done, _pending = await asyncio.wait(
                         [wait_task, shutdown_task],
                         return_when=asyncio.FIRST_COMPLETED,
                         timeout=queue_timeout,
                     )
 
-                    # Cancel pending tasks
-                    for task in pending:
-                        task.cancel()
-                        # Ensure cancellation is processed
-                        with suppress(asyncio.CancelledError):
-                            await task
+                    if wait_task not in done:
+                        # Nothing was dequeued. Both waiters stay alive for the
+                        # next iteration, so a request arriving in any suspension
+                        # window remains owned by the live getter.
+                        if shutdown_task in done:
+                            break
+                        # Idle timeout: no writes pending.
+                        continue
 
-                    if shutdown_task in done and wait_task not in done:
-                        break
-                    # When BOTH tasks complete in the same asyncio.wait batch, a
-                    # WriteRequest has already been dequeued by wait_task; breaking
-                    # on shutdown first would orphan it (its future never resolved,
-                    # the caller awaiting execute_write hangs past shutdown). Service
-                    # the dequeued request first; the loop condition (and the next
-                    # iteration's shutdown check) then honors the shutdown signal.
+                    # A WriteRequest was dequeued. Even when the shutdown signal
+                    # fired in the same asyncio.wait batch it MUST be serviced
+                    # first: once removed from the queue it is invisible to
+                    # shutdown's drain, so abandoning it leaves the caller
+                    # awaiting execute_write past shutdown. The loop condition
+                    # honors the shutdown signal on the next iteration.
+                    dequeued, wait_task = wait_task, None
+                    request = dequeued.result()
+                    current_request = request
+                    self.metrics.write_queue_size = self._write_queue.qsize()
 
-                    if wait_task in done:
-                        try:
-                            request = await wait_task
-                        except asyncio.CancelledError:
-                            continue
-                        else:
-                            # This else block only executes if no exception was raised
-                            # At this point, request is guaranteed to be a WriteRequest
-                            current_request = request
-                            self.metrics.write_queue_size = self._write_queue.qsize()
+                    # Check circuit breaker. The done() guard matches every
+                    # other resolution site in this block: the caller's task
+                    # may have been cancelled while the request sat queued
+                    # (client disconnect), and set_exception on a done future
+                    # raises InvalidStateError -- which would skip the
+                    # current_request reset and log a spurious processor error.
+                    if self.circuit_breaker.is_open():
+                        if not request.future.done():
+                            request.future.set_exception(
+                                Exception('Database circuit breaker is open, too many failures'),
+                            )
+                        current_request = None
+                        continue
 
-                            # Check circuit breaker. The done() guard matches every
-                            # other resolution site in this block: the caller's task
-                            # may have been cancelled while the request sat queued
-                            # (client disconnect), and set_exception on a done future
-                            # raises InvalidStateError -- which would skip the
-                            # current_request reset and log a spurious processor error.
-                            if self.circuit_breaker.is_open():
-                                if not request.future.done():
-                                    request.future.set_exception(
-                                        Exception('Database circuit breaker is open, too many failures'),
-                                    )
-                                current_request = None
-                                continue
-
-                            # Process write request with retry logic
-                            try:
-                                result = await self._execute_write_with_retry(request)
-                                if not request.future.done():
-                                    request.future.set_result(result)
-                                self.circuit_breaker.record_success()
-                            except ControlFlowError as e:
-                                # Control-flow signals (optimistic-concurrency
-                                # VersionConflictError, post-dedup
-                                # EmbeddingsReconcileRequiredError) escaping execute_write are
-                                # normal write contention, NOT a database fault: propagate to
-                                # the caller WITHOUT recording a breaker failure, mirroring
-                                # begin_transaction's exemption on this backend and the
-                                # PostgreSQL execute_write path. Recording them could open the
-                                # breaker on routine contention and lock out writes.
-                                if not request.future.done():
-                                    request.future.set_exception(e)
-                            except Exception as e:
-                                if not request.future.done():
-                                    request.future.set_exception(e)
-                                self.circuit_breaker.record_failure()
-                                self.metrics.failed_queries += 1
-                                self.metrics.last_error = str(e)
-                                self.metrics.last_error_time = time.time()
-                            finally:
-                                # Terminal guarantee: whatever path unwinds this
-                                # block — including a cancellation delivered while
-                                # the write ran in the executor thread, which
-                                # cannot be interrupted and may still commit —
-                                # the caller's future must resolve. An unresolved
-                                # future leaves execute_write awaiting forever,
-                                # invisible to the shutdown drain, which only
-                                # cancels still-queued requests.
-                                if not request.future.done():
-                                    request.future.cancel()
-                                current_request = None
-                    # If we get here and wait_task is not in done, it's a timeout - no writes pending
+                    # Process write request with retry logic
+                    try:
+                        result = await self._execute_write_with_retry(request)
+                        if not request.future.done():
+                            request.future.set_result(result)
+                        self.circuit_breaker.record_success()
+                    except ControlFlowError as e:
+                        # Control-flow signals (optimistic-concurrency
+                        # VersionConflictError, post-dedup
+                        # EmbeddingsReconcileRequiredError) escaping execute_write are
+                        # normal write contention, NOT a database fault: propagate to
+                        # the caller WITHOUT recording a breaker failure, mirroring
+                        # begin_transaction's exemption on this backend and the
+                        # PostgreSQL execute_write path. Recording them could open the
+                        # breaker on routine contention and lock out writes.
+                        if not request.future.done():
+                            request.future.set_exception(e)
+                    except Exception as e:
+                        if not request.future.done():
+                            request.future.set_exception(e)
+                        self._record_charged_failure(e)
+                    finally:
+                        # Terminal guarantee: whatever path unwinds this
+                        # block — including a cancellation delivered while
+                        # the write ran in the executor thread, which
+                        # cannot be interrupted and may still commit —
+                        # the caller's future must resolve. An unresolved
+                        # future leaves execute_write awaiting forever,
+                        # invisible to the shutdown drain, which only
+                        # cancels still-queued requests.
+                        if not request.future.done():
+                            request.future.cancel()
+                        current_request = None
 
                 except asyncio.CancelledError:
                     logger.info('Write queue processor cancelled')
@@ -993,11 +1056,20 @@ class SQLiteBackend:
                 current_request.future.cancel()
             # Clean up any remaining tasks
             try:
-                if wait_task and not wait_task.done():
-                    wait_task.cancel()
+                if wait_task is not None:
+                    if not wait_task.done():
+                        wait_task.cancel()
                     with suppress(asyncio.CancelledError):
-                        await wait_task
-                if shutdown_task and not shutdown_task.done():
+                        orphan = await wait_task
+                        # The getter had already dequeued a request when the loop
+                        # unwound (shutdown or cancellation). Cancelling a
+                        # completed task is a no-op, so its request would
+                        # otherwise vanish with its future unresolved; resolve it
+                        # terminally, exactly as shutdown's drain does for
+                        # requests still sitting in the queue.
+                        if not orphan.future.done():
+                            orphan.future.cancel()
+                if shutdown_task is not None and not shutdown_task.done():
                     shutdown_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await shutdown_task
@@ -1086,21 +1158,23 @@ class SQLiteBackend:
 
         assert self._shutdown_event is not None, 'Backend not initialized, call initialize() first'
 
-        shutdown_task = None
+        # One long-lived waiter kept across iterations, like the write-queue
+        # processor: cancelling and recreating it every interval churns tasks and
+        # discards the awaited result of a waiter that completed during the
+        # cancellation window, so the shutdown signal is only noticed one
+        # iteration later.
+        shutdown_task: asyncio.Task[bool] | None = None
 
         try:
             while not self._shutdown:
                 try:
                     # Use wait with timeout for interruptible sleep
-                    shutdown_task = asyncio.create_task(self._shutdown_event.wait())
-                    done, pending = await asyncio.wait([shutdown_task], timeout=self.pool_config.health_check_interval)
-
-                    # Cancel pending tasks
-                    for task in pending:
-                        task.cancel()
-                        # Ensure cancellation is processed
-                        with suppress(asyncio.CancelledError):
-                            await task
+                    if shutdown_task is None:
+                        shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+                    done, _pending = await asyncio.wait(
+                        [shutdown_task],
+                        timeout=self.pool_config.health_check_interval,
+                    )
 
                     if shutdown_task in done:
                         break
@@ -1223,7 +1297,11 @@ class SQLiteBackend:
                         # caller's requests, including the writes that are taught to
                         # ride out the same condition.
                         raise
-                    self.circuit_breaker.record_failure()
+                    # Charged with the failure metrics: this arm is the SINGLE
+                    # accounting site for a read fault (the _execute_read_once
+                    # wrapper deliberately records nothing), so an operator sees
+                    # the failure count AND the message that caused it.
+                    self._record_charged_failure(e)
                     raise
                 finally:
                     # Clean up temporary connections after use
@@ -1237,7 +1315,12 @@ class SQLiteBackend:
         elif allow_write:
             # Direct write connection with lock protection
             async with self._writer_lock:
-                writer = await self._ensure_writer_connection()
+                # Wrap the writer-recreation await so a genuine establishment fault
+                # (e.g. SQLITE_CANTOPEN when the database volume detaches) charges the
+                # breaker with its metrics, instead of escaping above the use-time
+                # recording block below with the breaker still reporting healthy.
+                # Mirrors begin_transaction, which routes the identical call this way.
+                writer = await self._acquire_connection_charging_faults(self._ensure_writer_connection)
                 loop = asyncio.get_running_loop()
                 try:
                     yield writer
@@ -1252,9 +1335,27 @@ class SQLiteBackend:
                     # genuine fault trips the breaker.
                     if isinstance(e, Exception):
                         await run_in_executor_uninterruptible(loop, writer.rollback)
-                        self.circuit_breaker.record_failure()
                     else:
                         writer.rollback()
+                        raise
+                    if isinstance(e, ControlFlowError):
+                        # Normal control flow (a client-input validation error raised
+                        # inside the connection scope), NOT a database fault: rolled
+                        # back, but charging it would let a client repeatedly sending
+                        # invalid input open the process-global breaker. Exempted on
+                        # the readonly arm and in begin_transaction for the same
+                        # reason.
+                        raise
+                    if is_sqlite_locked_error(e):
+                        # SQLITE_BUSY / SQLITE_LOCKED write contention (typically a
+                        # concurrent process sharing the database file): rolled back,
+                        # but self-clearing contention is NOT a database fault --
+                        # charging it would open the breaker on the very condition the
+                        # write paths are taught to ride out. Same exemption as the
+                        # readonly arm and begin_transaction.
+                        logger.warning(f'Direct write hit SQLite contention, rolled back (retry expected): {e}')
+                        raise
+                    self._record_charged_failure(e)
                     raise
         else:
             # Use write queue for normal write operations
@@ -1363,8 +1464,9 @@ class SQLiteBackend:
                 counting it in failed_queries or charging the breaker (self-clearing
                 contention, not a database fault). A ControlFlowError or any other
                 fault raised inside the read callable propagates unchanged from the
-                single-attempt helper (ControlFlowError stays out of failed_queries;
-                genuine faults are counted there).
+                single-attempt helper; the connection scope inside that helper does
+                the accounting (ControlFlowError stays out of failed_queries, a
+                genuine fault is charged there with last_error/last_error_time).
 
         Note:
             SQLiteBackend expects SYNC callables (not async). The operation is executed
@@ -1421,13 +1523,16 @@ class SQLiteBackend:
         Returns:
             The operation result.
 
-        Raises:
-            ControlFlowError: Re-raised from the read callable WITHOUT counting it
-                in the failed_queries metric (normal control flow, not a fault).
-            sqlite3.OperationalError: Re-raised for the SQLITE_BUSY / SQLITE_LOCKED
-                family WITHOUT counting it in failed_queries, so the caller's retry
-                loop can back off; the get_connection readonly arm has already left
-                the breaker uncharged for this family.
+        Note:
+            Every fault raised by the read callable propagates unchanged; failure
+            ACCOUNTING belongs to the enclosing ``get_connection(readonly=True)``
+            arms, which own the whole classification -- ControlFlowError and the
+            self-clearing SQLITE_BUSY / SQLITE_LOCKED family exempt, a genuine
+            fault routed through ``_record_charged_failure`` so failed_queries,
+            last_error and last_error_time move together with the breaker charge.
+            Counting a fault here as well would double-count every read fault, and
+            counting it here INSTEAD would report a failure count with no
+            diagnostic message.
         """
         async with self.get_connection(readonly=True) as conn:
             loop = asyncio.get_running_loop()
@@ -1439,31 +1544,14 @@ class SQLiteBackend:
                 self.metrics.total_queries += 1
                 return result
 
-            try:
-                # Drain the read like every other executor hop (commit, rollback,
-                # the direct write, reader creation): a cancellation landing on a bare
-                # await releases get_connection's finally, which CLOSES this temporary
-                # reader connection while the query is still running on the worker
-                # thread -- a use-after-free that stalls the event loop for the length
-                # of the in-flight statement or crashes the interpreter. The drain lets
-                # the query finish before the connection is closed.
-                return await run_in_executor_uninterruptible(loop, _execute)
-            except ControlFlowError:
-                # Normal control flow (e.g. a client-input validation error raised
-                # inside a read callable), not a failed query: keep the
-                # operator-facing failed_queries metric consistent with the write
-                # path's exemption, which re-raises before its counter arm.
-                raise
-            except sqlite3.OperationalError as e:
-                if is_sqlite_locked_error(e):
-                    # Self-clearing contention: not a failed query. The caller's retry
-                    # loop backs off and retries on a fresh connection.
-                    raise
-                self.metrics.failed_queries += 1
-                raise
-            except Exception:
-                self.metrics.failed_queries += 1
-                raise
+            # Drain the read like every other executor hop (commit, rollback,
+            # the direct write, reader creation): a cancellation landing on a bare
+            # await releases get_connection's finally, which CLOSES this temporary
+            # reader connection while the query is still running on the worker
+            # thread -- a use-after-free that stalls the event loop for the length
+            # of the in-flight statement or crashes the interpreter. The drain lets
+            # the query finish before the connection is closed.
+            return await run_in_executor_uninterruptible(loop, _execute)
 
     @asynccontextmanager
     async def begin_transaction(self) -> AsyncGenerator[SQLiteTransactionContext, None]:
@@ -1590,12 +1678,29 @@ class SQLiteBackend:
                     raise
 
                 logger.warning(f'Transaction failed, rolling back: {e}')
-                self.circuit_breaker.record_failure()
+                # Charged failure WITH metrics: begin_transaction is the main
+                # store/update write path on this backend and no execute_read /
+                # execute_write wrapper observes transactional flows, so this is
+                # the only site that can count the fault into
+                # failed_queries/last_error.
+                self._record_charged_failure(e)
                 raise
 
     def get_metrics(self) -> dict[str, Any]:
-        """Get current metrics for monitoring."""
+        """Get current metrics for monitoring.
+
+        Returns:
+            Mapping published to clients as ``connection_metrics``. ``backend_type``
+            and ``pool_size`` are the two keys the shared cross-backend contract
+            guarantees, so a client can identify the backend and read one pool
+            bound without branching on backend-specific keys; the SQLite pool-size
+            analogue is the reader-pool bound (SQLite serializes writes onto a
+            single writer connection, so the concurrency bound IS the reader
+            count). The remaining keys are backend-specific.
+        """
         return {
+            'backend_type': self.backend_type,
+            'pool_size': self.pool_config.max_readers,
             'total_connections': self.metrics.total_connections,
             'active_connections': self.metrics.active_connections,
             'failed_connections': self.metrics.failed_connections,

@@ -419,6 +419,44 @@ class TestPostgresqlPoolLimits:
         assert settings.postgresql_connect_timeout_s == 60.0
         assert settings.postgresql_pool_timeout_s == 120.0
 
+    def test_connect_timeout_at_or_above_pool_timeout_rejected(self) -> None:
+        """A connect budget the acquire deadline always pre-empts is a misconfiguration.
+
+        asyncpg wraps the queue wait AND the connect callable in one
+        wait_for(timeout=POSTGRESQL_POOL_TIMEOUT_S), so a connect budget at or above
+        the acquire budget can never elapse on its own: the acquire deadline wins and
+        CANCELS the dial, which destroys the typed establishment error the fault
+        classification depends on. Nothing else rejects the ordering, so an operator
+        could set it silently.
+        """
+        from app.settings import StorageSettings
+
+        with (
+            env_var('POSTGRESQL_CONNECT_TIMEOUT_S', '180'),
+            env_var('POSTGRESQL_POOL_TIMEOUT_S', '120'),
+            pytest.raises(ValidationError, match='must be below'),
+        ):
+            StorageSettings()
+
+        with (
+            env_var('POSTGRESQL_CONNECT_TIMEOUT_S', '60'),
+            env_var('POSTGRESQL_POOL_TIMEOUT_S', '60'),
+            pytest.raises(ValidationError, match='must be below'),
+        ):
+            StorageSettings()
+
+    def test_connect_timeout_below_pool_timeout_accepted(self) -> None:
+        """A correctly ordered pair passes, including a tuned-down acquire budget."""
+        from app.settings import StorageSettings
+
+        with (
+            env_var('POSTGRESQL_CONNECT_TIMEOUT_S', '20'),
+            env_var('POSTGRESQL_POOL_TIMEOUT_S', '60'),
+        ):
+            settings = StorageSettings()
+        assert settings.postgresql_connect_timeout_s == 20.0
+        assert settings.postgresql_pool_timeout_s == 60.0
+
     @pytest.mark.parametrize(
         ('env_name', 'value'),
         [

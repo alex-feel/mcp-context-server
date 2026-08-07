@@ -43,6 +43,9 @@ from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
 from app.metadata_types import non_finite_metadata_error
 from app.models import MAX_IMAGES_PER_ENTRY
+from app.models import MAX_TAG_LENGTH
+from app.models import MAX_TAGS_PER_ENTRY
+from app.models import MAX_THREAD_ID_LENGTH
 from app.repositories.base import canonical_timestamp
 from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
@@ -55,6 +58,7 @@ from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import EntryNotFoundError
 from app.tools._shared import build_store_response_message
 from app.tools._shared import build_update_response_message
+from app.tools._shared import cleanup_embeddings_for_delete
 from app.tools._shared import embed_then_compress
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
@@ -62,6 +66,8 @@ from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import node_layer_active
+from app.tools._shared import reject_oversized_indexed_values
+from app.tools._shared import reject_oversized_tags
 from app.tools._shared import reject_unstorable_input
 from app.tools._shared import run_generation
 from app.tools._shared import validate_and_normalize_images
@@ -75,7 +81,15 @@ settings = get_settings()
 
 
 async def store_context(
-    thread_id: Annotated[str, Field(min_length=1, description='Unique identifier for the conversation/task thread')],
+    thread_id: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=MAX_THREAD_ID_LENGTH,
+            description='Unique identifier for the conversation/task thread '
+            f'(at most {MAX_THREAD_ID_LENGTH} characters)',
+        ),
+    ],
     source: Annotated[Literal['user', 'agent'], Field(description="Either 'user' or 'agent'")],
     text: Annotated[str, Field(min_length=1, description='Text content to store')],
     images: Annotated[
@@ -96,7 +110,14 @@ async def store_context(
             'These fields are indexed for faster filtering but not required.',
         ),
     ] = None,
-    tags: Annotated[list[str] | None, Field(description='List of tags (normalized to lowercase)')] = None,
+    tags: Annotated[
+        list[Annotated[str, Field(max_length=MAX_TAG_LENGTH)]] | None,
+        Field(
+            max_length=MAX_TAGS_PER_ENTRY,
+            description=f'List of tags (normalized to lowercase). Max {MAX_TAGS_PER_ENTRY} tags, '
+            f'each at most {MAX_TAG_LENGTH} characters',
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> StoreContextSuccessDict:
     """Store a context entry.
@@ -165,6 +186,19 @@ async def store_context(
         # PostgreSQL after a wasted generation pass, inside the transaction where a
         # non-ControlFlowError charges the circuit breaker.
         reject_unstorable_input(thread_id=thread_id, text=text, tags=tags, metadata=metadata)
+
+        # Reject an oversized tag list BEFORE generation. The wire schema already
+        # advertises both bounds, but the shared chokepoint is what makes the four
+        # write tools agree: without the per-tag length cap an over-long tag stores
+        # on SQLite and aborts the PostgreSQL INSERT on idx_tags_tag inside the
+        # transaction, after a wasted generation pass and while charging the breaker.
+        reject_oversized_tags(tags)
+
+        # Reject an over-long thread_id or indexed metadata value for the same reason,
+        # and at the same point: each also lands in a PostgreSQL btree index whose
+        # index-tuple ceiling aborts the INSERT inside the transaction where SQLite
+        # stores the identical value.
+        reject_oversized_indexed_values(thread_id=thread_id, metadata=metadata)
 
         # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===
         # All generation happens BEFORE any database operation: if an
@@ -552,26 +586,21 @@ async def delete_context(
             await ctx.info(f'Deleting context: ids={context_ids}, thread={thread_id}')
 
         deleted = 0
+        backend = repos.context.backend
 
         if context_ids:
-            # Delete embeddings first (explicit cleanup). Gate on whether the
-            # embedding tables were ever PROVISIONED (embedding_tables_exist),
-            # NOT on the runtime ENABLE_EMBEDDING_GENERATION/COMPRESSION toggles:
-            # a prior session may have written embeddings that a now-disabled
-            # toggle would skip cleaning. On SQLite the vec0 table has no FK and
-            # is reachable only through the embedding_chunks bridge, so once that
-            # bridge cascades away with the context row the vec0 vectors are
-            # orphaned permanently. Mirrors the stale-embedding cleanup on the
-            # update path (app/tools/_shared.py), which gates on the same signal.
-            if await repos.embeddings.embedding_tables_exist():
-                for context_id in context_ids:
-                    try:
-                        await repos.embeddings.delete(context_id)
-                    except Exception as e:
-                        logger.warning(f'Failed to delete embedding for context {context_id}: {e}')
-                        # Non-blocking: continue even if embedding deletion fails
-
-            deleted = await repos.context.delete_by_ids(context_ids)
+            # Embedding cleanup and the row delete run in ONE transaction so they
+            # commit or roll back together. Deleting the embeddings first closes
+            # the orphaned-vector window (a SQLite vec0 row outliving its context
+            # row); the transaction closes the complementary one -- a failure or
+            # cancellation between the two would otherwise leave entries stripped
+            # of their vectors while their rows survive, silently missing from
+            # semantic and hybrid search with no path back short of a text edit.
+            # cleanup_embeddings_for_delete is a no-op on PostgreSQL, where
+            # ON DELETE CASCADE removes the embedding rows in the same statement.
+            async with backend.begin_transaction() as txn:
+                await cleanup_embeddings_for_delete(repos, txn, context_ids)
+                deleted = await repos.context.delete_by_ids(context_ids, txn=txn)
             logger.info(f'Deleted {deleted} context entries by IDs')
 
         elif thread_id:
@@ -579,34 +608,25 @@ async def delete_context(
             # the context rows, so a single WHERE thread_id = ? delete is atomic and needs
             # no explicit embedding cleanup.
             #
-            # On SQLite the vec0 virtual embedding tables have no FK CASCADE and are reached
-            # only through the embedding_chunks bridge; when a context row is deleted its
-            # bridge cascades away but the vec0 vectors it referenced orphan permanently
-            # unless cleaned first. A WHERE thread_id = ? delete re-evaluates the predicate
-            # independently of the pre-queried cleanup snapshot, so a store committing into
-            # the thread between the snapshot and the delete would be swept by the delete
-            # while its embeddings escaped the snapshot and orphaned. Constrain the delete to
-            # exactly the snapshot ids so the cleaned set and the deleted set are identical:
-            # an entry inserted after the snapshot is neither cleaned nor deleted (it simply
-            # survives the operation), which closes the orphan window without a wrapping
-            # transaction. delete_by_ids chunks the id list, so a very large thread is safe.
-            backend = repos.context.backend
+            # On SQLite the fp32 vec0 virtual embedding table has no FK CASCADE and is
+            # reached only through the embedding_chunks bridge; when a context row is
+            # deleted its bridge cascades away but the vec0 vectors it referenced orphan
+            # permanently unless cleaned first. A WHERE thread_id = ? delete re-evaluates
+            # the predicate independently of the pre-queried cleanup snapshot, so a store
+            # committing into the thread between the snapshot and the delete would be swept
+            # by the delete while its embeddings escaped the snapshot and orphaned.
+            # Constrain the delete to exactly the snapshot ids so the cleaned set and the
+            # deleted set are identical: an entry inserted after the snapshot is neither
+            # cleaned nor deleted (it simply survives the operation). delete_by_ids chunks
+            # the id list, so a very large thread is safe.
             if backend.backend_type == 'sqlite':
                 thread_ids_to_delete = await repos.context.get_ids_matching_batch_criteria(
                     thread_ids=[thread_id],
                 )
-                # Gate embedding cleanup on table PRESENCE (embedding_tables_exist), not the
-                # runtime ENABLE_EMBEDDING_GENERATION/COMPRESSION toggles: a prior session's
-                # embeddings must still be cleaned even after generation/compression are turned
-                # off, or the FK-less vec0 rows orphan. Mirrors the context_ids branch above.
-                if thread_ids_to_delete and await repos.embeddings.embedding_tables_exist():
-                    for cid in thread_ids_to_delete:
-                        try:
-                            await repos.embeddings.delete(cid)
-                        except Exception as e:
-                            logger.warning(f'Failed to delete embedding for context {cid}: {e}')
-                            # Non-blocking: continue with context deletion
-                deleted = await repos.context.delete_by_ids(thread_ids_to_delete)
+                if thread_ids_to_delete:
+                    async with backend.begin_transaction() as txn:
+                        await cleanup_embeddings_for_delete(repos, txn, thread_ids_to_delete)
+                        deleted = await repos.context.delete_by_ids(thread_ids_to_delete, txn=txn)
             else:
                 deleted = await repos.context.delete_by_thread(thread_id)
             logger.info(f'Deleted {deleted} entries from thread {thread_id}')
@@ -641,7 +661,14 @@ async def update_context(
             'existing updated, null values DELETE keys. MUTUALLY EXCLUSIVE with metadata.',
         ),
     ] = None,
-    tags: Annotated[list[str] | None, Field(description='New tags list (REPLACES all existing)')] = None,
+    tags: Annotated[
+        list[Annotated[str, Field(max_length=MAX_TAG_LENGTH)]] | None,
+        Field(
+            max_length=MAX_TAGS_PER_ENTRY,
+            description=f'New tags list (REPLACES all existing). Max {MAX_TAGS_PER_ENTRY} tags, '
+            f'each at most {MAX_TAG_LENGTH} characters',
+        ),
+    ] = None,
     images: Annotated[
         list[dict[str, str]] | None,
         Field(
@@ -697,6 +724,21 @@ async def update_context(
 
         # Validate images early (before any operations)
         validated_images, _, _ = validate_and_normalize_images(images, error_mode='raise')
+
+        # Reject an oversized tag list here in the input-validation phase, for the
+        # same cross-backend-parity and breaker reason as the store path: an
+        # over-long tag stores on SQLite and aborts the PostgreSQL INSERT on
+        # idx_tags_tag inside the transaction, after a wasted generation pass.
+        reject_oversized_tags(tags)
+
+        # Reject an over-long value under an INDEXED metadata key, in both the
+        # replacement and the merge-patch form: each lands in that field's expression
+        # btree index (idx_metadata_<field>), whose index-tuple ceiling aborts the
+        # UPDATE inside the transaction where SQLite stores it. thread_id is immutable
+        # on this path, so only metadata is checked. Runs in the input-validation
+        # phase, alongside the tag caps and before any database work.
+        for meta_value in (metadata, metadata_patch):
+            reject_oversized_indexed_values(metadata=meta_value)
 
         # Get repositories
         repos = await ensure_repositories()

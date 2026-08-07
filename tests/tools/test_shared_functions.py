@@ -223,24 +223,40 @@ class TestValidateAndNormalizeImages:
         assert content_type == 'multimodal'
         assert errors == []
 
-    def test_raise_mode_non_finite_image_metadata(self) -> None:
-        """A dict-valued image metadata (untyped batch path) with NaN/Infinity is rejected.
+    def test_raise_mode_rejects_dict_image_metadata(self) -> None:
+        """A dict-valued image metadata (untyped batch path only) is rejected.
 
-        json.dumps emits the invalid-JSON tokens NaN/Infinity, which PostgreSQL's jsonb
-        image_metadata column rejects while SQLite stores them -- a cross-backend parity
-        divergence caught in Phase 1, before the generation pass and the transaction.
+        Per-image metadata crosses the boundary as a JSON-ENCODED STRING: the typed
+        single-entry tools declare images as list[dict[str, str]], so a dict there is
+        a Pydantic error. The untyped batch path bypassed that and stored the dict,
+        which the strict get_context_by_ids output schema then refused to serialize --
+        making the entry permanently unreadable. Rejecting the shape here also
+        subsumes the NaN/Infinity parity hazard: only a bare float serializes to the
+        invalid-JSON tokens PostgreSQL's jsonb column rejects, and a JSON-encoded
+        string carries none.
         """
         imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'metadata': {'score': float('nan')}}])
-        with pytest.raises(ToolError, match='Image 0 metadata:'):
+        with pytest.raises(ToolError, match='Image 0 metadata must be a JSON-encoded string'):
             validate_and_normalize_images(imgs, error_mode='raise')
 
-    def test_collect_mode_non_finite_image_metadata_nested(self) -> None:
-        """collect mode reports a non-finite image-metadata error nested at any depth."""
-        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'metadata': {'deep': {'x': float('inf')}}}])
+    def test_collect_mode_rejects_non_string_image_metadata(self) -> None:
+        """collect mode reports the same shape rejection as a per-entry error."""
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'metadata': {'deep': {'x': 1}}}])
         _, content_type, errors = validate_and_normalize_images(imgs, error_mode='collect')
         assert content_type == 'text'
         assert len(errors) == 1
-        assert 'Image 0 metadata:' in errors[0]
+        assert 'Image 0 metadata must be a JSON-encoded string' in errors[0]
+
+    def test_null_image_metadata_is_treated_as_absent(self) -> None:
+        """An explicit null metadata means "no metadata" and is accepted.
+
+        It stores as SQL NULL exactly like an omitted key, so refusing it would add
+        friction without preventing anything.
+        """
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'metadata': None}])
+        _, content_type, errors = validate_and_normalize_images(imgs, error_mode='collect')
+        assert content_type == 'multimodal'
+        assert errors == []
 
     def test_raise_mode_missing_data(self) -> None:
         """error_mode='raise' raises ToolError for missing data field."""
@@ -1000,6 +1016,7 @@ class TestExecuteUpdateInTransaction:
         repos.context.update_context_entry = AsyncMock(return_value=(True, ['text']))
         repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
         repos.context.update_content_type = AsyncMock()
+        repos.context.touch_updated_at = AsyncMock(return_value=True)
         repos.context.get_content_type = AsyncMock(return_value='text')
         repos.context.entry_exists = AsyncMock(return_value=True)
         repos.tags.replace_tags_for_context = AsyncMock()

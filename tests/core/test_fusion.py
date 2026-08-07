@@ -227,6 +227,53 @@ class TestReciprocalRankFusion:
         assert results[0].get('tags') == []
 
 
+class TestRRFTieOrderingIsDeterministic:
+    """Equal RRF scores must resolve on the context id, not on input order.
+
+    RRF ties are ordinary: a document ranked 1 in the FTS leg only and a different
+    document ranked 1 in the semantic leg only both score 1/(k+1). A score-only sort is
+    stable, so tied documents keep the registry insertion order, which follows the two
+    legs' own (write-order sensitive) orderings. The fused list is then sliced by the
+    caller's limit/offset, so a tie that reshuffles between two calls silently drops or
+    duplicates a document across pages.
+    """
+
+    def test_tied_scores_sort_by_id_regardless_of_input_order(self) -> None:
+        """Two documents with identical RRF scores come back id-ascending either way."""
+        doc_high = {'id': 'ffff0000', 'score': 1.0, 'text_content': 'high id'}
+        doc_low = {'id': '00001111', 'distance': 0.2, 'text_content': 'low id'}
+
+        forward = reciprocal_rank_fusion([doc_high], [doc_low], k=60, limit=10)
+        # Same documents, legs swapped: the tie is identical, only insertion order differs.
+        reversed_order = reciprocal_rank_fusion(
+            [{'id': '00001111', 'score': 1.0, 'text_content': 'low id'}],
+            [{'id': 'ffff0000', 'distance': 0.2, 'text_content': 'high id'}],
+            k=60,
+            limit=10,
+        )
+
+        assert [r.get('id') for r in forward] == ['00001111', 'ffff0000']
+        assert [r.get('id') for r in reversed_order] == ['00001111', 'ffff0000']
+        assert forward[0].get('scores', {}).get('rrf') == forward[1].get('scores', {}).get('rrf')
+
+    def test_tied_head_paginates_without_gaps_or_duplicates(self) -> None:
+        """Two head documents tie; slicing the fused list still covers each exactly once."""
+        fts_results: list[dict[str, Any]] = [{'id': 'bbbb2222', 'score': 1.0}]
+        semantic_results: list[dict[str, Any]] = [
+            {'id': 'aaaa1111', 'distance': 0.1},
+            {'id': 'cccc3333', 'distance': 0.4},
+        ]
+
+        full = [str(r.get('id')) for r in reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)]
+        # The two rank-1 documents tie at 1/(k+1); the rank-2 semantic document scores lower,
+        # so the deterministic order is the tied pair id-ascending followed by the lower score.
+        assert full == ['aaaa1111', 'bbbb2222', 'cccc3333']
+        # The caller slices this list by limit/offset, so a stable order is what makes paging safe.
+        pages = [full[index : index + 1] for index in range(len(full))]
+        assert [page[0] for page in pages] == full
+        assert len({page[0] for page in pages}) == len(full)
+
+
 class TestCountUniqueResults:
     """Tests for count_unique_results function."""
 

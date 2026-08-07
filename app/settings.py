@@ -1339,6 +1339,38 @@ class StorageSettings(BaseSettings):
             )
         return self
 
+    @model_validator(mode='after')
+    def validate_connect_timeout_below_pool_timeout(self) -> Self:
+        """Reject a connection-establishment budget that the acquire deadline always pre-empts.
+
+        asyncpg wraps the whole acquire -- the queue wait AND the connect
+        callable -- in ONE ``wait_for(timeout=POSTGRESQL_POOL_TIMEOUT_S)``, so an
+        establishment budget at or above the acquire budget can never expire on
+        its own: the acquire deadline always wins and CANCELS the in-flight dial
+        instead, destroying the typed establishment error that tells an
+        unreachable database from a saturated pool. The backend still charges
+        such a dial (the acquire tracker records the interruption out of band),
+        but the ordering is a misconfiguration in its own right -- a new
+        connection gets strictly less time than the operator asked for -- so it
+        is rejected at the configuration boundary where the operator sees it,
+        rather than silently degrading connection diagnostics at runtime.
+
+        Returns:
+            The validated settings instance.
+
+        Raises:
+            ValueError: If POSTGRESQL_CONNECT_TIMEOUT_S is not below
+                POSTGRESQL_POOL_TIMEOUT_S.
+        """
+        if self.postgresql_connect_timeout_s >= self.postgresql_pool_timeout_s:
+            raise ValueError(
+                f'POSTGRESQL_CONNECT_TIMEOUT_S ({self.postgresql_connect_timeout_s}) must be '
+                f'below POSTGRESQL_POOL_TIMEOUT_S ({self.postgresql_pool_timeout_s}): the pool '
+                f'acquire deadline bounds the connection dial, so an equal or larger connect '
+                f'budget can never elapse and the dial is cancelled instead of timing out',
+            )
+        return self
+
 
 class CompressionSettings(CommonSettings):
     """Embedding compression settings.
@@ -1575,6 +1607,28 @@ class IndexTreeNodeSummarySettings(CommonSettings):
         le=600,
         description='Per-node summary timeout in seconds; a timeout omits that node, '
                     'never aborts the store.',
+    )
+
+    max_nodes: int = Field(
+        default=200,
+        alias='INDEX_TREE_NODE_SUMMARY_MAX_NODES',
+        ge=1,
+        le=10000,
+        description='Maximum number of heading sections summarized for one entry. Bounds TOTAL '
+                    'work per store (the concurrency caps bound only how much runs at once): a '
+                    'heading-dense document would otherwise issue one model call per section. '
+                    'When more sections qualify, the shallowest and longest are summarized first '
+                    'so the outline degrades gracefully.',
+    )
+
+    total_timeout_s: float = Field(
+        default=600.0,
+        alias='INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S',
+        gt=0,
+        le=3600,
+        description='Aggregate wall-clock budget in seconds for the whole per-node summary pass '
+                    'of one entry. When it expires the pass stops and keeps the summaries produced '
+                    'so far; like every other node-summary limit it never aborts the store.',
     )
 
     max_concurrent: int = Field(

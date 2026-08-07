@@ -183,7 +183,7 @@ When FTS is enabled, a new MCP tool becomes available.
 }
 ```
 
-**Note:** The `stats` field is only included when `explain_query=True`. Within the stats block, `backend` (the active storage backend type, e.g. `"sqlite"` or `"postgresql"`) is always present; `query_plan` is also present whenever the stats block appears, since both are populated by the same `explain_query=True` pass.
+**Note:** The `stats` field is only included when `explain_query=True`. Every key of the block is then present, including `backend` (the active storage backend type, e.g. `"sqlite"` or `"postgresql"`) and `query_plan`. A request that fails parameter validation (for example an invalid `metadata_filters` operator) returns the same keys with the counters zeroed and `query_plan` set to `null`, since no query ran, so a client can read `stats["query_plan"]` unconditionally and only has to handle the null.
 
 **Scores Object**:
 - `fts_score`: BM25/ts_rank relevance score (HIGHER = better match)

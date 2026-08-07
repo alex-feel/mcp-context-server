@@ -20,6 +20,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from app.repositories.context_repository import DuplicateCandidate
+from app.settings import get_settings
 
 
 # Error formatting conformance
@@ -687,22 +688,64 @@ class TestBatchUpdateResponseParity:
             assert 'summaries cleared' in result['message']
 
 
+class _FakeDeleteTransaction:
+    """Stand-in for TransactionContext exposing only what the delete path reads."""
+
+    def __init__(self, backend_type: str) -> None:
+        self.connection = object()
+        self.backend_type = backend_type
+
+
+class _FakeTransactionalBackend:
+    """Backend stub whose begin_transaction yields a recording fake transaction."""
+
+    def __init__(self, backend_type: str) -> None:
+        self.backend_type = backend_type
+        self.transactions: list[_FakeDeleteTransaction] = []
+
+    @asynccontextmanager
+    async def begin_transaction(self):
+        """Yield a fake transaction and record it for assertions.
+
+        Yields:
+            The fake transaction context handed to the tool body.
+        """
+        txn = _FakeDeleteTransaction(self.backend_type)
+        self.transactions.append(txn)
+        yield txn
+
+
+@pytest.fixture
+def fp32_cleanup_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Select the fp32 layout, where the explicit per-entry cleanup is required.
+
+    With compression enabled (the default) the compressed payload table cascades
+    with the context row, so the explicit loop is correctly skipped; a test that
+    asserts the loop RUNS therefore needs the fp32 layout.
+    """
+    import app.tools._shared as shared_module
+
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    monkeypatch.setattr(shared_module, 'settings', get_settings())
+
+
 # Embedding cleanup for non-ID batch deletes on SQLite
 @pytest.mark.usefixtures('initialized_server')
 class TestBatchDeleteEmbeddingCleanup:
     """Embedding cleanup and snapshot-constrained deletion on SQLite."""
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures('fp32_cleanup_mode')
     async def test_delete_batch_by_thread_cleans_embeddings_sqlite(self):
-        """Verify embeddings.delete is called when deleting by thread_ids on SQLite."""
+        """Verify the fp32 embedding cleanup runs when deleting by thread_ids on SQLite."""
         from app.tools.batch import delete_context_batch
 
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
 
-            mock_backend = MagicMock()
-            mock_backend.backend_type = 'sqlite'
+            mock_backend = _FakeTransactionalBackend('sqlite')
             mock_repos.context.backend = mock_backend
 
             # The snapshot returns the ids the combined criteria match.
@@ -711,7 +754,7 @@ class TestBatchDeleteEmbeddingCleanup:
                 return_value=list(snapshot),
             )
             mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=True)
-            mock_repos.embeddings.delete = AsyncMock()
+            mock_repos.embeddings.delete_all_chunks_bulk = AsyncMock(return_value=0)
             mock_repos.context.delete_by_ids = AsyncMock(return_value=3)
             mock_repos.context.delete_contexts_batch = AsyncMock()
 
@@ -721,11 +764,11 @@ class TestBatchDeleteEmbeddingCleanup:
             assert result['deleted_count'] == 3
             assert result['criteria_used'] == ['thread_ids: 1 threads']
 
-            # Verify embeddings.delete was called for each snapshotted ID
-            assert mock_repos.embeddings.delete.call_count == 3
-            mock_repos.embeddings.delete.assert_any_call('id-10')
-            mock_repos.embeddings.delete.assert_any_call('id-20')
-            mock_repos.embeddings.delete.assert_any_call('id-30')
+            # The cleanup covered the whole snapshot in ONE bulk call on the shared
+            # transaction: a per-entry loop would cost one write round trip per matched
+            # row and hold the single SQLite writer for the entire scan.
+            txn = mock_backend.transactions[0]
+            mock_repos.embeddings.delete_all_chunks_bulk.assert_awaited_once_with(snapshot, txn=txn)
 
             # Verify get_ids_matching_batch_criteria was called with correct args.
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
@@ -735,23 +778,23 @@ class TestBatchDeleteEmbeddingCleanup:
                 older_than_days=None,
             )
 
-            # The destructive step deletes EXACTLY the snapshot ids; it never
-            # re-runs the criteria, which would sweep rows committed after the
-            # cleanup snapshot and orphan their vec0 embeddings.
-            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot)
+            # The destructive step deletes EXACTLY the snapshot ids, on the SAME
+            # transaction; it never re-runs the criteria, which would sweep rows
+            # committed after the cleanup snapshot and orphan their vec0 embeddings.
+            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, txn=txn)
             mock_repos.context.delete_contexts_batch.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures('fp32_cleanup_mode')
     async def test_delete_batch_by_older_than_cleans_embeddings_sqlite(self):
-        """Verify embeddings.delete is called when deleting by older_than_days on SQLite."""
+        """Verify the fp32 cleanup runs when deleting by older_than_days on SQLite."""
         from app.tools.batch import delete_context_batch
 
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
 
-            mock_backend = MagicMock()
-            mock_backend.backend_type = 'sqlite'
+            mock_backend = _FakeTransactionalBackend('sqlite')
             mock_repos.context.backend = mock_backend
 
             snapshot = ['id-5', 'id-15']
@@ -759,20 +802,21 @@ class TestBatchDeleteEmbeddingCleanup:
                 return_value=list(snapshot),
             )
             mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=True)
-            mock_repos.embeddings.delete = AsyncMock()
+            mock_repos.embeddings.delete_all_chunks_bulk = AsyncMock(return_value=0)
             mock_repos.context.delete_by_ids = AsyncMock(return_value=2)
             mock_repos.context.delete_contexts_batch = AsyncMock()
 
-            result = await delete_context_batch(older_than_days=30)
+            # older_than_days alone is refused (it would reach the whole database), so
+            # the age criterion is combined with a source filter here.
+            result = await delete_context_batch(older_than_days=30, source='agent')
 
             assert result['success'] is True
             assert result['deleted_count'] == 2
-            assert result['criteria_used'] == ['older_than_days: 30']
+            assert result['criteria_used'] == ['source: agent', 'older_than_days: 30']
 
-            # Verify embeddings.delete was called for each snapshotted ID
-            assert mock_repos.embeddings.delete.call_count == 2
-            mock_repos.embeddings.delete.assert_any_call('id-5')
-            mock_repos.embeddings.delete.assert_any_call('id-15')
+            # The cleanup covered the whole snapshot in ONE bulk call.
+            mock_repos.embeddings.delete_all_chunks_bulk.assert_awaited_once()
+            assert mock_repos.embeddings.delete_all_chunks_bulk.await_args.args[0] == snapshot
 
             # The criteria (including the age boundary) are evaluated exactly ONCE,
             # in the snapshot SELECT; the destructive step deletes exactly the
@@ -782,10 +826,11 @@ class TestBatchDeleteEmbeddingCleanup:
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
                 context_ids=None,
                 thread_ids=None,
-                source=None,
+                source='agent',
                 older_than_days=30,
             )
-            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot)
+            txn = mock_backend.transactions[0]
+            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, txn=txn)
             mock_repos.context.delete_contexts_batch.assert_not_called()
 
     @pytest.mark.asyncio
@@ -827,7 +872,7 @@ class TestBatchDeleteEmbeddingCleanup:
                 older_than_days=None,
             )
             mock_repos.context.get_ids_matching_batch_criteria.assert_not_called()
-            mock_repos.embeddings.delete.assert_not_called()
+            mock_repos.embeddings.delete_all_chunks_bulk.assert_not_called()
             mock_repos.context.delete_by_ids.assert_not_called()
 
     @pytest.mark.asyncio
@@ -854,25 +899,31 @@ class TestBatchDeleteEmbeddingCleanup:
         snapshot_ids = {first['context_id'], second['context_id']}
 
         interleaved: dict[str, str] = {}
-        mock_embedding_delete = AsyncMock()
+        mock_embedding_delete = AsyncMock(return_value=0)
 
-        async def tables_exist_and_interleave(*_args: object, **_kwargs: object) -> bool:
-            # Fires after the snapshot SELECT and before cleanup + delete: the
-            # exact window a concurrent store commits into. Guarded so a nested
-            # call cannot recurse into another store.
+        async def snapshot_then_interleave(**_kwargs: object) -> list[str]:
+            # The interleaving store must commit AFTER the snapshot SELECT and
+            # BEFORE the cleanup + delete transaction opens -- exactly the window
+            # a concurrent writer lands in. It cannot run once that transaction is
+            # open: SQLite serializes writes onto one writer connection, so a
+            # same-process store would wait on a lock the caller itself holds.
+            ids = sorted(snapshot_ids)
             if 'id' not in interleaved:
                 stored = await store_context(
                     thread_id=thread, source='user', text='Entry three (interleaved)',
                 )
                 interleaved['id'] = stored['context_id']
-            return True
+            return ids
 
         with (
-            patch.object(repos.embeddings, 'delete', mock_embedding_delete),
+            patch.object(repos.embeddings, 'delete_all_chunks_bulk', mock_embedding_delete),
             patch.object(
-                repos.embeddings,
-                'embedding_tables_exist',
-                AsyncMock(side_effect=tables_exist_and_interleave),
+                repos.embeddings, 'embedding_tables_exist', AsyncMock(return_value=True),
+            ),
+            patch.object(
+                repos.context,
+                'get_ids_matching_batch_criteria',
+                AsyncMock(side_effect=snapshot_then_interleave),
             ),
         ):
             result = await delete_context_batch(thread_ids=[thread])
@@ -882,7 +933,7 @@ class TestBatchDeleteEmbeddingCleanup:
         assert result['deleted_count'] == 2
 
         # The cleaned set and the deleted set are identical: exactly the snapshot.
-        cleaned = {call.args[0] for call in mock_embedding_delete.await_args_list}
+        cleaned = {cid for call in mock_embedding_delete.await_args_list for cid in call.args[0]}
         assert cleaned == snapshot_ids
 
         # The snapshotted entries are gone; the interleaved entry survives.

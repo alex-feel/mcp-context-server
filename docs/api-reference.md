@@ -58,12 +58,14 @@ get_context_by_ids(context_ids=[
 Store a context entry with optional images and flexible metadata.
 
 **Parameters:**
-- `thread_id` (str, required): Unique identifier for the conversation/task thread
+- `thread_id` (str, required): Unique identifier for the conversation/task thread. At most 256 characters.
 - `source` (str, required): Either 'user' or 'agent'
 - `text` (str, required): Text content to store
-- `images` (list, optional): Base64 encoded images with mime_type
+- `images` (list, optional): Base64 encoded images with mime_type. Each image's own `metadata` crosses the boundary as a JSON-encoded **string**, not an object, and `get_context_by_ids` returns it verbatim as that same string.
 - `metadata` (dict, optional): Additional structured data - completely flexible JSON object for your use case
-- `tags` (list, optional): Tags for organization (automatically normalized)
+- `tags` (list, optional): Tags for organization (automatically normalized). At most 100 tags, each at most 128 characters.
+
+**Write-path length caps:** `thread_id` (256 characters), each tag (128 characters) and the value stored under any *indexed* metadata field (512 characters) are bounded at the tool boundary. Each of those values lands in a PostgreSQL btree index whose index-tuple ceiling would otherwise reject the write inside the store transaction while SQLite accepted the identical value, so the cap is what keeps the two backends accepting and rejecting the same input. Values under non-indexed metadata keys are not length-capped.
 
 **Metadata Flexibility:**
 The metadata field accepts any JSON-serializable structure, making the server adaptable to various use cases:
@@ -177,8 +179,10 @@ Update specific fields of an existing context entry.
 - `text` (str, optional): New text content
 - `metadata` (dict, optional): New metadata (full replacement)
 - `metadata_patch` (dict, optional): Partial metadata update using RFC 7396 JSON Merge Patch
-- `tags` (list, optional): New tags (full replacement)
-- `images` (list, optional): New images (full replacement)
+- `tags` (list, optional): New tags (full replacement). At most 100 tags, each at most 128 characters.
+- `images` (list, optional): New images (full replacement). Each image's own `metadata` crosses the boundary as a JSON-encoded **string**, not an object.
+
+The same write-path length caps as `store_context` apply: each tag is limited to 128 characters, and the value under any indexed metadata field to 512 characters, in both the `metadata` and the `metadata_patch` form.
 
 **Metadata Update Options:**
 
@@ -504,6 +508,8 @@ Store multiple context entries in a single batch operation.
   - `metadata` (dict, optional), `tags` (list, optional), `images` (list, optional)
 - `atomic` (bool, optional): If true, all succeed or all fail (default: true)
 
+Each entry is subject to the same write-path length caps as `store_context`: `thread_id` at most 256 characters, at most 100 tags of at most 128 characters each, and at most 512 characters in the value under any indexed metadata field. A breach is reported as a per-entry validation error, so `atomic=false` still stores the remaining entries.
+
 **Returns:** Dictionary with success, total, succeeded, failed, results array, message
 
 ### update_context_batch
@@ -517,6 +523,8 @@ Update multiple context entries in a single batch operation.
   - `tags` (list, optional), `images` (list, optional)
 - `atomic` (bool, optional): If true, all succeed or all fail (default: true)
 
+Each update is subject to the same write-path length caps as `update_context`: at most 100 tags of at most 128 characters each, and at most 512 characters in the value under any indexed metadata field (in both the `metadata` and the `metadata_patch` form). A breach is reported as a per-entry validation error.
+
 **Note:** `metadata_patch` uses RFC 7396 JSON Merge Patch semantics. See [Metadata Guide](metadata-addition-updating-and-filtering.md#partial-metadata-updates-metadata_patch) for details.
 
 **Returns:** Dictionary with success, total, succeeded, failed, results array, message
@@ -529,9 +537,9 @@ Delete multiple context entries by various criteria. **IRREVERSIBLE.**
 - `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID context IDs to delete, or 8-31 character hex prefixes resolved independently per element (zero matches or an ambiguous prefix returns an error). At most 100 IDs per call.
 - `thread_ids` (list, optional): Delete all entries in these threads (at most 100 thread IDs per call)
 - `source` (str, optional): Filter by source ('user' or 'agent') - must combine with another criterion
-- `older_than_days` (int, optional): Delete entries older than N days
+- `older_than_days` (int, optional): Delete entries older than N days - must combine with another criterion
 
-At least one criterion must be provided. Cascading delete removes associated tags, images, and embeddings.
+At least one criterion must be provided. `source` and `older_than_days` are each insufficient on their own: on any database older than the requested window, either one matches essentially every row, so a single scalar would irreversibly reach the whole table. Combine them with each other, with `thread_ids`, or with `context_ids` (a retention purge is expressible as `older_than_days` plus `source`). Cascading delete removes associated tags, images, and embeddings.
 
 **Returns:** Dictionary with success, deleted_count, criteria_used, message
 

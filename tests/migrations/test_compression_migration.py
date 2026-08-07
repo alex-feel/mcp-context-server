@@ -15,8 +15,11 @@ import contextlib
 import importlib.util
 import sqlite3
 from collections.abc import AsyncGenerator
+from collections.abc import Callable
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
+from typing import cast
 
 import pytest
 import pytest_asyncio
@@ -746,3 +749,86 @@ async def test_sqlite_migration_stays_clean_after_zero_data_decompress_generatio
         return cur.fetchone() is not None
 
     assert await backend.execute_read(_payload_exists) is False
+
+
+class _FakeVecConnection:
+    """SQLite connection stand-in whose vec0 table read raises a chosen error.
+
+    ``sqlite_master`` reports the table as present, while the row probe against it
+    fails -- the shape of a vec0 virtual table whose module is not loaded, and the
+    shape of a lock held by another process, which are the two cases the probe's
+    handler must tell apart.
+    """
+
+    def __init__(self, error: sqlite3.OperationalError) -> None:
+        self._error = error
+
+    def execute(self, sql: str) -> object:
+        """Return a cursor-like object, or raise the configured error.
+
+        Args:
+            sql: The statement the probe issues.
+
+        Returns:
+            A cursor-like object for the sqlite_master lookup. The row probe against
+            the vec0 table instead re-raises the configured error.
+        """
+        if 'FROM vec_context_embeddings' in sql:
+            raise self._error
+
+        class _Cursor:
+            def fetchone(self) -> tuple[str]:
+                return ('vec_context_embeddings',)
+
+        return _Cursor()
+
+
+class _FakeProbeBackend:
+    """Minimal storage-backend stand-in running read callables on a fake connection."""
+
+    backend_type = 'sqlite'
+
+    def __init__(self, conn: _FakeVecConnection) -> None:
+        self._conn = conn
+
+    async def execute_read(self, operation: Callable[[Any], bool]) -> bool:
+        """Run the probe callable against the fake connection.
+
+        Args:
+            operation: The probe closure.
+
+        Returns:
+            Whatever the closure returns.
+        """
+        return operation(self._conn)
+
+
+@pytest.mark.asyncio
+async def test_fp32_probe_treats_a_missing_vec0_module_as_populated() -> None:
+    """An unreadable vec0 table refuses the drop: it may hold data once loadable.
+
+    The table exists in sqlite_master but its module is not loaded, so the rows
+    cannot be counted. Refusing is the fail-safe direction -- dropping it would
+    destroy shadow-table data that becomes readable the moment the extension loads.
+    """
+    from app.migrations.compression import _fp32_table_has_rows
+
+    backend = _FakeProbeBackend(_FakeVecConnection(sqlite3.OperationalError('no such module: vec0')))
+
+    assert await _fp32_table_has_rows(cast('StorageBackend', backend)) is True
+
+
+@pytest.mark.asyncio
+async def test_fp32_probe_propagates_lock_contention() -> None:
+    """SQLITE_BUSY must reach the bounded retry loop, not be read as 'fp32 populated'.
+
+    Consumed inside the read callable, a self-clearing lock became a permanent
+    ConfigurationError telling the operator to run --compress on a database that may
+    hold no fp32 rows at all.
+    """
+    from app.migrations.compression import _fp32_table_has_rows
+
+    backend = _FakeProbeBackend(_FakeVecConnection(sqlite3.OperationalError('database is locked')))
+
+    with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+        await _fp32_table_has_rows(cast('StorageBackend', backend))

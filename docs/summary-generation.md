@@ -373,7 +373,7 @@ The `summary` field appears in all search tool results when available:
 {
   "results": [
     {
-      "id": 123,
+      "id": "0190abcdef1234567890abcdef123456",
       "thread_id": "project-abc",
       "source": "agent",
       "text_content": "Agent implemented OAuth2 authentication with JWT tokens for the user management API, resolving rate-limiting issues on the /auth/...",

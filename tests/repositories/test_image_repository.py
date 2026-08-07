@@ -453,7 +453,7 @@ class TestImageRepository:
         assert len(images) == 5
         for i, img in enumerate(images):
             img_metadata = img.get('metadata')
-            assert img_metadata is not None
+            assert isinstance(img_metadata, dict)
             assert img_metadata.get('order') == str(i)
 
     async def test_image_cascade_delete_on_context_removal(

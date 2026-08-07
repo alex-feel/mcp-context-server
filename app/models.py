@@ -24,6 +24,48 @@ from app.types import MetadataDict
 # so the tools layer can import it without an import cycle.
 MAX_IMAGES_PER_ENTRY = 10
 
+# Single source of truth for the per-entry tag WRITE-path limits (the read/filter
+# side has its own MAX_FILTER_TAGS cap in app/tools/search.py). Enforced in three
+# aligned places, exactly like MAX_IMAGES_PER_ENTRY: the Pydantic models below,
+# the shared validation chokepoint (tag_limits_error in app/tools/_shared.py,
+# covering store_context, update_context, and both batch tools), and the
+# tool-boundary Field declarations in app/tools/context.py (so the MCP wire
+# schema advertises the bounds as maxItems / maxLength).
+#
+# MAX_TAG_LENGTH is deliberately far below PostgreSQL's ~2704-byte btree
+# index-tuple ceiling for idx_tags_tag: even if every code point encoded to 4
+# UTF-8 bytes AND case folding doubled the length, the stored tag stays under
+# ~1KB. Without it the two backends diverge -- SQLite stores an oversized tag
+# while PostgreSQL aborts the INSERT inside the store transaction, after a full
+# generation pass and while charging the circuit breaker.
+#
+# MAX_TAGS_PER_ENTRY bounds a dimension nothing else did: tags are inserted one
+# row per tag inside the open store/update transaction, and every later search
+# response re-hydrates the full tag list, so an unbounded list is both a
+# write-path stall and a permanent response-size amplifier.
+MAX_TAGS_PER_ENTRY = 100
+MAX_TAG_LENGTH = 128
+
+# Write-path length caps for the OTHER two client-supplied values that land in a
+# PostgreSQL btree index, where an oversized value aborts the INSERT inside the store
+# transaction (after a full generation pass, while charging the circuit breaker) while
+# SQLite stores it happily -- the same cross-backend divergence MAX_TAG_LENGTH closes
+# for idx_tags_tag.
+#
+# MAX_THREAD_ID_LENGTH bounds thread_id, which feeds four btree indexes
+# (idx_thread_id, idx_thread_source, idx_context_entries_dedup_hash,
+# idx_thread_created). MAX_INDEXED_METADATA_VALUE_LENGTH bounds the values stored under
+# the METADATA_INDEXED_FIELDS keys, each of which gets an expression btree index
+# (idx_metadata_<field> on metadata->>'<field>'); values under NON-indexed keys are not
+# capped, because jsonb itself imposes no such limit and the always-present GIN index
+# uses jsonb_path_ops, which hashes its entries.
+#
+# Both sit far below PostgreSQL's ~2704-byte btree index-tuple ceiling even if every
+# code point encoded to 4 UTF-8 bytes, leaving room for the other columns of a compound
+# index tuple.
+MAX_THREAD_ID_LENGTH = 256
+MAX_INDEXED_METADATA_VALUE_LENGTH = 512
+
 # One leading RFC 2397 data-URI prefix (any 'data:<mediatype>;base64,' form,
 # e.g. 'data:image/png;base64,'). Pure base64 never contains ':' or ',', so
 # stripping this prefix can never eat real payload characters.
@@ -140,14 +182,18 @@ class ContextEntry(BaseModel):
     }
 
     id: str | None = Field(default=None, description='Auto-generated UUIDv7 hex (32-char lowercase) ID')
-    thread_id: str = Field(..., description='Thread identifier for context scoping')
+    thread_id: str = Field(
+        ..., max_length=MAX_THREAD_ID_LENGTH, description='Thread identifier for context scoping',
+    )
     source: SourceType = Field(..., description='Origin of the context')
     content_type: ContentType = Field(default=ContentType.TEXT)
     text_content: str | None = Field(default=None)
     images: list[Any] = Field(default_factory=list, max_length=MAX_IMAGES_PER_ENTRY)
     metadata: MetadataDict | None = Field(default=None)
     summary: str | None = Field(default=None, description='LLM-generated summary for search result display')
-    tags: list[str] = Field(default_factory=list)
+    tags: list[Annotated[str, Field(max_length=MAX_TAG_LENGTH)]] = Field(
+        default_factory=list, max_length=MAX_TAGS_PER_ENTRY,
+    )
     created_at: datetime | None = Field(default=None)
     updated_at: datetime | None = Field(default=None)
 
@@ -219,12 +265,14 @@ class SearchFilters(BaseModel):
 class StoreContextRequest(BaseModel):
     """Request model for storing context"""
 
-    thread_id: str = Field(..., description='Thread ID for context scoping')
+    thread_id: str = Field(..., max_length=MAX_THREAD_ID_LENGTH, description='Thread ID for context scoping')
     source: SourceType = Field(..., description="Must be 'user' or 'agent'")
     text: str | None = Field(default=None)
     images: list[ImageAttachment] | None = Field(default=None, max_length=MAX_IMAGES_PER_ENTRY)
     metadata: MetadataDict | None = Field(default=None)
-    tags: list[str] | None = Field(default=None)
+    tags: list[Annotated[str, Field(max_length=MAX_TAG_LENGTH)]] | None = Field(
+        default=None, max_length=MAX_TAGS_PER_ENTRY,
+    )
 
     @field_validator('thread_id')
     @classmethod

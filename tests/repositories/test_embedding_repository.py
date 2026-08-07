@@ -609,3 +609,139 @@ async def test_get_statistics_with_compression_sqlite(
     assert stats['average_chunks_per_entry'] == float(chunks_per_entry)
     assert stats['coverage_percentage'] == 100.0
     assert stats['backend'] == 'sqlite'
+
+
+@pytest.mark.asyncio
+class TestBulkChunkCleanup:
+    """The delete paths clean many entries in bounded multi-row statements.
+
+    The thread-wide and criteria-wide deletes take an id list no client parameter
+    caps. Cleaning them one at a time cost one write round trip per matched row,
+    and on SQLite each hop occupies the single background writer, so a large thread
+    delete stalled every other client's writes for the whole scan. The bulk path
+    must remove exactly the same rows -- across every layer, including the FK-less
+    vec0 virtual table -- while leaving unrelated entries intact.
+    """
+
+    @requires_sqlite_vec
+    async def test_bulk_delete_removes_every_layer_for_the_given_ids(
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
+    ) -> None:
+        """Every id's metadata, chunk-bridge and vec0 rows go; others survive."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        stored_ids: list[str] = []
+        for index in range(4):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='bulk-cleanup-thread',
+                source='user',
+                content_type='text',
+                text_content=f'entry {index}',
+                metadata=None,
+            )
+            await embedding_repo.store_chunked(
+                context_id=context_id,
+                chunk_embeddings=[
+                    ChunkEmbedding(
+                        embedding=[0.05 * (index + 1)] * embedding_dim,
+                        start_index=0,
+                        end_index=10,
+                    ),
+                    ChunkEmbedding(
+                        embedding=[0.06 * (index + 1)] * embedding_dim,
+                        start_index=10,
+                        end_index=20,
+                    ),
+                ],
+                model='test-model',
+            )
+            stored_ids.append(context_id)
+
+        removed = stored_ids[:3]
+        survivor = stored_ids[3]
+
+        deleted = await embedding_repo.delete_all_chunks_bulk(removed)
+        assert deleted == 6  # two chunks per removed entry
+
+        def _counts(conn: sqlite3.Connection) -> tuple[int, int, int]:
+            placeholders = ', '.join('?' * len(removed))
+            gone_meta = conn.execute(
+                f'SELECT COUNT(*) FROM embedding_metadata WHERE context_id IN ({placeholders})',
+                removed,
+            ).fetchone()[0]
+            gone_chunks = conn.execute(
+                f'SELECT COUNT(*) FROM embedding_chunks WHERE context_id IN ({placeholders})',
+                removed,
+            ).fetchone()[0]
+            survivor_chunks = conn.execute(
+                'SELECT COUNT(*) FROM embedding_chunks WHERE context_id = ?',
+                (survivor,),
+            ).fetchone()[0]
+            return int(gone_meta), int(gone_chunks), int(survivor_chunks)
+
+        gone_meta, gone_chunks, survivor_chunks = await backend.execute_read(_counts)
+        assert gone_meta == 0
+        assert gone_chunks == 0
+        assert survivor_chunks == 2
+
+        # The survivor's vectors are still reachable, so the vec0 delete was scoped.
+        assert await embedding_repo.exists(survivor) is True
+        for context_id in removed:
+            assert await embedding_repo.exists(context_id) is False
+
+    @requires_sqlite_vec
+    async def test_bulk_delete_of_an_empty_list_is_a_no_op(
+        self, async_db_with_embeddings: StorageBackend,
+    ) -> None:
+        """No ids means no statements and no error."""
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        embedding_repo = EmbeddingRepository(async_db_with_embeddings)
+        assert await embedding_repo.delete_all_chunks_bulk([]) == 0
+
+    @requires_sqlite_vec
+    async def test_bulk_delete_chunks_a_list_beyond_the_bind_parameter_limit(
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
+    ) -> None:
+        """A list larger than SQLITE_MAX_VARIABLE_NUMBER must not overflow a statement."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        stored_ids: list[str] = []
+        for index in range(3):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='bulk-chunking-thread',
+                source='user',
+                content_type='text',
+                text_content=f'chunked entry {index}',
+                metadata=None,
+            )
+            await embedding_repo.store_chunked(
+                context_id=context_id,
+                chunk_embeddings=[
+                    ChunkEmbedding(
+                        embedding=[0.02 * (index + 1)] * embedding_dim,
+                        start_index=0,
+                        end_index=10,
+                    ),
+                ],
+                model='test-model',
+            )
+            stored_ids.append(context_id)
+
+        # Pad with ids that match nothing so the bound list crosses the 900-id
+        # chunk boundary the repository applies.
+        padded = stored_ids + [generate_id() for _ in range(1200)]
+
+        assert await embedding_repo.delete_all_chunks_bulk(padded) == 3
+        for context_id in stored_ids:
+            assert await embedding_repo.exists(context_id) is False

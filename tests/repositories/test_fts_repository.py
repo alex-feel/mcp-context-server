@@ -170,6 +170,90 @@ class TestFtsRepositoryQueryTransform:
         assert db.execute('SELECT rowid FROM d WHERE d MATCH ?', (fts,)).fetchall() == [(1,)]
 
 
+class TestFtsSQLiteEmbeddedQuoteSplitsIntoAndedTerms:
+    """An embedded double quote must AND two terms, never impose phrase adjacency.
+
+    FTS5 RE-TOKENIZES the content of a quoted string literal, so escaping an embedded
+    double quote by doubling it (``"cat""dog"``) decodes back to a literal ``"`` that the
+    tokenizer reads as a word boundary: the supposedly neutralized term becomes the strict
+    adjacency phrase ``"cat dog"``. PostgreSQL's plainto_tsquery splits the same input into
+    independently-ANDed lexemes, so the doubling form silently returned fewer rows on SQLite
+    than on PostgreSQL for ordinary input such as ``12"TV``, ``don"t`` or a pasted
+    ``KeyError: "foo"``. Splitting the token into separate literals restores parity.
+    """
+
+    @pytest.fixture
+    def repo(self) -> FtsRepository:
+        """Create a repository with a mock SQLite backend.
+
+        Returns:
+            FtsRepository bound to a backend that only reports its type.
+        """
+        backend = MagicMock()
+        backend.backend_type = 'sqlite'
+        return FtsRepository(backend)
+
+    def test_sanitize_splits_embedded_quote_into_separate_literals(self) -> None:
+        """The shared sanitizer emits one literal per quote-delimited fragment."""
+        from app.repositories.fts_repository import sanitize_sqlite_fts_terms
+
+        assert sanitize_sqlite_fts_terms(['cat"dog']) == ['"cat"', '"dog"']
+        assert sanitize_sqlite_fts_terms(['don"t']) == ['"don"', '"t"']
+        # A fragment that is an operator bareword is dropped for a stopword language exactly
+        # like a standalone one, matching plainto_tsquery on the same input.
+        assert sanitize_sqlite_fts_terms(['and"config']) == ['"config"']
+        assert sanitize_sqlite_fts_terms(['and"config'], 'german') == ['"and"', '"config"']
+
+    def test_transform_match_and_prefix_split_embedded_quote(self, repo: FtsRepository) -> None:
+        """match and prefix modes apply the identical split, so the two never diverge."""
+        assert repo._transform_query_sqlite('alpha"zulu', 'match') == '"alpha" "zulu"'
+        assert repo._transform_query_sqlite('alpha"zulu', 'prefix') == '"alpha"* "zulu"*'
+
+    def test_embedded_quote_matches_non_adjacent_document_on_real_fts5(self, repo: FtsRepository) -> None:
+        """Both an adjacent and a non-adjacent document match, as on PostgreSQL."""
+        import sqlite3
+
+        db = sqlite3.connect(':memory:')
+        db.execute("CREATE VIRTUAL TABLE d USING fts5(b, tokenize='porter unicode61')")
+        db.execute("INSERT INTO d(b) VALUES('alpha zulu beta')")
+        db.execute("INSERT INTO d(b) VALUES('alpha somewhere else entirely zulu')")
+
+        fts = repo._transform_query_sqlite('alpha"zulu', 'match')
+        rows = db.execute('SELECT rowid FROM d WHERE d MATCH ? ORDER BY rowid', (fts,)).fetchall()
+        # Two AND-ed terms with no adjacency requirement: both documents qualify. The old
+        # doubled-quote escape matched only the adjacent document.
+        assert rows == [(1,), (2,)]
+
+        # Control: the plain space-separated query behaves identically.
+        plain = repo._transform_query_sqlite('alpha zulu', 'match')
+        assert db.execute('SELECT rowid FROM d WHERE d MATCH ? ORDER BY rowid', (plain,)).fetchall() == [(1,), (2,)]
+
+    def test_hyphen_stays_an_adjacency_phrase(self, repo: FtsRepository) -> None:
+        """A hyphen keeps its adjacency phrase, the closest FTS5 form to the PG compound lexeme.
+
+        PostgreSQL's plainto_tsquery emits the compound lexeme ``alpha-zulu`` plus its parts,
+        which requires the two words adjacent in the document. FTS5's tokenizer drops hyphens
+        entirely, so the document side cannot represent the compound at all; the adjacency
+        phrase is the tightest expressible approximation and ANDing the parts separately would
+        widen recall further away from PostgreSQL.
+        """
+        import sqlite3
+
+        assert repo._transform_query_sqlite('alpha-zulu', 'match') == '"alpha zulu"'
+
+        db = sqlite3.connect(':memory:')
+        db.execute("CREATE VIRTUAL TABLE d USING fts5(b, tokenize='porter unicode61')")
+        db.execute("INSERT INTO d(b) VALUES('alpha zulu beta')")
+        db.execute("INSERT INTO d(b) VALUES('alpha somewhere else entirely zulu')")
+        fts = repo._transform_query_sqlite('alpha-zulu', 'match')
+        assert db.execute('SELECT rowid FROM d WHERE d MATCH ?', (fts,)).fetchall() == [(1,)]
+
+    def test_quote_only_query_matches_nothing_without_syntax_error(self, repo: FtsRepository) -> None:
+        """A query of nothing but quotes reduces to the match-nothing sentinel."""
+        assert repo._transform_query_sqlite('"', 'match') == ''
+        assert repo._transform_query_sqlite('"', 'prefix') == ''
+
+
 class TestFtsRepositoryPostgreSQLQueryTransform:
     """Test PostgreSQL query transformation for different modes."""
 
@@ -337,6 +421,117 @@ class TestFtsRepositoryPostgreSQLFunctions:
         """Parametrized test for all search modes."""
         result = repo._get_tsquery_function(mode, 'english')
         assert expected_func in result
+
+
+class TestFtsIsAvailablePropagatesOperationalFaults:
+    """is_available() reports feature ABSENCE, never an operational fault.
+
+    Every search request runs this probe (it backs fts_search_context and the hybrid FTS
+    leg), so swallowing exceptions turned a transient lock held by an external VACUUM or
+    backup -- and a corrupt database image -- into the misleading "FTS index not found,
+    restart the server to apply migrations" error, while hybrid search silently returned
+    semantic-only results. Swallowing inside the callable also consumed the fault before the
+    backend's bounded locked-retry loop and circuit-breaker accounting could see it. Neither
+    probe needs a handler for its stated purpose: sqlite_master yields zero rows for a
+    missing table and to_regclass yields NULL for a missing relation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sqlite_probe_error_propagates(self) -> None:
+        """A locked database surfaces as an error, not as 'FTS unavailable'."""
+        import sqlite3
+        from collections.abc import Callable
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+
+        class _LockedConnection:
+            def execute(self, _sql: str, _params: object = None) -> object:
+                raise sqlite3.OperationalError('database is locked')
+
+        class _Backend:
+            backend_type = 'sqlite'
+
+            async def execute_read(self, operation: Callable[[object], bool]) -> bool:
+                return operation(_LockedConnection())
+
+        repo = FtsRepository(cast(StorageBackend, _Backend()))
+
+        with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+            await repo.is_available()
+
+    @pytest.mark.asyncio
+    async def test_sqlite_probe_reports_absent_table_as_false(self) -> None:
+        """A missing FTS table is still reported as unavailable (zero catalog rows)."""
+        from collections.abc import Callable
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+
+        class _EmptyCursor:
+            def fetchone(self) -> object | None:
+                return None
+
+        class _Connection:
+            def execute(self, _sql: str, _params: object = None) -> _EmptyCursor:
+                return _EmptyCursor()
+
+        class _Backend:
+            backend_type = 'sqlite'
+
+            async def execute_read(self, operation: Callable[[object], bool]) -> bool:
+                return operation(_Connection())
+
+        repo = FtsRepository(cast(StorageBackend, _Backend()))
+
+        assert await repo.is_available() is False
+
+    @pytest.mark.asyncio
+    async def test_postgresql_probe_error_propagates(self) -> None:
+        """A dropped connection surfaces as an error, not as 'FTS unavailable'."""
+        from collections.abc import Awaitable
+        from collections.abc import Callable
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+
+        class _BrokenConnection:
+            async def fetchval(self, _sql: str) -> object:
+                raise OSError('connection reset by peer')
+
+        class _Backend:
+            backend_type = 'postgresql'
+
+            async def execute_read(self, operation: Callable[[object], Awaitable[bool]]) -> bool:
+                return await operation(_BrokenConnection())
+
+        repo = FtsRepository(cast(StorageBackend, _Backend()))
+
+        with pytest.raises(OSError, match='connection reset by peer'):
+            await repo.is_available()
+
+    @pytest.mark.asyncio
+    async def test_postgresql_probe_reports_absent_column_as_false(self) -> None:
+        """A missing relation/column is still reported as unavailable (EXISTS false)."""
+        from collections.abc import Awaitable
+        from collections.abc import Callable
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+
+        class _Connection:
+            async def fetchval(self, _sql: str) -> bool:
+                return False
+
+        class _Backend:
+            backend_type = 'postgresql'
+
+            async def execute_read(self, operation: Callable[[object], Awaitable[bool]]) -> bool:
+                return await operation(_Connection())
+
+        repo = FtsRepository(cast(StorageBackend, _Backend()))
+
+        assert await repo.is_available() is False
 
 
 class TestFtsValidationError:
@@ -643,19 +838,24 @@ class TestFtsHyphenHandlingSQLite:
         assert result == '"hello"* "world"*'
 
     def test_transform_prefix_hyphenated(self, repo: FtsRepository) -> None:
-        """Test prefix mode with hyphenated word."""
+        """Prefix mode splits a hyphenated word into AND-ed wildcarded literals.
+
+        PostgreSQL's prefix transform emits 'full:* & text:*' with no adjacency
+        requirement, so keeping the parts in one literal would make SQLite demand
+        adjacency for a query the other backend answers without it.
+        """
         result = repo._transform_query_sqlite('full-text', 'prefix')
-        assert result == '"full text"*'
+        assert result == '"full"* "text"*'
 
     def test_transform_prefix_mixed(self, repo: FtsRepository) -> None:
         """Test prefix mode with mixed words."""
         result = repo._transform_query_sqlite('real-time data', 'prefix')
-        assert result == '"real time"* "data"*'
+        assert result == '"real"* "time"* "data"*'
 
     def test_transform_prefix_multiple_hyphenated(self, repo: FtsRepository) -> None:
         """Test prefix mode with multiple hyphenated words."""
         result = repo._transform_query_sqlite('full-text real-time', 'prefix')
-        assert result == '"full text"* "real time"*'
+        assert result == '"full"* "text"* "real"* "time"*'
 
     # Transform query tests - phrase mode (should remain unchanged)
     def test_transform_phrase_hyphenated(self, repo: FtsRepository) -> None:
