@@ -1949,7 +1949,13 @@ class TestInitializeTargetPostgresqlVectorGating:
     async def test_semantic_init_allows_in_limit_settings_fallback_when_dim_none(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """embedding_dim=None with an in-limit settings fallback initializes normally."""
+        """embedding_dim=None with an in-limit settings fallback initializes normally.
+
+        The reported dimension and the dimension handed to the semantic migration must
+        both be the RESOLVED fallback: the vector column is built at that width, so a
+        report naming the raw ``None`` would leave the operator's only record of an
+        irreversible schema decision stating the dimension is unknown.
+        """
         from app.cli.migrate import initialize_target_postgresql
         from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
         from app.settings import get_settings
@@ -1976,6 +1982,59 @@ class TestInitializeTargetPostgresqlVectorGating:
 
         assert any('CREATE EXTENSION' in sql for sql in executed)
         mocks['semantic'].assert_awaited_once()
+        assert mocks['semantic'].await_args is not None
+        assert mocks['semantic'].await_args.kwargs['embedding_dim'] == PGVECTOR_INDEX_DIM_LIMIT
+
+        init_warnings = [w for w in stats.warnings if 'auto-initialized target PostgreSQL' in w]
+        assert len(init_warnings) == 1
+        assert f'embedding_dim={PGVECTOR_INDEX_DIM_LIMIT}' in init_warnings[0]
+        assert 'embedding_dim=None' not in init_warnings[0]
+
+    @pytest.mark.asyncio
+    async def test_semantic_init_reports_the_source_dimension_when_known(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A known source dimension is reported verbatim and passed to the migration."""
+        from app.cli.migrate import initialize_target_postgresql
+
+        executed: list[str] = []
+        mocks = self._install_pipeline_mocks(monkeypatch, executed)
+        stats = MigrationStats()
+
+        await initialize_target_postgresql(
+            'postgresql://u:p@localhost:5432/tgt',
+            embedding_dim=384,
+            with_semantic=True,
+            source_has_fts=False,
+            stats=stats,
+        )
+
+        assert mocks['semantic'].await_args is not None
+        assert mocks['semantic'].await_args.kwargs['embedding_dim'] == 384
+        assert any('embedding_dim=384' in w for w in stats.warnings)
+
+    @pytest.mark.asyncio
+    async def test_semantic_free_init_reports_no_dimension(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A with_semantic=False run builds no vector column and reports n/a."""
+        from app.cli.migrate import initialize_target_postgresql
+
+        executed: list[str] = []
+        mocks = self._install_pipeline_mocks(monkeypatch, executed)
+        stats = MigrationStats()
+
+        await initialize_target_postgresql(
+            'postgresql://u:p@localhost:5432/tgt',
+            embedding_dim=None,
+            with_semantic=False,
+            source_has_fts=False,
+            stats=stats,
+        )
+
+        mocks['semantic'].assert_not_awaited()
+        assert any('embedding_dim=n/a' in w for w in stats.warnings)
+
 
 # ---------------------------------------------------------------------------
 # PG->PG runner pre-flight for the pgvector fp32 index dimension cap

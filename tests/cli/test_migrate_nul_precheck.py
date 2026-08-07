@@ -1,13 +1,18 @@
-"""Regression tests for the SQLite->PostgreSQL NUL / unstorable-string pre-check.
+"""Regression tests for the SQLite->PostgreSQL unstorable-value pre-check.
 
 A NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite TEXT value but
 fatal on PostgreSQL: asyncpg rejects a NUL text bind (``CharacterNotInRepertoireError``,
 SQLSTATE 22021) and PostgreSQL's jsonb parser rejects the ``\\u0000`` escape the
-store path emits for a metadata NUL (SQLSTATE 22P05). Before the pre-check, such a
-value aborted the whole cross-backend migration mid-transaction with only a raw
-driver error and no row identification, and ``--dry-run`` could not surface it
-first. These tests prove each offending row is now identified and skipped, the run
-does not crash, and ``--dry-run`` surfaces the same rows without inserting.
+store path emits for a metadata NUL (SQLSTATE 22P05). A jsonb column has a third
+divergence class with the same consequence: a non-finite JSON number. ``json.loads``
+accepts the non-standard tokens ``NaN``/``Infinity``/``-Infinity`` and silently turns
+a standard-but-overflowing literal such as ``1e400`` into ``inf``, and the copy path's
+``json.dumps`` re-emits those as the invalid tokens PostgreSQL rejects. Before the
+pre-check covered a class, such a value aborted the whole cross-backend migration
+mid-transaction with only a raw driver error and no row identification, and
+``--dry-run`` could not surface it first. These tests prove each offending row is now
+identified and skipped, the run does not crash, and ``--dry-run`` surfaces the same
+rows without inserting.
 
 The full-run tests drive the real ``run_migration_mixed_sqlite_to_postgresql``
 against a fake asyncpg target connection (the PostgreSQL probe helpers are patched
@@ -26,6 +31,7 @@ import pytest
 from app.cli.migrate import MigrationOptions
 from app.cli.migrate import MigrationStats
 from app.cli.migrate import _pg_unstorable_column_reason
+from app.cli.migrate import rewrite_metadata_references
 from app.cli.migrate import run_migration_mixed_sqlite_to_postgresql
 from app.settings import get_settings
 
@@ -271,6 +277,82 @@ class TestUnstorableColumnReason:
         assert _pg_unstorable_column_reason('{not valid json', is_jsonb=False) is None
 
 
+class TestNonFiniteJsonNumbers:
+    """Unit coverage for the jsonb non-finite-number branch of the same helper."""
+
+    @pytest.mark.parametrize(
+        'metadata_json',
+        [
+            '{"score": 1e400}',        # standard JSON that json.loads turns into inf
+            '{"score": Infinity}',     # non-standard token json.loads accepts
+            '{"score": -Infinity}',
+            '{"a": NaN}',
+            '{"a": {"b": [1.0, NaN]}}',  # nested, reached by the walker
+        ],
+    )
+    def test_non_finite_number_is_unstorable_in_jsonb(self, metadata_json: str) -> None:
+        """Every spelling that decodes to a non-finite float is flagged for a jsonb column."""
+        assert _pg_unstorable_column_reason(metadata_json, is_jsonb=True) is not None
+
+    def test_finite_numbers_and_clean_json_pass(self) -> None:
+        """Ordinary finite numbers stay storable."""
+        assert _pg_unstorable_column_reason('{"score": 1.5}', is_jsonb=True) is None
+        assert _pg_unstorable_column_reason('{"score": 1e300}', is_jsonb=True) is None
+        assert _pg_unstorable_column_reason('{"a": [1, 2, 3]}', is_jsonb=True) is None
+
+    def test_message_names_the_offending_value(self) -> None:
+        """The recorded reason identifies the non-finite float so the row can be repaired."""
+        reason = _pg_unstorable_column_reason('{"score": 1e400}', is_jsonb=True)
+        assert reason is not None
+        assert 'Non-finite float' in reason
+
+    def test_rewrite_never_manufactures_an_invalid_token(self) -> None:
+        """Re-serialization preserves the source literal instead of emitting Infinity.
+
+        Re-encoding is where the invalid token would be created, on ALL FOUR migration
+        directions: json.loads turns 1e400 into inf and a default json.dumps writes it
+        back as the token ``Infinity``, which no RFC 8259 parser accepts. That converted
+        valid source metadata into invalid target metadata on every SQLite target
+        (json_valid flips to 0) and aborted the transaction on every PostgreSQL target.
+        """
+        stats = MigrationStats()
+        rewritten = rewrite_metadata_references('{"score": 1e400}', {}, stats, 1)
+
+        assert rewritten == '{"score": 1e400}'
+        assert json.loads(rewritten)  # still parseable JSON
+        assert 'Infinity' not in rewritten
+        # The skipped rewrite is reported, and a non-empty error list exits non-zero.
+        assert len(stats.errors) == 1
+        assert 'row 1' in stats.errors[0]
+
+    @pytest.mark.parametrize(
+        'metadata_json',
+        ['{"score": Infinity}', '{"a": NaN}', '{"score": -Infinity}'],
+    )
+    def test_non_standard_source_tokens_are_preserved_not_re_emitted(self, metadata_json: str) -> None:
+        """A source already carrying a non-standard token is preserved and reported.
+
+        Rewriting it would re-emit the same invalid token; preserving it verbatim keeps
+        the target byte-identical to the source, and the recorded error tells the
+        operator to repair the value.
+        """
+        stats = MigrationStats()
+        rewritten = rewrite_metadata_references(metadata_json, {}, stats, 7)
+
+        assert rewritten == metadata_json
+        assert len(stats.errors) == 1
+        assert 'row 7' in stats.errors[0]
+
+    def test_finite_metadata_still_round_trips(self) -> None:
+        """The guard does not disturb ordinary metadata."""
+        stats = MigrationStats()
+        rewritten = rewrite_metadata_references('{"score": 1e300, "a": [1, 2]}', {}, stats, 3)
+
+        assert rewritten is not None
+        assert json.loads(rewritten) == {'score': 1e300, 'a': [1, 2]}
+        assert stats.errors == []
+
+
 class TestSqliteToPostgresqlNulPrecheck:
     """The real cross-backend copy loops skip unstorable rows instead of aborting."""
 
@@ -453,3 +535,171 @@ class TestSqliteToPostgresqlNulPrecheck:
         assert all(not statement.startswith('INSERT') for statement in conn.statements())
         assert 'BEGIN' not in conn.statements()
         assert 'COMMIT' not in conn.statements()
+
+
+def _source_with_non_finite_metadata(path: Path) -> None:
+    """Seed a source whose metadata carries each non-finite spelling.
+
+    The values are passed as raw JSON strings so SQLite stores the exact literal a
+    legacy database would hold (``json.dumps`` would already have normalized them).
+    """
+    _seed_source(
+        path,
+        entries=[
+            {
+                'id': 1, 'thread_id': 't1', 'source': 'user', 'content_type': 'text',
+                'text_content': 'clean entry', 'metadata': '{"score": 1.5}',
+                'created_at': '2025-01-01 12:00:00',
+            },
+            {
+                'id': 2, 'thread_id': 't2', 'source': 'agent', 'content_type': 'text',
+                'text_content': 'overflowing literal', 'metadata': '{"score": 1e400}',
+                'created_at': '2025-01-02 12:00:00',
+            },
+            {
+                'id': 3, 'thread_id': 't3', 'source': 'user', 'content_type': 'text',
+                'text_content': 'infinity token', 'metadata': '{"score": Infinity}',
+                'created_at': '2025-01-03 12:00:00',
+            },
+            {
+                'id': 4, 'thread_id': 't4', 'source': 'agent', 'content_type': 'text',
+                'text_content': 'nan token', 'metadata': '{"a": {"b": NaN}}',
+                'created_at': '2025-01-04 12:00:00',
+            },
+        ],
+        images=[
+            (1, 'image/png', '{"iso": 100}'),
+            (1, 'image/png', '{"iso": NaN}'),
+        ],
+    )
+
+
+class TestSqliteToPostgresqlNonFinitePrecheck:
+    """Rows whose metadata decodes to a non-finite float are skipped, not fatal."""
+
+    @pytest.mark.asyncio
+    async def test_non_finite_rows_skipped_and_run_completes(self, tmp_path: Path) -> None:
+        """Each non-finite spelling is identified and skipped; the clean data still migrates.
+
+        Without the guard the re-serialized metadata reaches the ``$6::jsonb`` bind as
+        ``Infinity``/``NaN``, asyncpg raises, the handler issues ROLLBACK, and every other
+        row in the run is discarded with a raw driver error naming no source row.
+        """
+        source = tmp_path / 'non_finite_source.db'
+        _source_with_non_finite_metadata(source)
+
+        stats, conn = await _run_with_fake_target(source, dry_run=False)
+
+        assert stats.rows_migrated == 1
+        context_inserts = conn.inserts('context_entries')
+        assert len(context_inserts) == 1
+
+        errors = '\n'.join(stats.errors)
+        for row_id in (2, 3, 4):
+            assert f'context_entries row id={row_id}' in errors
+        assert "column 'metadata'" in errors
+        assert 'image_attachments row context_entry_id=1' in errors
+        assert "column 'image_metadata'" in errors
+
+        # Only the clean image survives.
+        assert stats.images_migrated == 1
+
+        # No invalid JSON token ever reaches an INSERT bind.
+        bound = [str(arg) for args in context_inserts for arg in args]
+        assert all('Infinity' not in value and 'NaN' not in value for value in bound)
+
+        # The run committed rather than rolling back on a mid-transaction jsonb parse error.
+        assert 'COMMIT' in conn.statements()
+        assert 'ROLLBACK' not in conn.statements()
+
+    @pytest.mark.asyncio
+    async def test_dry_run_surfaces_non_finite_rows(self, tmp_path: Path) -> None:
+        """--dry-run names every offending row so the operator can repair the source first."""
+        source = tmp_path / 'non_finite_source_dry.db'
+        _source_with_non_finite_metadata(source)
+
+        stats, conn = await _run_with_fake_target(source, dry_run=True)
+
+        errors = '\n'.join(stats.errors)
+        for row_id in (2, 3, 4):
+            assert f'context_entries row id={row_id}' in errors
+
+        assert all(not statement.startswith('INSERT') for statement in conn.statements())
+        assert 'BEGIN' not in conn.statements()
+        assert 'COMMIT' not in conn.statements()
+        assert stats.rows_migrated == 1
+
+
+def _source_with_oversized_indexed_values(path: Path) -> None:
+    """Seed a source carrying values SQLite indexes but a PostgreSQL btree cannot."""
+    _seed_source(
+        path,
+        entries=[
+            {
+                'id': 1,
+                'thread_id': 'clean-thread',
+                'source': 'user',
+                'content_type': 'text',
+                'text_content': 'clean row',
+                'metadata': None,
+                'created_at': '2026-01-01 00:00:00',
+            },
+            {
+                'id': 2,
+                'thread_id': 'T' * 4000,
+                'source': 'user',
+                'content_type': 'text',
+                'text_content': 'row whose thread_id cannot be indexed on PostgreSQL',
+                'metadata': None,
+                'created_at': '2026-01-01 00:00:01',
+            },
+        ],
+        tags=[(1, 'ok'), (1, 'g' * 4000)],
+    )
+
+
+class TestSqliteToPostgresqlIndexSizePrecheck:
+    """A legacy value SQLite indexed without limit must not abort the whole run.
+
+    SQLite places no size limit on an indexed value, so a corpus predating the
+    write-path length caps can hold a thread_id or tag larger than the PostgreSQL
+    target's btree index-tuple budget. Bound straight into the target, that value
+    aborts the INSERT mid-transaction, ROLLBACKs every other row, and reports a raw
+    driver error naming no source row -- so it is screened per row instead, exactly
+    like the NUL/surrogate class.
+    """
+
+    @pytest.mark.asyncio
+    async def test_oversized_rows_skipped_and_run_completes(self, tmp_path: Path) -> None:
+        """The offending rows are named and skipped; the clean data still migrates."""
+        source = tmp_path / 'oversized_index_source.db'
+        _source_with_oversized_indexed_values(source)
+
+        stats, conn = await _run_with_fake_target(source, dry_run=False)
+
+        errors = '\n'.join(stats.errors)
+        assert 'context_entries row id=2' in errors
+        assert "column 'thread_id'" in errors
+        assert 'index-tuple budget' in errors
+        assert 'tags row context_entry_id=1' in errors
+
+        # Only the clean entry and the clean tag are copied.
+        assert stats.rows_migrated == 1
+        assert stats.tags_migrated == 1
+        assert len(conn.inserts('context_entries')) == 1
+
+        # The run committed rather than rolling back on a mid-transaction index error.
+        assert 'COMMIT' in conn.statements()
+        assert 'ROLLBACK' not in conn.statements()
+
+    @pytest.mark.asyncio
+    async def test_dry_run_surfaces_oversized_rows(self, tmp_path: Path) -> None:
+        """--dry-run names the offending rows before any real run touches the target."""
+        source = tmp_path / 'oversized_index_source_dry.db'
+        _source_with_oversized_indexed_values(source)
+
+        stats, conn = await _run_with_fake_target(source, dry_run=True)
+
+        assert 'context_entries row id=2' in '\n'.join(stats.errors)
+        assert all(not statement.startswith('INSERT') for statement in conn.statements())
+        assert stats.rows_migrated == 1

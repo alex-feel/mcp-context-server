@@ -70,6 +70,7 @@ from app.errors import ConfigurationError
 # precision). Upstream tracker on the parameter's units:
 # https://github.com/aminalaee/uuid-utils/issues/73
 from app.ids import generate_id_with_timestamp
+from app.metadata_types import non_finite_metadata_error
 from app.metadata_types import unstorable_string_error
 from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
 from app.pgvector_limits import exceeds_pgvector_index_dim_limit
@@ -688,6 +689,21 @@ def rewrite_metadata_references(
     Malformed structures are preserved unchanged and counted in
     ``stats.malformed_references``.
 
+    Re-encoding is done with ``allow_nan=False``. This function runs on ALL FOUR
+    migration directions, and it is where an invalid token would be MANUFACTURED:
+    ``json.loads`` accepts the non-standard ``NaN``/``Infinity``/``-Infinity`` AND
+    silently turns a standard-but-overflowing literal such as ``1e400`` into
+    ``inf``, and a default ``json.dumps`` then writes those back as tokens no
+    RFC 8259 parser accepts. That converts VALID source metadata into INVALID
+    target metadata on the SQLite paths (``json_valid`` flips to 0) and aborts the
+    whole transaction on the PostgreSQL paths (the jsonb bind rejects it). With
+    ``allow_nan=False`` the encoder raises instead, and the row's ORIGINAL metadata
+    is preserved verbatim -- which is valid JSON on every target, since only the
+    Python float round trip could not represent it. Reference rewriting is skipped
+    for that row and the omission is recorded in ``stats.errors`` (a non-empty
+    error list makes the CLI exit non-zero), so the operator can repair the value
+    rather than discover a stale reference later.
+
     Args:
         metadata_json: Raw metadata JSON string from the source row, or
             ``None`` if no metadata was stored.
@@ -708,7 +724,15 @@ def rewrite_metadata_references(
         stats.errors.append(f'row {row_pk}: metadata JSON parse failed ({exc}); preserved verbatim')
         return metadata_json
     _walk_and_rewrite(parsed, id_mapping, stats, row_pk, seen=set())
-    return json.dumps(parsed, ensure_ascii=False)
+    try:
+        return json.dumps(parsed, ensure_ascii=False, allow_nan=False)
+    except ValueError as exc:
+        stats.errors.append(
+            f'row {row_pk}: metadata contains a number Python cannot round-trip as JSON '
+            f'({exc}); the original metadata is preserved verbatim and any integer '
+            f'context_ids references inside it were NOT rewritten',
+        )
+        return metadata_json
 
 
 def _pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | None:
@@ -720,12 +744,25 @@ def _pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | 
     is not UTF-8-encodable at all. A ``jsonb`` column has a second failure mode --
     the store path serializes a metadata NUL as the JSON escape ``\\u0000`` (six
     ASCII characters, not a literal byte), which passes the raw-string check yet
-    is rejected by PostgreSQL's jsonb parser (SQLSTATE 22P05). This runs the
-    shared :func:`app.metadata_types.unstorable_string_error` walker on the raw
+    is rejected by PostgreSQL's jsonb parser (SQLSTATE 22P05). A ``jsonb`` column
+    has a THIRD failure mode: a non-finite JSON number. ``json.loads`` accepts the
+    non-standard tokens ``NaN``/``Infinity``/``-Infinity`` AND silently converts a
+    standard-but-overflowing literal such as ``1e400`` into ``inf``, while
+    ``json.dumps`` -- which :func:`rewrite_metadata_references` applies to every
+    parseable ``metadata`` value on the copy path -- re-emits those values as the
+    invalid tokens the jsonb parser rejects. Such a value is also unstorable
+    through the server's own store boundary, which runs the same
+    :func:`app.metadata_types.non_finite_metadata_error` guard, so a v3 target must
+    not receive it either way.
+
+    Accordingly this runs the shared
+    :func:`app.metadata_types.unstorable_string_error` walker on the raw
     serialized string (catching a literal NUL/surrogate in the bind) and, for a
     ``jsonb`` column, ALSO on the decoded structure (``json.loads`` restores the
-    ``\\u0000`` escape to a real U+0000 the walker detects). For a ``jsonb`` column a value ``json.loads`` cannot
-    parse is itself unstorable: the target binds it through a ``$n::jsonb`` cast
+    ``\\u0000`` escape to a real U+0000 the walker detects) plus the shared
+    non-finite-number guard on that same decoded structure. For a ``jsonb`` column
+    a value ``json.loads`` cannot parse is itself unstorable: the target binds it
+    through a ``$n::jsonb`` cast
     that PostgreSQL rejects mid-transaction (SQLSTATE 22P02), aborting the whole
     migration with no row identification -- the exact failure this pre-check
     exists to convert into a skip-and-warn -- so malformed JSON returns a reason
@@ -736,11 +773,12 @@ def _pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | 
         value: The raw SQLite column value (already serialized to a JSON string
             for a ``jsonb`` column), or ``None``.
         is_jsonb: True when ``value`` is bound into a PostgreSQL ``jsonb`` column,
-            enabling the decoded-escape check in addition to the raw-string check.
+            enabling the decoded-escape and non-finite-number checks in addition
+            to the raw-string check.
 
     Returns:
-        The shared walker's operator-facing message for the first offending
-        sequence found, else None.
+        The shared guard's operator-facing message for the first offending
+        sequence or value found, else None.
     """
     if value is None:
         return None
@@ -757,7 +795,67 @@ def _pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | 
             f'mid-transaction (SQLSTATE 22P02): {exc}. SQLite stores the same '
             f'malformed metadata verbatim.'
         )
-    return unstorable_string_error(decoded)
+    string_reason = unstorable_string_error(decoded)
+    if string_reason is not None:
+        return string_reason
+    return non_finite_metadata_error(decoded)
+
+
+# PostgreSQL refuses to index a btree tuple larger than roughly a third of an 8KB
+# page: 2704 bytes on btree version 4. The subtracted margin leaves room for the
+# tuple header and for the other columns of the compound indexes thread_id
+# participates in (idx_thread_source, idx_context_entries_dedup_hash,
+# idx_thread_created), so a value that passes here really is indexable.
+#
+# This matters only for a SQLite SOURCE: SQLite indexes the same columns with no
+# size limit, so a corpus predating the write-path length caps can hold a tag or
+# thread_id the PostgreSQL target cannot index. Bound at the source, such a value
+# aborts the INSERT mid-transaction, ROLLBACKs the entire run, and reports a raw
+# driver error naming no source row -- the exact failure the NUL/surrogate
+# pre-check exists to convert into a per-row skip-and-warn.
+_PG_MAX_INDEXED_VALUE_BYTES = 2704 - 64
+
+
+def _pg_unindexable_column_reason(value: str | None) -> str | None:
+    """Return why a value is too large for a PostgreSQL btree index, else None.
+
+    Args:
+        value: The candidate value for an INDEXED target column.
+
+    Returns:
+        A reason string when the encoded value exceeds the index-tuple budget,
+        else None.
+    """
+    if value is None:
+        return None
+    encoded_bytes = len(value.encode('utf-8'))
+    if encoded_bytes <= _PG_MAX_INDEXED_VALUE_BYTES:
+        return None
+    return (
+        f'the value is {encoded_bytes} UTF-8 bytes, which exceeds the PostgreSQL btree '
+        f'index-tuple budget of {_PG_MAX_INDEXED_VALUE_BYTES} bytes for this indexed '
+        f'column; SQLite indexes it without a size limit, so the value must be shortened '
+        f'in the source database before it can be migrated'
+    )
+
+
+def _first_pg_unindexable_column(
+    columns: Iterable[tuple[str, str | None]],
+) -> tuple[str, str] | None:
+    """Return the first ``(column, reason)`` a PostgreSQL btree index cannot hold, else None.
+
+    Args:
+        columns: Ordered ``(column_name, value)`` candidates for one row, limited
+            to columns the target schema actually indexes.
+
+    Returns:
+        The ``(column_name, reason)`` of the first oversized column, else None.
+    """
+    for name, value in columns:
+        reason = _pg_unindexable_column_reason(value)
+        if reason is not None:
+            return name, reason
+    return None
 
 
 def _first_pg_unstorable_column(
@@ -1288,6 +1386,43 @@ def target_already_has_data_sqlite(path: str) -> bool:
         conn.close()
 
 
+def target_sqlite_is_compressed(path: str) -> bool:
+    """Return True if the target SQLite file is configured for COMPRESSED embeddings.
+
+    Probes the REAL target file (never the dry-run ``:memory:`` handle) for either
+    marker of the compressed embedding layout: a populated ``compression_metadata``
+    provenance row, or the ``vec_context_embeddings_compressed`` payload table. A
+    target file that does not exist, is empty, or carries neither marker is treated
+    as an fp32 (uncompressed) target.
+
+    Args:
+        path: Filesystem path to the target SQLite database file.
+
+    Returns:
+        True iff the target already carries the compressed embedding layout.
+    """
+    abs_path = Path(path).resolve()
+    if not abs_path.exists():
+        return False
+    if abs_path.stat().st_size == 0:
+        return False
+    conn = sqlite3.connect(str(abs_path))
+    try:
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('compression_metadata', 'vec_context_embeddings_compressed')",
+        )
+        present = {str(row[0]) for row in cursor.fetchall()}
+        if 'vec_context_embeddings_compressed' in present:
+            return True
+        if 'compression_metadata' not in present:
+            return False
+        row = conn.execute('SELECT COUNT(*) FROM compression_metadata WHERE id = 1').fetchone()
+        return row is not None and int(row[0]) > 0
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Top-level orchestration (SQLite -> SQLite)
 # ---------------------------------------------------------------------------
@@ -1332,6 +1467,42 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
 
         optional_tables = detect_optional_tables(source)
         embedding_dim = _detect_source_embedding_dim(source)
+
+        # Defensive backstop (never silently drop embeddings), symmetric with the
+        # PostgreSQL runner's pre-existing-target check. On PostgreSQL a compressed
+        # target manifests as a MISSING vec_context_embeddings table, which that
+        # runner detects directly. On SQLite the same condition is MASKED:
+        # initialize_target_sqlite re-executes add_semantic_search_sqlite.sql, whose
+        # CREATE VIRTUAL TABLE IF NOT EXISTS re-creates the fp32 vec0 table, so the
+        # 'target lacks vec_context_embeddings' warning below can never fire and the
+        # migrated fp32 vectors land in a database that already carries compression
+        # provenance. The next server start then applies the compression migration,
+        # whose leading DROP TABLE IF EXISTS vec_context_embeddings destroys every
+        # migrated vector -- and --compress in between is a no-op, because it
+        # early-returns on the existing provenance row. Probe the REAL target file
+        # (the dry-run handle is an in-memory database that would see nothing) and
+        # refuse BEFORE initialize_target_sqlite masks the condition.
+        source_has_embeddings = bool(
+            optional_tables.get('embedding_metadata') or optional_tables.get('vec_context_embeddings'),
+        )
+        if source_has_embeddings and target_sqlite_is_compressed(target_address):
+            message = (
+                'source has embeddings but the target database is already configured '
+                'for compressed embeddings (it carries a compression_metadata '
+                'provenance row and/or a vec_context_embeddings_compressed table). '
+                'The fp32 vectors this migration copies would be destroyed the next '
+                'time the server applies the compression migration, and --compress '
+                'would not encode them (it is a no-op while a provenance row exists). '
+                'Use an empty target file (this CLI initializes it), or run '
+                'mcp-context-server-migrate --decompress against the target first to '
+                'clear its compression provenance, then rerun the migration and '
+                'finish with --compress.'
+            )
+            if options.dry_run:
+                stats.warnings.append(f'{message} (a real run would abort)')
+            else:
+                stats.errors.append(f'{message} Aborting to avoid silently dropping embeddings.')
+                return stats
 
         cursor = source.execute(
             'SELECT id, created_at FROM context_entries ORDER BY created_at ASC, id ASC',
@@ -1790,10 +1961,11 @@ async def initialize_target_postgresql(
         embedding_dim: SOURCE embedding dimension, templated into the semantic
             vector column. Ignored when ``with_semantic`` is False. When None on
             a ``with_semantic`` run (the source ``embedding_metadata`` table
-            exists but is empty), the semantic migration falls back to
-            ``settings.embedding.dim``; the pre-flight resolves and validates
-            that same fallback so the value the DDL actually templates is
-            capacity-checked.
+            exists but is empty), this function resolves the same
+            ``settings.embedding.dim`` fallback the semantic migration would have
+            applied and uses that resolved value everywhere -- for the
+            capacity pre-flight, for the migration call, and for the reported
+            dimension -- so the report can never disagree with the built DDL.
         with_semantic: When True, also create the semantic-search and chunking
             layout (PG->PG migrations that copy embeddings). When False (a
             cross-backend migration that drops embeddings), only the base schema
@@ -1833,6 +2005,11 @@ async def initialize_target_postgresql(
     # so validating only the source-detected value would leave the settings
     # fallback -- the value the DDL templates -- unchecked and crash mid-index.
     # Resolve the same fallback here and validate whichever value the DDL uses.
+    #
+    # effective_dim is resolved ONCE here and then used for the pre-flight, for the
+    # dimension passed to the semantic migration, and for the final report line, so
+    # the reported dimension can never disagree with the dimension the DDL built.
+    effective_dim: int | None = None
     if with_semantic:
         effective_dim = embedding_dim
         if effective_dim is None:
@@ -1939,7 +2116,7 @@ async def initialize_target_postgresql(
     try:
         await init_database(backend=backend)
         if with_semantic:
-            await apply_semantic_search_migration(backend, force=True, embedding_dim=embedding_dim)
+            await apply_semantic_search_migration(backend, force=True, embedding_dim=effective_dim)
         await apply_jsonb_merge_patch_migration(backend)
         await apply_function_search_path_migration(backend)
         # FTS: create the tsvector GENERATED column + GIN index ONLY when the
@@ -1963,10 +2140,15 @@ async def initialize_target_postgresql(
     finally:
         await backend.shutdown()
 
+    # Report the RESOLVED dimension the vector column was actually built at, not the
+    # raw parameter: a source whose embedding_metadata table is empty detects as
+    # None and the semantic migration falls back to settings.embedding.dim, so
+    # printing the parameter would tell the operator that an irreversible schema
+    # decision was made at an unknown width.
     stats.warnings.append(
         'auto-initialized target PostgreSQL schema '
         f'(semantic_search={"yes" if with_semantic else "no"}, '
-        f'embedding_dim={embedding_dim if with_semantic else "n/a"})',
+        f'embedding_dim={effective_dim if with_semantic else "n/a"})',
     )
 
 
@@ -2553,6 +2735,15 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                         ('metadata', rewritten_metadata, True),
                     ),
                 )
+                if unstorable is None:
+                    # Same skip-and-warn shape for the OTHER SQLite-accepts /
+                    # PostgreSQL-rejects class on this path: a value SQLite indexed
+                    # happily but the target's btree cannot hold. Only the columns the
+                    # target schema itself indexes are checked; text_content and
+                    # summary are unindexed and may be arbitrarily large.
+                    unstorable = _first_pg_unindexable_column(
+                        (('thread_id', row_thread_id),),
+                    )
                 if unstorable is not None:
                     column, reason = unstorable
                     stats.errors.append(
@@ -2604,6 +2795,10 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     # --dry-run surfaces it too.
                     tag_unstorable = _first_pg_unstorable_column(
                         (('tag', tag_row['tag'], False),),
+                    ) or _first_pg_unindexable_column(
+                        # idx_tags_tag is a btree: a legacy tag longer than its
+                        # index-tuple budget aborts the INSERT mid-transaction.
+                        (('tag', tag_row['tag']),),
                     )
                     if tag_unstorable is not None:
                         column, reason = tag_unstorable

@@ -31,6 +31,32 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def ensure_sqlite_codebook_fingerprint_column(conn: sqlite3.Connection) -> None:
+    """Idempotently add ``compression_metadata.codebook_fingerprint`` on SQLite.
+
+    ``CREATE TABLE IF NOT EXISTS`` never ADDS a column to an existing table, so a
+    ``compression_metadata`` table created by a build predating the fingerprint
+    column -- a documented in-place-upgrade shape the provenance reader tolerates
+    -- survives the create statement unchanged, and the seven-column provenance
+    INSERT then fails with 'no such column'. SQLite has no
+    ``ADD COLUMN IF NOT EXISTS``, hence the PRAGMA probe; the ALTER is a no-op on a
+    current-shape table, so the call is safe on every start.
+
+    Exported because TWO independent paths create this table on SQLite: this
+    migration loader, and the ``--compress`` CLI, which must create it itself (it
+    cannot call the loader, whose leading DROP would remove the fp32 source table
+    mid-stream). Sharing one implementation is what keeps them from drifting.
+
+    Args:
+        conn: SQLite connection with the ``compression_metadata`` table present.
+    """
+    existing_columns = [
+        row[1] for row in conn.execute('PRAGMA table_info(compression_metadata)').fetchall()
+    ]
+    if 'codebook_fingerprint' not in existing_columns:
+        conn.execute('ALTER TABLE compression_metadata ADD COLUMN codebook_fingerprint TEXT')
+
+
 async def _fp32_table_has_rows(backend: StorageBackend) -> bool:
     """Return True when the fp32 ``vec_context_embeddings`` table exists and holds rows.
 
@@ -71,8 +97,21 @@ async def _fp32_table_has_rows(backend: StorageBackend) -> bool:
                 row = conn.execute(
                     'SELECT EXISTS (SELECT 1 FROM vec_context_embeddings)',
                 ).fetchone()
-            except sqlite3.OperationalError:
-                return True
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                # The ONLY condition this sentinel is for: the vec0 virtual table
+                # exists in sqlite_master but its module is not loaded, so the rows
+                # cannot be counted and dropping the table would destroy readable
+                # data. Every other OperationalError -- SQLITE_BUSY/SQLITE_LOCKED
+                # contention above all -- MUST propagate so execute_read's bounded
+                # locked-retry loop can retry it: consumed here it would be
+                # misreported as data state and turn a self-clearing transient into
+                # a permanent ConfigurationError telling the operator to run
+                # --compress. Mirrors the message-pinned narrowing in
+                # app/compression/provenance.py.
+                if 'no such module' in message or 'unable to use function' in message:
+                    return True
+                raise
             return bool(row and row[0])
 
         return await backend.execute_read(_probe_sqlite)
@@ -393,17 +432,7 @@ async def _apply_compression_migration_with_backend(
 
     def _apply_sqlite(conn: sqlite3.Connection) -> None:
         conn.executescript(migration_sql_template)
-        # Add codebook_fingerprint to a pre-existing compression_metadata table that
-        # predates the column (CREATE TABLE IF NOT EXISTS never adds a column to an
-        # existing table). SQLite has no ADD COLUMN IF NOT EXISTS, so probe PRAGMA
-        # first; the ALTER is then idempotent across restarts and in-place upgrades.
-        existing_cols = [
-            row[1] for row in conn.execute('PRAGMA table_info(compression_metadata)').fetchall()
-        ]
-        if 'codebook_fingerprint' not in existing_cols:
-            conn.execute(
-                'ALTER TABLE compression_metadata ADD COLUMN codebook_fingerprint TEXT',
-            )
+        ensure_sqlite_codebook_fingerprint_column(conn)
 
     await manager.execute_write(_apply_sqlite)
 
