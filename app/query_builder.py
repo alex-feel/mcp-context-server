@@ -7,6 +7,7 @@ import string
 from typing import Any
 
 from app.metadata_types import MAX_METADATA_BIND_PARAMS
+from app.metadata_types import MAX_METADATA_CLAUSE_CHARS
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.metadata_types import reject_non_finite
@@ -78,23 +79,37 @@ class MetadataQueryBuilder:
         # PostgreSQL uses $1, $2, $3... with offset
         return f'${self.param_offset + len(self.parameters) + 1}'
 
-    def _enforce_bind_budget(self) -> None:
-        """Reject the clause once its accumulated bind parameters exceed the shared budget.
+    def _enforce_clause_budgets(self) -> None:
+        """Reject the clause once its binds OR its generated SQL text exceed the shared budgets.
 
         Called after each filter is added. The per-dimension caps bound every input
         list individually, but capped dimensions MULTIPLY (filters times IN-list
-        members), so this aggregate backstop guarantees the built clause can never
-        grow past the backend's per-statement bind limit regardless of how future
-        filter dimensions combine -- see ``MAX_METADATA_BIND_PARAMS``. The count
-        includes ``param_offset`` (the enclosing statement's earlier placeholders on
-        PostgreSQL) so the budget tracks the true statement position. The raised
-        ``ValueError`` is routed by every construction site into the structured,
-        breaker-exempt validation-error channel; the query is then never executed,
-        so the builder's partially-accumulated state is harmless.
+        members), so these aggregate backstops guarantee the built clause can never
+        grow past the backend's limits regardless of how future filter dimensions
+        combine.
+
+        BIND COUNT (``MAX_METADATA_BIND_PARAMS``) tracks the backend's per-statement
+        bind limit and includes ``param_offset`` (the enclosing statement's earlier
+        placeholders on PostgreSQL) so it reflects the true statement position.
+
+        SQL TEXT (``MAX_METADATA_CLAUSE_CHARS``) is a SEPARATE dimension: the generated
+        statement size is NOT proportional to the bind count. One PostgreSQL numeric
+        comparison inlines a multi-kilobyte exact/double discriminator, and the metadata
+        key path is repeated inside it, so bind-legal input could otherwise assemble an
+        arbitrarily large statement -- costly to build on the event loop and to
+        parse+plan on every call, since it also exceeds asyncpg's cacheable-statement
+        size. The measured length sums the accumulated conditions; the small constant
+        joiner/alias overhead added by :meth:`build_where_clause` is immaterial at this
+        scale.
+
+        The raised ``ValueError`` is routed by every construction site into the
+        structured, breaker-exempt validation-error channel; the query is then never
+        executed, so the builder's partially-accumulated state is harmless.
 
         Raises:
             ValueError: If the accumulated bind-parameter count exceeds
-                MAX_METADATA_BIND_PARAMS.
+                MAX_METADATA_BIND_PARAMS, or the generated clause text exceeds
+                MAX_METADATA_CLAUSE_CHARS.
         """
         total = self.param_offset + len(self.parameters)
         if total > MAX_METADATA_BIND_PARAMS:
@@ -102,6 +117,13 @@ class MetadataQueryBuilder:
                 f'Metadata filters expand into too many SQL bind parameters: {total} exceeds '
                 f'the budget of {MAX_METADATA_BIND_PARAMS}. Narrow the filters (fewer filters, '
                 f'or shorter in/not_in value lists).',
+            )
+        clause_chars = sum(len(condition) for condition in self.conditions)
+        if clause_chars > MAX_METADATA_CLAUSE_CHARS:
+            raise ValueError(
+                f'Metadata filters expand into too much SQL text: {clause_chars} characters '
+                f'exceeds the budget of {MAX_METADATA_CLAUSE_CHARS}. Narrow the filters (fewer '
+                f'filters, shorter in/not_in value lists, or shorter metadata key paths).',
             )
 
     def add_simple_filter(self, key: str, value: str | float | bool | None) -> None:
@@ -113,7 +135,7 @@ class MetadataQueryBuilder:
 
         Raises:
             ValueError: If key is invalid or contains unsafe characters, or the
-                accumulated bind parameters exceed MAX_METADATA_BIND_PARAMS
+                accumulated binds or generated SQL text exceed the clause budgets
         """
         if not self._is_safe_key(key):
             raise ValueError(f'Invalid metadata key: {key}')
@@ -172,7 +194,7 @@ class MetadataQueryBuilder:
                 self.conditions.append(f'({guard} AND {acc} = {placeholder}::TEXT)')
         self.parameters.append(self._normalize_value(value))
         self._filter_count += 1
-        self._enforce_bind_budget()
+        self._enforce_clause_budgets()
 
     def add_advanced_filter(self, filter_spec: MetadataFilter) -> None:
         """Add an advanced metadata filter with operator support.
@@ -182,7 +204,7 @@ class MetadataQueryBuilder:
 
         Raises:
             ValueError: If key is invalid or contains unsafe characters, or the
-                accumulated bind parameters exceed MAX_METADATA_BIND_PARAMS
+                accumulated binds or generated SQL text exceed the clause budgets
         """
         if not self._is_safe_key(filter_spec.key):
             raise ValueError(f'Invalid metadata key: {filter_spec.key}')
@@ -229,7 +251,7 @@ class MetadataQueryBuilder:
             self._add_array_contains_condition(json_path, value, case_sensitive)
 
         self._filter_count += 1
-        self._enforce_bind_budget()
+        self._enforce_clause_budgets()
 
     def build_where_clause(self, use_and: bool = True) -> tuple[str, list[Any]]:
         """Build the complete WHERE clause with parameter bindings.
@@ -317,15 +339,39 @@ class MetadataQueryBuilder:
         return key
 
     @staticmethod
-    def _pg_text_accessor(key_path: str) -> str:
+    def _pg_path_literal(key_path: str) -> str:
+        """Build the PostgreSQL ``text[]`` path literal for a dotted key path.
+
+        Every segment is DOUBLE-QUOTED. PostgreSQL's array-literal parser reads an
+        unquoted, case-insensitive bareword ``null`` as a genuine SQL NULL element, and
+        ``#>>``/``#>`` return NULL as soon as ANY path element is NULL, so an object key
+        legitimately spelled ``null``/``NULL``/``Null`` would silently collapse the whole
+        accessor to NULL: ``a.null eq x`` then matches nothing on PostgreSQL while SQLite
+        matches it, and ``a.null not_exists`` returns the very entry that DOES carry the
+        key. Quoting makes every segment a literal string, so the two backends traverse
+        the same path. No escaping is needed because ``_is_safe_key`` and
+        ``MetadataFilter.validate_key`` restrict segments to ``[A-Za-z0-9_-]``, so no
+        quote, backslash, comma, brace or whitespace can ever reach the literal.
+
+        Args:
+            key_path: Dot-separated key WITHOUT the ``$.`` JSONPath prefix.
+
+        Returns:
+            A quoted PostgreSQL array-literal string such as ``{"a","b"}``.
+        """
+        return '{' + ','.join(f'"{segment}"' for segment in key_path.split('.')) + '}'
+
+    @classmethod
+    def _pg_text_accessor(cls, key_path: str) -> str:
         """PostgreSQL ``->>``/``#>>`` accessor extracting a key as TEXT.
 
-        A dotted ``key_path`` is split into ``#>>'{a,b,c}'`` array notation so a
+        A dotted ``key_path`` is split into ``#>>'{"a","b","c"}'`` array notation so a
         nested path is TRAVERSED. PostgreSQL ``->>'a.b.c'`` would instead look up
         a single top-level key literally named ``a.b.c`` (never traversing), so
         every operator that accesses metadata as TEXT MUST route through this
         helper to stay consistent with the SQLite ``json_extract`` traversal and
-        with one another. A flat key uses ``->>'key'``.
+        with one another. A flat key uses ``->>'key'`` -- a plain key name, not an
+        array literal, so it needs no quoting (see :meth:`_pg_path_literal`).
 
         Args:
             key_path: Dot-separated key WITHOUT the ``$.`` JSONPath prefix.
@@ -334,17 +380,17 @@ class MetadataQueryBuilder:
             A PostgreSQL JSON text accessor expression for the metadata column.
         """
         if '.' in key_path:
-            array_path = '{' + ','.join(key_path.split('.')) + '}'
-            return f"metadata#>>'{array_path}'"
+            return f"metadata#>>'{cls._pg_path_literal(key_path)}'"
         return f"metadata->>'{key_path}'"
 
-    @staticmethod
-    def _pg_json_accessor(key_path: str) -> str:
+    @classmethod
+    def _pg_json_accessor(cls, key_path: str) -> str:
         """PostgreSQL ``->``/``#>`` accessor extracting a key as JSONB.
 
-        Nested ``key_path`` becomes ``#>'{a,b,c}'`` array notation; a flat key
+        Nested ``key_path`` becomes ``#>'{"a","b","c"}'`` array notation; a flat key
         uses ``->'key'``. Used where the JSONB value itself is needed rather than
-        its text form (for example ``jsonb_typeof``).
+        its text form (for example ``jsonb_typeof``). The nested form routes through
+        :meth:`_pg_path_literal` so a ``null`` segment stays a literal key.
 
         Args:
             key_path: Dot-separated key WITHOUT the ``$.`` JSONPath prefix.
@@ -353,8 +399,7 @@ class MetadataQueryBuilder:
             A PostgreSQL JSONB accessor expression for the metadata column.
         """
         if '.' in key_path:
-            array_path = '{' + ','.join(key_path.split('.')) + '}'
-            return f"metadata#>'{array_path}'"
+            return f"metadata#>'{cls._pg_path_literal(key_path)}'"
         return f"metadata->'{key_path}'"
 
     def _normalize_value(self, value: str | float | bool | None) -> str | int | float | None:
@@ -459,7 +504,12 @@ class MetadataQueryBuilder:
           ``float8``'s exact decimal value, so there is no faithful SQL reconstruction of SQLite's
           double-vs-int64 comparison, and exact ``NUMERIC`` is the closest available (it diverges on
           the fewest inputs of any option).
-        - FLOAT param: reproduce SQLite's per-type snapping via a nested ``CASE``. The exact
+        - FLOAT param: reproduce SQLite's per-type snapping via a ``CASE`` over the shared
+          :meth:`_pg_int_origin_probe` discriminator, whose ELSE arm compares double-vs-double
+          through :meth:`_pg_safe_float8`. Factoring both out keeps each expensive expression --
+          the probe and the two long decimal literals inside ``safe_float8`` -- emitted ONCE per
+          comparison instead of once per branch arm, which is what bounds the generated statement
+          text (see ``MAX_METADATA_CLAUSE_CHARS``); the semantics are unchanged. The exact
           ``NUMERIC`` compare is kept ONLY for a stored value that is integral, WITHIN int64, AND
           provably int-origin -- NOT equal to ``(stored::float8)::text::NUMERIC``, the shortest
           round-trip decimal of its nearest double. Everything else (fractional, out-of-int64, or
@@ -530,19 +580,61 @@ class MetadataQueryBuilder:
         # ``NUMERIC`` is the closest faithful reconstruction available in SQL.
         if isinstance(value, int):
             return f'{num} {sql_op} {placeholder}'
-        safe_f8 = (
+        return (
+            f'CASE WHEN {self._pg_int_origin_probe(num)} '
+            f'THEN {num} {sql_op} {placeholder} '
+            f'ELSE {self._pg_safe_float8(num)} {sql_op} ({placeholder})::float8 END'
+        )
+
+    def _pg_int_origin_probe(self, num: str) -> str:
+        """Boolean SQL: is the stored NUMERIC provably an INT-origin value SQLite reads exactly?
+
+        True only when the stored value is integral, WITHIN int64, and NOT equal to
+        ``(stored::float8)::text::NUMERIC`` (the shortest round-trip decimal of its nearest
+        double) -- exactly the condition under which :meth:`_pg_numeric_compare` keeps the
+        exact ``NUMERIC`` comparison instead of comparing double-vs-double. The nested
+        ``CASE`` is load-bearing, NOT cosmetic: the ``::float8`` probe would raise 22003 on a
+        stored value at/beyond the float8 overflow threshold, so it may only be evaluated
+        inside the within-int64 branch, and ``CASE`` (unlike ``AND``, which PostgreSQL may not
+        short-circuit) guarantees that. Emitting the probe as ONE boolean expression lets the
+        caller reference the expensive ``safe_float8`` fallback ONCE instead of once per
+        comparison arm, which keeps the generated statement text small (see
+        ``MAX_METADATA_CLAUSE_CHARS``). A NULL stored value yields FALSE here and takes the
+        double branch, the same outcome the nested-CASE form produced.
+
+        Args:
+            num: A SQL expression yielding the stored value as ``NUMERIC``.
+
+        Returns:
+            A boolean SQL expression selecting the exact-``NUMERIC`` comparison.
+        """
+        return (
+            f'CASE WHEN {num} = trunc({num}) AND {num} BETWEEN {self._INT64_MIN} AND {self._INT64_MAX} '
+            f'THEN (({num}::float8)::text::NUMERIC <> {num}) ELSE FALSE END'
+        )
+
+    def _pg_safe_float8(self, num: str) -> str:
+        """``float8`` form of a stored NUMERIC that can never raise 22003.
+
+        Maps a magnitude at/beyond the float8 overflow threshold to +/-Infinity (mirroring
+        SQLite's REAL read of a huge JSON integer) and the symmetric nonzero underflow band
+        (magnitude <= 2**-1075) to 0 (mirroring SQLite's 0.0 read), so a legal stored value
+        never aborts the whole query on the ``::float8`` cast. Shared by the scalar
+        comparisons and the IN / NOT_IN membership groups so both emit the two long decimal
+        literals ONCE per filter.
+
+        Args:
+            num: A SQL expression yielding the stored value as ``NUMERIC``.
+
+        Returns:
+            A ``float8``-typed SQL expression for the stored value.
+        """
+        return (
             f"CASE WHEN {num} >= {self._FLOAT8_OVERFLOW} THEN 'infinity'::float8 "
             f"WHEN {num} <= -{self._FLOAT8_OVERFLOW} THEN '-infinity'::float8 "
             f'WHEN {num} <> 0 AND {num} BETWEEN -{self._FLOAT8_TINY} AND {self._FLOAT8_TINY} '
             f'THEN (0)::float8 '
             f'ELSE {num}::float8 END'
-        )
-        double_cmp = f'{safe_f8} {sql_op} ({placeholder})::float8'
-        return (
-            f'CASE WHEN {num} = trunc({num}) AND {num} BETWEEN {self._INT64_MIN} AND {self._INT64_MAX} '
-            f'THEN CASE WHEN ({num}::float8)::text::NUMERIC <> {num} '
-            f'THEN {num} {sql_op} {placeholder} ELSE {double_cmp} END '
-            f'ELSE {double_cmp} END'
         )
 
     def _pg_numeric_body(self, key_path: str, sql_op: str, placeholder: str, value: float) -> str:
@@ -928,23 +1020,49 @@ class MetadataQueryBuilder:
                 parts.append(f'({self._pg_text_guard(key_path)} AND {lhs} IN ({ph}))')
                 self.parameters.extend(self._in_list_text(v, lower=fold) for v in string_members)
             if numeric_members:
-                # Per-member numeric equality with SQLite's exact integer/double semantics
-                # (_pg_numeric_body). Wrap the whole OR-group in an explicit jsonb_typeof =
-                # 'number' boolean guard (_pg_number_guard), mirroring SQLite's
-                # _sqlite_number_guard AND-form: an explicit boolean guard (rather than a
-                # value-or-NULL accessor) is required for NOT_IN, which is `present AND NOT
-                # match` -- for a present NON-number stored value a NULL match would make NOT
-                # NULL stay NULL and drop the row on PostgreSQL, while SQLite's explicit FALSE
-                # guard yields NOT FALSE -> TRUE and KEEPS it. The guard forces a deterministic
-                # FALSE for a non-number on BOTH backends, so IN and NOT_IN agree.
+                # Numeric equality with SQLite's exact integer/double semantics, emitted ONCE
+                # PER FILTER rather than once per member. The exact/double discriminator
+                # (_pg_int_origin_probe) and the double fallback (_pg_safe_float8, which
+                # inlines two long decimal literals) depend only on the STORED value, not on
+                # the member, so the whole member list rides ONE discriminator with an IN list
+                # on each arm. Rebuilding the discriminator per member made the generated
+                # statement text grow by kilobytes per FLOAT member while the bind count grew
+                # by one, so a fully cap-legal request (100 filters x 100 float members) built
+                # tens of megabytes of SQL on PostgreSQL and kilobytes on SQLite.
+                # INT and FLOAT members stay separated because their semantics differ: an int
+                # param compares exact NUMERIC for EVERY stored value, while a float param
+                # takes the discriminator (see _pg_numeric_compare).
+                # Wrap the whole OR-group in an explicit jsonb_typeof = 'number' boolean guard
+                # (_pg_number_guard), mirroring SQLite's _sqlite_number_guard AND-form: an
+                # explicit boolean guard (rather than a value-or-NULL accessor) is required for
+                # NOT_IN, which is `present AND NOT match` -- for a present NON-number stored
+                # value a NULL match would make NOT NULL stay NULL and drop the row on
+                # PostgreSQL, while SQLite's explicit FALSE guard yields NOT FALSE -> TRUE and
+                # KEEPS it. The guard forces a deterministic FALSE for a non-number on BOTH
+                # backends, so IN and NOT_IN agree.
                 num_guard = self._pg_number_guard(key_path)
-                num_parts: list[str] = []
+                num = f'({acc})::NUMERIC'
+                int_placeholders: list[str] = []
+                float_placeholders: list[str] = []
                 for m in numeric_members:
                     pos = self.param_offset + len(self.parameters) + 1
-                    member_ph = f'${pos}'
-                    body = self._pg_numeric_body(key_path, '=', member_ph, m)
-                    num_parts.append(f'({body})')
+                    # bool is already partitioned out, so isinstance(m, int) is an exact
+                    # int-vs-float discrimination here. Members keep their original binding
+                    # order; only their SQL grouping differs.
+                    target = int_placeholders if isinstance(m, int) else float_placeholders
+                    target.append(f'${pos}')
                     self.parameters.append(m)
+                num_parts: list[str] = []
+                if int_placeholders:
+                    num_parts.append(f'({num} IN (' + ', '.join(int_placeholders) + '))')
+                if float_placeholders:
+                    exact_list = ', '.join(float_placeholders)
+                    double_list = ', '.join(f'({ph})::float8' for ph in float_placeholders)
+                    num_parts.append(
+                        f'(CASE WHEN {self._pg_int_origin_probe(num)} '
+                        f'THEN {num} IN ({exact_list}) '
+                        f'ELSE {self._pg_safe_float8(num)} IN ({double_list}) END)',
+                    )
                 parts.append(f'({num_guard} AND (' + ' OR '.join(num_parts) + '))')
             if bool_members:
                 bguard = f"jsonb_typeof({json_acc}) = 'boolean'"
@@ -1298,82 +1416,49 @@ class MetadataQueryBuilder:
             # IMPORTANT: We wrap in CASE WHEN jsonb_typeof() = 'array' to gracefully handle
             # non-array fields. Without this check, jsonb_array_elements_text() throws
             # "cannot extract elements from a scalar" error on scalar fields.
-            if '.' in key_path:
-                # Nested path: use #> with array notation
-                path_parts = key_path.split('.')
-                array_path = '{' + ','.join(path_parts) + '}'
-                if isinstance(value, str) and not case_sensitive:
-                    # A string member matches ONLY a JSON-string array element (parity with
-                    # the SQLite json_each.type='text' branch and the string-only scalar
-                    # operators): iterate elements as jsonb, keep only jsonb_typeof(elem)=
-                    # 'string', and compare the unquoted text (elem #>> '{}'). Comparing a
-                    # NUMERIC element as text would diverge from SQLite's double-rendered
-                    # number text. Wrap in CASE to handle non-array fields gracefully.
-                    elem_text = self._pg_ci("elem #>> '{}'")
-                    self.conditions.append(
-                        f"(CASE WHEN jsonb_typeof(metadata#>'{array_path}') = 'array' "
-                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements(metadata#>'{array_path}') AS elem "
-                        f"WHERE jsonb_typeof(elem) = 'string' AND {elem_text} = {self._pg_ci(placeholder)}) "
-                        f'ELSE FALSE END)',
-                    )
-                    self.parameters.append(value)
-                elif isinstance(value, float):
-                    # A float member matches a numeric element with the SAME exact/double
-                    # semantics as the scalar operators: a bare @> containment matches only
-                    # the float's canonical decimal form, which diverges from SQLite's
-                    # exact int-vs-double element comparison above 2**53. Iterate the number
-                    # elements and reuse the shared discriminator so array_contains stays
-                    # consistent with the scalar path (only the documented int-origin /
-                    # canonical-double-form residual remains).
-                    elem_num = "(elem #>> '{}')::NUMERIC"
-                    compare = self._pg_numeric_compare(elem_num, '=', placeholder, value)
-                    self.conditions.append(
-                        f"(CASE WHEN jsonb_typeof(metadata#>'{array_path}') = 'array' "
-                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements(metadata#>'{array_path}') AS elem "
-                        f"WHERE jsonb_typeof(elem) = 'number' AND {compare}) ELSE FALSE END)",
-                    )
-                    self.parameters.append(value)
-                else:
-                    # Case-sensitive string, int, or bool: use @> operator with json.dumps() +
-                    # ::jsonb (exact for ints/bools; a canonical string match for strings).
-                    # Wrap in CASE to handle non-array fields gracefully.
-                    self.conditions.append(
-                        f"(CASE WHEN jsonb_typeof(metadata#>'{array_path}') = 'array' "
-                        f"THEN metadata#>'{array_path}' @> {placeholder}::jsonb ELSE FALSE END)",
-                    )
-                    self.parameters.append(json.dumps(value))
+            # ONE accessor for both the flat (``->'key'``) and nested (``#>'{"a","b"}'``)
+            # shapes: _pg_json_accessor is the single place a dotted key becomes an array
+            # literal, so this path cannot drift from the scalar operators' quoting (an
+            # unquoted ``null`` segment would parse as a SQL NULL element and make the
+            # whole accessor NULL -- see _pg_path_literal).
+            json_acc = self._pg_json_accessor(key_path)
+            if isinstance(value, str) and not case_sensitive:
+                # A string member matches ONLY a JSON-string array element (parity with
+                # the SQLite json_each.type='text' branch and the string-only scalar
+                # operators): iterate elements as jsonb, keep only jsonb_typeof(elem)=
+                # 'string', and compare the unquoted text (elem #>> '{}'). Comparing a
+                # NUMERIC element as text would diverge from SQLite's double-rendered
+                # number text. Wrap in CASE to handle non-array fields gracefully.
+                elem_text = self._pg_ci("elem #>> '{}'")
+                self.conditions.append(
+                    f"(CASE WHEN jsonb_typeof({json_acc}) = 'array' "
+                    f'THEN EXISTS (SELECT 1 FROM jsonb_array_elements({json_acc}) AS elem '
+                    f"WHERE jsonb_typeof(elem) = 'string' AND {elem_text} = {self._pg_ci(placeholder)}) "
+                    f'ELSE FALSE END)',
+                )
+                self.parameters.append(value)
+            elif isinstance(value, float):
+                # A float member matches a numeric element with the SAME exact/double
+                # semantics as the scalar operators: a bare @> containment matches only
+                # the float's canonical decimal form, which diverges from SQLite's
+                # exact int-vs-double element comparison above 2**53. Iterate the number
+                # elements and reuse the shared discriminator so array_contains stays
+                # consistent with the scalar path (only the documented int-origin /
+                # canonical-double-form residual remains).
+                elem_num = "(elem #>> '{}')::NUMERIC"
+                compare = self._pg_numeric_compare(elem_num, '=', placeholder, value)
+                self.conditions.append(
+                    f"(CASE WHEN jsonb_typeof({json_acc}) = 'array' "
+                    f'THEN EXISTS (SELECT 1 FROM jsonb_array_elements({json_acc}) AS elem '
+                    f"WHERE jsonb_typeof(elem) = 'number' AND {compare}) ELSE FALSE END)",
+                )
+                self.parameters.append(value)
             else:
-                # Single-level path
-                if isinstance(value, str) and not case_sensitive:
-                    # A string member matches ONLY a JSON-string array element (see the nested
-                    # branch above and the SQLite json_each.type='text' branch): keep only
-                    # jsonb_typeof(elem)='string' and compare the unquoted text, so a numeric
-                    # element is never text-compared (which would diverge from SQLite).
-                    elem_text = self._pg_ci("elem #>> '{}'")
-                    self.conditions.append(
-                        f"(CASE WHEN jsonb_typeof(metadata->'{key_path}') = 'array' "
-                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements(metadata->'{key_path}') AS elem "
-                        f"WHERE jsonb_typeof(elem) = 'string' AND {elem_text} = {self._pg_ci(placeholder)}) "
-                        f'ELSE FALSE END)',
-                    )
-                    self.parameters.append(value)
-                elif isinstance(value, float):
-                    # A float member matches a numeric element with the SAME exact/double
-                    # semantics as the scalar operators (see the nested-path branch above).
-                    elem_num = "(elem #>> '{}')::NUMERIC"
-                    compare = self._pg_numeric_compare(elem_num, '=', placeholder, value)
-                    self.conditions.append(
-                        f"(CASE WHEN jsonb_typeof(metadata->'{key_path}') = 'array' "
-                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements(metadata->'{key_path}') AS elem "
-                        f"WHERE jsonb_typeof(elem) = 'number' AND {compare}) ELSE FALSE END)",
-                    )
-                    self.parameters.append(value)
-                else:
-                    # Case-sensitive string, int, or bool: use @> operator with json.dumps() +
-                    # ::jsonb (exact for ints/bools; a canonical string match for strings).
-                    # Wrap in CASE to handle non-array fields gracefully.
-                    self.conditions.append(
-                        f"(CASE WHEN jsonb_typeof(metadata->'{key_path}') = 'array' "
-                        f"THEN metadata->'{key_path}' @> {placeholder}::jsonb ELSE FALSE END)",
-                    )
-                    self.parameters.append(json.dumps(value))
+                # Case-sensitive string, int, or bool: use @> operator with json.dumps() +
+                # ::jsonb (exact for ints/bools; a canonical string match for strings).
+                # Wrap in CASE to handle non-array fields gracefully.
+                self.conditions.append(
+                    f"(CASE WHEN jsonb_typeof({json_acc}) = 'array' "
+                    f'THEN {json_acc} @> {placeholder}::jsonb ELSE FALSE END)',
+                )
+                self.parameters.append(json.dumps(value))

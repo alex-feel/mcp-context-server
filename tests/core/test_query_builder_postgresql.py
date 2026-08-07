@@ -520,8 +520,9 @@ class TestMetadataQueryBuilderPostgresql:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert "jsonb_typeof(metadata#>'{user,preferences,tags}') = 'array'" in where_clause
-        assert "jsonb_array_elements(metadata#>'{user,preferences,tags}')" in where_clause
+        nested = '{"user","preferences","tags"}'  # quoted segments: a 'null' segment stays a literal key
+        assert f"jsonb_typeof(metadata#>'{nested}') = 'array'" in where_clause
+        assert f"jsonb_array_elements(metadata#>'{nested}')" in where_clause
         assert "jsonb_typeof(elem) = 'string'" in where_clause  # string member matches string elements only
         assert 'translate(elem' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
         assert params == ['favorite']
@@ -755,8 +756,9 @@ class TestMetadataQueryBuilderTableAlias:
         builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
         builder.add_simple_filter('metadata.version', 'x')
         where_clause, _ = builder.build_where_clause()
-        assert "ce.metadata#>>'{metadata,version}'" in where_clause
-        assert '{ce.metadata,version}' not in where_clause
+        nested = '{"metadata","version"}'
+        assert f"ce.metadata#>>'{nested}'" in where_clause
+        assert '{"ce.metadata","version"}' not in where_clause
 
     def test_alias_qualifies_sqlite_json_extract_column(self) -> None:
         builder = MetadataQueryBuilder(backend_type='sqlite', table_alias='ce')
@@ -827,20 +829,25 @@ class TestMetadataQueryBuilderTableAlias:
 
 
 _NESTED_KEY = 'user.preferences.theme'
-_NESTED_ARRAY = '{user,preferences,theme}'
+# Every path segment is double-quoted so a segment spelled 'null' stays a literal key
+# instead of parsing as a SQL NULL array element (which would make the whole accessor NULL).
+_NESTED_ARRAY = '{"user","preferences","theme"}'
 
 
-def _pg_nested_operator_cases() -> list[MetadataFilter]:
+def _pg_nested_operator_cases(key: str = _NESTED_KEY) -> list[MetadataFilter]:
     """One MetadataFilter per advanced operator on a NESTED key.
 
     Each operator emits structurally distinct SQL that must TRAVERSE the nested
     path via PostgreSQL ``#>>``/``#>`` array notation. The list/None values are
     literals inferred in-context against the field type.
 
+    Args:
+        key: The nested metadata key every filter is bound to.
+
     Returns:
         One MetadataFilter per supported operator, all bound to a nested key.
     """
-    k = _NESTED_KEY
+    k = key
     return [
         MetadataFilter(key=k, operator=MetadataOperator.EQ, value='dark'),
         MetadataFilter(key=k, operator=MetadataOperator.NE, value='dark'),
@@ -988,3 +995,83 @@ class TestMetadataQueryBuilderLikeWildcardEscaping:
         assert params == ['a[*]b[?][[]c']
         # No backslash escaping (the broken mechanism) remains.
         assert '\\' not in params[0]
+
+
+_NULL_SEGMENT_KEY = 'a.null'
+_QUOTED_NULL_PATH = '{"a","null"}'
+_UNQUOTED_NULL_PATH = '{a,null}'
+_PG_NULL_SEGMENT_CASES = _pg_nested_operator_cases(_NULL_SEGMENT_KEY)
+
+
+class TestMetadataQueryBuilderPostgresqlPathSegmentQuoting:
+    """Every PostgreSQL path segment is DOUBLE-QUOTED inside the ``text[]`` accessor literal.
+
+    PostgreSQL's array-literal parser reads an unquoted, case-insensitive bareword ``null``
+    as a genuine SQL NULL element, and ``#>>``/``#>`` return NULL as soon as any path element
+    is NULL. An unquoted literal therefore collapsed the whole accessor to NULL for a
+    legitimate object key spelled ``null``: ``a.null eq x`` matched nothing on PostgreSQL
+    while SQLite matched the row, and ``a.null not_exists`` returned the very entry that DOES
+    carry the key. The key validators accept such a key (only empty and post-first numeric
+    segments are rejected), so quoting is what makes the two backends traverse the same path.
+    """
+
+    @pytest.mark.parametrize('filter_spec', _PG_NULL_SEGMENT_CASES, ids=lambda f: f.operator.value)
+    def test_null_segment_is_quoted_for_every_operator(self, filter_spec: MetadataFilter) -> None:
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_advanced_filter(filter_spec)
+        clause, _ = builder.build_where_clause()
+        op = filter_spec.operator.value
+        assert clause, f'{op} produced no clause'
+        assert _QUOTED_NULL_PATH in clause, f'{op} did not quote the path segments: {clause}'
+        assert _UNQUOTED_NULL_PATH not in clause, f'{op} emitted an unquoted NULL segment: {clause}'
+
+    def test_null_segment_is_quoted_on_the_simple_equality_path(self) -> None:
+        # The simple metadata={} dict routes into the same accessor, so it needs the same fix.
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_simple_filter(_NULL_SEGMENT_KEY, 'x')
+        clause, params = builder.build_where_clause()
+        assert _QUOTED_NULL_PATH in clause
+        assert _UNQUOTED_NULL_PATH not in clause
+        assert params == ['x']
+
+    def test_null_segment_traverses_the_same_path_on_sqlite(self) -> None:
+        # Parity control: SQLite reads the segment as a literal object key with no quoting,
+        # which is the behavior PostgreSQL must now match.
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_simple_filter(_NULL_SEGMENT_KEY, 'x')
+        clause, _ = builder.build_where_clause()
+        assert '$.a.null' in clause
+
+    @pytest.mark.parametrize(
+        ('key', 'expected'),
+        [
+            ('a.b', '{"a","b"}'),
+            ('a.null', '{"a","null"}'),
+            ('a.NULL', '{"a","NULL"}'),
+            ('null.Null', '{"null","Null"}'),
+            ('a.b-c.d_e', '{"a","b-c","d_e"}'),
+            ('single', '{"single"}'),
+        ],
+    )
+    def test_path_literal_quotes_every_segment(self, key: str, expected: str) -> None:
+        # The validators restrict segments to [A-Za-z0-9_-], so quoting needs no escaping.
+        assert MetadataQueryBuilder._pg_path_literal(key) == expected
+
+    def test_flat_key_named_null_needs_no_array_literal(self) -> None:
+        # A flat key uses ->>'null', a plain key name rather than an array literal, so it was
+        # never affected -- and must stay unquoted or it would look up the key '"null"'.
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_simple_filter('null', 'x')
+        clause, _ = builder.build_where_clause()
+        assert "metadata->>'null'" in clause
+        assert '"null"' not in clause
+
+    def test_table_alias_still_qualifies_the_column_under_quoting(self) -> None:
+        # The alias rewrite keys on the column token followed by ->/#>, so quoted segments
+        # (including one literally named 'metadata') are still never mistaken for the column.
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('metadata.null', 'x')
+        clause, _ = builder.build_where_clause()
+        assert 'ce.metadata#>>' in clause
+        assert '{"metadata","null"}' in clause
+        assert '{"ce.metadata"' not in clause
