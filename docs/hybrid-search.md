@@ -256,7 +256,7 @@ When hybrid search is enabled and at least one underlying search method is avail
   "query": "authentication implementation",
   "results": [
     {
-      "id": 123,
+      "id": "0190abcdef1234567890abcdef123456",
       "thread_id": "project-alpha",
       "source": "agent",
       "content_type": "text",
@@ -327,18 +327,18 @@ When `explain_query=True`, the response includes a `stats` object with detailed 
 
 **FTS Stats:**
 - `execution_time_ms`: FTS search execution time
-- `filters_applied`: Number of metadata/date filters applied
+- `filters_applied`: Total number of filter conditions applied (thread, source, content type, date bounds and the tag subquery, plus every metadata condition)
 - `rows_returned`: Number of FTS results before fusion
 - `backend`: Active storage backend ('sqlite' or 'postgresql'), always present
-- `query_plan`: Query execution plan details (when explain_query=True)
+- `query_plan`: Backend query execution plan, or `null` when the sub-search was rejected by parameter validation and never ran
 
 **Semantic Stats:**
 - `execution_time_ms`: Semantic search execution time
 - `embedding_generation_ms`: Time spent generating the query embedding via the configured embedding provider
-- `filters_applied`: Number of metadata/date filters applied
+- `filters_applied`: Total number of filter conditions applied (thread, source, content type, date bounds and the tag subquery, plus every metadata condition)
 - `rows_returned`: Number of semantic results before fusion
 - `backend`: Active storage backend ('sqlite' or 'postgresql'), always present
-- `query_plan`: Query execution plan details (when explain_query=True)
+- `query_plan`: Backend query execution plan, or `null` when the sub-search was rejected by parameter validation and never ran
 
 **Fusion Stats:**
 - `rrf_k`: RRF smoothing constant used
