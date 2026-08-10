@@ -255,7 +255,7 @@ log_always(f'stdin isatty: {sys.stdin.isatty()}')
 log_always('FastMCP Client imported successfully')
 
 
-def _warmup_uvx_cache() -> None:
+def _warmup_uvx_cache(server_config: dict[str, Any]) -> None:
     """
     Pre-warm uvx cache to avoid cold start delays.
 
@@ -264,13 +264,16 @@ def _warmup_uvx_cache() -> None:
     uvx downloading packages from PyPI.
 
     This function:
-    - Runs synchronously at module load
+    - Runs only for the stdio transport, using the loaded configuration,
+      because UserPromptSubmit hooks execute under a short Claude Code
+      timeout and a warmup subprocess would spend that budget for nothing
+      on HTTP deployments
     - Silent failure (never breaks the hook)
     - Uses --help flag for minimal execution time
-    """
-    import subprocess
 
-    server_config = DEFAULT_CONFIG.get('mcp_server', {})
+    Args:
+        server_config: The mcp_server section of the loaded configuration
+    """
     if not server_config.get('prewarm_cache', True):
         log_always('uvx cache pre-warm disabled via config')
         return
@@ -301,10 +304,6 @@ def _warmup_uvx_cache() -> None:
     except Exception as e:
         # Silent failure for pre-warm
         log_always(f'uvx cache pre-warm failed: {type(e).__name__}: {e}', level='WARN')
-
-
-# Pre-warm uvx cache at module load (non-blocking, silent failure)
-_warmup_uvx_cache()
 
 
 def setup_windows_utf8() -> None:
@@ -1556,7 +1555,9 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClie
             config=config,
         )
     if transport == 'stdio':
-        # Existing stdio transport via uvx subprocess
+        # Stdio transport via uvx subprocess. Warm the uvx cache first so the
+        # initial connection attempt does not pay the package-download cost.
+        _warmup_uvx_cache(server_config)
         log_always('stdio transport: using create_mcp_client_with_retry')
         return create_mcp_client_with_retry(config)
     raise ValueError(f"Invalid mcp_server.transport: {transport}. Must be 'stdio' or 'http'")
