@@ -1,5 +1,7 @@
 # MCP Context Server
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.alex-feel%2Fmcp-context-server.svg)](https://mcptoplist.com/server/io.github.alex-feel%2Fmcp-context-server)
+
 <p align="center">
   <img src=".github/images/banner.png" alt="MCP Context Server - MCP-based server providing persistent multimodal context storage for LLM agents" width="100%">
 </p>
