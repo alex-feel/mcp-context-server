@@ -13,12 +13,25 @@ description: |
   For more information, see:
   https://github.com/alex-feel/mcp-context-server/blob/main/docs/connecting-ai-assistant.md#one-command-setup
 
-# Additional files to download (utility modules loaded by other hooks at runtime)
+# Additional files to download (utility modules loaded by other hooks at runtime,
+# plus uv sidecar lockfiles for the hooks below that declare PEP 723 dependencies:
+# uv run detects a `<script>.py.lock` file next to a script and installs straight
+# from it, skipping dependency resolution and registry-metadata refresh at every
+# hook launch, which avoids transient uv cache-write failures on Windows and makes
+# hook startup deterministic and faster)
 files-to-download:
   - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_config_loader.py
     dest: ~/.claude/hooks/
   - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_json_output.py
     dest: ~/.claude/hooks/
+  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/user_prompt_context_saver.py.lock
+    dest: ~/.claude/hooks/user_prompt_context_saver.py.lock
+  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/worktree_context.py.lock
+    dest: ~/.claude/hooks/worktree_context.py.lock
+  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/context_awareness_guidance.py.lock
+    dest: ~/.claude/hooks/context_awareness_guidance.py.lock
+  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/subagent_context_protocol_injection.py.lock
+    dest: ~/.claude/hooks/subagent_context_protocol_injection.py.lock
   - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/deploy/docker/docker-compose.postgresql.ollama.yml
     dest: ~/.mcp/docker-compose.postgresql.ollama.yml
 
