@@ -28,10 +28,12 @@ import asyncio
 import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import asyncpg
 import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
@@ -381,3 +383,58 @@ class TestUpdateContextVersionGuard:
         # The pre-generation capture (1) plus the single post-conflict re-read (2):
         # the not-found branch terminates the loop immediately, no further retries.
         assert check_calls['count'] == 2
+
+    @pytest.mark.asyncio
+    async def test_transient_reread_failure_refreshes_version_before_retrying(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """A transient fault during the post-conflict re-read retries the READ.
+
+        The write can only succeed with a refreshed token: ``version`` is monotonic,
+        so re-issuing the compare-and-set with the token that just failed matches
+        zero rows by construction. Sleeping and re-entering the write with the
+        unchanged token therefore burned a whole transaction on a guaranteed
+        conflict -- and one of the five conflict slots -- for what was only a
+        connection blip. The retry now happens on the re-read, and the write is
+        re-entered exactly once, with the fresh version.
+        """
+        _backend, repos, entry_id = setup_with_entry
+
+        real_check = repos.context.check_entry_exists
+        check_calls = {'count': 0}
+        versions_seen: list[int | None] = []
+
+        async def flaky_reread(context_id: str) -> tuple[bool, str | None, int | None]:
+            check_calls['count'] += 1
+            if check_calls['count'] == 1:
+                return await real_check(context_id)  # pre-generation capture
+            if check_calls['count'] == 2:
+                raise asyncpg.InterfaceError('connection recycled by the pooler')
+            return (True, 'agent', 3)
+
+        async def conflict_once(*_args: object, **kwargs: object) -> tuple[list[str], bool]:
+            versions_seen.append(cast('int | None', kwargs.get('expected_version')))
+            if len(versions_seen) == 1:
+                raise VersionConflictError(entry_id)
+            return ['metadata'], False
+
+        with (
+            patch('app.tools.context.ensure_repositories', return_value=repos),
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch.object(repos.context, 'check_entry_exists', side_effect=flaky_reread),
+            patch(
+                'app.tools.context.execute_update_in_transaction',
+                new=AsyncMock(side_effect=conflict_once),
+            ),
+        ):
+            result = await update_context(context_id=entry_id, metadata={'status': 'x'})
+
+        assert result['success'] is True
+        # Exactly two write attempts: the original one and the one carrying the
+        # refreshed token. No attempt re-used the token whose CAS already failed.
+        assert versions_seen == [0, 3]
+        # Capture, failed re-read, successful re-read.
+        assert check_calls['count'] == 3

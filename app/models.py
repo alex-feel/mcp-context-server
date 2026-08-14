@@ -307,7 +307,16 @@ class DeleteContextRequest(BaseModel):
 
     @model_validator(mode='after')
     def validate_has_fields(self) -> 'DeleteContextRequest':
-        """Ensure at least one field is provided for deletion"""
+        """Ensure exactly one selector is provided for deletion.
+
+        Returns:
+            The validated request.
+
+        Raises:
+            ValueError: If neither selector or both selectors are provided.
+        """
         if not self.context_ids and not self.thread_id:
             raise ValueError('Must provide either context_ids or thread_id')
+        if self.context_ids and self.thread_id:
+            raise ValueError('context_ids and thread_id are mutually exclusive; provide exactly one')
         return self

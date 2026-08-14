@@ -431,18 +431,21 @@ class TestDeleteContextRequest:
         assert request.context_ids is None
         assert request.thread_id == 'test_thread'
 
-    def test_delete_with_both_fields(self) -> None:
-        """Test delete request can have both IDs and thread."""
+    def test_delete_with_both_fields_rejected(self) -> None:
+        """Supplying both selectors is refused rather than half executed.
+
+        The delete tool deletes by id OR by thread and has no combined form, so a
+        request carrying both can only be served by ignoring one of them -- an
+        irreversible operation reported as fully successful while half of it never
+        ran. The model refuses it for the same reason the tool does.
+        """
         ids = [
             '0190abcdef1234567890abcdef444444',
             '0190abcdef1234567890abcdef555555',
         ]
-        request = DeleteContextRequest(
-            context_ids=ids,
-            thread_id='test_thread',
-        )
-        assert request.context_ids == ids
-        assert request.thread_id == 'test_thread'
+        with pytest.raises(ValidationError) as exc_info:
+            DeleteContextRequest(context_ids=ids, thread_id='test_thread')
+        assert 'mutually exclusive' in str(exc_info.value)
 
     def test_delete_without_any_field(self) -> None:
         """Test delete request without any field raises error."""

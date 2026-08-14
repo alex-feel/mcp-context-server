@@ -15,6 +15,7 @@ The issue being tested:
 import base64
 import json
 from collections.abc import Callable
+from collections.abc import Iterator
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -583,7 +584,13 @@ class TestEdgeCasesForParameters:
 
     @pytest.mark.asyncio
     async def test_multiple_identical_tags(self) -> None:
-        """Test that duplicate tags are deduplicated."""
+        """A repeated tag is stored once, not once per occurrence.
+
+        The stored list is compared AS A LIST: collapsing it into a set first would
+        make the assertion hold for any number of duplicate rows, which is exactly the
+        defect it is meant to catch -- every reader returns the rows verbatim, so a
+        duplicate row shows up in every response and inflates the tag statistics.
+        """
         duplicate_tags = ['python', 'python', 'test', 'test', 'python']
 
         result = await store_context(
@@ -595,10 +602,28 @@ class TestEdgeCasesForParameters:
 
         assert result['success'] is True
 
-        # Verify duplicates were removed
         search_result = await search_context(limit=50, thread_id='duplicate_tags_test')
-        unique_tags = set(search_result['results'][0]['tags'])
-        assert unique_tags == {'python', 'test'}
+        assert sorted(search_result['results'][0]['tags']) == ['python', 'test']
+
+    @pytest.mark.asyncio
+    async def test_tags_differing_only_in_case_collapse_to_one(self) -> None:
+        """Tags are lower-cased before storage, so case variants are ONE label.
+
+        Normalization manufactures the collision -- ``Tag`` and ``tag`` are distinct on
+        the wire and identical once folded -- so deduplication has to run after it, not
+        on the caller's raw list.
+        """
+        result = await store_context(
+            thread_id='case_collision_tags_test',
+            source='user',
+            text='Testing tag case collisions',
+            tags=['Tag', 'tag', ' TAG '],
+        )
+
+        assert result['success'] is True
+
+        search_result = await search_context(limit=50, thread_id='case_collision_tags_test')
+        assert search_result['results'][0]['tags'] == ['tag']
 
     @pytest.mark.asyncio
     async def test_special_characters_in_metadata_keys(self) -> None:
@@ -1811,3 +1836,132 @@ class TestIndexedWriteValueUpperBound:
         error = result['results'][0]['error']
         assert error is not None
         assert "metadata field 'task_name' is indexed" in error
+
+
+class TestTypedIndexedMetadataCastCompatibility:
+    """A typed indexed metadata field is validated before any generation runs.
+
+    METADATA_INDEXED_FIELDS supports integer/boolean/float type hints, and on
+    PostgreSQL each becomes a hard cast inside the field's expression index
+    (``((metadata->>'priority')::INTEGER)``), evaluated on every INSERT. A
+    cast-incompatible value passed every existing boundary check, paid the full
+    embedding + summary + compression pass, and then aborted the transaction with a
+    raw driver error that charges the circuit breaker for what is purely client
+    input -- while the identical request stored fine on SQLite, whose json_extract
+    index applies no cast. The four write tools now refuse it at the boundary, so
+    both backends behave identically.
+    """
+
+    @pytest.fixture(autouse=True)
+    def typed_indexed_fields(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        """Configure an integer-typed indexed metadata field for the whole class.
+
+        Yields:
+            Control to the test body, then drops the patched settings singleton.
+        """
+        import app.tools._shared as shared_module
+        from app.settings import get_settings
+
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'status,priority:integer')
+        get_settings.cache_clear()
+        monkeypatch.setattr(shared_module, 'settings', get_settings())
+        yield
+        get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_store_context_rejects_uncastable_indexed_value(self) -> None:
+        """The rejection happens in the validation phase, before any DB or model work."""
+        ensure_repos = AsyncMock()
+        with (
+            patch('app.tools.context.ensure_repositories', ensure_repos),
+            pytest.raises(ToolError, match="metadata field 'priority'"),
+        ):
+            await app.server.store_context(
+                thread_id='typed-index-thread',
+                source='user',
+                text='body',
+                metadata={'priority': 'high'},
+            )
+        ensure_repos.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_store_context_rejects_out_of_range_indexed_value(self) -> None:
+        """A number too large for a 32-bit INTEGER is refused with a range message."""
+        ensure_repos = AsyncMock()
+        with (
+            patch('app.tools.context.ensure_repositories', ensure_repos),
+            pytest.raises(ToolError, match='out of range'),
+        ):
+            await app.server.store_context(
+                thread_id='typed-index-thread',
+                source='user',
+                text='body',
+                metadata={'priority': 99999999999},
+            )
+        ensure_repos.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_store_context_accepts_castable_indexed_value(self) -> None:
+        """A value the cast accepts still stores, including its string spelling."""
+        result = await app.server.store_context(
+            thread_id='typed-index-thread-ok',
+            source='user',
+            text='body',
+            metadata={'priority': '7'},
+        )
+        assert result['success'] is True
+
+    @pytest.mark.asyncio
+    async def test_update_context_rejects_uncastable_indexed_patch_value(self) -> None:
+        """The merge-patch form reaches the same expression index, so it is checked too."""
+        ensure_repos = AsyncMock()
+        with (
+            patch('app.tools.context.ensure_repositories', ensure_repos),
+            pytest.raises(ToolError, match="metadata field 'priority'"),
+        ):
+            await app.server.update_context(
+                context_id='0190abcdef1234567890abcdef123456',
+                metadata_patch={'priority': 'urgent'},
+            )
+        ensure_repos.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_store_batch_rejects_uncastable_indexed_value_per_entry(self) -> None:
+        """The untyped batch path records it as that entry's error, not a batch abort."""
+        from app.tools.batch import store_context_batch
+
+        result = await store_context_batch(
+            entries=[{
+                'thread_id': 'typed-index-batch',
+                'source': 'user',
+                'text': 'body',
+                'metadata': {'priority': 'high'},
+            }],
+            atomic=False,
+        )
+
+        assert result['succeeded'] == 0
+        error = result['results'][0]['error']
+        assert error is not None
+        assert "metadata field 'priority'" in error
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_update_batch_rejects_uncastable_indexed_value_per_entry(self) -> None:
+        """Same per-entry boundary error on the batch update path."""
+        from app.tools.batch import update_context_batch
+
+        result = await update_context_batch(
+            updates=[{
+                'context_id': '0190abcdef1234567890abcdef123456',
+                'metadata': {'priority': 'high'},
+            }],
+            atomic=False,
+        )
+
+        assert result['succeeded'] == 0
+        error = result['results'][0]['error']
+        assert error is not None
+        assert "metadata field 'priority'" in error

@@ -52,7 +52,7 @@ from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import EntryNotFoundError
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
-from app.tools._shared import cleanup_embeddings_for_delete
+from app.tools._shared import delete_entries_with_cleanup
 from app.tools._shared import entry_boundary_error
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
@@ -63,6 +63,7 @@ from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import node_layer_active
 from app.tools._shared import reject_unstorable_input
+from app.tools._shared import reread_entry_version
 from app.tools._shared import tag_limits_error
 from app.tools._shared import transaction_heartbeat
 from app.tools._shared import validate_and_normalize_images
@@ -238,8 +239,9 @@ async def store_context_batch(
             # after a wasted generation pass, charging the circuit breaker inside the
             # transaction. Mirrors the single-entry store_context boundary guard.
             # The same chokepoint also enforces the LENGTH caps on the values that land
-            # in a PostgreSQL btree index (thread_id, and every INDEXED metadata field):
-            # an oversized value aborts the PostgreSQL INSERT where SQLite stores it.
+            # in a PostgreSQL btree index (thread_id, and every INDEXED metadata field)
+            # and the CAST compatibility of a typed indexed field: an oversized or
+            # uncastable value aborts the PostgreSQL INSERT where SQLite stores it.
             entry_error = entry_boundary_error(
                 thread_id=thread_id,
                 text=text,
@@ -1135,8 +1137,9 @@ async def update_context_batch(
             # single-entry update_context boundary guard: PostgreSQL cannot store it,
             # so the update would succeed on SQLite but hard-fail on PostgreSQL after a
             # wasted generation pass, charging the circuit breaker inside the transaction.
-            # The same chokepoint also enforces the length cap on every INDEXED metadata
-            # field, in both the replacement and the merge-patch form: an oversized value
+            # The same chokepoint also enforces the length cap and, for a typed field,
+            # the cast compatibility of every INDEXED metadata field, in both the
+            # replacement and the merge-patch form: an oversized or uncastable value
             # aborts the PostgreSQL UPDATE on idx_metadata_<field> where SQLite stores it.
             entry_error = entry_boundary_error(
                 text=text,
@@ -1640,22 +1643,16 @@ async def update_context_batch(
                             discard_generation_counts(vu_idx)
                             break
                         version_conflicts += 1
+                        # Refresh the token before re-entering the write. A transient
+                        # fault during the refresh is retried inside the helper, on the
+                        # READ alone: re-running the write transaction with the token
+                        # whose compare-and-set just failed is doomed by construction
+                        # (version is monotonic) and would burn a conflict slot on what
+                        # was only a connection blip. Only an exhausted refresh records
+                        # a per-entry failure.
                         try:
-                            exists, _src, current_version = await repos.context.check_entry_exists(context_id)
+                            exists, current_version = await reread_entry_version(repos, context_id)
                         except Exception as reread_error:
-                            # A transient connection error during the conflict re-read
-                            # gets the same bounded backoff/retry as the rest of the
-                            # loop, then records a per-entry failure if exhausted.
-                            if is_connection_error(reread_error) and attempt < max_retries:
-                                delay = 0.5 * (2 ** attempt)
-                                attempt += 1
-                                logger.warning(
-                                    'Connection error during version-conflict re-read of entry %d; '
-                                    'retrying in %.1fs (attempt %d/%d): %s',
-                                    original_idx, delay, attempt, max_retries, reread_error,
-                                )
-                                await asyncio.sleep(delay)
-                                continue
                             logger.error(f'Failed to update entry at index {original_idx}: {reread_error}')
                             results.append(BulkUpdateResultItemDict(
                                 index=original_idx,
@@ -1887,13 +1884,14 @@ async def delete_context_batch(
         # list, so a criteria match of any size stays under the per-statement
         # bound-parameter limit.
         #
-        # Cleanup and delete share ONE transaction so a failure between them can
-        # never leave entries stripped of their vectors while their rows survive.
-        # cleanup_embeddings_for_delete costs nothing at all whenever CASCADE
-        # already covers the embedding rows, and in the fp32 layout that still
-        # needs it, issues bounded multi-row statements instead of one write round
-        # trip per matched entry -- so a criteria-wide delete no longer holds the
-        # single SQLite writer for a scan proportional to the match count.
+        # Cleanup and delete share ONE transaction (delete_entries_with_cleanup, the
+        # same helper delete_context uses, which also retries a transient lock
+        # collision) so a failure between them can never leave entries stripped of
+        # their vectors while their rows survive. The cleanup costs nothing at all
+        # whenever CASCADE already covers the embedding rows, and in the fp32 layout
+        # that still needs it, issues bounded multi-row statements instead of one
+        # write round trip per matched entry -- so a criteria-wide delete no longer
+        # holds the single SQLite writer for a scan proportional to the match count.
         backend = repos.context.backend
         if backend.backend_type == 'sqlite':
             affected_ids = await repos.context.get_ids_matching_batch_criteria(
@@ -1904,9 +1902,7 @@ async def delete_context_batch(
             )
             deleted_count = 0
             if affected_ids:
-                async with backend.begin_transaction() as txn:
-                    await cleanup_embeddings_for_delete(repos, txn, affected_ids)
-                    deleted_count = await repos.context.delete_by_ids(affected_ids, txn=txn)
+                deleted_count = await delete_entries_with_cleanup(repos, affected_ids)
             criteria_used = describe_batch_delete_criteria(
                 context_ids=context_ids,
                 thread_ids=thread_ids,

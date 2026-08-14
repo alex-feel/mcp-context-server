@@ -20,6 +20,7 @@ Three properties are pinned here:
    can never leave entries stripped of their vectors while their rows survive.
 """
 
+import sqlite3
 from collections.abc import AsyncIterator
 from collections.abc import Callable
 from collections.abc import Generator
@@ -28,6 +29,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 import app.tools._shared as shared_module
 import app.tools.batch as batch_module
@@ -365,3 +367,92 @@ async def test_delete_context_by_ids_skips_cleanup_on_postgresql(
 
     fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
     fake.context.delete_by_ids.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_context_rejects_context_ids_and_thread_id_together(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """Supplying BOTH selectors is refused instead of silently deleting only the ids.
+
+    The two parameters are documented as mutually exclusive and the dispatch is
+    if/elif, so accepting the combination executed half the request -- deleting the
+    listed ids while leaving the rest of the named thread in place -- and still
+    reported success. For an irreversible tool that is the wrong failure mode.
+    """
+    fake = make_fake_repos(tables_exist=True)
+
+    with pytest.raises(ToolError, match='mutually exclusive'):
+        await context_module.delete_context(context_ids=[VALID_ID], thread_id='thread-abc')
+
+    fake.context.delete_by_ids.assert_not_awaited()
+    fake.context.delete_by_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_lock_contention_rolls_back_and_retries(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """A locked embedding cleanup aborts the delete, which is then retried whole.
+
+    The cleanup is the FIRST write of a DEFERRED transaction, so an external lock
+    holder surfaces SQLITE_BUSY exactly there. Logging it and letting the row delete
+    commit anyway removed the context rows while their FK-less vec0 vectors survived
+    unreachable -- the very leak the cleanup exists to prevent -- and reported
+    success. The retryable family now propagates, rolling the transaction back, and
+    the bounded retry re-runs cleanup and delete together once the lock clears.
+    """
+    fake = make_fake_repos(tables_exist=True)
+    fake.embeddings.delete_all_chunks_bulk = AsyncMock(
+        side_effect=[sqlite3.OperationalError('database is locked'), 0],
+    )
+
+    result = await context_module.delete_context(context_ids=[VALID_ID])
+
+    assert result['success'] is True
+    assert result['deleted_count'] == 1
+    # Two attempts at the cleanup, but the row delete ran only in the attempt whose
+    # cleanup succeeded: the first transaction rolled back before reaching it.
+    assert fake.embeddings.delete_all_chunks_bulk.await_count == 2
+    fake.context.delete_by_ids.assert_awaited_once()
+    assert len(fake.context.backend.transactions) == 2
+
+
+@pytest.mark.asyncio
+async def test_cleanup_unreadable_embeddings_still_fails_open(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """A genuinely unreadable embedding row must not block the delete.
+
+    Fail-open is scoped to the conditions it was written for (a missing vec0
+    module, a corrupted row): deleting an entry stays possible, with the row delete
+    committing in the same transaction. Only write contention is re-raised.
+    """
+    fake = make_fake_repos(tables_exist=True)
+    fake.embeddings.delete_all_chunks_bulk = AsyncMock(
+        side_effect=sqlite3.OperationalError('no such module: vec0'),
+    )
+
+    result = await context_module.delete_context(context_ids=[VALID_ID])
+
+    assert result['success'] is True
+    fake.context.delete_by_ids.assert_awaited_once()
+    assert len(fake.context.backend.transactions) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_delete_cleanup_lock_contention_rolls_back_and_retries(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """The criteria-wide SQLite delete shares the same rollback-and-retry behavior."""
+    fake = make_fake_repos(tables_exist=True)
+    fake.embeddings.delete_all_chunks_bulk = AsyncMock(
+        side_effect=[sqlite3.OperationalError('database is locked'), 0],
+    )
+
+    result = await batch_module.delete_context_batch(thread_ids=['thread-abc'])
+
+    assert result['deleted_count'] == 1
+    assert fake.embeddings.delete_all_chunks_bulk.await_count == 2
+    fake.context.delete_by_ids.assert_awaited_once()
+    assert len(fake.context.backend.transactions) == 2

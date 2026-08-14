@@ -38,6 +38,8 @@ from app.backends.sqlite_backend import is_sqlite_locked_error
 from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import ControlFlowError
 from app.errors import format_exception_message
+from app.metadata_types import pg_indexed_cast_error
+from app.metadata_types import pg_indexed_metadata_text
 from app.metadata_types import sanitize_pg_unstorable_text
 from app.metadata_types import unstorable_string_error
 from app.models import MAX_IMAGES_PER_ENTRY
@@ -155,26 +157,39 @@ def reject_oversized_tags(tags: list[str] | None) -> None:
         raise ToolError(message)
 
 
-def indexed_value_limits_error(
+def indexed_value_error(
     thread_id: str | None = None,
     metadata: object = None,
 ) -> str | None:
-    """Return an error message when a client value that lands in a btree index is too long.
+    """Return an error message when a client value cannot survive its index.
 
-    ``tags`` is not the only write-path value PostgreSQL indexes with a btree whose
-    index-tuple ceiling (~2704 bytes) rejects an oversized entry INSIDE the store
+    Two dimensions, both of which make PostgreSQL reject INSIDE the store
     transaction -- after a full generation pass, and while charging the circuit
-    breaker -- where SQLite stores it happily:
+    breaker -- what SQLite stores happily:
 
-    * ``thread_id`` feeds ``idx_thread_id``, ``idx_thread_source``,
-      ``idx_context_entries_dedup_hash`` and ``idx_thread_created``.
-    * every value stored under a ``METADATA_INDEXED_FIELDS`` key feeds that field's
-      expression index ``idx_metadata_<field>`` on ``metadata->>'<field>'``.
+    * LENGTH. ``tags`` is not the only write-path value PostgreSQL indexes with a
+      btree whose index-tuple ceiling (~2704 bytes) rejects an oversized entry.
+      ``thread_id`` feeds ``idx_thread_id``, ``idx_thread_source``,
+      ``idx_context_entries_dedup_hash`` and ``idx_thread_created``; every value
+      stored under a ``string``-typed ``METADATA_INDEXED_FIELDS`` key feeds that
+      field's TEXT expression index ``idx_metadata_<field>`` on
+      ``metadata->>'<field>'``. The length is measured on the text that expression
+      YIELDS (:func:`pg_indexed_metadata_text`), not on ``str`` values alone: ``->>``
+      renders a list or object as its whole serialized JSON, so a container under an
+      indexed key is indexed at full width and an inspection restricted to strings
+      lets it through to abort the INSERT.
+    * CAST COMPATIBILITY. A ``METADATA_INDEXED_FIELDS`` entry configured with an
+      ``integer``/``boolean``/``float`` type hint puts a hard SQL cast in that
+      expression index, evaluated on every INSERT (see :func:`~app.metadata_types.pg_indexed_cast_error`).
 
-    Values under NON-indexed metadata keys are deliberately not capped: jsonb imposes
-    no such limit and the always-present GIN index uses ``jsonb_path_ops``, which
-    hashes its entries. Only the top level of ``metadata`` is inspected, because
-    ``metadata->>'<field>'`` addresses top-level keys only.
+    Values under NON-indexed metadata keys are deliberately not capped or type-checked:
+    jsonb imposes no such limit and the always-present GIN index uses
+    ``jsonb_path_ops``, which hashes its entries. The same reasoning exempts an
+    ``array``/``object``-typed indexed field, which builds no expression index at all
+    and is served by that GIN index, and an ``integer``/``boolean``/``float`` field,
+    whose index datum is the fixed-width cast result rather than the source text.
+    Only the top level of ``metadata`` is inspected, because ``metadata->>'<field>'``
+    addresses top-level keys only.
 
     Args:
         thread_id: The client-supplied thread identifier, or None when absent.
@@ -182,7 +197,7 @@ def indexed_value_limits_error(
 
     Returns:
         An error message describing the first breach, or None when every indexed
-        value is within its cap.
+        value is storable.
     """
     if thread_id is not None and len(thread_id) > MAX_THREAD_ID_LENGTH:
         return (
@@ -194,12 +209,17 @@ def indexed_value_limits_error(
         for key, value in cast('dict[object, object]', metadata).items():
             if not isinstance(key, str) or key not in indexed_fields:
                 continue
-            if isinstance(value, str) and len(value) > MAX_INDEXED_METADATA_VALUE_LENGTH:
-                return (
-                    f'metadata field {key!r} is indexed and its value is too long: '
-                    f'{len(value)} characters, maximum is '
-                    f'{MAX_INDEXED_METADATA_VALUE_LENGTH} characters'
-                )
+            if indexed_fields[key] == 'string':
+                indexed_text = pg_indexed_metadata_text(value)
+                if indexed_text is not None and len(indexed_text) > MAX_INDEXED_METADATA_VALUE_LENGTH:
+                    return (
+                        f'metadata field {key!r} is indexed and its value is too long: '
+                        f'{len(indexed_text)} characters, maximum is '
+                        f'{MAX_INDEXED_METADATA_VALUE_LENGTH} characters'
+                    )
+            cast_error = pg_indexed_cast_error(key, value, indexed_fields[key])
+            if cast_error is not None:
+                return cast_error
     return None
 
 
@@ -217,8 +237,8 @@ def entry_boundary_error(
     tools rely on their wire schema plus the individual raising guards. It bundles
     both families of "SQLite accepts it, PostgreSQL rejects it" input so the batch
     loops carry one call instead of a long boolean chain: PostgreSQL-unstorable
-    strings (embedded NUL, unpaired UTF-16 surrogate) and the length caps on the
-    values that land in a PostgreSQL btree index.
+    strings (embedded NUL, unpaired UTF-16 surrogate) and the length caps plus cast
+    compatibility of the values that land in a PostgreSQL btree index.
 
     Every argument is optional so a call site passes only the fields that shape
     exists (``update`` has no ``thread_id``; ``store`` has no ``metadata_patch``).
@@ -242,29 +262,30 @@ def entry_boundary_error(
         or unstorable_string_error(tags)
         or unstorable_string_error(metadata)
         or unstorable_string_error(metadata_patch)
-        or indexed_value_limits_error(thread_id=thread_id, metadata=metadata)
-        or indexed_value_limits_error(metadata=metadata_patch)
+        or indexed_value_error(thread_id=thread_id, metadata=metadata)
+        or indexed_value_error(metadata=metadata_patch)
     )
 
 
-def reject_oversized_indexed_values(
+def reject_invalid_indexed_values(
     thread_id: str | None = None,
     metadata: object = None,
 ) -> None:
-    """Raise ``ToolError`` when an indexed client value breaches its write cap.
+    """Raise ``ToolError`` when an indexed client value cannot survive its index.
 
     The raising wrapper used by the single-entry tools; the batch tools call
-    :func:`indexed_value_limits_error` directly so they can record a per-entry
-    failure instead of aborting the whole request.
+    :func:`indexed_value_error` directly so they can record a per-entry failure
+    instead of aborting the whole request.
 
     Args:
         thread_id: The client-supplied thread identifier, or None when absent.
         metadata: The client-supplied metadata mapping, or None when absent.
 
     Raises:
-        ToolError: When an indexed value exceeds its length cap.
+        ToolError: When an indexed value exceeds its length cap or cannot be cast
+            to its configured index type.
     """
-    message = indexed_value_limits_error(thread_id=thread_id, metadata=metadata)
+    message = indexed_value_error(thread_id=thread_id, metadata=metadata)
     if message is not None:
         raise ToolError(message)
 
@@ -619,11 +640,6 @@ async def generate_compression_with_timeout(
         ) from e
 
     async def _encode_one(chunk: ChunkEmbedding) -> ChunkEmbedding:
-        # Local import keeps numpy out of the hot import graph; this branch
-        # only executes when compression is enabled (extra installed).
-        import numpy as np
-
-        vector = np.asarray([chunk.embedding], dtype=np.float32)
         # Acquire one semaphore permit per encode call so the configured
         # COMPRESSION_MAX_CONCURRENT limit governs in-flight CPU work
         # accurately. Wrapping the outer asyncio.gather() would let an
@@ -632,6 +648,16 @@ async def generate_compression_with_timeout(
         # pattern.
         async with _compression_semaphore:
             try:
+                # Local import keeps numpy out of the hot import graph; this branch
+                # only executes when compression is enabled (extra installed). Both the
+                # import and the array construction sit INSIDE the guard so every
+                # failure this leg can produce leaves as ToolError: the store paths
+                # guard the compression call with `except ToolError`, and a raw
+                # exception escaping from here would slip past that guard and abort a
+                # whole non-atomic batch instead of failing the one entry.
+                import numpy as np
+
+                vector = np.asarray([chunk.embedding], dtype=np.float32)
                 payload_bytes = await asyncio.to_thread(provider.encode_sync, vector)
             except Exception as e:
                 raise ToolError(
@@ -681,7 +707,9 @@ async def generate_summary_with_timeout(text: str, source: str) -> str | None:
         Summary string, or None if summary provider is not configured.
 
     Raises:
-        ToolError: If summary generation times out or fails.
+        ToolError: If summary generation times out or fails. EVERY non-cancellation
+            failure is normalized to ToolError, matching the embedding helper's
+            contract (see the note in the body).
     """
     summary_provider = get_summary_provider()
     if summary_provider is None:
@@ -712,6 +740,19 @@ async def generate_summary_with_timeout(text: str, source: str) -> str | None:
             f'Summary generation exceeded total timeout ({total_timeout:.0f}s). '
             f'This may indicate the summary provider is overloaded or unreachable.',
         ) from None
+    except Exception as e:
+        # Normalize EVERY provider failure to ToolError, exactly as the embedding
+        # leg does (_generate_embeddings_for_text wraps its own body). Without this
+        # the retry layer's SummaryTimeoutError / SummaryRetryExhaustedError and the
+        # providers' bare RuntimeError / ValueError escaped raw, so callers that
+        # isolate a per-entry failure with ``except ToolError`` -- the non-atomic
+        # batch reconcile path -- let a routine provider outage escape their loop and
+        # abort the whole request, discarding sibling results already committed. One
+        # error contract for both abort-mandatory legs keeps that isolation honest and
+        # makes the single-entry and batch error messages consistent.
+        # ``except Exception`` deliberately does NOT catch ``CancelledError`` (a
+        # ``BaseException``), so run_generation's leg cancellation still propagates.
+        raise ToolError(f'Summary generation failed: {format_exception_message(e)}') from e
 
 
 async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | None:
@@ -851,13 +892,24 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
     # pathological entry from stretching a single store indefinitely (each per-node
     # wait_for bounds ONE call, and their sum is unbounded without this). Whatever was
     # produced before the deadline is kept -- this leg never aborts a store.
+    #
+    # The deadline bounds the WORK, not just the gaps between chunks: each chunk's
+    # gather runs under the REMAINING budget. Testing the clock only between chunks
+    # bounds nothing, because nothing bounds the chunk itself -- chunk_size is
+    # max(fan-out * 4, 16) while the effective model concurrency is the smaller
+    # shared SUMMARY_MAX_CONCURRENT budget, so one chunk serializes into several
+    # waves of per-node timeouts and overruns the aggregate budget by that multiple;
+    # and an entry with no more sections than one chunk holds yields a single
+    # iteration whose only deadline test happens before any work, where it can never
+    # be true, leaving the budget inert for the common case.
     # _summarize_node never raises; return_exceptions is a defensive backstop so a
     # surprise (e.g. cancellation of a child) cannot turn into a store-aborting raise.
     chunk_size = max(settings.index_tree.max_concurrent * 4, 16)
     deadline = time.monotonic() + settings.index_tree.total_timeout_s
     rows: list[IndexNodeRow] = []
     for start in range(0, attempted, chunk_size):
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             logger.warning(
                 'Index-tree node summaries: aggregate budget of %.0fs expired after %d of '
                 '%d section(s); keeping the summaries produced so far.',
@@ -865,9 +917,28 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
             )
             break
         chunk = eligible[start:start + chunk_size]
-        results = await asyncio.gather(
-            *[_summarize_node(node) for node in chunk], return_exceptions=True,
-        )
+        node_tasks = [asyncio.create_task(_summarize_node(node)) for node in chunk]
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*node_tasks, return_exceptions=True),
+                timeout=remaining,
+            )
+        except TimeoutError:
+            # The budget expired mid-chunk. Cancel AND await the still-running node
+            # calls so none outlives this pass holding a shared summary-model permit,
+            # then keep every row that did finish -- the leg is never-raise, so an
+            # expired budget degrades the outline instead of failing the store.
+            for node_task in node_tasks:
+                node_task.cancel()
+            settled = await asyncio.gather(*node_tasks, return_exceptions=True)
+            rows.extend(result for result in settled if isinstance(result, IndexNodeRow))
+            logger.warning(
+                'Index-tree node summaries: aggregate budget of %.0fs expired during the '
+                'section(s) at offset %d of %d; cancelling the outstanding node summaries '
+                'and keeping the ones produced so far.',
+                settings.index_tree.total_timeout_s, start, attempted,
+            )
+            break
         rows.extend(result for result in results if isinstance(result, IndexNodeRow))
 
     # TOTAL degradation: sections were eligible and summaries attempted, but every
@@ -1149,6 +1220,17 @@ async def cleanup_embeddings_for_delete(
     fail-open direction (never a blocked delete, never lost user data), traded
     for a write path that no longer scales with the number of matched rows.
 
+    Fail-open covers UNREADABLE embedding rows only. Write CONTENTION is the
+    opposite case and is re-raised: ``begin_transaction`` opens DEFERRED, so this
+    cleanup is the FIRST write of the transaction and therefore exactly where an
+    external lock holder surfaces SQLITE_BUSY once ``busy_timeout`` expires.
+    Swallowing it would let the row delete commit against a lock that is about to
+    clear, permanently orphaning the FK-less vec0 rows this function exists to
+    remove -- while reporting success. Re-raising that family propagates out of the
+    caller's transaction, rolling the whole delete back so the caller's bounded
+    retry (:func:`delete_entries_with_cleanup`) re-runs it atomically once the lock
+    clears.
+
     Args:
         repos: Repository container.
         txn: The open transaction that will also issue the row delete.
@@ -1166,7 +1248,58 @@ async def cleanup_embeddings_for_delete(
     try:
         await repos.embeddings.delete_all_chunks_bulk(context_ids, txn=txn)
     except Exception as exc:
+        if is_sqlite_locked_error(exc):
+            raise
         logger.warning('Failed to delete embeddings for %d contexts: %s', len(context_ids), exc)
+
+
+async def delete_entries_with_cleanup(
+    repos: 'RepositoryContainer',
+    context_ids: list[str],
+    *,
+    max_retries: int = 2,
+) -> int:
+    """Delete context entries and their FK-less embedding rows in one transaction.
+
+    The single chokepoint shared by ``delete_context`` (both the by-ids and the
+    SQLite by-thread branch) and ``delete_context_batch``'s SQLite criteria
+    branch, so all three get identical cleanup-then-delete ordering, identical
+    atomicity, and identical transient-fault recovery.
+
+    Cleanup and row delete share ONE transaction so a failure between them can
+    never leave entries stripped of their vectors while their rows survive. The
+    bounded retry mirrors the store and update write paths: a SQLITE_BUSY from a
+    cross-process lock collision, or a dropped PostgreSQL connection, is
+    self-clearing contention rather than a client error, and ``delete_by_ids`` is
+    idempotent, so re-running the rolled-back transaction is safe.
+
+    Args:
+        repos: Repository container.
+        context_ids: The exact ids to remove.
+        max_retries: Maximum transient-fault retries (exponential backoff).
+
+    Returns:
+        The number of context rows deleted.
+    """
+    backend = repos.context.backend
+    attempt = 0
+    while True:
+        try:
+            async with backend.begin_transaction() as txn:
+                await cleanup_embeddings_for_delete(repos, txn, context_ids)
+                return await repos.context.delete_by_ids(context_ids, txn=txn)
+        except Exception as exc:
+            if is_connection_error(exc) and attempt < max_retries:
+                delay = 0.5 * (2 ** attempt)
+                attempt += 1
+                logger.warning(
+                    'Delete transaction failed with a transient error, retrying in %.1fs '
+                    '(attempt %d/%d): %s',
+                    delay, attempt, max_retries, exc,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -1278,6 +1411,54 @@ def is_connection_error(exc: Exception) -> bool:
         ConnectionResetError,
         OSError,
     ))
+
+
+async def reread_entry_version(
+    repos: 'RepositoryContainer',
+    context_id: str,
+    *,
+    max_retries: int = 2,
+) -> tuple[bool, int | None]:
+    """Re-read an entry's optimistic-concurrency version after a failed compare-and-set.
+
+    The update write paths capture ``version`` before their (LLM-bound) generation
+    pass and compare-and-set on commit. When a concurrent writer wins that race the
+    repository raises ``VersionConflictError`` and the caller must refresh the token
+    BEFORE re-entering the write: ``version`` is monotonic, so re-issuing the write
+    with the token whose compare-and-set just failed matches zero rows by
+    construction -- a guaranteed-doomed transaction that also consumes one of the
+    caller's bounded conflict slots.
+
+    The operation that actually needs retrying after a transient fault is therefore
+    this READ, which is what this helper retries: a dropped connection or a
+    self-clearing lock collision during the refresh is retried here, on the read
+    alone, and the caller re-enters the write only once a fresh version is in hand.
+
+    Args:
+        repos: Repository container.
+        context_id: ID (32-char canonical hex) of the entry whose version to refresh.
+        max_retries: Maximum transient-fault retries (exponential backoff).
+
+    Returns:
+        ``(exists, version)``; ``version`` is None when the entry is gone.
+    """
+    attempt = 0
+    while True:
+        try:
+            exists, _source, version = await repos.context.check_entry_exists(context_id)
+        except Exception as exc:
+            if is_connection_error(exc) and attempt < max_retries:
+                delay = 0.5 * (2 ** attempt)
+                attempt += 1
+                logger.warning(
+                    'Transient error re-reading the version of context %s; retrying in %.1fs '
+                    '(attempt %d/%d): %s',
+                    context_id, delay, attempt, max_retries, exc,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
+        return exists, version
 
 
 # ---------------------------------------------------------------------------

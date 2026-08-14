@@ -433,6 +433,87 @@ class TestStoreBatchReconcile:
         # The reconcile-time regeneration was attempted exactly once (entry 1).
         assert mock_gen_emb.await_count == 1
 
+    @pytest.mark.asyncio
+    async def test_nonatomic_reconcile_summary_failure_isolates_to_entry(self) -> None:
+        """A reconcile-time summary PROVIDER failure fails only that entry.
+
+        The reconcile-time summary regeneration is isolated with ``except
+        ToolError`` so a failure records a per-entry result instead of escaping the
+        per-entry loop. That isolation only holds if the summary helper actually
+        normalizes provider failures: the retry layer raises SummaryRetryExhaustedError
+        and the providers raise bare RuntimeError/ValueError, none of which is a
+        ToolError, so a routine summary outage escaped the loop, hit the
+        function-level handler, and aborted the whole non-atomic batch -- discarding
+        sibling results for entries already committed in their own transactions.
+        The provider (not the helper) is faulted here so the normalization itself is
+        under test.
+        """
+        from app.summary.retry import SummaryRetryExhaustedError
+        from app.tools.batch import store_context_batch
+
+        _, mock_begin_transaction = _make_mock_txn()
+        good_text = 'a' * 600
+        diverged_text = 'b' * 600
+        failing_provider = MagicMock()
+        failing_provider.summarize = AsyncMock(
+            side_effect=SummaryRetryExhaustedError('summary sidecar unreachable'),
+        )
+
+        with (
+            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=failing_provider),
+            patch('app.tools._shared.get_summary_provider', return_value=failing_provider),
+            patch(
+                'app.tools.batch.generate_index_nodes_with_timeout',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch('app.tools.batch.execute_store_in_transaction') as mock_exec,
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+
+            # Both entries look like duplicates WITH a stored summary, so the
+            # pre-check reuses it and no upfront model call happens.
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(
+                return_value=DuplicateCandidate(
+                    context_id='dup-id',
+                    summary='stale summary of other text',
+                ),
+            )
+
+            # Entry 0 stores cleanly; entry 1 diverges into an INSERT, so its
+            # reused summary must be regenerated -- and the provider is down.
+            mock_exec.side_effect = [
+                ('ctx-good', False, True),
+                EmbeddingsReconcileRequiredError(diverged_text),
+            ]
+
+            result = await store_context_batch(
+                entries=[
+                    {'thread_id': 't', 'source': 'user', 'text': good_text},
+                    {'thread_id': 't', 'source': 'user', 'text': diverged_text},
+                ],
+                atomic=False,
+            )
+
+        # No batch-wide abort: the committed sibling result survives.
+        assert result['succeeded'] == 1
+        assert result['failed'] == 1
+        by_index = {r['index']: r for r in result['results']}
+        assert by_index[0]['success'] is True
+        assert by_index[0]['context_id'] == 'ctx-good'
+        assert by_index[1]['success'] is False
+        assert by_index[1]['error']
+        assert 'Summary generation failed' in by_index[1]['error']
+
 
 class TestSemanticDistanceContractWording:
     """Guards the variant-aware semantic_distance contract (Bug 2 regression)."""

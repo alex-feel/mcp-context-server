@@ -1049,7 +1049,7 @@ result = search_context(
 print(result["stats"])
 # {
 #     "execution_time_ms": 12.34,
-#     "filters_applied": 4,
+#     "filters_applied": 3,
 #     "rows_returned": 15,
 #     "backend": "sqlite",
 #     "query_plan": "..."
@@ -1625,6 +1625,12 @@ Configure which metadata fields are indexed for faster filtering.
 - `float`: Cast to numeric for decimal comparisons
 - `array`: Array field (PostgreSQL GIN only, skipped in SQLite)
 - `object`: Nested object field (PostgreSQL GIN only, skipped in SQLite)
+
+**Type hints are enforced at the write boundary.** A field declared `integer`, `boolean`, or `float` is indexed through a SQL cast on PostgreSQL, so a value that cast cannot accept is REJECTED when it is stored -- on BOTH backends, and before any embedding or summary generation runs. Previously such a value stored fine on SQLite (whose index applies no cast) and aborted the PostgreSQL transaction after a full generation pass, with a raw driver error.
+
+What counts as acceptable mirrors PostgreSQL's own input parsers applied to the text the index stores: `integer` accepts an optional sign and a decimal run, plus PostgreSQL 16's non-decimal literals (`0x10`, `0o17`, `0b101`) and `_` digit separators, and must fit the 32-bit `INTEGER` range; `boolean` accepts the usual `true`/`false`/`yes`/`no`/`on`/`off` spellings and their unambiguous prefixes; `float` accepts decimal and exponent forms plus `NaN`/`Infinity`. Only ASCII whitespace is trimmed, because that is all PostgreSQL trims. A list or object under a typed field is rejected outright -- there is no scalar for the cast to produce.
+
+Turning an existing field into a typed one is an operator decision that the server verifies at startup: if rows already stored hold a value the new cast rejects, `CREATE INDEX` cannot succeed, and the server stops with a configuration error naming the field and quoting the offending value rather than crash-looping on a raw driver error.
 
 **Examples:**
 
