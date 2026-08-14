@@ -16,35 +16,61 @@ security scan (including its SARIF upload) on the default branch.
 
 These tests are structural: they read the workflow files and pin the invariants, so
 reintroducing an untrusted-string skip fails here rather than silently degrading the
-signal a reviewer relies on. They parse the text directly rather than through a YAML
-library so the suite needs no extra dependency for a check this small.
+signal a reviewer relies on.
+
+Conditions are extracted with a real YAML parser rather than by matching lines. A
+line-oriented reader has to re-derive scalar boundaries that YAML already defines,
+and every shape it gets wrong makes a condition arrive TRUNCATED or EMPTY -- at
+which point the substring assertions below still pass, on text that no longer
+contains the thing they were written to reject. A multi-line plain scalar, a value
+that begins on the line after the key, a block header carrying a trailing comment,
+and a multi-line quoted scalar are all valid YAML and all defeat that approach.
+PyYAML is a hard dependency of fastmcp, so parsing properly costs nothing here.
 """
 
-import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 _WORKFLOW_DIR = Path(__file__).resolve().parents[2] / '.github' / 'workflows'
-_WORKFLOW_FILES = sorted(_WORKFLOW_DIR.glob('*.yml'))
+# GitHub Actions reads BOTH extensions, so a workflow saved as .yaml would otherwise
+# be exempt from every assertion in this module while still gating the repository.
+_WORKFLOW_FILES = sorted(
+    path for pattern in ('*.yml', '*.yaml') for path in _WORKFLOW_DIR.glob(pattern)
+)
 
-# An ``if:`` value in these workflows is always a GitHub expression: either the
-# single-line ``if: ${{ ... }}`` form or a folded block whose last line closes with
-# ``}}``. Capturing from the key to that closing brace pair yields the whole
-# condition regardless of which form is used.
-_CONDITION_RE = re.compile(r'^\s*if:.*?\}\}', re.DOTALL | re.MULTILINE)
+
+def _collect_if_values(node: object, found: list[str]) -> None:
+    """Append every ``if`` value found anywhere in a parsed workflow document.
+
+    Args:
+        node: A node of the parsed YAML document.
+        found: Accumulator receiving one entry per ``if`` key, in document order.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == 'if':
+                found.append(str(value))
+            else:
+                _collect_if_values(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_if_values(item, found)
 
 
 def _conditions(path: Path) -> list[str]:
-    """Return every job/step ``if:`` expression in one workflow file.
+    """Return every job/step ``if:`` expression in one workflow file, one per ``if:`` key.
 
     Args:
         path: Workflow file to read.
 
     Returns:
-        The raw text of each condition, in file order.
+        The text of each condition, in document order, exactly one entry per ``if:`` key.
     """
-    return _CONDITION_RE.findall(path.read_text(encoding='utf-8'))
+    found: list[str] = []
+    _collect_if_values(yaml.safe_load(path.read_text(encoding='utf-8')), found)
+    return found
 
 
 def test_workflow_files_are_present() -> None:
@@ -89,3 +115,76 @@ def test_the_quality_gates_still_carry_a_skip_condition() -> None:
         assert path.exists(), f'{name} is missing'
         conditions = [c for c in _conditions(path) if 'head_ref' in c]
         assert conditions, f'{name} no longer exempts the release bump pull request'
+
+
+def test_every_condition_arrives_whole_and_separate(tmp_path: Path) -> None:
+    """Each ``if:`` yields exactly one complete condition, whatever scalar shape it uses.
+
+    Covers the shapes a line-oriented reader mis-handles, each of which silently
+    empties or truncates a condition and so lets an unguarded branch-prefix skip pass
+    the author-check assertion above: a multi-line plain scalar, a value starting on
+    the line after the key, a block header followed by a comment, and a multi-line
+    double-quoted scalar. It also pins the separation between an unwrapped condition
+    and a neighbouring job's wrapped one, which a scan terminating at the next ``}}``
+    merged into a single blob carrying both jobs' substrings.
+    """
+    workflow = tmp_path / 'shapes.yml'
+    workflow.write_text(
+        'jobs:\n'
+        '  multiline_plain:\n'
+        '    if: always()\n'
+        "      && startsWith(github.head_ref, 'release-please--branches--')\n"
+        '    steps:\n'
+        '      - run: echo a\n'
+        '  value_on_next_line:\n'
+        '    if:\n'
+        "      startsWith(github.head_ref, 'release-please--branches--')\n"
+        '    steps:\n'
+        '      - run: echo b\n'
+        '  block_header_with_comment:\n'
+        '    if: >- # keep the branch check on its own line\n'
+        "      startsWith(github.head_ref, 'release-please--branches--')\n"
+        '    steps:\n'
+        '      - run: echo c\n'
+        '  multiline_quoted:\n'
+        '    if: "always()\n'
+        '      && startsWith(github.head_ref, \'release-please--branches--\')"\n'
+        '    steps:\n'
+        '      - run: echo d\n'
+        '  wrapped:\n'
+        '    if: ${{ github.event.pull_request.user.login == github.repository_owner }}\n'
+        '    steps:\n'
+        '      - run: echo e\n',
+        encoding='utf-8',
+    )
+
+    conditions = _conditions(workflow)
+
+    assert len(conditions) == 5
+    for condition in conditions[:4]:
+        assert 'head_ref' in condition, condition
+        assert 'github.repository_owner' not in condition, condition
+    assert 'github.repository_owner' in conditions[4]
+    assert 'head_ref' not in conditions[4]
+
+
+def test_step_level_conditions_are_collected_too(tmp_path: Path) -> None:
+    """A skip placed on a STEP is inspected the same way a job-level one is.
+
+    A gate can be disabled just as effectively one level down, so the extraction must
+    reach into the steps list rather than stopping at the job mapping.
+    """
+    workflow = tmp_path / 'step_level.yml'
+    workflow.write_text(
+        'jobs:\n'
+        '  build:\n'
+        '    steps:\n'
+        '      - run: echo guarded\n'
+        "        if: startsWith(github.head_ref, 'release-please--branches--')\n",
+        encoding='utf-8',
+    )
+
+    conditions = _conditions(workflow)
+
+    assert len(conditions) == 1
+    assert 'head_ref' in conditions[0]

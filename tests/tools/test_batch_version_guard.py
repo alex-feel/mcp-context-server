@@ -35,9 +35,11 @@ the updates apply as pure text/metadata writes through the real CAS path.
 import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
+import asyncpg
 import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
@@ -433,6 +435,61 @@ class TestBatchVersionGuard:
         # PHASE 2 up-front check (1) + the single post-conflict re-read (2): the
         # not-found branch terminates the loop immediately, no further retries.
         assert check_calls['count'] == 2
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_transient_reread_failure_refreshes_version(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """atomic=False: a transient fault during the re-read retries the READ.
+
+        ``version`` is monotonic, so re-entering the write with the token whose
+        compare-and-set just failed matches zero rows by construction. Sleeping and
+        re-running the whole entry transaction with the unchanged token therefore
+        burned a guaranteed-doomed write and one of the five conflict slots on what
+        was only a connection blip. Mirrors the single-update path.
+        """
+        _backend, repos, entry_id = setup_with_entry
+
+        real_check = repos.context.check_entry_exists
+        check_calls = {'count': 0}
+        versions_seen: list[int | None] = []
+
+        async def flaky_reread(context_id: str) -> tuple[bool, str | None, int | None]:
+            check_calls['count'] += 1
+            if check_calls['count'] == 1:
+                return await real_check(context_id)  # PHASE 2 up-front capture
+            if check_calls['count'] == 2:
+                raise asyncpg.InterfaceError('connection recycled by the pooler')
+            return (True, 'agent', 3)
+
+        async def conflict_once(*_args: object, **kwargs: object) -> tuple[list[str], bool]:
+            versions_seen.append(cast('int | None', kwargs.get('expected_version')))
+            if len(versions_seen) == 1:
+                raise VersionConflictError(entry_id)
+            return ['metadata'], False
+
+        with (
+            patch('app.tools.batch.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch.object(repos.context, 'check_entry_exists', side_effect=flaky_reread),
+            patch(
+                'app.tools.batch.execute_update_in_transaction',
+                new=AsyncMock(side_effect=conflict_once),
+            ),
+        ):
+            result = await update_context_batch(
+                updates=[{'context_id': entry_id, 'metadata': {'status': 'x'}}],
+                atomic=False,
+            )
+
+        assert result['succeeded'] == 1
+        # Exactly two write attempts: the original and the one carrying the
+        # refreshed token. No attempt re-used the token whose CAS already failed.
+        assert versions_seen == [0, 3]
+        assert check_calls['count'] == 3
 
     # ---- Test 5: atomic delete-mid-CAS disambiguates to not-found ----
 

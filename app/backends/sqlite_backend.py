@@ -166,9 +166,12 @@ class PoolConfig:
     """Configuration for connection pooling."""
 
     max_readers: int = 8  # Increased for better concurrency
-    max_writers: int = 1  # SQLite only supports one writer
     connection_timeout: float = 10.0  # Reduced for faster timeout
-    idle_timeout: float = 300.0  # Close idle connections after 5 minutes
+    # Recycle the writer connection after this many seconds without a write, so
+    # an idle process stops pinning the database file and its -wal/-shm siblings;
+    # the next write recreates it. Applied by the health-check loop. Readers need
+    # no equivalent: they are per-use connections closed right after each read.
+    idle_timeout: float = 300.0
     health_check_interval: float = 30.0  # More frequent health checks
 
     def __post_init__(self) -> None:
@@ -221,18 +224,42 @@ class CircuitBreaker:
         self.failures = 0
         self.last_failure_time: float | None = None
         self.state = ConnectionState.HEALTHY
-        self.half_open_calls = 0
+        # Half-open bookkeeping, split into two counters because ADMISSION and
+        # OUTCOME are different events: half_open_admissions is advanced by
+        # is_open() for every probe it lets through and bounds how many probes
+        # reach a database that may still be dead, while half_open_successes is
+        # advanced by record_success() and drives promotion back to HEALTHY. One
+        # counter cannot do both -- incrementing it only on success (and zeroing
+        # it at the promotion threshold) keeps it permanently below the gate, so
+        # the gate never closes and every waiting caller stampedes the dead
+        # database on each recovery window.
+        self.half_open_admissions = 0
+        self.half_open_successes = 0
+        self.half_open_started_at: float | None = None
         self._lock = RLock()
+
+    def _open_half_open_window(self, now: float) -> None:
+        """Enter DEGRADED with a fresh probe budget. The caller holds the lock.
+
+        Args:
+            now: Current ``time.time()`` value, used as the window start.
+        """
+        self.state = ConnectionState.DEGRADED
+        self.half_open_admissions = 0
+        self.half_open_successes = 0
+        self.half_open_started_at = now
 
     def record_success(self) -> None:
         """Record a successful operation."""
         with self._lock:
             if self.state == ConnectionState.DEGRADED:
-                self.half_open_calls += 1
-                if self.half_open_calls >= self.half_open_max_calls:
+                self.half_open_successes += 1
+                if self.half_open_successes >= self.half_open_max_calls:
                     self.state = ConnectionState.HEALTHY
                     self.failures = 0
-                    self.half_open_calls = 0
+                    self.half_open_admissions = 0
+                    self.half_open_successes = 0
+                    self.half_open_started_at = None
                     logger.info('Circuit breaker recovered to HEALTHY state')
             elif self.state == ConnectionState.HEALTHY:
                 self.failures = max(0, self.failures - 1)
@@ -248,33 +275,49 @@ class CircuitBreaker:
                 logger.warning(f'Circuit breaker tripped: {self.failures} consecutive failures')
 
     def is_open(self) -> bool:
-        """Check if circuit is open, meaning we should block calls."""
+        """Check if circuit is open, meaning we should block calls.
+
+        While DEGRADED (half-open) at most ``half_open_max_calls`` calls are
+        ADMITTED per recovery window, so a still-dead database receives a handful
+        of probes instead of every request that piled up during the outage. A
+        window that elapses without a verdict (probes that neither succeeded nor
+        failed, e.g. calls exempted from breaker accounting) re-arms the budget
+        rather than blocking forever.
+
+        Returns:
+            True when the call must be rejected.
+        """
         with self._lock:
             if self.state == ConnectionState.HEALTHY:
                 return False
 
+            now = time.time()
             if self.state == ConnectionState.FAILED:
-                if self.last_failure_time:
-                    elapsed = time.time() - self.last_failure_time
-                    if elapsed > self.recovery_timeout:
-                        self.state = ConnectionState.DEGRADED
-                        self.half_open_calls = 0
-                        logger.info('Circuit breaker entering DEGRADED state for recovery')
-                        return False
-                return True
+                if self.last_failure_time is None or (now - self.last_failure_time) <= self.recovery_timeout:
+                    return True
+                self._open_half_open_window(now)
+                logger.info('Circuit breaker entering DEGRADED state for recovery')
 
-            # DEGRADED state, allow limited calls
-            return self.half_open_calls >= self.half_open_max_calls
+            # DEGRADED state, allow a bounded number of probe calls per window
+            if self.half_open_admissions >= self.half_open_max_calls:
+                started_at = self.half_open_started_at
+                if started_at is not None and (now - started_at) <= self.recovery_timeout:
+                    return True
+                # The probe budget was spent without any probe reporting an
+                # outcome; start a new window instead of rejecting forever.
+                self.half_open_admissions = 0
+                self.half_open_started_at = now
+            self.half_open_admissions += 1
+            return False
 
     def get_state(self) -> ConnectionState:
         """Get current circuit state."""
         with self._lock:
             # Check if we should transition from FAILED to DEGRADED
             if self.state == ConnectionState.FAILED and self.last_failure_time:
-                elapsed = time.time() - self.last_failure_time
-                if elapsed > self.recovery_timeout:
-                    self.state = ConnectionState.DEGRADED
-                    self.half_open_calls = 0
+                now = time.time()
+                if (now - self.last_failure_time) > self.recovery_timeout:
+                    self._open_half_open_window(now)
             return self.state
 
     def peek_state(self) -> ConnectionState:
@@ -343,7 +386,6 @@ class SQLiteBackend:
         if pool_config is None:
             pool_config = PoolConfig(
                 max_readers=settings.storage.pool_max_readers,
-                max_writers=settings.storage.pool_max_writers,
                 connection_timeout=settings.storage.pool_connection_timeout_s,
                 idle_timeout=settings.storage.pool_idle_timeout_s,
                 health_check_interval=settings.storage.pool_health_check_interval_s,
@@ -361,6 +403,11 @@ class SQLiteBackend:
 
         # Connection pools
         self._writer_conn: sqlite3.Connection | None = None
+        # Monotonic timestamp of the last writer acquisition, driving the
+        # POOL_IDLE_TIMEOUT_S recycling in the health-check loop. Readers are
+        # per-use temporary connections closed in get_connection's finally, so
+        # only the process-lifetime writer can sit idle.
+        self._writer_last_used: float = time.monotonic()
         self._reader_pool: list[sqlite3.Connection] = []
         self._reader_semaphore: asyncio.Semaphore | None = None
 
@@ -619,9 +666,22 @@ class SQLiteBackend:
             import sqlite_vec
 
             conn.enable_load_extension(True)
-            cast(Any, sqlite_vec).load(conn)
-            conn.enable_load_extension(False)
-            cast(Any, conn)._vec_loaded = True
+            try:
+                # sqlite_vec.load() is a plain conn.load_extension() dlopen: it
+                # raises sqlite3.OperationalError whenever the bundled shared
+                # object cannot be loaded (a noexec mount, a musl base image, a
+                # distroless image missing its runtime deps). The finally pairing
+                # is what guarantees the capability is withdrawn again on that
+                # path -- otherwise SQL-level load_extension() stays enabled on
+                # the writer and on every reader connection for the process
+                # lifetime, silently removing the hardening layer that turns any
+                # future SQL-injection defect into 'not authorized' instead of
+                # arbitrary native code execution.
+                cast(Any, sqlite_vec).load(conn)
+                cast(Any, conn)._vec_loaded = True
+            finally:
+                with suppress(Exception):
+                    conn.enable_load_extension(False)
             logger.debug('sqlite-vec extension loaded successfully')
         except ImportError:
             logger.debug('sqlite-vec package not installed, skipping extension loading')
@@ -750,7 +810,12 @@ class SQLiteBackend:
             raise
 
     async def _ensure_writer_connection(self) -> sqlite3.Connection:
-        """Ensure writer connection exists and is healthy."""
+        """Ensure writer connection exists and is healthy.
+
+        Returns:
+            The shared writer connection, created on demand when the previous one
+            was closed (unhealthy, or recycled after POOL_IDLE_TIMEOUT_S).
+        """
         loop = asyncio.get_running_loop()
 
         def _get_writer() -> sqlite3.Connection:
@@ -758,6 +823,10 @@ class SQLiteBackend:
                 if not self._writer_conn:
                     self._writer_conn = self._create_connection(readonly=False)
                     logger.debug('Created new writer connection')
+                # Every writer user (the write queue, begin_transaction and the
+                # allow_write scope) acquires through here, so this is the single
+                # site that can date the writer for idle recycling.
+                self._writer_last_used = time.monotonic()
                 return self._writer_conn
 
         return await loop.run_in_executor(None, _get_writer)
@@ -1227,9 +1296,58 @@ class SQLiteBackend:
 
         await loop.run_in_executor(None, _check)
 
+        await self._recycle_idle_writer_connection()
+
         # Update circuit breaker state in metrics
         self.metrics.circuit_state = self.circuit_breaker.get_state()
         self.metrics.consecutive_failures = self.circuit_breaker.failures
+
+    async def _recycle_idle_writer_connection(self) -> None:
+        """Close the writer connection once it has been idle past POOL_IDLE_TIMEOUT_S.
+
+        The writer is created at initialize() and otherwise lives for the whole
+        process, pinning the database file plus its -wal/-shm siblings even when
+        no write has happened for hours; POOL_IDLE_TIMEOUT_S exists to bound that.
+        Readers need no equivalent: they are per-use temporary connections that
+        get_connection closes in its finally.
+
+        Closing is safe because every writer user acquires the writer through
+        ``_ensure_writer_connection`` while holding ``_writer_lock``, which this
+        method also takes -- so no caller can be holding the connection object
+        being closed -- and the next write recreates it lazily. The lock is taken
+        only when it is already free (asyncio.Lock.acquire on a free lock does not
+        yield, so the check and the acquisition are atomic on the event loop):
+        waiting for it would mean a write is in flight, i.e. the writer is not
+        idle at all.
+        """
+        assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
+
+        idle_timeout = self.pool_config.idle_timeout
+        if self._shutdown or self._writer_conn is None or self._writer_lock.locked():
+            return
+        if (time.monotonic() - self._writer_last_used) < idle_timeout:
+            return
+
+        loop = asyncio.get_running_loop()
+
+        def _close_idle_writer() -> bool:
+            with self._pool_lock:
+                writer = self._writer_conn
+                if writer is None:
+                    return False
+                # Closed while it is still the tracked writer so the helper's
+                # PRAGMA optimize runs before the handle goes away.
+                self._safe_close_connection(writer)
+                self._writer_conn = None
+                return True
+
+        async with self._writer_lock:
+            # Re-check under the lock: a write may have landed between the
+            # unlocked pre-check above and the acquisition.
+            if (time.monotonic() - self._writer_last_used) < idle_timeout:
+                return
+            if await run_in_executor_uninterruptible(loop, _close_idle_writer):
+                logger.debug(f'Closed writer connection idle for more than {idle_timeout}s')
 
     @asynccontextmanager
     async def get_connection(
@@ -1327,17 +1445,37 @@ class SQLiteBackend:
                     # Drained commit (see begin_transaction): a cancellation must
                     # not leave a zombie commit against the shared writer.
                     await run_in_executor_uninterruptible(loop, writer.commit)
+                    # Count the committed scope as one completed operation, like
+                    # begin_transaction: this arm's failure ladder moves
+                    # failed_queries, so without the success-side increment the
+                    # two connection_metrics counters would cover different
+                    # populations here too.
+                    self.metrics.total_queries += 1
                     self.circuit_breaker.record_success()
                 except BaseException as e:
                     # Mirror begin_transaction: BaseException (cancellation) must
                     # still roll back the open transaction on the shared writer,
                     # or the NEXT write silently commits its partial state. Only a
                     # genuine fault trips the breaker.
-                    if isinstance(e, Exception):
-                        await run_in_executor_uninterruptible(loop, writer.rollback)
-                    else:
-                        writer.rollback()
-                        raise
+                    #
+                    # The rollback is GUARDED exactly as begin_transaction guards
+                    # its identical rollback on the same shared writer: a rollback
+                    # that itself fails (e.g. the health check closed the writer
+                    # this arm already captured, so rollback raises 'Cannot operate
+                    # on a closed database') must not replace the caller's real
+                    # error, skip the classification ladder below, and leave the
+                    # genuine fault uncharged -- and on a cancellation unwind it
+                    # must not turn a cancelled task into a failed one.
+                    try:
+                        if isinstance(e, Exception):
+                            await run_in_executor_uninterruptible(loop, writer.rollback)
+                        else:
+                            # Synchronous rollback on a BaseException unwind
+                            # (interpreter shutdown): the executor may be gone.
+                            writer.rollback()
+                    except Exception as rollback_error:
+                        logger.error(f'Rollback failed: {rollback_error}')
+
                     if isinstance(e, ControlFlowError):
                         # Normal control flow (a client-input validation error raised
                         # inside the connection scope), NOT a database fault: rolled
@@ -1345,6 +1483,11 @@ class SQLiteBackend:
                         # invalid input open the process-global breaker. Exempted on
                         # the readonly arm and in begin_transaction for the same
                         # reason.
+                        raise
+                    if not isinstance(e, Exception):
+                        # Cancellation / interpreter shutdown: rolled back above,
+                        # but not a database fault -- do not trip the breaker,
+                        # exactly as begin_transaction treats the same unwind.
                         raise
                     if is_sqlite_locked_error(e):
                         # SQLITE_BUSY / SQLITE_LOCKED write contention (typically a
@@ -1625,6 +1768,14 @@ class SQLiteBackend:
                 # cancellation then falls into the rollback arm below as a
                 # harmless no-op (nothing is open once the commit succeeded).
                 await run_in_executor_uninterruptible(loop, writer.commit)
+                # Count the committed transaction as one completed operation, the
+                # same unit execute_write/execute_read count. Without it
+                # total_queries never moves for the transactional store/update/
+                # delete path while its failure arm below still moves
+                # failed_queries, so the two counters published side by side in
+                # connection_metrics cover different populations and any
+                # failure-rate computed from them is wrong.
+                self.metrics.total_queries += 1
                 self.circuit_breaker.record_success()
                 logger.debug('Transaction committed successfully')
 

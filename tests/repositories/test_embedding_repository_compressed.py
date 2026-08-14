@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import sqlite3
 from collections.abc import AsyncGenerator
+from collections.abc import Callable
 from collections.abc import Generator
 from pathlib import Path
 
@@ -25,6 +26,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository import ChunkEmbedding
@@ -337,3 +339,137 @@ async def test_upsert_replaces_existing_compressed_chunks(
         ]
 
     assert await compressed_backend.execute_read(_read) == [b'NEW0']
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_compressed_uses_multi_row_statements(
+    compressed_backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compressed layout is cleaned in bounded multi-row statements, not per id.
+
+    The delete path hands this method an id list no client parameter caps (a
+    thread-wide or criteria-wide delete). With compression enabled and
+    ``SQLITE_FOREIGN_KEYS=false`` the cascade does not fire, so the delete path's
+    own gate still routes every id here -- and a per-id fallback would issue one
+    write round trip per entry while the exclusive SQLite writer is held, stalling
+    every concurrent store and update for the whole delete.
+    """
+    repos = RepositoryContainer(compressed_backend)
+    repo = EmbeddingRepository(compressed_backend)
+
+    stored_ids: list[str] = []
+    for index in range(4):
+        cid, _ = await repos.context.store_with_deduplication(
+            thread_id='bulk-compressed-thread', source='user', content_type='text',
+            text_content=f'compressed bulk entry {index}', metadata=None,
+        )
+        await repo.store_chunked(
+            cid,
+            [_make_chunk(0, b'AAA'), _make_chunk(1, b'BBB')],
+            model='test-model',
+        )
+        stored_ids.append(cid)
+
+    removed = stored_ids[:3]
+    survivor = stored_ids[3]
+
+    per_id_calls: list[tuple[str, object]] = []
+
+    async def _recording_delete_all_chunks(context_id: str, txn: object = None) -> int:
+        """Stand-in for the per-id method, recording that it was reached.
+
+        Args:
+            context_id: Id the caller wanted cleaned.
+            txn: Optional transaction context (unused).
+
+        Returns:
+            Zero; the call must never happen on this path.
+        """
+        per_id_calls.append((context_id, txn))
+        return 0
+
+    monkeypatch.setattr(repo, 'delete_all_chunks', _recording_delete_all_chunks)
+
+    original_execute_write = compressed_backend.execute_write
+    write_calls: list[object] = []
+
+    async def _counting_execute_write(operation: Callable[[sqlite3.Connection], int]) -> int:
+        """Count each write round trip the bulk delete issues.
+
+        Args:
+            operation: The synchronous closure the repository submits.
+
+        Returns:
+            Whatever the closure returns.
+        """
+        write_calls.append(operation)
+        return await original_execute_write(operation)
+
+    monkeypatch.setattr(compressed_backend, 'execute_write', _counting_execute_write)
+
+    deleted = await repo.delete_all_chunks_bulk(removed)
+
+    assert deleted == 6  # two chunks per removed entry
+    assert per_id_calls == [], 'the bulk path must not fall back to the per-id method'
+    assert len(write_calls) == 1, f'expected one bounded statement batch, got {len(write_calls)} writes'
+
+    def _counts(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
+        placeholders = ', '.join('?' * len(removed))
+        gone_payloads = conn.execute(
+            'SELECT COUNT(*) FROM vec_context_embeddings_compressed '
+            f'WHERE context_id IN ({placeholders})',
+            removed,
+        ).fetchone()[0]
+        gone_meta = conn.execute(
+            f'SELECT COUNT(*) FROM embedding_metadata WHERE context_id IN ({placeholders})',
+            removed,
+        ).fetchone()[0]
+        survivor_payloads = conn.execute(
+            'SELECT COUNT(*) FROM vec_context_embeddings_compressed WHERE context_id = ?',
+            (survivor,),
+        ).fetchone()[0]
+        survivor_meta = conn.execute(
+            'SELECT COUNT(*) FROM embedding_metadata WHERE context_id = ?',
+            (survivor,),
+        ).fetchone()[0]
+        return int(gone_payloads), int(gone_meta), int(survivor_payloads), int(survivor_meta)
+
+    gone_payloads, gone_meta, survivor_payloads, survivor_meta = await compressed_backend.execute_read(_counts)
+    assert gone_payloads == 0
+    assert gone_meta == 0
+    assert survivor_payloads == 2
+    assert survivor_meta == 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_compressed_chunks_beyond_the_bind_parameter_limit(
+    compressed_backend: StorageBackend,
+) -> None:
+    """A list larger than SQLITE_MAX_VARIABLE_NUMBER is split into bounded slices."""
+    repos = RepositoryContainer(compressed_backend)
+    repo = EmbeddingRepository(compressed_backend)
+
+    stored_ids: list[str] = []
+    for index in range(3):
+        cid, _ = await repos.context.store_with_deduplication(
+            thread_id='bulk-compressed-chunking-thread', source='user', content_type='text',
+            text_content=f'compressed chunking entry {index}', metadata=None,
+        )
+        await repo.store_chunked(cid, [_make_chunk(0, b'PAYLOAD')], model='test-model')
+        stored_ids.append(cid)
+
+    # Pad past the 900-id slice boundary with ids that match nothing.
+    padded = stored_ids + [generate_id() for _ in range(1200)]
+
+    assert await repo.delete_all_chunks_bulk(padded) == 3
+    for cid in stored_ids:
+        assert await repo.exists(cid) is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_compressed_empty_list_is_a_no_op(
+    compressed_backend: StorageBackend,
+) -> None:
+    """No ids means no statements and no error."""
+    repo = EmbeddingRepository(compressed_backend)
+    assert await repo.delete_all_chunks_bulk([]) == 0

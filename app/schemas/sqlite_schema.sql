@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS tags (
 
 CREATE INDEX IF NOT EXISTS idx_tags_entry ON tags(context_entry_id);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+-- Tags are a SET of labels per entry: the write path normalizes and deduplicates
+-- before inserting, and this index is the database-level backstop that keeps a
+-- second insertion path (or a defect in the first) from storing the same label
+-- twice, which every reader would then return twice.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_entry_tag ON tags(context_entry_id, tag);
 
 CREATE TABLE IF NOT EXISTS image_attachments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

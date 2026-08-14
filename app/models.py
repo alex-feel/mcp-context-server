@@ -66,6 +66,41 @@ MAX_TAG_LENGTH = 128
 MAX_THREAD_ID_LENGTH = 256
 MAX_INDEXED_METADATA_VALUE_LENGTH = 512
 
+
+def normalize_tag_list(tags: list[str]) -> list[str]:
+    """Reduce a caller-supplied tag list to the exact labels to store.
+
+    The single source of truth for what makes two tags the SAME label, so no two
+    call sites can disagree about it. Tags are a SET: an entry either carries a
+    label or it does not, and every reader (``get_context_by_ids``, all four search
+    tools, the tag statistics) exposes the stored rows verbatim, so inserting the
+    same label twice leaks a duplicate into every response and inflates the tag
+    counts.
+
+    Deduplication runs AFTER normalization because normalization itself manufactures
+    collisions: ``'Alpha'``, ``' alpha '`` and ``'alpha'`` are distinct on the wire
+    and identical once trimmed and lower-cased. First-seen order is preserved so the
+    stored labels follow the caller's ordering. Interior whitespace is significant
+    and is left alone, so ``'code review'`` and ``'code  review'`` stay distinct
+    labels.
+
+    Args:
+        tags: Raw tags as supplied by the caller.
+
+    Returns:
+        Trimmed, lower-cased, blank-free tags with duplicates removed, in first-seen
+        order.
+    """
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in tags:
+        tag = raw_tag.strip().lower()
+        if tag and tag not in seen:
+            seen.add(tag)
+            normalized.append(tag)
+    return normalized
+
+
 # One leading RFC 2397 data-URI prefix (any 'data:<mediatype>;base64,' form,
 # e.g. 'data:image/png;base64,'). Pure base64 never contains ':' or ',', so
 # stripping this prefix can never eat real payload characters.
@@ -208,25 +243,18 @@ class ContextEntry(BaseModel):
     @field_validator('tags')
     @classmethod
     def validate_tags(cls, v: list[str]) -> list[str]:
-        """Ensure tags are properly formatted with robust character support.
+        """Normalize tags through the shared label rule.
 
-        Handles:
-        - Unicode characters including forward slashes (/)
-        - Edge cases like double-encoding
-        - Non-string types that can be converted
-        - Whitespace normalization
+        Delegates to :func:`normalize_tag_list` rather than restating the rule, so this
+        model and the write path cannot disagree about which two tags are the same
+        label -- a disagreement would let one of them store a pair the other treats as
+        a single label, and duplicates surface in every reader's response.
 
         Returns:
-            List of validated and normalized tag strings.
+            Trimmed, lower-cased, blank-free tags with duplicates removed, in
+            first-seen order.
         """
-        validated_tags: list[str] = []
-        for tag in v:
-            # The tag should always be a string at this point due to type hints
-            # Normalize whitespace: replace multiple spaces/tabs/newlines with single space
-            normalized_tag = ' '.join(tag.split()).strip().lower()
-            if normalized_tag:
-                validated_tags.append(normalized_tag)
-        return validated_tags
+        return normalize_tag_list(v)
 
     @model_validator(mode='after')
     def set_content_type(self) -> 'ContextEntry':
@@ -292,7 +320,14 @@ class StoreContextRequest(BaseModel):
 
 
 class DeleteContextRequest(BaseModel):
-    """Request model for deleting context"""
+    """Request model for deleting context.
+
+    ``context_ids`` and ``thread_id`` are alternative selectors, EXACTLY ONE of which
+    must be supplied -- matching the ``delete_context`` tool, which deletes by id or by
+    thread and has no combined form. Accepting both would leave the request half
+    executed for an irreversible operation: the id branch runs, the thread branch is
+    skipped, and the caller is told the whole request succeeded.
+    """
 
     context_ids: list[str] | None = Field(default=None)
     thread_id: str | None = Field(default=None)
@@ -307,7 +342,16 @@ class DeleteContextRequest(BaseModel):
 
     @model_validator(mode='after')
     def validate_has_fields(self) -> 'DeleteContextRequest':
-        """Ensure at least one field is provided for deletion"""
+        """Ensure exactly one selector is provided for deletion.
+
+        Returns:
+            The validated request.
+
+        Raises:
+            ValueError: If neither selector or both selectors are provided.
+        """
         if not self.context_ids and not self.thread_id:
             raise ValueError('Must provide either context_ids or thread_id')
+        if self.context_ids and self.thread_id:
+            raise ValueError('context_ids and thread_id are mutually exclusive; provide exactly one')
         return self

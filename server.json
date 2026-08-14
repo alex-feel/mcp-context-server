@@ -60,13 +60,6 @@
           "name": "POOL_MAX_READERS"
         },
         {
-          "description": "Maximum number of concurrent write connections in the pool",
-          "isRequired": false,
-          "format": "number",
-          "isSecret": false,
-          "name": "POOL_MAX_WRITERS"
-        },
-        {
           "description": "Connection timeout in seconds",
           "isRequired": false,
           "format": "number",
@@ -74,7 +67,7 @@
           "name": "POOL_CONNECTION_TIMEOUT_S"
         },
         {
-          "description": "Idle connection timeout in seconds",
+          "description": "Close the SQLite writer connection after this many seconds without a write; the next write recreates it",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -130,21 +123,21 @@
           "name": "SQLITE_FOREIGN_KEYS"
         },
         {
-          "description": "SQLite journal mode (e.g., WAL, DELETE)",
+          "description": "SQLite journal mode: DELETE, TRUNCATE, PERSIST, MEMORY, WAL or OFF (case-insensitive); any other value is rejected at startup",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "SQLITE_JOURNAL_MODE"
         },
         {
-          "description": "SQLite synchronous mode (e.g., NORMAL, FULL, OFF)",
+          "description": "SQLite synchronous mode: OFF, NORMAL, FULL, EXTRA or 0-3 (case-insensitive); any other value is rejected at startup",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "SQLITE_SYNCHRONOUS"
         },
         {
-          "description": "SQLite temporary storage location (e.g., MEMORY, FILE)",
+          "description": "SQLite temporary storage location: DEFAULT, FILE, MEMORY or 0-2 (case-insensitive); any other value is rejected at startup",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -165,7 +158,7 @@
           "name": "SQLITE_CACHE_SIZE"
         },
         {
-          "description": "SQLite page size in bytes",
+          "description": "SQLite page size in bytes: a power of two between 512 and 65536; any other value is rejected at startup",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -186,7 +179,7 @@
           "name": "SQLITE_BUSY_TIMEOUT_MS"
         },
         {
-          "description": "SQLite WAL checkpoint mode (e.g., PASSIVE, FULL, RESTART)",
+          "description": "SQLite WAL checkpoint mode: PASSIVE, FULL, RESTART or TRUNCATE (case-insensitive); any other value is rejected at startup",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -235,7 +228,7 @@
           "name": "CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S"
         },
         {
-          "description": "Maximum calls allowed in circuit breaker half-open state",
+          "description": "Maximum calls admitted per recovery window while the circuit breaker is half-open, and the number of consecutive successes that closes it",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -781,13 +774,6 @@
           "name": "HYBRID_FTS_OR_THRESHOLD"
         },
         {
-          "description": "Default sort order for search results: relevance (only 'relevance' supported in current version)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "SEARCH_DEFAULT_SORT_BY"
-        },
-        {
           "description": "Maximum character length for truncated text_content in search results (default: 300, range: 50-1000)",
           "isRequired": false,
           "format": "number",
@@ -830,13 +816,6 @@
           "name": "CHUNK_AGGREGATION"
         },
         {
-          "description": "Multiplier for over-fetching chunks before deduplication (default: 5)",
-          "isRequired": false,
-          "format": "number",
-          "isSecret": false,
-          "name": "CHUNK_DEDUP_OVERFETCH"
-        },
-        {
           "description": "Enable cross-encoder reranking of search results (default: true)",
           "isRequired": false,
           "format": "boolean",
@@ -863,13 +842,6 @@
           "format": "number",
           "isSecret": false,
           "name": "RERANKING_MAX_LENGTH"
-        },
-        {
-          "description": "Multiplier for over-fetching results before reranking (default: 4)",
-          "isRequired": false,
-          "format": "number",
-          "isSecret": false,
-          "name": "RERANKING_OVERFETCH"
         },
         {
           "description": "Directory for caching reranking models",
@@ -1193,13 +1165,6 @@
           "name": "POOL_MAX_READERS"
         },
         {
-          "description": "Maximum number of concurrent write connections in the pool",
-          "isRequired": false,
-          "format": "number",
-          "isSecret": false,
-          "name": "POOL_MAX_WRITERS"
-        },
-        {
           "description": "Connection timeout in seconds",
           "isRequired": false,
           "format": "number",
@@ -1207,7 +1172,7 @@
           "name": "POOL_CONNECTION_TIMEOUT_S"
         },
         {
-          "description": "Idle connection timeout in seconds",
+          "description": "Close the SQLite writer connection after this many seconds without a write; the next write recreates it",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1263,21 +1228,21 @@
           "name": "SQLITE_FOREIGN_KEYS"
         },
         {
-          "description": "SQLite journal mode (e.g., WAL, DELETE)",
+          "description": "SQLite journal mode: DELETE, TRUNCATE, PERSIST, MEMORY, WAL or OFF (case-insensitive); any other value is rejected at startup",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "SQLITE_JOURNAL_MODE"
         },
         {
-          "description": "SQLite synchronous mode (e.g., NORMAL, FULL, OFF)",
+          "description": "SQLite synchronous mode: OFF, NORMAL, FULL, EXTRA or 0-3 (case-insensitive); any other value is rejected at startup",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "SQLITE_SYNCHRONOUS"
         },
         {
-          "description": "SQLite temporary storage location (e.g., MEMORY, FILE)",
+          "description": "SQLite temporary storage location: DEFAULT, FILE, MEMORY or 0-2 (case-insensitive); any other value is rejected at startup",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1298,7 +1263,7 @@
           "name": "SQLITE_CACHE_SIZE"
         },
         {
-          "description": "SQLite page size in bytes",
+          "description": "SQLite page size in bytes: a power of two between 512 and 65536; any other value is rejected at startup",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1319,7 +1284,7 @@
           "name": "SQLITE_BUSY_TIMEOUT_MS"
         },
         {
-          "description": "SQLite WAL checkpoint mode (e.g., PASSIVE, FULL, RESTART)",
+          "description": "SQLite WAL checkpoint mode: PASSIVE, FULL, RESTART or TRUNCATE (case-insensitive); any other value is rejected at startup",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1368,7 +1333,7 @@
           "name": "CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S"
         },
         {
-          "description": "Maximum calls allowed in circuit breaker half-open state",
+          "description": "Maximum calls admitted per recovery window while the circuit breaker is half-open, and the number of consecutive successes that closes it",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1914,13 +1879,6 @@
           "name": "HYBRID_FTS_OR_THRESHOLD"
         },
         {
-          "description": "Default sort order for search results: relevance (only 'relevance' supported in current version)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "SEARCH_DEFAULT_SORT_BY"
-        },
-        {
           "description": "Maximum character length for truncated text_content in search results (default: 300, range: 50-1000)",
           "isRequired": false,
           "format": "number",
@@ -1963,13 +1921,6 @@
           "name": "CHUNK_AGGREGATION"
         },
         {
-          "description": "Multiplier for over-fetching chunks before deduplication (default: 5)",
-          "isRequired": false,
-          "format": "number",
-          "isSecret": false,
-          "name": "CHUNK_DEDUP_OVERFETCH"
-        },
-        {
           "description": "Enable cross-encoder reranking of search results (default: true)",
           "isRequired": false,
           "format": "boolean",
@@ -1996,13 +1947,6 @@
           "format": "number",
           "isSecret": false,
           "name": "RERANKING_MAX_LENGTH"
-        },
-        {
-          "description": "Multiplier for over-fetching results before reranking (default: 4)",
-          "isRequired": false,
-          "format": "number",
-          "isSecret": false,
-          "name": "RERANKING_OVERFETCH"
         },
         {
           "description": "Directory for caching reranking models",

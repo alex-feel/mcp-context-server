@@ -8,6 +8,7 @@ Contains:
 - New tests for build_batch_store_response_message, build_batch_update_response_message
 """
 
+import asyncio
 import base64
 import sqlite3
 from collections.abc import Awaitable
@@ -17,23 +18,33 @@ from typing import get_type_hints
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import PropertyMock
+from unittest.mock import patch
 
 import asyncpg
 import pytest
 from fastmcp.exceptions import ToolError
 from pydantic import TypeAdapter
 
+import app.tools._shared as shared_module
 from app.models import MAX_IMAGES_PER_ENTRY
 from app.repositories.embedding_repository import ChunkEmbedding
+from app.settings import get_settings
+from app.summary.retry import SummaryRetryExhaustedError
+from app.summary.retry import SummaryTimeoutError
 from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import EntryNotFoundError
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
 from app.tools._shared import build_store_response_message
 from app.tools._shared import build_update_response_message
+from app.tools._shared import entry_boundary_error
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
+from app.tools._shared import generate_summary_with_timeout
+from app.tools._shared import indexed_value_error
 from app.tools._shared import is_connection_error
+from app.tools._shared import reject_invalid_indexed_values
+from app.tools._shared import reread_entry_version
 from app.tools._shared import transaction_heartbeat
 from app.tools._shared import validate_and_normalize_images
 from app.tools.context import store_context
@@ -1341,3 +1352,281 @@ class TestExecuteUpdateInTransaction:
             embedding_model='m',
         )
         assert summary_cleared is True
+
+
+class TestGenerateSummaryErrorContract:
+    """generate_summary_with_timeout normalizes EVERY failure to ToolError.
+
+    Its sibling abort-mandatory leg (generate_embeddings_with_timeout) already
+    converts any provider failure into a ToolError, and call sites that isolate a
+    per-entry failure rely on that shared contract with ``except ToolError``. The
+    summary helper used to convert only its own outer timeout, so the retry layer's
+    SummaryTimeoutError / SummaryRetryExhaustedError and the providers' bare
+    RuntimeError / ValueError escaped raw and slipped past those guards.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'failure',
+        [
+            SummaryRetryExhaustedError('retries exhausted'),
+            SummaryTimeoutError('provider timed out'),
+            RuntimeError('ollama unreachable'),
+            ValueError('text too long for the model context'),
+        ],
+        ids=['retries-exhausted', 'provider-timeout', 'runtime-error', 'value-error'],
+    )
+    async def test_provider_failures_become_tool_error(self, failure: Exception) -> None:
+        """Every provider failure class arrives as a ToolError naming the leg."""
+        provider = MagicMock()
+        provider.summarize = AsyncMock(side_effect=failure)
+        with (
+            patch('app.tools._shared.get_summary_provider', return_value=provider),
+            pytest.raises(ToolError, match='Summary generation failed'),
+        ):
+            await generate_summary_with_timeout('body text', 'agent')
+
+    @pytest.mark.asyncio
+    async def test_outer_timeout_keeps_its_dedicated_message(self) -> None:
+        """The total-timeout message stays distinct from the generic failure message."""
+
+        async def _never_returns(text: str, source: str) -> str:
+            _ = (text, source)
+            await asyncio.sleep(10)
+            return 'unreachable'
+
+        provider = MagicMock()
+        provider.summarize = _never_returns
+        with (
+            patch('app.tools._shared.get_summary_provider', return_value=provider),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=0.01),
+            pytest.raises(ToolError, match='exceeded total timeout'),
+        ):
+            await generate_summary_with_timeout('body text', 'agent')
+
+    @pytest.mark.asyncio
+    async def test_cancellation_still_propagates(self) -> None:
+        """Cancellation is NOT swallowed: run_generation cancels this leg on abort."""
+        started = asyncio.Event()
+
+        async def _block(text: str, source: str) -> str:
+            _ = (text, source)
+            started.set()
+            await asyncio.sleep(10)
+            return 'unreachable'
+
+        provider = MagicMock()
+        provider.summarize = _block
+        with patch('app.tools._shared.get_summary_provider', return_value=provider):
+            task = asyncio.create_task(generate_summary_with_timeout('body text', 'agent'))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
+class TestRereadEntryVersion:
+    """The version refresh after a compare-and-set conflict retries the READ.
+
+    ``version`` is monotonic, so re-entering the write with the token whose
+    compare-and-set just failed matches zero rows by construction. A transient fault
+    during the refresh must therefore be retried on the read itself, leaving the
+    caller to re-enter the write only once a fresh token is in hand.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_retried_and_returns_fresh_version(self) -> None:
+        """A dropped connection during the refresh retries and yields the new version."""
+        repos = MagicMock()
+        repos.context.check_entry_exists = AsyncMock(
+            side_effect=[asyncpg.InterfaceError('connection recycled'), (True, 'agent', 7)],
+        )
+        with patch('app.tools._shared.asyncio.sleep', new_callable=AsyncMock):
+            exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456')
+        assert exists is True
+        assert version == 7
+        assert repos.context.check_entry_exists.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_entry_is_reported_not_retried(self) -> None:
+        """A deleted row is a clean answer, not a fault to retry."""
+        repos = MagicMock()
+        repos.context.check_entry_exists = AsyncMock(return_value=(False, None, None))
+        exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456')
+        assert exists is False
+        assert version is None
+        assert repos.context.check_entry_exists.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_propagate(self) -> None:
+        """The refresh is bounded; a persistent fault surfaces to the caller."""
+        repos = MagicMock()
+        repos.context.check_entry_exists = AsyncMock(
+            side_effect=asyncpg.InterfaceError('connection recycled'),
+        )
+        with (
+            patch('app.tools._shared.asyncio.sleep', new_callable=AsyncMock),
+            pytest.raises(asyncpg.InterfaceError),
+        ):
+            await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', max_retries=1)
+        assert repos.context.check_entry_exists.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_logical_error_is_not_retried(self) -> None:
+        """A non-transient error fails immediately instead of burning retries."""
+        repos = MagicMock()
+        repos.context.check_entry_exists = AsyncMock(side_effect=ValueError('bad id'))
+        with pytest.raises(ValueError, match='bad id'):
+            await reread_entry_version(repos, '0190abcdef1234567890abcdef123456')
+        assert repos.context.check_entry_exists.await_count == 1
+
+
+class TestIndexedValueCastCompatibility:
+    """A typed METADATA_INDEXED_FIELDS entry is validated at the write boundary.
+
+    An ``integer``/``boolean``/``float`` type hint becomes a hard SQL cast inside
+    the PostgreSQL expression index, which PostgreSQL evaluates on INSERT. Without a
+    boundary check a cast-incompatible value passed every guard, paid the full
+    generation pass, and then aborted the transaction with a raw driver error --
+    while storing happily on SQLite, whose json_extract index applies no cast.
+    """
+
+    @pytest.fixture
+    def typed_indexed_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Configure one field per castable type hint for the module under test."""
+        monkeypatch.setenv(
+            'METADATA_INDEXED_FIELDS',
+            'status,priority:integer,completed:boolean,score:float',
+        )
+        get_settings.cache_clear()
+        monkeypatch.setattr(shared_module, 'settings', get_settings())
+
+    @pytest.mark.usefixtures('typed_indexed_fields')
+    @pytest.mark.parametrize(
+        ('metadata', 'expected'),
+        [
+            ({'priority': 5}, None),
+            ({'priority': '5'}, None),
+            ({'priority': ' -12 '}, None),
+            # PostgreSQL 16 added non-decimal literals and '_' digit separators to the
+            # integer and numeric input functions, so these cast fine and refusing them
+            # would block a store both backends accept.
+            ({'priority': '0x10'}, None),
+            ({'priority': '0o17'}, None),
+            ({'priority': '0b101'}, None),
+            ({'priority': '1_000'}, None),
+            ({'priority': '0x_10'}, None),
+            ({'priority': '1__0'}, 'not a valid integer'),
+            ({'priority': '_1'}, 'not a valid integer'),
+            ({'priority': '1_'}, 'not a valid integer'),
+            # PostgreSQL trims ASCII whitespace only: its scanners run under the C locale
+            # and test single bytes, so a Unicode space is ordinary content the cast
+            # chokes on. Python's argument-less strip() would remove it and accept these.
+            ({'priority': '\xa05'}, 'not a valid integer'),
+            ({'priority': '5　'}, 'not a valid integer'),
+            ({'priority': ' 5'}, 'not a valid integer'),
+            ({'completed': '\xa0true'}, 'not a valid boolean'),
+            ({'score': '\x1c1.5'}, 'not a valid float'),
+            ({'priority': 'high'}, 'not a valid integer'),
+            ({'priority': 5.5}, 'not a valid integer'),
+            ({'priority': True}, 'not a valid integer'),
+            ({'priority': [1, 2]}, 'cannot be stored'),
+            ({'priority': 99999999999}, 'out of range'),
+            ({'priority': -99999999999}, 'out of range'),
+            ({'priority': None}, None),
+            ({'completed': True}, None),
+            ({'completed': 'yes'}, None),
+            # 'of' is an accepted prefix of 'off'; a lone 'o' is ambiguous and rejected.
+            ({'completed': 'of'}, None),
+            ({'completed': 'o'}, 'not a valid boolean'),
+            ({'completed': 'maybe'}, 'not a valid boolean'),
+            ({'completed': 7}, 'not a valid boolean'),
+            ({'score': 1.5}, None),
+            ({'score': '2e3'}, None),
+            ({'score': 'NaN'}, None),
+            ({'score': 'high'}, 'not a valid float'),
+            ({'status': 'anything at all'}, None),
+            ({'unindexed': 'anything at all'}, None),
+        ],
+    )
+    def test_cast_compatibility_matches_postgresql(
+        self, metadata: dict[str, object], expected: str | None,
+    ) -> None:
+        """Values PostgreSQL would accept pass; values it would reject are refused."""
+        result = indexed_value_error(metadata=metadata)
+        if expected is None:
+            assert result is None
+        else:
+            assert result is not None
+            assert expected in result
+
+    @pytest.mark.usefixtures('typed_indexed_fields')
+    def test_raising_wrapper_reports_the_field(self) -> None:
+        """The single-entry wrapper names the offending field, as the length cap does."""
+        with pytest.raises(ToolError, match="metadata field 'priority'"):
+            reject_invalid_indexed_values(metadata={'priority': 'high'})
+
+    @pytest.mark.usefixtures('typed_indexed_fields')
+    def test_batch_chokepoint_covers_metadata_and_patch(self) -> None:
+        """The untyped batch chokepoint checks both the replacement and the patch form."""
+        assert entry_boundary_error(metadata={'priority': 'high'}) is not None
+        assert entry_boundary_error(metadata_patch={'completed': 'maybe'}) is not None
+
+    def test_default_configuration_has_no_castable_hints(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The shipped defaults declare only string/array/object, so nothing casts.
+
+        Array and object fields build no expression index at all (the always-present
+        GIN index serves them), so their values must not be type-checked here.
+        """
+        get_settings.cache_clear()
+        monkeypatch.setattr(shared_module, 'settings', get_settings())
+        assert indexed_value_error(metadata={'status': 'anything', 'technologies': ['a', 'b']}) is None
+
+
+class TestIndexedValueLengthMeasuresTheIndexedText:
+    """The length cap measures the text ``metadata->>'<field>'`` actually yields.
+
+    ``->>`` renders a JSON string unquoted and every other JSON value as its serialized
+    form, so a list or object stored under a string-typed indexed field is indexed at
+    its full serialized width. A cap that inspected only ``str`` values let such a
+    container through to abort the PostgreSQL INSERT inside the store transaction --
+    after a full generation pass, while charging the circuit breaker -- for a value
+    SQLite stored happily.
+    """
+
+    @pytest.fixture
+    def string_indexed_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Configure one string-typed and one array-typed indexed field."""
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'project,technologies:array')
+        get_settings.cache_clear()
+        monkeypatch.setattr(shared_module, 'settings', get_settings())
+
+    @pytest.mark.usefixtures('string_indexed_field')
+    def test_oversized_container_under_a_string_field_is_refused(self) -> None:
+        """A list whose serialized text exceeds the cap is refused, like a long string."""
+        oversized = ['x' * 100] * 40
+
+        message = indexed_value_error(metadata={'project': oversized})
+
+        assert message is not None
+        assert 'too long' in message
+
+    @pytest.mark.usefixtures('string_indexed_field')
+    def test_small_container_under_a_string_field_is_accepted(self) -> None:
+        """A container whose serialized text fits is stored, not blanket-refused."""
+        assert indexed_value_error(metadata={'project': ['alpha', 'beta']}) is None
+
+    @pytest.mark.usefixtures('string_indexed_field')
+    def test_array_typed_field_is_exempt_from_the_cap(self) -> None:
+        """An array-typed field builds no expression index, so its width is unbounded.
+
+        It is served by the always-present GIN index, which hashes its entries.
+        """
+        assert indexed_value_error(metadata={'technologies': ['x' * 100] * 40}) is None
+
+    @pytest.mark.usefixtures('string_indexed_field')
+    def test_batch_chokepoint_sees_the_same_breach(self) -> None:
+        """The untyped batch path refuses it too, so both write paths agree."""
+        assert entry_boundary_error(metadata={'project': ['x' * 100] * 40}) is not None

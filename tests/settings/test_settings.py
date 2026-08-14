@@ -285,20 +285,18 @@ class TestStorageImageSizeLimits:
 
 
 class TestStoragePoolLimits:
-    """POOL_MAX_READERS / POOL_MAX_WRITERS must be at least 1.
+    """POOL_MAX_READERS must be at least 1.
 
-    POOL_MAX_READERS sizes an asyncio.Semaphore: a value of 0 would start it
-    locked (every reader blocks forever, a silent deadlock) and a negative value
-    raises an opaque ValueError deep in pool init, so both must be rejected
-    cleanly at the configuration boundary like every peer concurrency cap.
+    It sizes an asyncio.Semaphore: a value of 0 would start it locked (every
+    reader blocks forever, a silent deadlock) and a negative value raises an
+    opaque ValueError deep in pool init, so both must be rejected cleanly at the
+    configuration boundary like every peer concurrency cap.
     """
 
-    def test_defaults_are_positive(self) -> None:
+    def test_default_is_positive(self) -> None:
         from app.settings import StorageSettings
 
-        settings = StorageSettings()
-        assert settings.pool_max_readers == 8
-        assert settings.pool_max_writers == 1
+        assert StorageSettings().pool_max_readers == 8
 
     def test_zero_readers_rejected(self) -> None:
         from app.settings import StorageSettings
@@ -306,10 +304,10 @@ class TestStoragePoolLimits:
         with env_var('POOL_MAX_READERS', '0'), pytest.raises(ValidationError):
             StorageSettings()
 
-    def test_negative_writers_rejected(self) -> None:
+    def test_negative_readers_rejected(self) -> None:
         from app.settings import StorageSettings
 
-        with env_var('POOL_MAX_WRITERS', '-1'), pytest.raises(ValidationError):
+        with env_var('POOL_MAX_READERS', '-1'), pytest.raises(ValidationError):
             StorageSettings()
 
 
@@ -516,6 +514,83 @@ class TestPostgresqlPoolLimits:
 
         with env_var(env_name, value):
             StorageSettings()
+
+
+class TestSqlitePragmaValidation:
+    """SQLITE_* pragma arguments are checked against what SQLite actually accepts.
+
+    SQLite does not reject an unrecognized pragma argument: it silently keeps the
+    current or default value, and the backend never reads the applied value back.
+    So a typo produced a server that boots clean and reports healthy while running
+    with different durability or concurrency than the operator configured --
+    SQLITE_SYNCHRONOUS=FULLL runs at NORMAL (a power loss can discard transactions
+    believed to be fsynced), and SQLITE_JOURNAL_MODE=wal-mode leaves a fresh
+    database in DELETE mode (every write takes an exclusive lock).
+    """
+
+    @pytest.mark.parametrize(
+        ('env_name', 'value'),
+        [
+            ('SQLITE_JOURNAL_MODE', 'WAL2'),
+            ('SQLITE_JOURNAL_MODE', 'wal-mode'),
+            ('SQLITE_SYNCHRONOUS', 'FULLL'),
+            ('SQLITE_SYNCHRONOUS', 'typo'),
+            ('SQLITE_TEMP_STORE', 'MEMORYY'),
+            ('SQLITE_WAL_CHECKPOINT', 'PASIVE'),
+        ],
+    )
+    def test_unrecognized_pragma_argument_rejected(self, env_name: str, value: str) -> None:
+        """A value SQLite would silently ignore fails at the configuration boundary."""
+        from app.settings import StorageSettings
+
+        with env_var(env_name, value), pytest.raises(ValidationError, match='SQLite'):
+            StorageSettings()
+
+    @pytest.mark.parametrize(
+        ('env_name', 'value', 'expected'),
+        [
+            ('SQLITE_JOURNAL_MODE', 'wal', 'WAL'),
+            ('SQLITE_JOURNAL_MODE', 'Delete', 'DELETE'),
+            ('SQLITE_SYNCHRONOUS', 'full', 'FULL'),
+            ('SQLITE_SYNCHRONOUS', '2', '2'),
+            ('SQLITE_TEMP_STORE', 'memory', 'MEMORY'),
+            ('SQLITE_TEMP_STORE', '0', '0'),
+            ('SQLITE_WAL_CHECKPOINT', 'truncate', 'TRUNCATE'),
+        ],
+    )
+    def test_recognized_pragma_argument_normalized(self, env_name: str, value: str, expected: str) -> None:
+        """Every spelling SQLite accepts stays valid and is normalized to upper case."""
+        from app.settings import StorageSettings
+
+        with env_var(env_name, value):
+            settings = StorageSettings()
+        assert getattr(settings, env_name.lower()) == expected
+
+    def test_defaults_are_valid_pragma_arguments(self) -> None:
+        """The shipped defaults pass their own validation."""
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+        assert settings.sqlite_journal_mode == 'WAL'
+        assert settings.sqlite_synchronous == 'NORMAL'
+        assert settings.sqlite_temp_store == 'MEMORY'
+        assert settings.sqlite_wal_checkpoint == 'PASSIVE'
+
+    @pytest.mark.parametrize('value', ['5000', '256', '131072', '0'])
+    def test_unsupported_page_size_rejected(self, value: str) -> None:
+        """A page size SQLite would ignore is rejected instead of silently dropped."""
+        from app.settings import StorageSettings
+
+        with env_var('SQLITE_PAGE_SIZE', value), pytest.raises(ValidationError, match='power of two'):
+            StorageSettings()
+
+    @pytest.mark.parametrize('value', ['512', '4096', '65536'])
+    def test_supported_page_size_accepted(self, value: str) -> None:
+        """Every power of two in SQLite's supported range stays valid."""
+        from app.settings import StorageSettings
+
+        with env_var('SQLITE_PAGE_SIZE', value):
+            assert StorageSettings().sqlite_page_size == int(value)
 
 
 class TestPgvectorDimensionLimit:

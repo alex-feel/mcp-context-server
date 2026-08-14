@@ -71,6 +71,8 @@ from app.errors import ConfigurationError
 # https://github.com/aminalaee/uuid-utils/issues/73
 from app.ids import generate_id_with_timestamp
 from app.metadata_types import non_finite_metadata_error
+from app.metadata_types import pg_indexed_cast_error
+from app.metadata_types import pg_indexed_metadata_text
 from app.metadata_types import unstorable_string_error
 from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
 from app.pgvector_limits import exceeds_pgvector_index_dim_limit
@@ -95,7 +97,10 @@ class MigrationStats:
             target.
         references_rewritten: Number of integer entries inside
             ``metadata.references.context_ids`` arrays that were
-            successfully remapped to UUIDv7 hex strings.
+            successfully remapped to UUIDv7 hex strings AND reached the
+            target. A remapping the run then discards -- because the
+            re-encode was rejected and the original metadata was preserved,
+            or because the whole row was skipped -- is not counted.
         orphan_references: Number of integer entries inside
             ``metadata.references.context_ids`` arrays that did not match
             any source ``context_entries.id``; these are preserved as
@@ -723,10 +728,16 @@ def rewrite_metadata_references(
     except json.JSONDecodeError as exc:
         stats.errors.append(f'row {row_pk}: metadata JSON parse failed ({exc}); preserved verbatim')
         return metadata_json
+    # _walk_and_rewrite counts each remapping as it mutates the parsed structure, but
+    # the encoder below can still reject that structure -- in which case the mutations
+    # are discarded and the ORIGINAL metadata is returned. Snapshot the counter so the
+    # discarded remappings are not reported as remappings that reached the target.
+    references_rewritten_before = stats.references_rewritten
     _walk_and_rewrite(parsed, id_mapping, stats, row_pk, seen=set())
     try:
         return json.dumps(parsed, ensure_ascii=False, allow_nan=False)
     except ValueError as exc:
+        stats.references_rewritten = references_rewritten_before
         stats.errors.append(
             f'row {row_pk}: metadata contains a number Python cannot round-trip as JSON '
             f'({exc}); the original metadata is preserved verbatim and any integer '
@@ -802,25 +813,65 @@ def _pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | 
 
 
 # PostgreSQL refuses to index a btree tuple larger than roughly a third of an 8KB
-# page: 2704 bytes on btree version 4. The subtracted margin leaves room for the
-# tuple header and for the other columns of the compound indexes thread_id
-# participates in (idx_thread_source, idx_context_entries_dedup_hash,
-# idx_thread_created), so a value that passes here really is indexable.
+# page: BTMaxItemSize is 2704 bytes on btree version 4.
 #
-# This matters only for a SQLite SOURCE: SQLite indexes the same columns with no
-# size limit, so a corpus predating the write-path length caps can hold a tag or
-# thread_id the PostgreSQL target cannot index. Bound at the source, such a value
-# aborts the INSERT mid-transaction, ROLLBACKs the entire run, and reports a raw
-# driver error naming no source row -- the exact failure the NUL/surrogate
-# pre-check exists to convert into a per-row skip-and-warn.
-_PG_MAX_INDEXED_VALUE_BYTES = 2704 - 64
+# For thread_id and tags this matters only for a SQLite SOURCE: SQLite indexes those
+# columns with no size limit, while every PostgreSQL database declares idx_thread_id
+# and idx_tags_tag in its base schema and therefore cannot already hold a value that
+# breaches the ceiling. An INDEXED METADATA value is different, and a PostgreSQL
+# source can hold one: the metadata expression indexes are deliberately NOT in the
+# base schema (see app/schemas/postgresql_schema.sql -- a database initialized only by
+# this CLI has none until its first server startup), so a source whose
+# METADATA_INDEXED_FIELDS never covered a field, or which was never started as a
+# server, can carry a value the target's index rejects.
+#
+# Bound at the source, such a value aborts the INSERT mid-transaction, ROLLBACKs the
+# entire run, and reports a raw driver error naming no source row -- the exact failure
+# the NUL/surrogate pre-check exists to convert into a per-row skip-and-warn.
+#
+# The budget is deliberately measured against the UNCOMPRESSED value. PostgreSQL
+# compresses an index attribute larger than 512 bytes in line, so a highly repetitive
+# oversized value can still fit while an incompressible one of the same length cannot.
+# Modeling that compression is not possible from here, and the two errors are not
+# symmetric: over-accepting costs the WHOLE run, while over-skipping costs one row that
+# is named in the errors and migrates on a rerun once the value is shortened.
+_PG_BTREE_MAX_ITEM_BYTES = 2704
+
+# What an index tuple costs BESIDES the payload of the value being checked, for any
+# index shape:
+#   16 bytes  IndexTupleData header (8 bytes), MAXALIGNed to 16 once a nullable
+#             trailing column adds the null bitmap
+#    4 bytes  the long varlena header carried by a text datum past the 126-byte
+#             short-header threshold
+#    8 bytes  one MAXALIGN quantum of slack on the assembled tuple, covering the
+#             inter-attribute padding a fixed-width trailing column can introduce
+_PG_INDEX_TUPLE_FIXED_BYTES = 16 + 4 + 8
+
+# Budget for a value that is indexed ON ITS OWN: idx_tags_tag on ``tags(tag)`` and the
+# metadata expression indexes ``idx_metadata_<field>`` on
+# ``context_entries((metadata->>'<field>'))`` that handle_metadata_indexes provisions
+# for every string-typed METADATA_INDEXED_FIELDS entry.
+_PG_MAX_INDEXED_VALUE_BYTES = _PG_BTREE_MAX_ITEM_BYTES - _PG_INDEX_TUPLE_FIXED_BYTES
+
+# thread_id needs a SMALLER budget because it is the leading column of
+# idx_context_entries_dedup_hash (thread_id, source, content_hash), which the base
+# schema declares on every PostgreSQL target: the tuple must also hold 6 bytes of
+# source ('agent' as a short-header varlena) and 65 bytes of content_hash (a 64-character
+# SHA-256 hex string, likewise short-header). The other compound indexes thread_id feeds
+# (idx_thread_source, idx_thread_created) have narrower trailing columns than that, so
+# the dedup index sets the ceiling.
+_PG_MAX_INDEXED_THREAD_ID_BYTES = _PG_MAX_INDEXED_VALUE_BYTES - (6 + 65)
 
 
-def _pg_unindexable_column_reason(value: str | None) -> str | None:
+def _pg_unindexable_column_reason(value: str | None, max_bytes: int) -> str | None:
     """Return why a value is too large for a PostgreSQL btree index, else None.
 
     Args:
         value: The candidate value for an INDEXED target column.
+        max_bytes: Payload budget for the widest index this value feeds --
+            :data:`_PG_MAX_INDEXED_THREAD_ID_BYTES` for thread_id (a compound index
+            whose trailing columns share the tuple), :data:`_PG_MAX_INDEXED_VALUE_BYTES`
+            for a value indexed on its own.
 
     Returns:
         A reason string when the encoded value exceeds the index-tuple budget,
@@ -829,32 +880,104 @@ def _pg_unindexable_column_reason(value: str | None) -> str | None:
     if value is None:
         return None
     encoded_bytes = len(value.encode('utf-8'))
-    if encoded_bytes <= _PG_MAX_INDEXED_VALUE_BYTES:
+    if encoded_bytes <= max_bytes:
         return None
     return (
         f'the value is {encoded_bytes} UTF-8 bytes, which exceeds the PostgreSQL btree '
-        f'index-tuple budget of {_PG_MAX_INDEXED_VALUE_BYTES} bytes for this indexed '
-        f'column; SQLite indexes it without a size limit, so the value must be shortened '
-        f'in the source database before it can be migrated'
+        f'index-tuple budget of {max_bytes} bytes for this indexed '
+        f'column; SQLite indexes it without a size limit, so this row is skipped -- shorten '
+        f'the value in the source database and rerun to migrate it'
     )
 
 
 def _first_pg_unindexable_column(
-    columns: Iterable[tuple[str, str | None]],
+    columns: Iterable[tuple[str, str | None, int]],
 ) -> tuple[str, str] | None:
     """Return the first ``(column, reason)`` a PostgreSQL btree index cannot hold, else None.
 
     Args:
-        columns: Ordered ``(column_name, value)`` candidates for one row, limited
-            to columns the target schema actually indexes.
+        columns: Ordered ``(column_name, value, max_bytes)`` candidates for one row,
+            limited to columns the target schema actually indexes. ``max_bytes`` is the
+            payload budget of the widest index that column feeds.
 
     Returns:
         The ``(column_name, reason)`` of the first oversized column, else None.
     """
-    for name, value in columns:
-        reason = _pg_unindexable_column_reason(value)
+    for name, value, max_bytes in columns:
+        reason = _pg_unindexable_column_reason(value, max_bytes)
         if reason is not None:
             return name, reason
+    return None
+
+
+def _first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str, str] | None:
+    """Return the first indexed metadata field a PostgreSQL target cannot index, else None.
+
+    A ``METADATA_INDEXED_FIELDS`` key gets an expression btree index
+    ``idx_metadata_<field>`` on ``context_entries((metadata->>'<field>'))``
+    (app.migrations.metadata), evaluated on every INSERT. SQLite's equivalent
+    ``json_extract`` index has neither a size limit nor a cast, so a source can hold a
+    value the target cannot index at all -- aborting the whole run when the target
+    already carries the index, or breaking the target's first server startup (which
+    creates the index) when the CLI initialized the target itself. Both ways that
+    happens are checked, in the order they would fail:
+
+    * WIDTH, for a ``string``-typed field, whose TEXT btree entry is bounded by the
+      index-tuple ceiling that also bounds thread_id and tags. The width is measured on
+      the text the expression YIELDS (:func:`~app.metadata_types.pg_indexed_metadata_text`),
+      so a list or object is measured as the whole serialized JSON ``->>`` renders it as.
+    * CAST COMPATIBILITY, for an ``integer``/``boolean``/``float``-typed field, whose
+      index expression carries a hard SQL cast the value must survive. This is the same
+      check the write boundary applies
+      (:func:`~app.metadata_types.pg_indexed_cast_error`), so a value the running server
+      would refuse to store is a value the migration refuses to import -- SQLite happily
+      holds ``{"priority": "high"}`` under an integer-typed field, and the cast is where
+      that stops being portable.
+
+    ``array``/``object``-typed fields are exempt from both: they build no expression
+    index at all, being served by the always-present jsonb_path_ops GIN index, which
+    hashes its entries. Only top-level keys are inspected, because
+    ``metadata->>'<field>'`` addresses top-level keys only. Unparseable or non-object
+    metadata returns None: the jsonb bind itself rejects it, which the unstorable
+    pre-check reports with a more specific reason.
+
+    Args:
+        metadata_json: The metadata JSON string about to be bound into the target's
+            ``jsonb`` column, or None when the row has no metadata.
+
+    Returns:
+        The ``('metadata.<field>', reason)`` of the first unindexable value, else None.
+    """
+    if metadata_json is None:
+        return None
+    try:
+        parsed: object = json.loads(metadata_json)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    from app.settings import get_settings
+
+    indexed_fields = get_settings().storage.metadata_indexed_fields
+    for key, value in cast(dict[str, object], parsed).items():
+        type_hint = indexed_fields.get(key)
+        if type_hint is None:
+            continue
+        if type_hint == 'string':
+            reason = _pg_unindexable_column_reason(pg_indexed_metadata_text(value), _PG_MAX_INDEXED_VALUE_BYTES)
+            if reason is not None:
+                return f'metadata.{key}', reason
+            continue
+        cast_error = pg_indexed_cast_error(key, value, type_hint)
+        if cast_error is not None:
+            return (
+                f'metadata.{key}',
+                (
+                    f'{cast_error}; the PostgreSQL expression index evaluates that cast on every '
+                    f'INSERT while SQLite indexes the value uncast, so this row is skipped -- '
+                    f'correct the value in the source database and rerun to migrate it'
+                ),
+            )
     return None
 
 
@@ -878,6 +1001,18 @@ def _first_pg_unstorable_column(
         if reason is not None:
             return name, reason
     return None
+
+
+# Tags are a SET of labels per entry, and the target schema enforces that with a
+# UNIQUE index on (context_entry_id, tag). A legacy source predating the write-path
+# deduplication can hold the same label twice for one entry, which would abort the
+# whole run on the second INSERT, so the copy collapses the duplicates instead of
+# carrying them across. MIN(id) keeps the ordering deterministic and identical on
+# both backends.
+_SELECT_DISTINCT_TAGS_SQL = (
+    'SELECT MIN(id) AS id, context_entry_id, tag FROM tags '
+    'GROUP BY context_entry_id, tag ORDER BY id ASC'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -969,7 +1104,7 @@ def copy_tags(
     The local ``tags.id`` AUTOINCREMENT counter is regenerated by the
     target schema; the original integer value is not preserved.
     """
-    cursor = source.execute('SELECT context_entry_id, tag FROM tags ORDER BY id ASC')
+    cursor = source.execute(_SELECT_DISTINCT_TAGS_SQL)
     insert_sql = 'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)'
     inserted = 0
     for row in cursor:
@@ -986,6 +1121,29 @@ def copy_tags(
     stats.tags_migrated = inserted
 
 
+def _malformed_image_metadata_reason(value: object) -> str | None:
+    """Return why an ``image_metadata`` value is undecodable, else None.
+
+    Args:
+        value: The ``image_attachments.image_metadata`` value read from the source.
+
+    Returns:
+        A reason string when the value is neither absent nor valid JSON, else None.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return f'value is a {type(value).__name__}, not the JSON text the column stores'
+    try:
+        json.loads(value)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return (
+            f'value is not valid JSON, so no reader can decode it: {exc}. '
+            f'Correct it in the source database and rerun to migrate this attachment.'
+        )
+    return None
+
+
 def copy_image_attachments(
     source: sqlite3.Connection,
     target: sqlite3.Connection,
@@ -995,9 +1153,15 @@ def copy_image_attachments(
 ) -> None:
     """Copy ``image_attachments`` rows from source to target.
 
-    The local ``image_attachments.id`` AUTOINCREMENT counter is
-    regenerated by the target schema. Image payload columns are copied
-    verbatim.
+    The local ``image_attachments.id`` AUTOINCREMENT counter is regenerated by the
+    target schema. Image payload columns are copied verbatim.
+
+    ``image_metadata`` is the exception: it is validated as JSON before the bind. On a
+    PostgreSQL target the ``$4::jsonb`` cast validates it for free and a malformed
+    value is skipped with a reason; a SQLite target binds through a plain ``?`` and
+    would import a payload no reader can decode. Readers degrade gracefully on such a
+    row, but the migration has no business creating one, and the two targets should
+    reject the same input.
     """
     cursor = source.execute(
         'SELECT context_entry_id, image_data, mime_type, image_metadata, position, created_at '
@@ -1015,6 +1179,13 @@ def copy_image_attachments(
         if mapped is None:
             stats.warnings.append(
                 f'image_attachments row references missing context_entry_id={source_id}; skipped',
+            )
+            continue
+        metadata_reason = _malformed_image_metadata_reason(row['image_metadata'])
+        if metadata_reason is not None:
+            stats.errors.append(
+                f'image_attachments row context_entry_id={source_id} column '
+                f"'image_metadata' skipped: {metadata_reason}",
             )
             continue
         if not dry_run:
@@ -1637,10 +1808,22 @@ def _pg_connect_kwargs() -> dict[str, Any]:
 
     Imported lazily so the SQLite-only migration paths never import the
     PostgreSQL backend (and therefore never require asyncpg/pgvector to be
-    installed). The kwargs apply ``search_path`` (``POSTGRESQL_SCHEMA``) and
-    ``statement_cache_size`` (set ``POSTGRESQL_STATEMENT_CACHE_SIZE=0`` for
-    transaction-mode poolers such as the Supabase Transaction Pooler). SSL is
-    carried by the DSN (``?sslmode=...``), parsed natively by asyncpg.
+    installed). The kwargs apply ``statement_cache_size`` (set
+    ``POSTGRESQL_STATEMENT_CACHE_SIZE=0`` for transaction-mode poolers such as the
+    Supabase Transaction Pooler). SSL is carried by the DSN (``?sslmode=...``),
+    parsed natively by asyncpg. The SESSION parameters (``search_path``,
+    ``extra_float_digits``, the TCP keepalive GUCs) are NOT startup-packet
+    parameters -- a pooler would refuse the connection over them -- and are applied
+    by :func:`_pg_connect` right after the dial instead.
+
+    ``timeout`` (``POSTGRESQL_CONNECT_TIMEOUT_S``) is added here rather than by
+    :func:`app.backends.postgresql_backend.build_asyncpg_connect_kwargs`, whose scope
+    is what the pool merges into ``create_pool``; the pool supplies the same
+    establishment budget separately. Without it every migration connection would
+    silently fall back to asyncpg's built-in 60-second default, so a DSN whose TLS and
+    startup handshake needs the longer budget the operator configured would boot the
+    server fine yet abort the migration -- and a deliberately SHORT budget would not
+    fail fast either.
 
     Returns:
         Mapping suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``.
@@ -1648,7 +1831,40 @@ def _pg_connect_kwargs() -> dict[str, Any]:
     from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
     from app.settings import get_settings
 
-    return build_asyncpg_connect_kwargs(get_settings())
+    settings = get_settings()
+    kwargs = build_asyncpg_connect_kwargs(settings)
+    kwargs['timeout'] = settings.storage.postgresql_connect_timeout_s
+    return kwargs
+
+
+async def _pg_connect(dsn: str) -> 'asyncpg.Connection[asyncpg.Record]':
+    """Open a PostgreSQL connection configured exactly like the server's pool ones.
+
+    The single dial point for every PostgreSQL connection the migration CLI opens.
+    Dialing and configuring in one place is what keeps the CLI's sessions equivalent
+    to the server's: the server's pool applies its session parameters through the
+    pool ``setup`` callback, which a one-off connection never runs, so a CLI
+    connection that only spread the connect kwargs would resolve bare table names
+    through the server's default ``search_path`` rather than ``POSTGRESQL_SCHEMA``
+    and would read float8 text at the server's default precision.
+
+    Args:
+        dsn: The PostgreSQL connection URL.
+
+    Returns:
+        The established connection, with its session parameters already applied.
+    """
+    import asyncpg
+
+    from app.backends.postgresql_backend import apply_session_gucs
+
+    conn: asyncpg.Connection[asyncpg.Record] = await asyncpg.connect(dsn, **_pg_connect_kwargs())
+    try:
+        await apply_session_gucs(conn)
+    except BaseException:
+        await conn.close()
+        raise
+    return conn
 
 
 async def _pg_table_exists(
@@ -2041,18 +2257,15 @@ async def initialize_target_postgresql(
     import asyncpg
 
     from app.backends import create_backend
+    from app.backends.postgresql_backend import quote_pg_identifier
     from app.migrations.chunking import apply_chunking_migration
     from app.migrations.fts import apply_fts_migration
     from app.migrations.index_tree import apply_index_tree_migration
     from app.migrations.semantic import apply_function_search_path_migration
     from app.migrations.semantic import apply_jsonb_merge_patch_migration
     from app.migrations.semantic import apply_semantic_search_migration
-    from app.startup import init_database
-
-    pg_kwargs = _pg_connect_kwargs()
-
-    from app.backends.postgresql_backend import quote_pg_identifier
     from app.settings import get_settings
+    from app.startup import init_database
 
     schema = get_settings().storage.postgresql_schema
 
@@ -2069,7 +2282,7 @@ async def initialize_target_postgresql(
     # services where DDL privileges are restricted and on hosts where the
     # pgvector extension is not installed at all (missing control file --
     # IF NOT EXISTS does not suppress that failure).
-    ext_conn = await asyncpg.connect(target_url, **pg_kwargs)
+    ext_conn = await _pg_connect(target_url)
     try:
         try:
             await ext_conn.execute(f'CREATE SCHEMA IF NOT EXISTS {quote_pg_identifier(schema)}')
@@ -2246,14 +2459,13 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
     import asyncpg
 
     stats = MigrationStats()
-    pg_kwargs = _pg_connect_kwargs()
-    source_conn = await asyncpg.connect(options.source_url, **pg_kwargs)
+    source_conn = await _pg_connect(options.source_url)
     # Open the target connection INSIDE the try so a failed target connect
     # (unreachable host, bad credentials, role/connection limit, SSL) closes the
     # already-open source connection via the finally instead of leaking it.
     target_conn: asyncpg.Connection | None = None
     try:
-        target_conn = await asyncpg.connect(options.target_url, **pg_kwargs)
+        target_conn = await _pg_connect(options.target_url)
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
         # Bind the configured POSTGRESQL_SCHEMA EXPLICITLY for every TARGET probe so they
@@ -2456,15 +2668,41 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 f'metadata::text AS metadata, {summary_col_src}, {content_hash_col_src}, created_at, updated_at '
                 f'FROM context_entries ORDER BY created_at ASC, id ASC',
             )
+            # Source ids whose context_entries row was skipped. Their children must be
+            # skipped too: a tag, attachment or embedding row pointing at an id the
+            # target never received would violate the foreign key and abort the run --
+            # replacing one skipped row with a total failure.
+            pg_skipped_context_ids: set[int] = set()
             for entry in entry_rows:
                 source_id = int(entry['id'])
                 new_id = id_mapping[source_id]
+                references_rewritten_before = stats.references_rewritten
                 rewritten_metadata = rewrite_metadata_references(
                     entry['metadata'],
                     id_mapping,
                     stats,
                     source_id,
                 )
+                # The metadata expression indexes are deliberately absent from the
+                # PostgreSQL base schema (a database this CLI initialized has none until
+                # its first server startup), so a PostgreSQL SOURCE can legitimately hold
+                # a value the TARGET's idx_metadata_<field> cannot index -- an oversized
+                # one, or one the index's cast rejects. Unchecked, that value aborts the
+                # INSERT mid-transaction and rolls the whole run back with a raw driver
+                # error naming no source row. thread_id and tags need no equivalent check
+                # here: their indexes ARE in the base schema, so the source could not have
+                # stored a value that breaches them. Checked unconditionally so --dry-run
+                # surfaces the row too.
+                unindexable = _first_pg_unindexable_metadata_field(rewritten_metadata)
+                if unindexable is not None:
+                    column, reason = unindexable
+                    stats.errors.append(
+                        f'context_entries row id={source_id} thread_id={entry["thread_id"]!r} '
+                        f'column {column!r} skipped: {reason}',
+                    )
+                    stats.references_rewritten = references_rewritten_before
+                    pg_skipped_context_ids.add(source_id)
+                    continue
                 if not options.dry_run:
                     await target_conn.execute(
                         'INSERT INTO context_entries '
@@ -2485,7 +2723,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 stats.rows_migrated += 1
 
             tag_rows = (
-                await source_conn.fetch('SELECT context_entry_id, tag FROM tags ORDER BY id ASC')
+                await source_conn.fetch(_SELECT_DISTINCT_TAGS_SQL)
                 if await _pg_table_exists(source_conn, 'tags')
                 else []
             )
@@ -2495,6 +2733,11 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 if tag_new_id is None:
                     stats.warnings.append(
                         f'tags row references missing context_entry_id={source_id}; skipped',
+                    )
+                    continue
+                if source_id in pg_skipped_context_ids:
+                    stats.warnings.append(
+                        f'tags row context_entry_id={source_id} skipped: parent context_entries row was skipped',
                     )
                     continue
                 if not options.dry_run:
@@ -2519,6 +2762,12 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 if img_new_id is None:
                     stats.warnings.append(
                         f'image_attachments row references missing context_entry_id={source_id}; skipped',
+                    )
+                    continue
+                if source_id in pg_skipped_context_ids:
+                    stats.warnings.append(
+                        f'image_attachments row context_entry_id={source_id} skipped: '
+                        f'parent context_entries row was skipped',
                     )
                     continue
                 if not options.dry_run:
@@ -2567,14 +2816,23 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                             await source_conn.fetchval('SELECT COUNT(*) FROM vec_context_embeddings') or 0,
                         )
                 else:
+                    # A skipped parent's embedding rows are excluded the same way its
+                    # tags and attachments are: the copies resolve their parent through
+                    # this mapping, so dropping the skipped ids from it turns an FK
+                    # violation that would abort the run into their own skip-and-warn.
+                    embedding_id_mapping = {
+                        source_key: target_key
+                        for source_key, target_key in id_mapping.items()
+                        if source_key not in pg_skipped_context_ids
+                    }
                     await copy_embedding_metadata_pg(
-                        source_conn, target_conn, id_mapping, stats, options.dry_run,
+                        source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
                     )
                     # Gate the vector copy on the SOURCE vec table (copy_vec_embeddings_pg
                     # reads FROM vec_context_embeddings, which would crash if absent).
                     if source_has_vec:
                         await copy_vec_embeddings_pg(
-                            source_conn, target_conn, id_mapping, stats, options.dry_run,
+                            source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
                         )
 
             if not options.dry_run:
@@ -2619,7 +2877,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
     # the already-open SQLite source via the finally instead of leaking it.
     target_conn: asyncpg.Connection | None = None
     try:
-        target_conn = await asyncpg.connect(options.target_url, **_pg_connect_kwargs())
+        target_conn = await _pg_connect(options.target_url)
         id_kind = detect_source_id_kind(source)
         if id_kind != 'integer':
             stats.warnings.append(
@@ -2712,6 +2970,9 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
             for row in entry_cursor:
                 source_id = int(row['id'])
                 new_id = id_mapping[source_id]
+                # Snapshot the rewrite counter so a row this loop ends up SKIPPING does
+                # not leave its remappings counted: none of them reach the target.
+                references_rewritten_before = stats.references_rewritten
                 rewritten_metadata = rewrite_metadata_references(
                     row['metadata'],
                     id_mapping,
@@ -2740,16 +3001,21 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     # PostgreSQL-rejects class on this path: a value SQLite indexed
                     # happily but the target's btree cannot hold. Only the columns the
                     # target schema itself indexes are checked; text_content and
-                    # summary are unindexed and may be arbitrarily large.
+                    # summary are unindexed and may be arbitrarily large. The metadata
+                    # bound into the target is inspected too: every
+                    # METADATA_INDEXED_FIELDS key is indexed by the expression index
+                    # idx_metadata_<field>, under the same btree ceiling for a
+                    # string-typed field and under a hard SQL cast for a typed one.
                     unstorable = _first_pg_unindexable_column(
-                        (('thread_id', row_thread_id),),
-                    )
+                        (('thread_id', row_thread_id, _PG_MAX_INDEXED_THREAD_ID_BYTES),),
+                    ) or _first_pg_unindexable_metadata_field(rewritten_metadata)
                 if unstorable is not None:
                     column, reason = unstorable
                     stats.errors.append(
                         f'context_entries row id={source_id} thread_id={row_thread_id!r} '
                         f'column {column!r} skipped: {reason}',
                     )
+                    stats.references_rewritten = references_rewritten_before
                     skipped_context_ids.add(source_id)
                     continue
                 if not options.dry_run:
@@ -2776,7 +3042,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
             # vectors are dropped cross-backend. Reads are guarded by source
             # table presence.
             if optional_tables.get('tags'):
-                tag_cursor = source.execute('SELECT context_entry_id, tag FROM tags ORDER BY id ASC')
+                tag_cursor = source.execute(_SELECT_DISTINCT_TAGS_SQL)
                 for tag_row in tag_cursor:
                     sid = int(tag_row['context_entry_id'])
                     mapped = id_mapping.get(sid)
@@ -2797,8 +3063,9 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                         (('tag', tag_row['tag'], False),),
                     ) or _first_pg_unindexable_column(
                         # idx_tags_tag is a btree: a legacy tag longer than its
-                        # index-tuple budget aborts the INSERT mid-transaction.
-                        (('tag', tag_row['tag']),),
+                        # index-tuple budget aborts the INSERT mid-transaction. The tag
+                        # is indexed on its own, so it gets the full single-column budget.
+                        (('tag', tag_row['tag'], _PG_MAX_INDEXED_VALUE_BYTES),),
                     )
                     if tag_unstorable is not None:
                         column, reason = tag_unstorable
@@ -2894,7 +3161,6 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
     Returns:
         Populated :class:`MigrationStats` instance.
     """
-    import asyncpg
 
     stats = MigrationStats()
     stats.warnings.append(
@@ -2911,7 +3177,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
         )
         return stats
 
-    source_conn = await asyncpg.connect(options.source_url, **_pg_connect_kwargs())
+    source_conn = await _pg_connect(options.source_url)
     target: sqlite3.Connection | None = None
     try:
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
@@ -3027,7 +3293,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
             # dropped cross-backend. Reads guarded by source table presence.
             if source_has_tags:
                 tag_rows = await source_conn.fetch(
-                    'SELECT context_entry_id, tag FROM tags ORDER BY id ASC',
+                    _SELECT_DISTINCT_TAGS_SQL,
                 )
                 for tag_row in tag_rows:
                     sid = int(tag_row['context_entry_id'])

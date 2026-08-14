@@ -193,35 +193,36 @@ When both hybrid search and reranking are enabled (both are enabled by default),
 
 This ensures documents found by both methods rank highest, then reranking optimizes relevance.
 
-### Over-Fetching Chain
+### Candidate Depth
 
-For a request with `limit=5`, the pipeline applies multiple over-fetch multipliers:
+The candidate pool is FIXED and page-independent: it does not grow with the requested `limit` or `offset`. Both RRF and the cross-encoder are reordering stages, so a pool sized from the requested page would produce a different ordering for every page, and adjacent pages would repeat rows while other rows were never returned at all.
 
 ```text
-User requests: limit=5
+User requests: limit=5, offset=0
     |
     v
-Reranking needs: 5 * 4 (RERANKING_OVERFETCH) = 20 candidates
+Each leg fetches: 100 (ranked depth) * 2 (HYBRID_RRF_OVERFETCH) = 200 candidates
     |
     v
-RRF needs: 20 * 2 (HYBRID_RRF_OVERFETCH) = 40 per method
+RRF fuses both legs into one ordering, kept to the ranked depth: 100 documents
     |
     v
-Semantic search: 40 * 5 (CHUNK_DEDUP_OVERFETCH) = 200 chunks
+Cross-encoder scores that window and reorders it
     |
     v
-After chunk dedup + RRF + rerank: 5 final results
+The requested page is cut from the result: 5 rows
 ```
+
+A page whose window reaches past the ranked depth is served short, and the response says so through the `rank_depth_limit` key.
 
 ### Configuration
 
 Reranking is controlled by these environment variables (see [Semantic Search Guide](semantic-search.md#cross-encoder-reranking) for details):
 
-| Variable               | Default | Description                                   |
-|------------------------|---------|-----------------------------------------------|
-| `ENABLE_RERANKING`     | `true`  | Enable cross-encoder reranking                |
-| `RERANKING_OVERFETCH`  | `4`     | Multiplier for over-fetching before reranking |
-| `HYBRID_RRF_OVERFETCH` | `2`     | Multiplier for RRF to get enough candidates   |
+| Variable                 | Default   | Description                                         |
+|--------------------------|-----------|-----------------------------------------------------|
+| `ENABLE_RERANKING`       | `true`    | Enable cross-encoder reranking                      |
+| `HYBRID_RRF_OVERFETCH`   | `2`       | Multiplier applied to the ranked depth for each leg |
 
 ## Usage
 
@@ -326,19 +327,23 @@ When `explain_query=True`, the response includes a `stats` object with detailed 
 | `adaptive_fts_mode` | string         | FTS mode selected by the adaptive AND/OR switch (match or boolean) |
 
 **FTS Stats:**
+
+`fts_stats` itself is `null` (not an object) when the FTS leg was rejected by parameter validation and never ran; the fields below only exist when the leg actually ran:
 - `execution_time_ms`: FTS search execution time
 - `filters_applied`: Total number of filter conditions applied (thread, source, content type, date bounds and the tag subquery, plus every metadata condition)
 - `rows_returned`: Number of FTS results before fusion
 - `backend`: Active storage backend ('sqlite' or 'postgresql'), always present
-- `query_plan`: Backend query execution plan, or `null` when the sub-search was rejected by parameter validation and never ran
+- `query_plan`: Backend query execution plan
 
 **Semantic Stats:**
+
+`semantic_stats` itself is `null` (not an object) when the semantic leg was rejected by parameter validation and never ran; the fields below only exist when the leg actually ran:
 - `execution_time_ms`: Semantic search execution time
 - `embedding_generation_ms`: Time spent generating the query embedding via the configured embedding provider
 - `filters_applied`: Total number of filter conditions applied (thread, source, content type, date bounds and the tag subquery, plus every metadata condition)
 - `rows_returned`: Number of semantic results before fusion
 - `backend`: Active storage backend ('sqlite' or 'postgresql'), always present
-- `query_plan`: Backend query execution plan, or `null` when the sub-search was rejected by parameter validation and never ran
+- `query_plan`: Backend query execution plan
 
 **Fusion Stats:**
 - `rrf_k`: RRF smoothing constant used

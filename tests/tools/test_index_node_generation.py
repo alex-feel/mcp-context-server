@@ -5,7 +5,9 @@ get summaries via summarize_with_prompt; a provider failure or timeout omits tha
 node WITHOUT raising (never aborts a store); short sections are skipped.
 """
 
+import asyncio
 import threading
+import time
 from typing import Any
 from typing import cast
 from unittest.mock import patch
@@ -34,7 +36,35 @@ class _FakeProvider:
         return self._value
 
 
-def _set_provider(provider: _FakeProvider | None) -> None:
+class _SlowProvider:
+    """Summary provider whose calls take measurable time and track cancellation.
+
+    ``active`` returns to zero only when every started call has settled, so a test
+    can prove the pass awaited the node summaries it cancelled instead of leaving
+    them running with a shared summary-model permit held.
+    """
+
+    def __init__(self, *, delay: float) -> None:
+        self.delay = delay
+        self.started = 0
+        self.active = 0
+        self.cancelled = 0
+
+    async def summarize_with_prompt(self, text: str, system_prompt: str) -> str:
+        _ = (text, system_prompt)  # signature parity with the provider protocol
+        self.started += 1
+        self.active += 1
+        try:
+            await asyncio.sleep(self.delay)
+            return 'a node summary'
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        finally:
+            self.active -= 1
+
+
+def _set_provider(provider: _FakeProvider | _SlowProvider | None) -> None:
     app.startup.set_summary_provider(cast(Any, provider))
 
 
@@ -327,3 +357,84 @@ class TestTotalWorkBounds:
         finally:
             _set_provider(None)
             get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_aggregate_deadline_bounds_the_work_in_flight(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The budget bounds the running chunk, not just the gaps between chunks.
+
+        Checking the clock only before dispatching each chunk bounds nothing: the
+        chunk holds more sections than the shared summary-model budget lets run at
+        once, so it serializes into several waves of per-node timeouts and overruns
+        the aggregate budget by that multiple. Worse, an entry with no more sections
+        than one chunk holds yields a single iteration whose only clock check
+        happens before any work, where it can never be true -- leaving the budget
+        inert for the ordinary case. The pass must stop at the budget either way.
+        """
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT', '4')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TIMEOUT_S', '30')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '0.4')
+        monkeypatch.setenv('SUMMARY_MAX_CONCURRENT', '1')
+        _refresh_shared_settings(monkeypatch)
+        shared_module._reset_summary_model_semaphore()
+        shared_module._reset_node_summary_semaphore()
+        provider = _SlowProvider(delay=0.25)
+        _set_provider(provider)
+        # Six sections is a SINGLE chunk (chunk size is at least 16), so the whole
+        # pass is one gather -- the exact shape a between-chunks check never reaches.
+        # Serialized on one model permit they would need about 1.5s against a 0.4s
+        # budget.
+        text = ''.join(f'# Section {i}\nbody {i}\n' for i in range(6))
+        try:
+            started = time.monotonic()
+            rows = await generate_index_nodes_with_timeout(text)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 1.0, f'aggregate budget not enforced: took {elapsed:.2f}s'
+            assert rows is None or len(rows) < 6
+            # Every started call has settled: the pass cancels AND awaits the
+            # outstanding node summaries instead of orphaning them holding the
+            # shared summary-model permit.
+            assert provider.active == 0
+            assert provider.cancelled >= 1
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()
+            shared_module._reset_summary_model_semaphore()
+            shared_module._reset_node_summary_semaphore()
+
+    @pytest.mark.asyncio
+    async def test_rows_produced_before_the_deadline_are_kept(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An expired budget degrades the outline; it never aborts the store.
+
+        The node leg is contractually never-raise, so the sections summarized before
+        the budget expired must come back as rows rather than being discarded with
+        the cancelled ones.
+        """
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT', '4')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TIMEOUT_S', '30')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '0.5')
+        monkeypatch.setenv('SUMMARY_MAX_CONCURRENT', '1')
+        _refresh_shared_settings(monkeypatch)
+        shared_module._reset_summary_model_semaphore()
+        shared_module._reset_node_summary_semaphore()
+        provider = _SlowProvider(delay=0.1)
+        _set_provider(provider)
+        text = ''.join(f'# Section {i}\nbody {i}\n' for i in range(12))
+        try:
+            rows = await generate_index_nodes_with_timeout(text)
+            assert rows is not None
+            assert 1 <= len(rows) < 12
+            assert provider.active == 0
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()
+            shared_module._reset_summary_model_semaphore()
+            shared_module._reset_node_summary_semaphore()

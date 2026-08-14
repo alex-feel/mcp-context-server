@@ -183,6 +183,11 @@ async def _create_metadata_index(backend: StorageBackend, field: str, type_hint:
         field: Metadata field name.
         type_hint: Type hint for the field (string, integer, boolean, float, array, object).
 
+    Raises:
+        ConfigurationError: When a typed field's index cannot be built because rows
+            already stored hold a value its cast rejects. That is an operator
+            decision, not a transient fault, so it must not be crash-looped.
+
     Note:
         Array and object fields are skipped for SQLite as they require GIN indexes
         which SQLite does not support. PostgreSQL uses the existing GIN index
@@ -231,7 +236,26 @@ async def _create_metadata_index(backend: StorageBackend, field: str, type_hint:
             await begin_migration(conn, migration_timeout_s)
             await execute_migration_ddl(conn, sql, migration_timeout_s)
 
-        await backend.execute_write(cast(Any, _create_postgresql_index))
+        try:
+            await backend.execute_write(cast(Any, _create_postgresql_index))
+        except asyncpg.exceptions.DataError as exc:
+            # A typed field puts a hard SQL cast inside the index expression, and
+            # PostgreSQL evaluates it for EVERY existing row while building the index. A
+            # row stored before the field carried this type hint -- or migrated in from
+            # SQLite, whose uncast json_extract index accepts anything -- makes that cast
+            # fail, and the raw driver error reads like a database fault the supervisor
+            # should retry. It is neither: the same rows fail the same way on every
+            # restart. Naming the field and the configuration that selected the cast
+            # turns a crash loop into a decision the operator can act on. PostgreSQL's own
+            # message quotes the offending value, so it is carried through verbatim.
+            raise ConfigurationError(
+                f'Cannot index metadata field "{field}" as {type_hint}: rows already stored '
+                f'hold a value that cast rejects ({exc}). The write boundary refuses such a '
+                f'value now, so this comes from data stored earlier or migrated in from '
+                f'SQLite, whose index applies no cast. Correct those rows, or change this '
+                f'field in METADATA_INDEXED_FIELDS (drop the type hint to index it as text, '
+                f'or remove the field).',
+            ) from exc
 
 
 async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compound: bool = False) -> None:

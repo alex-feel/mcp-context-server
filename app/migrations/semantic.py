@@ -7,6 +7,7 @@ This module handles:
 - Function search_path security fix migration
 """
 
+import contextlib
 import logging
 import sqlite3
 from pathlib import Path
@@ -292,8 +293,21 @@ async def _apply_migration_with_backend(
                     import sqlite_vec
 
                     conn.enable_load_extension(True)
-                    sqlite_vec.load(conn)
-                    conn.enable_load_extension(False)
+                    try:
+                        # sqlite_vec.load() is a plain conn.load_extension() dlopen and
+                        # raises whenever the bundled shared object cannot be loaded (a
+                        # noexec mount, a musl base image, a distroless image missing its
+                        # runtime deps). The finally pairing is what withdraws the
+                        # capability again on that path: this runs on the SHARED writer
+                        # connection, so an un-withdrawn enable would leave SQL-level
+                        # load_extension() available on it for the process lifetime,
+                        # removing the hardening layer that turns any future SQL-injection
+                        # defect into 'not authorized' instead of arbitrary native code
+                        # execution.
+                        sqlite_vec.load(conn)
+                    finally:
+                        with contextlib.suppress(Exception):
+                            conn.enable_load_extension(False)
                     logger.debug('sqlite-vec extension loaded for migration')
                 except ImportError:
                     raise RuntimeError(

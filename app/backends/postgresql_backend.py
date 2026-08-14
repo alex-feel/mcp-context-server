@@ -66,23 +66,29 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
 
     Returns a dict suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``
     or merging into ``asyncpg.create_pool(dsn, **kwargs)``. This is the single
-    source of truth for the two connection parameters that BOTH the long-lived
-    server pool (``PostgreSQLBackend.initialize``) and the short-lived migration
-    CLI (``app.cli.migrate``) must apply identically:
+    source of truth for the connection parameters that BOTH the long-lived server
+    pool (``PostgreSQLBackend.initialize``) and the short-lived migration CLI
+    (``app.cli.migrate``) must apply identically:
 
-    - ``server_settings['search_path']``: always populated as
-      ``"<POSTGRESQL_SCHEMA>", public`` (the schema double-quoted so mixed-case
-      and reserved identifiers are safe) so bare table names resolve to the
-      configured schema. With the default ``POSTGRESQL_SCHEMA=public`` this is
-      the benign no-op ``"public", public``.
-    - ``server_settings`` TCP keepalive GUCs: added only when their setting is
-      > 0. These are SECONDARY (silently ignored by Supavisor/PgBouncer); the
-      pool also installs the PRIMARY client-side ``setsockopt`` keepalive via its
-      ``init`` callback, which short-lived CLI connections do not need.
     - ``statement_cache_size``: ``POSTGRESQL_STATEMENT_CACHE_SIZE`` (default 100;
       set 0 to disable prepared statements for transaction-mode poolers such as
       PgBouncer transaction mode, Pgpool-II, AWS RDS Proxy, or the Supabase
       Transaction Pooler).
+
+    The STARTUP PACKET is deliberately left empty. asyncpg delivers
+    ``server_settings`` as PostgreSQL startup-packet parameters, and an external
+    pooler decides for itself what it accepts there: PgBouncer's always-allowed
+    set is client_encoding, datestyle, timezone, standard_conforming_strings and
+    application_name, and it REFUSES the connection with ``unsupported startup
+    parameter: <name>`` for anything else unless the operator lists it in
+    ``ignore_startup_parameters`` (which makes PgBouncer drop the value) or, on
+    1.22+, ``track_extra_parameters`` (which makes it forward it). Sending
+    anything there therefore turns the documented PgBouncer transaction-mode
+    deployment into one that cannot connect at all with a stock configuration,
+    and against a pooler that strips rather than refuses it turns a dropped
+    ``search_path`` into every query resolving to the wrong schema. Every session
+    parameter this server needs is applied with ``SET`` instead -- see
+    :func:`session_guc_set_statements`, which every connection path runs.
 
     SSL is intentionally NOT included: asyncpg parses ``sslmode`` natively from
     the DSN query string, so SSL is carried by the connection URL itself.
@@ -93,39 +99,85 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
             pick up that process's environment.
 
     Returns:
-        Mapping with ``server_settings`` and ``statement_cache_size`` keys.
+        Mapping with the ``statement_cache_size`` key.
     """
     resolved = app_settings if app_settings is not None else get_settings()
-    storage = resolved.storage
-    # Quote the schema via the shared quote_pg_identifier helper so the connection
-    # search_path and any schema-qualified DDL (the migration CLI's CREATE SCHEMA)
-    # escape it identically and cannot drift -- a schema name containing a double
-    # quote yields a valid quoted identifier rather than a malformed search_path.
-    server_settings: dict[str, str] = {
-        'search_path': f'{quote_pg_identifier(storage.postgresql_schema)}, public',
-        # Pin extra_float_digits to a shortest-round-trip setting so the numeric
-        # metadata-filter discriminator (query_builder._pg_numeric_compare) sees
-        # the Ryu shortest-repr float8 text it relies on: a cluster/role default
-        # of 0 or negative reverts float8out to %.15g and would misclassify every
-        # high-magnitude float-origin stored value, silently resurrecting the
-        # eq-against-its-own-value divergence the discriminator exists to close.
-        # Sent in the startup packet, so it survives the pool's RESET ALL (same
-        # mechanism as search_path).
-        'extra_float_digits': '1',
-    }
-    tcp_idle_guc = storage.postgresql_tcp_keepalives_idle_s
-    tcp_interval_guc = storage.postgresql_tcp_keepalives_interval_s
-    tcp_count_guc = storage.postgresql_tcp_keepalives_count
-    if tcp_idle_guc > 0:
-        server_settings['tcp_keepalives_idle'] = str(tcp_idle_guc)
-    if tcp_interval_guc > 0:
-        server_settings['tcp_keepalives_interval'] = str(tcp_interval_guc)
-    if tcp_count_guc > 0:
-        server_settings['tcp_keepalives_count'] = str(tcp_count_guc)
-    return {
-        'server_settings': server_settings,
-        'statement_cache_size': storage.postgresql_statement_cache_size,
-    }
+    return {'statement_cache_size': resolved.storage.postgresql_statement_cache_size}
+
+
+def session_guc_set_statements(app_settings: AppSettings | None = None) -> list[str]:
+    """Build the ``SET`` statements every PostgreSQL connection needs.
+
+    The session parameters this server depends on, delivered as ordinary
+    statements rather than startup-packet parameters so an external pooler cannot
+    refuse the connection over them (see :func:`build_asyncpg_connect_kwargs`).
+    Every connection path runs them: the pool through ``_setup_pool_connection``,
+    which executes on every acquire and therefore also restores them after the
+    pool's ``RESET ALL``, and each one-off connection through
+    :func:`apply_session_gucs` immediately after dialing.
+
+    The statements are:
+
+    - ``search_path``, always ``"<POSTGRESQL_SCHEMA>", public`` (the schema
+      double-quoted through :func:`quote_pg_identifier` so mixed-case and
+      reserved identifiers are safe, and so the connection search_path and the
+      migration CLI's schema-qualified DDL escape it identically). With the
+      default ``POSTGRESQL_SCHEMA=public`` this is the benign no-op
+      ``"public", public``.
+    - ``extra_float_digits``, pinned to a shortest-round-trip setting so the
+      numeric metadata-filter discriminator (``query_builder._pg_numeric_compare``)
+      sees the Ryu shortest-repr float8 text it relies on: a cluster or role
+      default of 0 or negative reverts float8out to ``%.15g`` and would
+      misclassify every high-magnitude float-origin stored value, silently
+      resurrecting the eq-against-its-own-value divergence the discriminator
+      exists to close.
+    - The server-side TCP keepalive GUCs, each omitted when its setting is 0 (the
+      documented way to disable that probe parameter). They are the SECONDARY
+      half of the keepalive story -- the PRIMARY half is the client-side
+      ``setsockopt`` applied to the socket -- and through a pooler they describe
+      the pooler-to-server hop rather than this connection.
+
+    Args:
+        app_settings: Resolved application settings. Defaults to
+            ``get_settings()``.
+
+    Returns:
+        The ``SET`` statements, in the order they should be executed.
+    """
+    storage = (app_settings if app_settings is not None else get_settings()).storage
+    statements = [
+        f'SET search_path = {quote_pg_identifier(storage.postgresql_schema)}, public',
+        'SET extra_float_digits = 1',
+    ]
+    keepalive_gucs = (
+        ('tcp_keepalives_idle', storage.postgresql_tcp_keepalives_idle_s),
+        ('tcp_keepalives_interval', storage.postgresql_tcp_keepalives_interval_s),
+        ('tcp_keepalives_count', storage.postgresql_tcp_keepalives_count),
+    )
+    # The values are integers validated at the settings boundary (ge=0), so the
+    # interpolation cannot carry anything but digits.
+    statements.extend(f'SET {name} = {value}' for name, value in keepalive_gucs if value > 0)
+    return statements
+
+
+async def apply_session_gucs(conn: asyncpg.Connection, app_settings: AppSettings | None = None) -> None:
+    """Apply the session parameters to a connection that bypasses the pool.
+
+    The pool applies them through its ``setup`` callback on every acquire; a
+    one-off connection (the boot-time provisioning probes and both migration CLIs)
+    has no such callback and must run them itself, immediately after dialing and
+    before its first statement. Without this the connection would silently use the
+    server's default ``search_path`` -- resolving bare table names to ``public``
+    instead of ``POSTGRESQL_SCHEMA`` -- and the server's default
+    ``extra_float_digits``.
+
+    All statements go out in ONE simple-query round trip.
+
+    Args:
+        conn: The freshly established connection.
+        app_settings: Resolved application settings. Defaults to ``get_settings()``.
+    """
+    await conn.execute('; '.join(session_guc_set_statements(app_settings)))
 
 
 class ConnectionState(Enum):
@@ -370,9 +422,15 @@ async def _connect_pool_connection(*args: Any, **kwargs: Any) -> asyncpg.Connect
 async def _setup_pool_connection(conn: asyncpg.Connection) -> None:
     """Configure session state before a pooled connection is handed to a caller.
 
-    Sets statement_timeout to prevent queries from hanging indefinitely. Runs as
+    Sets statement_timeout to prevent queries from hanging indefinitely, plus every
+    session parameter this server depends on (see ``session_guc_set_statements``:
+    search_path, extra_float_digits and the server-side TCP keepalive GUCs). Runs as
     the pool's ``setup`` callback: AFTER ``init`` but BEFORE the connection is
-    returned from ``pool.acquire()``.
+    returned from ``pool.acquire()``, so it also restores all of them after the
+    pool's ``RESET ALL`` on release -- which is what makes delivering them as
+    statements, rather than as startup-packet parameters an external pooler can
+    refuse, safe. All of them go out in ONE simple-query round trip, the same single
+    round trip the statement timeout alone used to cost.
 
     A TimeoutError here means the SET statement ran on a dead connection (e.g. a
     pooled connection whose backend became unreachable) and exceeded the pool
@@ -404,8 +462,9 @@ async def _setup_pool_connection(conn: asyncpg.Connection) -> None:
         # Set statement timeout to prevent infinite hangs.
         # Use slightly less than command_timeout for graceful handling.
         timeout_ms = _statement_timeout_ms(settings.storage.postgresql_command_timeout_s)
-        await conn.execute(f'SET statement_timeout = {timeout_ms}')
-        logger.debug(f'Connection setup: statement_timeout={timeout_ms}ms')
+        session_statements = [f'SET statement_timeout = {timeout_ms}', *session_guc_set_statements(settings)]
+        await conn.execute('; '.join(session_statements))
+        logger.debug(f'Connection setup: statement_timeout={timeout_ms}ms, {len(session_statements) - 1} session GUCs')
     except TimeoutError as e:
         logger.warning(f'Connection setup timed out, connection is unusable: {e}')
         raise asyncpg.exceptions.ConnectionDoesNotExistError(
@@ -461,18 +520,42 @@ class CircuitBreaker:
         self.failures = 0
         self.last_failure_time: float | None = None
         self.state = ConnectionState.HEALTHY
-        self.half_open_calls = 0
+        # Half-open bookkeeping, split into two counters because ADMISSION and
+        # OUTCOME are different events: half_open_admissions is advanced by
+        # is_open() for every probe it lets through and bounds how many probes
+        # reach a database that may still be dead, while half_open_successes is
+        # advanced by record_success() and drives promotion back to HEALTHY. One
+        # counter cannot do both -- incrementing it only on success (and zeroing
+        # it at the promotion threshold) keeps it permanently below the gate, so
+        # the gate never closes and every waiting caller stampedes the dead
+        # database on each recovery window.
+        self.half_open_admissions = 0
+        self.half_open_successes = 0
+        self.half_open_started_at: float | None = None
         self._lock = asyncio.Lock()
+
+    def _open_half_open_window(self, now: float) -> None:
+        """Enter DEGRADED with a fresh probe budget. The caller holds the lock.
+
+        Args:
+            now: Current ``time.time()`` value, used as the window start.
+        """
+        self.state = ConnectionState.DEGRADED
+        self.half_open_admissions = 0
+        self.half_open_successes = 0
+        self.half_open_started_at = now
 
     async def record_success(self) -> None:
         """Record a successful operation."""
         async with self._lock:
             if self.state == ConnectionState.DEGRADED:
-                self.half_open_calls += 1
-                if self.half_open_calls >= self.half_open_max_calls:
+                self.half_open_successes += 1
+                if self.half_open_successes >= self.half_open_max_calls:
                     self.state = ConnectionState.HEALTHY
                     self.failures = 0
-                    self.half_open_calls = 0
+                    self.half_open_admissions = 0
+                    self.half_open_successes = 0
+                    self.half_open_started_at = None
                     logger.info('Circuit breaker recovered to HEALTHY state')
             elif self.state == ConnectionState.HEALTHY:
                 self.failures = max(0, self.failures - 1)
@@ -488,33 +571,49 @@ class CircuitBreaker:
                 logger.warning(f'Circuit breaker tripped: {self.failures} consecutive failures')
 
     async def is_open(self) -> bool:
-        """Check if circuit is open, meaning we should block calls."""
+        """Check if circuit is open, meaning we should block calls.
+
+        While DEGRADED (half-open) at most ``half_open_max_calls`` calls are
+        ADMITTED per recovery window, so a still-dead database receives a handful
+        of probes instead of every request that piled up during the outage. A
+        window that elapses without a verdict (probes that neither succeeded nor
+        failed, e.g. calls exempted from breaker accounting) re-arms the budget
+        rather than blocking forever.
+
+        Returns:
+            True when the call must be rejected.
+        """
         async with self._lock:
             if self.state == ConnectionState.HEALTHY:
                 return False
 
+            now = time.time()
             if self.state == ConnectionState.FAILED:
-                if self.last_failure_time:
-                    elapsed = time.time() - self.last_failure_time
-                    if elapsed > self.recovery_timeout:
-                        self.state = ConnectionState.DEGRADED
-                        self.half_open_calls = 0
-                        logger.info('Circuit breaker entering DEGRADED state for recovery')
-                        return False
-                return True
+                if self.last_failure_time is None or (now - self.last_failure_time) <= self.recovery_timeout:
+                    return True
+                self._open_half_open_window(now)
+                logger.info('Circuit breaker entering DEGRADED state for recovery')
 
-            # DEGRADED state, allow limited calls
-            return self.half_open_calls >= self.half_open_max_calls
+            # DEGRADED state, allow a bounded number of probe calls per window
+            if self.half_open_admissions >= self.half_open_max_calls:
+                started_at = self.half_open_started_at
+                if started_at is not None and (now - started_at) <= self.recovery_timeout:
+                    return True
+                # The probe budget was spent without any probe reporting an
+                # outcome; start a new window instead of rejecting forever.
+                self.half_open_admissions = 0
+                self.half_open_started_at = now
+            self.half_open_admissions += 1
+            return False
 
     async def get_state(self) -> ConnectionState:
         """Get current circuit state."""
         async with self._lock:
             # Check if we should transition from FAILED to DEGRADED
             if self.state == ConnectionState.FAILED and self.last_failure_time:
-                elapsed = time.time() - self.last_failure_time
-                if elapsed > self.recovery_timeout:
-                    self.state = ConnectionState.DEGRADED
-                    self.half_open_calls = 0
+                now = time.time()
+                if (now - self.last_failure_time) > self.recovery_timeout:
+                    self._open_half_open_window(now)
             return self.state
 
     def peek_state(self) -> ConnectionState:
@@ -696,8 +795,10 @@ class PostgreSQLBackend:
             conn = await asyncpg.connect(
                 self.connection_string,
                 timeout=settings.storage.postgresql_connect_timeout_s,
+                **build_asyncpg_connect_kwargs(settings),
             )
             try:
+                await apply_session_gucs(conn, settings)
                 await conn.execute('CREATE EXTENSION IF NOT EXISTS vector;')
                 logger.debug('pgvector extension ensured before pool creation')
             finally:
@@ -840,6 +941,9 @@ class PostgreSQLBackend:
             **connect_kwargs,
         )
         try:
+            # The to_regclass probes below resolve through search_path, so the session
+            # parameters must be in place before the first one runs.
+            await apply_session_gucs(conn)
             fp32_present = bool(
                 await conn.fetchval("SELECT to_regclass('vec_context_embeddings') IS NOT NULL"),
             )
@@ -890,12 +994,28 @@ class PostgreSQLBackend:
                 the vector type codec for semantic search support.
 
                 Raises:
-                    ConfigurationError: If pgvector extension is not installed or codec registration fails
+                    ConfigurationError: If the pgvector extension is not installed, or
+                        codec registration fails for a permanent reason (exit 78 at
+                        boot; the supervisor never retries it).
+                    TimeoutError: Re-raised unchanged when the codec registration
+                        round-trips time out, so the caller's retry arms still see a
+                        transient fault rather than a permanent misconfiguration.
+                    asyncpg.exceptions.PostgresConnectionError: Re-raised unchanged for
+                        the whole connection-failure family (backend gone, connection
+                        rejected, protocol violation) during a failover or pooler recycle.
+                    asyncpg.exceptions.OperatorInterventionError: Re-raised unchanged for
+                        an administrative or crash restart, a server still in recovery,
+                        or a cancelled query.
+                    asyncpg.exceptions.InterfaceError: Re-raised unchanged for the
+                        remaining transient driver-transport faults.
+                    OSError: Re-raised unchanged for transient socket faults.
                 """
                 # === TCP Keepalive Configuration ===
-                # Set keepalive on the client socket via setsockopt.
-                # This is the PRIMARY mechanism for connections through Supavisor/PgBouncer,
-                # which silently ignore server_settings GUC parameters.
+                # Set keepalive on the client socket via setsockopt. This is the
+                # PRIMARY mechanism, and the ONLY one that reaches the app's own
+                # socket when an external pooler terminates the connection: the
+                # server-side GUCs (_setup_pool_connection) then describe the
+                # pooler-to-server hop rather than this one.
                 tcp_idle = settings.storage.postgresql_tcp_keepalives_idle_s
                 tcp_interval = settings.storage.postgresql_tcp_keepalives_interval_s
                 tcp_count = settings.storage.postgresql_tcp_keepalives_count
@@ -972,11 +1092,73 @@ class PostgreSQLBackend:
                         # Re-raise ConfigurationError as-is (from "extension not installed" check above)
                         raise
 
+                    except (
+                        asyncpg.exceptions.ClientConfigurationError,
+                        asyncpg.exceptions.UnsupportedClientFeatureError,
+                        asyncpg.exceptions.UnsupportedServerFeatureError,
+                        asyncpg.exceptions.DataError,
+                    ) as e:
+                        # The PERMANENT InterfaceError subclasses, peeled off before the
+                        # transient tuple below, which they would otherwise match through
+                        # their shared InterfaceError base. A client misconfiguration, a
+                        # feature this driver or this server does not support, and a codec
+                        # that cannot decode what the server sends are all deterministic:
+                        # retrying reproduces them exactly, so they belong in the
+                        # ConfigurationError (exit 78) class like everywhere else in this
+                        # module, and treating them as transient would spin the retry arms
+                        # and the supervisor against a fault that never clears.
+                        logger.error(f'PostgreSQL client configuration invalid: {e}')
+                        raise ConfigurationError(
+                            f'pgvector codec registration failed: {type(e).__name__}: {e}',
+                        ) from e
+
+                    except (
+                        TimeoutError,
+                        asyncpg.exceptions.PostgresConnectionError,
+                        asyncpg.exceptions.OperatorInterventionError,
+                        asyncpg.exceptions.InterfaceError,
+                        OSError,
+                    ) as e:
+                        # The two awaits above (the pg_extension probe and
+                        # register_vector's type introspection) are real server
+                        # round-trips, so this block sees the whole transient
+                        # transport family: a backend terminated by a failover or
+                        # a pooler recycle, a reset connection, a command timeout.
+                        # The families are named by their asyncpg BASE classes rather than
+                        # by individual members, because a member-by-member list silently
+                        # excludes the siblings nobody enumerated: PostgresConnectionError
+                        # covers the whole SQLSTATE class 08 (connection failure, rejection,
+                        # protocol violation) and not only ConnectionDoesNotExistError, and
+                        # OperatorInterventionError covers class 57 (admin shutdown, crash
+                        # restart, "cannot connect now" during recovery, a cancelled query)
+                        # -- exactly the faults a failover or a rolling restart produces,
+                        # and every one of them self-clearing.
+                        # asyncpg re-raises an init failure VERBATIM out of
+                        # pool.acquire(), so relabelling one of these as
+                        # ConfigurationError would make a self-clearing blip
+                        # permanent: at runtime execute_write's typed retry arms
+                        # would no longer match it (no retry, breaker charged),
+                        # and at boot initialize()'s ladder would exit 78 -- which
+                        # the supervisor never retries -- instead of the retryable
+                        # DependencyError exit 69. Re-raise unchanged and let the
+                        # existing classification handle it.
+                        logger.warning(
+                            f'pgvector codec registration hit a transient connection fault, '
+                            f'connection will be retried: {type(e).__name__}: {e}',
+                        )
+                        raise
+
                     except Exception as e:
-                        # STRICT: All other errors are FATAL
-                        logger.error(f'Failed to register pgvector type codec: {e}')
+                        # STRICT: All other errors are FATAL. The type name is part
+                        # of the message because several candidates here (a bare
+                        # TimeoutError above all) stringify to '', which would leave
+                        # the operator with 'pgvector codec registration failed: '
+                        # and no cause at all.
+                        logger.error(f'Failed to register pgvector type codec: {type(e).__name__}: {e}')
                         logger.error('Ensure pgvector extension is enabled and accessible')
-                        raise ConfigurationError(f'pgvector codec registration failed: {e}') from e
+                        raise ConfigurationError(
+                            f'pgvector codec registration failed: {type(e).__name__}: {e}',
+                        ) from e
 
                 # === UUID Type Codec Registration ===
                 # asyncpg's default codec maps the PostgreSQL ``uuid`` type to
@@ -1048,8 +1230,7 @@ class PostgreSQLBackend:
                 # TimeoutError a saturated pool's acquire deadline raises; the
                 # acquire-phase circuit-breaker arms rely on that distinction.
                 'connect': _connect_pool_connection,
-                # statement_cache_size and server_settings (search_path + TCP
-                # keepalive GUCs) are merged below via
+                # statement_cache_size is merged below via
                 # build_asyncpg_connect_kwargs() so the pool and the migration
                 # CLI share one source of truth.
                 'max_cached_statement_lifetime': settings.storage.postgresql_max_cached_statement_lifetime_s,
@@ -1067,21 +1248,16 @@ class PostgreSQLBackend:
                 'reset': _reset_connection,  # Health check before pool return
             }
 
-            # Merge the shared connection kwargs (statement_cache_size +
-            # server_settings) sent in the PostgreSQL startup packet so
-            # session-level parameters are set in a single round-trip and
-            # persist for the connection's lifetime (asyncpg-recommended over
-            # per-connection ``SET`` callbacks).
-            #
-            # build_asyncpg_connect_kwargs() is the single source of truth shared
-            # with the migration CLI: it always populates search_path
-            # (``"POSTGRESQL_SCHEMA", public``, a benign no-op for the default
-            # ``public``; double-quoted for mixed-case / reserved identifiers),
-            # adds the SECONDARY TCP keepalive GUCs when > 0 (the PRIMARY
-            # mechanism is the client-side setsockopt in _init_connection above,
-            # since Supavisor/PgBouncer ignore these GUCs), and forwards
-            # statement_cache_size (0 disables prepared statements for
-            # transaction-mode poolers).
+            # Merge the shared connection kwargs. build_asyncpg_connect_kwargs() is the
+            # single source of truth shared with the migration CLI, and it forwards
+            # ONLY statement_cache_size (0 disables prepared statements for
+            # transaction-mode poolers). The PostgreSQL startup packet is left empty on
+            # purpose: an external pooler refuses any startup parameter it does not
+            # allowlist, so anything sent there is a deployment that cannot connect at
+            # all. search_path, extra_float_digits and the server-side TCP keepalive
+            # GUCs are applied as statements by _setup_pool_connection, which runs on
+            # every acquire and therefore also restores them after the pool's RESET ALL
+            # (see build_asyncpg_connect_kwargs and docs/database-backends.md).
             pool_kwargs.update(build_asyncpg_connect_kwargs(settings))
 
             # Add connection recycling settings if configured (0 means disabled)
@@ -1935,6 +2111,18 @@ class PostgreSQLBackend:
                             # Body succeeded; asyncpg COMMITs on exiting this inner context.
                         # Reaching here means the COMMIT itself also succeeded.
                         committed = True
+                        # Count the committed transaction as one completed
+                        # operation, the same unit execute_write/execute_read
+                        # count. Without it total_queries never moves for the
+                        # transactional store/update/delete path while the arm
+                        # below still moves failed_queries, so the two counters
+                        # published side by side in connection_metrics cover
+                        # different populations and any failure-rate computed
+                        # from them is wrong. Counted here rather than beside
+                        # record_success() so a transaction whose RELEASE fails
+                        # after a successful COMMIT is still counted -- its work
+                        # did reach the database.
+                        self.metrics.total_queries += 1
 
                     except Exception as e:
                         # Rolled back automatically on a body error, OR the COMMIT failed on exit.

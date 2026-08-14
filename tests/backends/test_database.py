@@ -64,6 +64,9 @@ class TestDatabaseInitialization:
                 'idx_source',
                 'idx_tags_entry',
                 'idx_tags_tag',
+                # Tags are a set per entry; the unique index is the database-level
+                # backstop behind the write path's deduplication.
+                'idx_tags_entry_tag',
                 'idx_thread_id',
                 'idx_thread_source',
                 # Deduplication lookup index, provisioned from the base schema.

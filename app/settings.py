@@ -10,6 +10,7 @@ from typing import Self
 from dotenv import find_dotenv
 from pydantic import Field
 from pydantic import SecretStr
+from pydantic import ValidationInfo
 from pydantic import field_validator
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
@@ -37,6 +38,32 @@ _SAFE_METADATA_FIELD_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # characters silently collapse to one index. The identifier grammar above is pure
 # ASCII, so one character is one byte and the character count is the byte budget.
 _MAX_METADATA_FIELD_NAME_LENGTH = 50
+
+# Accepted keywords for the four string-valued SQLite PRAGMA settings, which are
+# interpolated verbatim into ``PRAGMA <name> = <value>`` by the SQLite backend.
+# SQLite does NOT reject an unrecognized pragma argument: it silently keeps the
+# current or default value, and the backend never reads the applied value back.
+# So SQLITE_SYNCHRONOUS=FULLL boots clean and runs at NORMAL, and
+# SQLITE_JOURNAL_MODE=wal-mode leaves a fresh database in DELETE mode -- the
+# server reports healthy while its durability and concurrency characteristics
+# differ from what the operator configured. Validating here turns a typo into a
+# startup failure, exactly like the numeric bounds on the sibling storage fields.
+# Comparison is case-insensitive (values are normalized to upper case), and the
+# numeric spellings SQLite itself accepts for synchronous and temp_store are
+# allowed alongside the keywords.
+_SQLITE_PRAGMA_CHOICES: dict[str, frozenset[str]] = {
+    'sqlite_journal_mode': frozenset({'DELETE', 'TRUNCATE', 'PERSIST', 'MEMORY', 'WAL', 'OFF'}),
+    'sqlite_synchronous': frozenset({'OFF', 'NORMAL', 'FULL', 'EXTRA', '0', '1', '2', '3'}),
+    'sqlite_temp_store': frozenset({'DEFAULT', 'FILE', 'MEMORY', '0', '1', '2'}),
+    'sqlite_wal_checkpoint': frozenset({'PASSIVE', 'FULL', 'RESTART', 'TRUNCATE'}),
+}
+
+# SQLite stores the page size in the database header as a power of two in this
+# range; ``PRAGMA page_size`` silently ignores anything else, so an out-of-range
+# value would leave a fresh database on the 4096-byte default while the operator
+# believes it was applied.
+_SQLITE_MIN_PAGE_SIZE = 512
+_SQLITE_MAX_PAGE_SIZE = 65536
 
 
 class CommonSettings(BaseSettings):
@@ -407,13 +434,6 @@ class ChunkingSettings(CommonSettings):
         description='How to aggregate chunk scores (currently only max is supported; '
                     'avg and sum will be added in future releases)',
     )
-    dedup_overfetch: int = Field(
-        default=5,
-        alias='CHUNK_DEDUP_OVERFETCH',
-        ge=1,
-        le=20,
-        description='Multiplier for fetching extra chunks before deduplication (default: 5)',
-    )
 
     @model_validator(mode='after')
     def validate_overlap_less_than_size(self) -> Self:
@@ -453,13 +473,6 @@ class RerankingSettings(CommonSettings):
         ge=128,
         le=2048,
         description='Maximum input length for reranking (default: 512 tokens)',
-    )
-    overfetch: int = Field(
-        default=4,
-        alias='RERANKING_OVERFETCH',
-        ge=1,
-        le=20,
-        description='Multiplier for over-fetching results before reranking (default: 4x)',
     )
     cache_dir: str | None = Field(
         default=None,
@@ -886,12 +899,6 @@ class SearchSettings(CommonSettings):
     Settings that apply across all search types (FTS, semantic, hybrid).
     """
 
-    default_sort_by: Literal['relevance'] = Field(
-        default='relevance',
-        alias='SEARCH_DEFAULT_SORT_BY',
-        description='Default sort order for search results (currently only relevance is supported; '
-                    'created_at and updated_at will be added in future releases)',
-    )
     truncation_length: int = Field(
         default=300,
         ge=50,
@@ -951,7 +958,6 @@ class StorageSettings(BaseSettings):
     # busy-spins its loop; a non-positive timeout misclassifies as a retryable
     # dependency failure), so it is rejected at the configuration boundary.
     pool_max_readers: int = Field(default=8, alias='POOL_MAX_READERS', ge=1)
-    pool_max_writers: int = Field(default=1, alias='POOL_MAX_WRITERS', ge=1)
     pool_connection_timeout_s: float = Field(default=10.0, alias='POOL_CONNECTION_TIMEOUT_S', gt=0)
     pool_idle_timeout_s: float = Field(default=300.0, alias='POOL_IDLE_TIMEOUT_S', gt=0)
     pool_health_check_interval_s: float = Field(default=30.0, alias='POOL_HEALTH_CHECK_INTERVAL_S', gt=0)
@@ -969,7 +975,10 @@ class StorageSettings(BaseSettings):
     retry_jitter: bool = Field(default=True, alias='RETRY_JITTER')
     retry_backoff_factor: float = Field(default=2.0, alias='RETRY_BACKOFF_FACTOR', ge=1)
 
-    # SQLite PRAGMAs
+    # SQLite PRAGMAs. The keyword-valued ones are constrained to the arguments
+    # SQLite actually recognizes (see _SQLITE_PRAGMA_CHOICES): an unrecognized
+    # argument is silently ignored by SQLite, so an unvalidated typo would run
+    # the server with different durability or concurrency than configured.
     sqlite_foreign_keys: bool = Field(default=True, alias='SQLITE_FOREIGN_KEYS')
     sqlite_journal_mode: str = Field(default='WAL', alias='SQLITE_JOURNAL_MODE')
     sqlite_synchronous: str = Field(default='NORMAL', alias='SQLITE_SYNCHRONOUS')
@@ -1315,6 +1324,58 @@ class StorageSettings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             raise ValueError('DB_PATH must not be empty or whitespace-only when set')
         return value
+
+    @field_validator('sqlite_journal_mode', 'sqlite_synchronous', 'sqlite_temp_store', 'sqlite_wal_checkpoint')
+    @classmethod
+    def validate_sqlite_pragma_keyword(cls, v: str, info: ValidationInfo) -> str:
+        """Reject a pragma argument SQLite would silently ignore.
+
+        Args:
+            v: The configured pragma argument.
+            info: Validation context carrying the field being validated.
+
+        Returns:
+            str: The argument normalized to upper case.
+
+        Raises:
+            ValueError: If the argument is not one SQLite recognizes for this pragma.
+        """
+        # The validator is bound to the four pragma fields above, and each of
+        # those fields' env alias is its name upper-cased (SQLITE_JOURNAL_MODE,
+        # SQLITE_SYNCHRONOUS, SQLITE_TEMP_STORE, SQLITE_WAL_CHECKPOINT).
+        field_name = info.field_name or ''
+        allowed = _SQLITE_PRAGMA_CHOICES[field_name]
+        normalized = v.strip().upper()
+        if normalized not in allowed:
+            raise ValueError(
+                f"{field_name.upper()}='{v}' is not a value SQLite accepts for "
+                f'PRAGMA {field_name.removeprefix("sqlite_")}. SQLite ignores an unrecognized '
+                f'argument silently, so the setting would have no effect. '
+                f'Valid options: {", ".join(sorted(allowed))}',
+            )
+        return normalized
+
+    @field_validator('sqlite_page_size')
+    @classmethod
+    def validate_sqlite_page_size(cls, v: int) -> int:
+        """Reject a page size SQLite would silently ignore.
+
+        Args:
+            v: The configured page size in bytes.
+
+        Returns:
+            int: The validated page size.
+
+        Raises:
+            ValueError: If the value is not a power of two in SQLite's supported range.
+        """
+        if not (_SQLITE_MIN_PAGE_SIZE <= v <= _SQLITE_MAX_PAGE_SIZE) or (v & (v - 1)) != 0:
+            raise ValueError(
+                f'SQLITE_PAGE_SIZE={v} is not a power of two between '
+                f'{_SQLITE_MIN_PAGE_SIZE} and {_SQLITE_MAX_PAGE_SIZE}. SQLite ignores an '
+                f'unsupported page size silently, so the setting would have no effect.',
+            )
+        return v
 
     @model_validator(mode='after')
     def validate_pool_min_not_above_max(self) -> Self:

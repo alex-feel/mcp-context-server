@@ -46,34 +46,93 @@ settings = get_settings()
 # Maximum allowed search results limit (Postel's Law: accept, clamp, warn)
 MAX_SEARCH_LIMIT = 100
 
-# Maximum allowed pagination offset, rejected at the tool boundary. A deep offset
-# is already an anti-pattern (the database still scans offset + limit rows), and an
-# unbounded offset multiplied by the reranking and RRF overfetch factors can grow a
-# LIMIT/OFFSET bind past the int64 column width. That failure surfaces INSIDE
-# connection scope and charges the circuit breaker for what is purely invalid client
-# input; bounding the offset here keeps it a clean client-facing validation error.
+# Depth of the ONE ranked ordering that semantic, FTS, and hybrid search serve every
+# page from. It is fixed and page-independent by design. Those three tools decide the
+# final order AFTER the database returns rows -- cross-encoder reranking, RRF fusion,
+# or both -- so sizing the candidate window from the requested page (the old
+# (limit + offset) * factors) built page N and page N + 1 from DIFFERENT candidate
+# pools: a document that only entered the larger pool could outrank rows already
+# served, which pushed those rows onto a later page a second time while other rows
+# were never returned by any page. With a fixed depth there is exactly one ordering
+# per query and offset/limit merely select a window inside it. MAX_SEARCH_LIMIT is
+# that depth because a single request can never return more rows than it, so the
+# ordering spans every window a client can ask for; a window reaching past the depth
+# is reported to the client through the rank_depth_limit hint. The depth is also the
+# candidate pool the cross-encoder scores, and it already exceeds any requested page
+# size, so the ranked tools no longer scale that pool by RERANKING_OVERFETCH on top of
+# the page -- doing so would have made the pool grow with the page again.
+RANKED_SEARCH_DEPTH = MAX_SEARCH_LIMIT
+
+# Maximum allowed pagination offset, rejected at the tool boundary. search_context
+# binds the offset straight into its LIMIT/OFFSET SQL, where an unbounded value is
+# both an anti-pattern (the database still scans offset + limit rows) and a bind that
+# can exceed the int64 column width. That failure surfaces INSIDE connection scope and
+# charges the circuit breaker for what is purely invalid client input; bounding the
+# offset here keeps it a clean client-facing validation error. The ranked tools slice
+# their fixed-depth ordering in Python, so for them any offset past RANKED_SEARCH_DEPTH
+# simply returns no rows together with the rank_depth_limit hint.
 MAX_SEARCH_OFFSET = 1_000_000
 
-# Hard ceiling for the computed overfetch window ((limit + offset) times the
-# reranking and RRF factors) before it reaches a LIMIT/OFFSET bind. The value is the
-# largest legitimate window: MAX_SEARCH_LIMIT + MAX_SEARCH_OFFSET rows times the
-# maximum overfetch factor chain (HYBRID_RRF_OVERFETCH max 10 times RERANKING_OVERFETCH
-# max 20 = 200). With the offset already bounded this never clamps a valid request; it
-# is defense in depth so no future factor change can grow the bind out of range.
-MAX_OVERFETCH_ROWS = (MAX_SEARCH_LIMIT + MAX_SEARCH_OFFSET) * 200
+# Wire-schema ceiling for the full-text query string, applied to the two tools whose
+# query text is handed to a search ENGINE that builds an expression out of it. Neither
+# engine is bounded by the number of terms it will assemble: PostgreSQL aborts a query
+# of many thousands of terms while allocating the tsquery, and FTS5 spends real CPU on
+# one. Neither failure is dangerous any more (both classify as client input and stay off
+# the circuit breaker), but there is no reason to let a client ask for the work at all.
+# The bound is roughly a thousand words -- orders of magnitude above any real search
+# query and far below the sizes at which the engines misbehave -- and rejecting past it
+# is a clean schema-level validation error before the request reaches the server. The
+# semantic-only tool is deliberately NOT bounded: its query goes to an embedding
+# provider, which has its own documented context handling.
+MAX_FTS_QUERY_LENGTH = 10_000
+
+# Hard ceiling for a computed candidate window before it reaches a LIMIT/OFFSET bind.
+# The largest legitimate window is RANKED_SEARCH_DEPTH rows times the biggest overfetch
+# factor the module applies (HYBRID_RRF_OVERFETCH, max 10) for the hybrid legs, so this
+# ceiling keeps an order of magnitude of headroom above it. It never clamps a valid
+# request now that the window no longer grows with the requested page; it is defense in
+# depth so no future factor change can grow the bind out of range.
+MAX_OVERFETCH_ROWS = RANKED_SEARCH_DEPTH * 200
 
 
 def _clamp_overfetch(rows: int) -> int:
-    """Clamp a computed overfetch window to the safe ceiling before it is bound.
+    """Clamp a computed candidate window to the safe ceiling before it is bound.
 
     Args:
-        rows: The computed (limit + offset) * factors overfetch window.
+        rows: The computed candidate window (the ranked depth times the overfetch
+            factors).
 
     Returns:
         The window bounded to MAX_OVERFETCH_ROWS so the row count reaching a
         LIMIT/OFFSET bind stays independent of the individual overfetch multipliers.
     """
     return min(rows, MAX_OVERFETCH_ROWS)
+
+
+def _rank_depth_hint(offset: int, limit: int) -> dict[str, int] | None:
+    """Return the hint describing a page that reaches past the fixed ranked depth.
+
+    Ranked search serves every page from ONE ordering of at most
+    RANKED_SEARCH_DEPTH rows (see that constant), so a window whose end lies beyond
+    the depth is served short -- or empty when the offset alone is past it. The hint
+    says so explicitly instead of leaving the client to guess whether the result set
+    was exhausted or the window fell outside the ranked ordering.
+
+    Args:
+        offset: The requested pagination offset.
+        limit: The applied (already clamped) page size.
+
+    Returns:
+        A hint carrying the requested window and the ranked depth, or None when the
+        whole window fits inside the depth.
+    """
+    if offset + limit <= RANKED_SEARCH_DEPTH:
+        return None
+    return {
+        'requested_offset': offset,
+        'requested_limit': limit,
+        'rank_depth': RANKED_SEARCH_DEPTH,
+    }
 
 
 # Maximum member count for the client-supplied tags filter, shared by the four
@@ -211,16 +270,90 @@ def filter_caps_error(
     )
 
 
-def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> dict[str, Any]:
-    """Build the zeroed stats dict for a structured validation-error response.
+def structural_filter_errors(
+    tags: list[str] | None = None,
+    metadata: dict[str, str | int | float | bool] | None = None,
+    metadata_filters: list[dict[str, Any]] | None = None,
+) -> list[str] | None:
+    """Return the filter-validation messages a purely structural check can produce.
 
-    The uniform error-path stats shape under ``explain_query``: zeroed counters plus
-    the always-present ``backend`` key (the active storage backend type), so a
-    client sees the same stats keys whether the search executed or failed
-    validation. ``query_plan`` is included as an explicit ``None``: no plan exists
+    The repositories validate ``tags``/``metadata``/``metadata_filters`` inside their
+    per-backend read callables, which on the semantic path runs only AFTER the query
+    embedding has been generated -- so a request that is guaranteed to be rejected
+    still paid a full round trip to the embedding provider (seconds to tens of
+    seconds), and the rejection then reported ``embedding_generation_ms: 0.0`` for
+    time it really spent. Running the same checks here, before that call, rejects the
+    request for the same reason with the same messages and no provider traffic.
+
+    The check touches no database and is deliberately built without the enclosing
+    statement's bind offset or table alias, which makes it strictly MORE permissive
+    than the repository's own clause-budget accounting: it can only reject a request
+    the repository would also reject, never one the repository would accept.
+
+    Args:
+        tags: The client-supplied tags filter (None when absent).
+        metadata: The client-supplied simple metadata filter dict (None when absent).
+        metadata_filters: The client-supplied advanced filter list (None when absent).
+
+    Returns:
+        The validation messages, in the order the repositories report them, or None
+        when nothing structurally invalid was found.
+    """
+    from app.metadata_types import MetadataFilter
+    from app.query_builder import MetadataQueryBuilder
+    from app.repositories.base import BaseRepository
+
+    if tags:
+        try:
+            BaseRepository.normalize_tag_filter(tags)
+        except ValueError as e:
+            return [format_exception_message(e)]
+
+    if not metadata and not metadata_filters:
+        return None
+
+    backend_type: Literal['sqlite', 'postgresql'] = (
+        'postgresql' if settings.storage.backend_type == 'postgresql' else 'sqlite'
+    )
+    builder = MetadataQueryBuilder(backend_type=backend_type)
+    errors: list[str] = []
+
+    if metadata:
+        for key, value in metadata.items():
+            try:
+                builder.add_simple_filter(key, value)
+            except ValueError as e:
+                errors.append(f'Invalid metadata key {key!r}: {format_exception_message(e)}')
+
+    if metadata_filters:
+        for filter_dict in metadata_filters:
+            try:
+                # pydantic's ValidationError subclasses ValueError, so one branch
+                # covers both the schema rejection (bad operator, missing key) and
+                # the builder's own ValueError (unsafe key, clause budgets).
+                builder.add_advanced_filter(MetadataFilter(**filter_dict))
+            except ValueError as e:
+                errors.append(f'Invalid metadata filter {filter_dict}: {format_exception_message(e)}')
+            except Exception as e:
+                # Parity with the repositories: an unexpected failure is still a
+                # structured validation message rather than an opaque tool error.
+                errors.append(f'Unexpected error in metadata filter {filter_dict}: {format_exception_message(e)}')
+                logger.error(f'Unexpected error processing metadata filter: {e}')
+
+    return errors or None
+
+
+def _empty_stats_for_unexecuted_query(*, include_embedding_ms: bool = False) -> dict[str, Any]:
+    """Build the zeroed stats dict for a response whose search never executed.
+
+    The uniform shape under ``explain_query`` for every path that returns without
+    running SQL -- a rejected filter, and a page that provably lies outside the ranked
+    ordering -- so a client sees the same stats keys whether the search executed or
+    not. Zeroed counters plus the always-present ``backend`` key (the active storage
+    backend type). ``query_plan`` is included as an explicit ``None``: no plan exists
     for a query that never ran, but omitting the key entirely would break the very
     uniformity this shape promises and make the documented
-    ``stats['query_plan']`` access raise ``KeyError`` on the rejection path.
+    ``stats['query_plan']`` access raise ``KeyError`` on those paths.
     ``include_embedding_ms`` adds the semantic shape's
     ``embedding_generation_ms`` counter (see ``HybridSemanticStatsDict``).
 
@@ -228,7 +361,7 @@ def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> 
         include_embedding_ms: Include the semantic-only embedding timing counter.
 
     Returns:
-        The stats dict for the validation-error response.
+        The stats dict for the response.
     """
     stats: dict[str, Any] = {
         'execution_time_ms': 0.0,
@@ -240,6 +373,48 @@ def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> 
     if include_embedding_ms:
         stats['embedding_generation_ms'] = 0.0
     return stats
+
+
+def _empty_page_beyond_rank_depth(
+    base: dict[str, Any],
+    *,
+    offset: int,
+    limit: int,
+    original_limit: int,
+    stats: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Finish the response for a page that lies entirely past the fixed ranked depth.
+
+    Every ranked page is cut from one ordering of at most RANKED_SEARCH_DEPTH rows, so a
+    request whose offset already reaches the depth can only ever return nothing. That is
+    decidable from the client's own arguments alone, before any work runs, which is why
+    the ranked tools answer it here instead of paying an embedding round trip, a search,
+    and a cross-encoder pass over the full window only to discard every row in the slice.
+
+    Args:
+        base: The response keys specific to the calling tool (query, model, mode, and
+            the hybrid shape's mode counters).
+        offset: The requested pagination offset.
+        limit: The applied (already clamped) page size.
+        original_limit: The page size as requested, for the clamped_limit notice.
+        stats: The stats block to attach, or None when explain_query is off.
+
+    Returns:
+        The complete empty-page response, carrying the rank_depth_limit hint that
+        explains why it is empty.
+    """
+    response: dict[str, Any] = {**base, 'results': [], 'count': 0}
+    if stats is not None:
+        response['stats'] = stats
+    if original_limit != limit:
+        response['clamped_limit'] = {
+            'requested': original_limit,
+            'applied': limit,
+        }
+    depth_hint = _rank_depth_hint(offset, limit)
+    if depth_hint is not None:
+        response['rank_depth_limit'] = depth_hint
+    return response
 
 
 def _zeroed_fusion_stats(rrf_k: int) -> dict[str, Any]:
@@ -440,6 +615,19 @@ async def _semantic_search_raw(
             error_msg += f'. Download model: ollama pull {settings.embedding.model}'
         raise ToolError(error_msg)
 
+    # Reject a structurally invalid filter BEFORE the embedding round trip. The
+    # repository validates the same inputs, but only inside the read callable that
+    # runs after embed_query(), so a request that could never return results still
+    # burned provider latency and quota -- and the rejection then reported a zero
+    # embedding_generation_ms for the seconds it had just spent. The messages and the
+    # exception type are the repository's, so the response a caller builds from them
+    # is unchanged.
+    from app.repositories.embedding_repository import MetadataFilterValidationError
+
+    structural_errors = structural_filter_errors(tags, metadata, metadata_filters)
+    if structural_errors is not None:
+        raise MetadataFilterValidationError('Metadata filter validation failed', structural_errors)
+
     # Get repositories
     repos = await ensure_repositories()
 
@@ -454,8 +642,6 @@ async def _semantic_search_raw(
     embedding_generation_ms = (time.perf_counter() - embedding_start) * 1000
 
     # Perform similarity search with optional filtering
-    from app.repositories.embedding_repository import MetadataFilterValidationError
-
     try:
         search_results, search_stats = await repos.embeddings.search(
             query_embedding=query_embedding,
@@ -753,7 +939,7 @@ async def search_context(
                 'validation_errors': [caps_error],
             }
             if explain_query:
-                caps_response['stats'] = _empty_stats_for_validation_error()
+                caps_response['stats'] = _empty_stats_for_unexecuted_query()
             return caps_response
 
         if ctx:
@@ -793,7 +979,7 @@ async def search_context(
             if 'validation_errors' in stats:
                 error_response['validation_errors'] = stats['validation_errors']
             if explain_query:
-                error_response['stats'] = _empty_stats_for_validation_error()
+                error_response['stats'] = _empty_stats_for_unexecuted_query()
             return error_response
 
         entries: list[ContextEntryDict] = []
@@ -917,10 +1103,18 @@ async def semantic_search_context(
     - semantic_rank: Always null for standalone semantic search
     - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
+    Pagination:
+    - A query has ONE ranking, at most 100 rows deep; limit and offset select a window
+      inside it, so paging never repeats a row on two pages nor skips one entirely.
+    - A window reaching past that depth is served short (empty when the offset itself is
+      past it) and the response carries rank_depth_limit.
+
     Returns:
         Dict with query (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
-        metadata, scores, tags), count (int), model (str), and stats (only when explain_query=True).
+        metadata, scores, tags), count (int), model (str), stats (only when
+        explain_query=True), and rank_depth_limit (only when the requested window
+        reaches past the ranked depth).
 
     Raises:
         ToolError: If semantic search is not available or search operation fails.
@@ -949,7 +1143,7 @@ async def semantic_search_context(
             'validation_errors': [caps_error],
         }
         if explain_query:
-            caps_error_response['stats'] = _empty_stats_for_validation_error(include_embedding_ms=True)
+            caps_error_response['stats'] = _empty_stats_for_unexecuted_query(include_embedding_ms=True)
         return caps_error_response
 
     try:
@@ -965,24 +1159,38 @@ async def semantic_search_context(
         if ctx:
             await ctx.info(f'Performing semantic search: "{query[:50]}..."')
 
-        # Calculate overfetch limit for reranking
-        # Over-fetch more results to give reranker better candidates
+        # The candidate depth is fixed and page-independent (see
+        # RANKED_SEARCH_DEPTH), so every page is cut from the SAME ordering. It also
+        # over-fetches for the reranker on its own: the cross-encoder scores the full
+        # ranked window however few rows the caller asked for.
         reranking_provider = get_reranking_provider()
         need_reranking = reranking_provider is not None and settings.reranking.enabled
-        overfetch_limit = _clamp_overfetch(
-            (limit + offset) * settings.reranking.overfetch if need_reranking else limit + offset,
-        )
 
         # Import exception here to avoid circular imports at module level
         from app.repositories.embedding_repository import MetadataFilterValidationError
 
+        # A page starting at or past the ranked depth is deterministically empty, so it is
+        # answered from the client's arguments alone rather than after an embedding round
+        # trip, a vector search and a cross-encoder pass whose every row the slice below
+        # would then discard. A structurally invalid filter still takes precedence: the
+        # request falls through to the normal path, which rejects it (before the embedding
+        # call) with the per-filter detail the client needs.
+        if offset >= RANKED_SEARCH_DEPTH and structural_filter_errors(tags, metadata, metadata_filters) is None:
+            return _empty_page_beyond_rank_depth(
+                {'query': query, 'model': settings.embedding.model},
+                offset=offset,
+                limit=limit,
+                original_limit=original_limit,
+                stats=_empty_stats_for_unexecuted_query(include_embedding_ms=True) if explain_query else None,
+            )
+
         try:
-            # Call raw search (Layer 1) with overfetch
+            # Call raw search (Layer 1) for the full ranked depth
             # Extract rerank_text (matched chunk) when reranking is enabled
             search_results, search_stats = await _semantic_search_raw(
                 query=query,
-                limit=overfetch_limit,
-                offset=0,  # Offset handled after reranking
+                limit=RANKED_SEARCH_DEPTH,
+                offset=0,  # The page is cut from the ranked window below
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
@@ -1007,7 +1215,7 @@ async def semantic_search_context(
             if explain_query:
                 # Uniform validation-error stats shape, mirroring the FTS error
                 # path: zeroed counters plus the always-present backend key.
-                error_response['stats'] = _empty_stats_for_validation_error(include_embedding_ms=True)
+                error_response['stats'] = _empty_stats_for_unexecuted_query(include_embedding_ms=True)
             return error_response
 
         # Transform results to use scores object (before reranking)
@@ -1019,14 +1227,14 @@ async def semantic_search_context(
                 'semantic_rank': None,  # Standalone semantic has no ranking
             }
 
-        # Apply reranking (Layer 2) if available
+        # Apply reranking (Layer 2) if available, over the whole fixed-depth window
         reranked_results = await _apply_reranking(
             query=query,
             results=search_results,
-            limit=limit + offset,  # Get enough for offset + limit
+            limit=RANKED_SEARCH_DEPTH,
         )
 
-        # Apply offset after reranking
+        # Cut the requested page out of the single ranked ordering
         final_results = reranked_results[offset:][:limit]
 
         # Clean up internal fields from final results
@@ -1066,6 +1274,9 @@ async def semantic_search_context(
                 'requested': original_limit,
                 'applied': limit,
             }
+        depth_hint = _rank_depth_hint(offset, limit)
+        if depth_hint is not None:
+            response['rank_depth_limit'] = depth_hint
         return response
 
     except ToolError:
@@ -1076,7 +1287,14 @@ async def semantic_search_context(
 
 
 async def fts_search_context(
-    query: Annotated[str, Field(min_length=1, description='Full-text search query')],
+    query: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=MAX_FTS_QUERY_LENGTH,
+            description=f'Full-text search query (1-{MAX_FTS_QUERY_LENGTH} characters)',
+        ),
+    ],
     limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
     mode: Annotated[
         Literal['match', 'prefix', 'phrase', 'boolean'],
@@ -1151,11 +1369,18 @@ async def fts_search_context(
     - fts_rank: Always null for standalone FTS search
     - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
+    Pagination:
+    - A query has ONE ranking, at most 100 rows deep; limit and offset select a window
+      inside it, so paging never repeats a row on two pages nor skips one entirely.
+    - A window reaching past that depth is served short (empty when the offset itself is
+      past it) and the response carries rank_depth_limit.
+
     Returns:
         Dict with query (str), mode (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
         metadata, scores, highlighted, tags), count (int), language (str),
-        and stats (only when explain_query=True).
+        stats (only when explain_query=True), and rank_depth_limit (only when the
+        requested window reaches past the ranked depth).
 
     Raises:
         ToolError: If FTS is not available or search operation fails.
@@ -1185,7 +1410,7 @@ async def fts_search_context(
             'validation_errors': [caps_error],
         }
         if explain_query:
-            caps_error_response['stats'] = _empty_stats_for_validation_error()
+            caps_error_response['stats'] = _empty_stats_for_unexecuted_query()
         return caps_error_response
 
     # Check if migration is in progress - return informative response for graceful degradation
@@ -1224,26 +1449,43 @@ async def fts_search_context(
         if ctx:
             await ctx.info(f'Performing FTS search: "{query[:50]}..." (mode={mode})')
 
-        # Calculate overfetch limit for reranking
+        # The candidate depth is fixed and page-independent (see
+        # RANKED_SEARCH_DEPTH), so every page is cut from the SAME ordering.
         reranking_provider = get_reranking_provider()
-        if reranking_provider is not None and settings.reranking.enabled:
-            overfetch_limit = _clamp_overfetch((limit + offset) * settings.reranking.overfetch)
-        else:
-            overfetch_limit = _clamp_overfetch(limit + offset)
 
         # Determine if we need highlights for internal reranking
         need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
 
         # Import exception here to avoid circular imports
         from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository import fts_query_validation_errors
+
+        # A page starting at or past the ranked depth is deterministically empty, so it is
+        # answered from the client's arguments alone rather than after a full-depth search
+        # and a cross-encoder pass over up to RANKED_SEARCH_DEPTH documents whose every row
+        # the slice below would then discard. An unbindable query or a structurally invalid
+        # filter still takes precedence: the request falls through to the normal path,
+        # which rejects it with the detail the client needs to correct it.
+        if (
+            offset >= RANKED_SEARCH_DEPTH
+            and fts_query_validation_errors(query) is None
+            and structural_filter_errors(tags, metadata, metadata_filters) is None
+        ):
+            return _empty_page_beyond_rank_depth(
+                {'query': query, 'mode': mode, 'language': settings.fts.language},
+                offset=offset,
+                limit=limit,
+                original_limit=original_limit,
+                stats=_empty_stats_for_unexecuted_query() if explain_query else None,
+            )
 
         try:
-            # Call raw search (Layer 1) with overfetch
+            # Call raw search (Layer 1) for the full ranked depth
             search_results, stats = await _fts_search_raw(
                 query=query,
-                limit=overfetch_limit,
+                limit=RANKED_SEARCH_DEPTH,
                 mode=mode,
-                offset=0,  # Offset handled after reranking
+                offset=0,  # The page is cut from the ranked window below
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
@@ -1268,7 +1510,7 @@ async def fts_search_context(
                 'validation_errors': e.validation_errors,
             }
             if explain_query:
-                error_response['stats'] = _empty_stats_for_validation_error()
+                error_response['stats'] = _empty_stats_for_unexecuted_query()
             return error_response
 
         # Transform results to use scores object (before reranking)
@@ -1280,14 +1522,14 @@ async def fts_search_context(
                 'fts_rank': None,  # Standalone FTS has no ranking
             }
 
-        # Apply reranking (Layer 2) if available
+        # Apply reranking (Layer 2) if available, over the whole fixed-depth window
         reranked_results = await _apply_reranking(
             query=query,
             results=search_results,
-            limit=limit + offset,  # Get enough for offset + limit
+            limit=RANKED_SEARCH_DEPTH,
         )
 
-        # Apply offset after reranking
+        # Cut the requested page out of the single ranked ordering
         final_results = reranked_results[offset:][:limit]
 
         # Clean up internal fields from final results
@@ -1339,6 +1581,9 @@ async def fts_search_context(
                 'requested': original_limit,
                 'applied': limit,
             }
+        depth_hint = _rank_depth_hint(offset, limit)
+        if depth_hint is not None:
+            response['rank_depth_limit'] = depth_hint
         return response
 
     except ToolError:
@@ -1446,7 +1691,14 @@ def _prepare_hybrid_fts_query(
 
 
 async def hybrid_search_context(
-    query: Annotated[str, Field(min_length=1, description='Natural language search query')],
+    query: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=MAX_FTS_QUERY_LENGTH,
+            description=f'Natural language search query (1-{MAX_FTS_QUERY_LENGTH} characters)',
+        ),
+    ],
     limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
     offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     fusion_method: Annotated[
@@ -1537,11 +1789,18 @@ async def hybrid_search_context(
     - fusion_stats: {rrf_k, total_unique_documents, documents_in_both, documents_fts_only, documents_semantic_only}
     - adaptive_fts_mode: 'match' or 'boolean' (the FTS mode the adaptive AND/OR switch selected)
 
+    Pagination:
+    - A query has ONE ranking, at most 100 rows deep; limit and offset select a window
+      inside it, so paging never repeats a row on two pages nor skips one entirely.
+    - A window reaching past that depth is served short (empty when the offset itself is
+      past it) and the response carries rank_depth_limit.
+
     Returns:
         Dict with query (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
         metadata, scores, tags), count (int), fusion_method (str), search_modes_used (list),
-        fts_count (int), semantic_count (int), and stats (only when explain_query=True).
+        fts_count (int), semantic_count (int), stats (only when explain_query=True), and
+        rank_depth_limit (only when the requested window reaches past the ranked depth).
 
     Raises:
         ToolError: If hybrid search is not available or all search modes fail.
@@ -1647,15 +1906,15 @@ async def hybrid_search_context(
         # Get repositories for tag/image enrichment
         repos = await ensure_repositories()
 
-        # Calculate overfetch limit for hybrid search with reranking
-        # Chain: limit * hybrid_rrf_overfetch * reranking.overfetch
+        # Per-leg candidate depth: the fixed ranked depth times the RRF overfetch
+        # factor, so each leg reaches far enough for fusion to find the documents the
+        # two modes share. It is page-independent (see RANKED_SEARCH_DEPTH) because
+        # RRF is itself a reordering stage even with the cross-encoder absent -- a
+        # document present in BOTH legs outscores a higher-placed document present in
+        # only one -- so legs sized from the requested page fused into a different
+        # ordering for every page.
         reranking_provider = get_reranking_provider()
-        if reranking_provider is not None and settings.reranking.enabled:
-            over_fetch_limit = _clamp_overfetch(
-                (limit + offset) * settings.hybrid_search.rrf_overfetch * settings.reranking.overfetch,
-            )
-        else:
-            over_fetch_limit = _clamp_overfetch((limit + offset) * settings.hybrid_search.rrf_overfetch)
+        over_fetch_limit = _clamp_overfetch(RANKED_SEARCH_DEPTH * settings.hybrid_search.rrf_overfetch)
 
         # Determine if we need highlights for internal reranking
         need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
@@ -1686,6 +1945,43 @@ async def hybrid_search_context(
             backend_type=settings.storage.backend_type,
             language=settings.fts.language,
         )
+
+        # A page starting at or past the ranked depth is deterministically empty, so it is
+        # answered from the client's arguments alone rather than after both legs run --
+        # which on this tool means an embedding round trip, two searches, RRF fusion and a
+        # cross-encoder pass whose every row the slice would then discard. An unbindable
+        # query or a structurally invalid filter still takes precedence: the request falls
+        # through to the normal path, whose per-leg degradation reports it. No leg executed,
+        # so search_modes_used is empty and the counters are zero; rank_depth_limit says why.
+        from app.repositories.fts_repository import fts_query_validation_errors
+
+        if (
+            offset >= RANKED_SEARCH_DEPTH
+            and fts_query_validation_errors(query) is None
+            and structural_filter_errors(tags, metadata, metadata_filters) is None
+        ):
+            depth_stats: dict[str, Any] | None = None
+            if explain_query:
+                depth_stats = {
+                    'execution_time_ms': round((time_module.time() - total_start_time) * 1000, 2),
+                    'fts_stats': None,
+                    'semantic_stats': None,
+                    'fusion_stats': _zeroed_fusion_stats(effective_rrf_k),
+                    'adaptive_fts_mode': adaptive_mode,
+                }
+            return _empty_page_beyond_rank_depth(
+                {
+                    'query': query,
+                    'fusion_method': fusion_method,
+                    'search_modes_used': [],
+                    'fts_count': 0,
+                    'semantic_count': 0,
+                },
+                offset=offset,
+                limit=limit,
+                original_limit=original_limit,
+                stats=depth_stats,
+            )
 
         async def run_fts_search() -> None:
             nonlocal fts_results, fts_error, fts_stats, fts_validation_errors
@@ -1858,18 +2154,13 @@ async def hybrid_search_context(
                 except (json.JSONDecodeError, ValueError, AttributeError):
                     result['metadata'] = None
 
-        # Fuse results using RRF (no reranking yet - Layer 1 results only)
-        # Get more than needed for reranking
-        fused_limit_for_reranking = _clamp_overfetch(
-            (limit + offset) * (
-                settings.reranking.overfetch if reranking_provider is not None and settings.reranking.enabled else 1
-            ),
-        )
+        # Fuse results using RRF (no reranking yet - Layer 1 results only) down to the
+        # fixed ranked depth, so the fused ordering every page is cut from is the same.
         fused_results = reciprocal_rank_fusion(
             fts_results=fts_results,
             semantic_results=semantic_results,
             k=effective_rrf_k,
-            limit=fused_limit_for_reranking,
+            limit=RANKED_SEARCH_DEPTH,
         )
 
         # Apply reranking (Layer 3 - single reranking after fusion)
@@ -1877,10 +2168,10 @@ async def hybrid_search_context(
         reranked_results = await _apply_reranking(
             query=query,
             results=fused_results_any,
-            limit=limit + offset,  # Get enough for offset + limit
+            limit=RANKED_SEARCH_DEPTH,
         )
 
-        # Apply offset after reranking
+        # Cut the requested page out of the single ranked ordering
         final_results = reranked_results[offset:][:limit]
 
         # Clean up internal fields from final results
@@ -1949,6 +2240,9 @@ async def hybrid_search_context(
                 'requested': original_limit,
                 'applied': limit,
             }
+        depth_hint = _rank_depth_hint(offset, limit)
+        if depth_hint is not None:
+            response['rank_depth_limit'] = depth_hint
         if search_warnings:
             response['warnings'] = search_warnings
         # A partially-degraded response carries the captured per-filter details

@@ -67,6 +67,23 @@ class ClampedLimitDict(TypedDict):
     applied: int
 
 
+class RankDepthLimitDict(TypedDict):
+    """Type definition for the ranked-depth hint in ranked search responses.
+
+    The ranked search tools (semantic, FTS, hybrid) decide their final order after
+    the database returns rows, so they serve every page from ONE ordering of fixed
+    depth (``rank_depth``); that is what keeps successive pages from repeating or
+    skipping rows. A request whose ``offset + limit`` reaches past that depth is
+    served short -- empty when the offset alone is past it -- and carries this hint,
+    so a client can tell a window outside the ranked ordering apart from an
+    exhausted result set.
+    """
+
+    requested_offset: int
+    requested_limit: int
+    rank_depth: int
+
+
 class SearchContextResponseDict(TypedDict, total=False):
     """Type definition for search_context response.
 
@@ -603,6 +620,8 @@ class FtsSearchResponseDict(TypedDict, total=False):
     error: str | None
     validation_errors: list[str] | None
     clamped_limit: ClampedLimitDict | None
+    # Only present when the requested page reaches past the fixed ranked depth
+    rank_depth_limit: RankDepthLimitDict | None
 
 
 class SemanticSearchResultDict(TypedDict, total=False):
@@ -643,6 +662,8 @@ class SemanticSearchResponseDict(TypedDict, total=False):
     error: str | None
     validation_errors: list[str] | None
     clamped_limit: ClampedLimitDict | None
+    # Only present when the requested page reaches past the fixed ranked depth
+    rank_depth_limit: RankDepthLimitDict | None
 
 
 class FtsMigrationInProgressDict(TypedDict):
@@ -789,6 +810,8 @@ class HybridSearchResponseDict(TypedDict, total=False):
     semantic_count: int  # Number of results from semantic search
     stats: HybridSearchStatsDict | None
     clamped_limit: ClampedLimitDict | None
+    # Only present when the requested page reaches past the fixed ranked depth
+    rank_depth_limit: RankDepthLimitDict | None
     warnings: list[str] | None  # Degradation warnings when sub-searches fail (e.g., FTS or semantic)
     error: str | None  # Set when all available modes failed on filter validation
     # Per-filter details captured from a failing sub-search. Present both when all

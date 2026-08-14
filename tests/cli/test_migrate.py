@@ -1503,6 +1503,10 @@ async def test_pg_pg_migration_closes_source_when_target_connect_fails(
     closed = {'source': False}
 
     class _FakeConn:
+        async def execute(self, _sql: str, *_args: object) -> str:
+            """Accept the session-parameter statements applied right after the dial."""
+            return 'SET'
+
         async def close(self) -> None:
             closed['source'] = True
 

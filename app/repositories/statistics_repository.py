@@ -18,6 +18,7 @@ from anyio import Path as AsyncPath
 
 from app.backends.base import StorageBackend
 from app.ids import normalize_id
+from app.repositories._collation import byte_ordered_text
 from app.repositories.base import BaseRepository
 from app.types import ThreadInfoDict
 
@@ -204,16 +205,22 @@ class StatisticsRepository(BaseRepository):
                 # The grouping key is the unique secondary sort key: without it a
                 # tie in `count` leaves the LIMIT window computed over an undefined
                 # ordering, so which rows make the top-N flaps under unrelated writes.
-                cursor.execute('''
+                # It is byte-ordered so a tie at the LIMIT boundary admits the SAME
+                # rows the PostgreSQL branch admits.
+                thread_order = byte_ordered_text('thread_id', 'sqlite')
+                cursor.execute(f'''
                     SELECT thread_id, COUNT(*) as count FROM context_entries
-                    GROUP BY thread_id ORDER BY count DESC, thread_id ASC LIMIT 5
+                    GROUP BY thread_id ORDER BY count DESC, {thread_order} ASC LIMIT 5
                 ''')
                 most_active: list[dict[str, Any]] = [
                     {'thread_id': row['thread_id'], 'count': row['count']} for row in cursor.fetchall()
                 ]
                 stats['most_active_threads'] = most_active
 
-                cursor.execute('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, tag ASC LIMIT 10')
+                tag_order = byte_ordered_text('tag', 'sqlite')
+                cursor.execute(
+                    f'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, {tag_order} ASC LIMIT 10',
+                )
                 top_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
                 stats['top_tags'] = top_tags
 
@@ -259,16 +266,21 @@ class StatisticsRepository(BaseRepository):
                 # The grouping key is the unique secondary sort key: without it a
                 # tie in `count` leaves the LIMIT window computed over an undefined
                 # ordering, and PostgreSQL MVCC rewrites heap order on every unrelated
-                # UPDATE, so which rows make the top-N flaps between calls.
-                rows = await conn.fetch('''
+                # UPDATE, so which rows make the top-N flaps between calls. The explicit
+                # byte-wise collation makes that tiebreak decide the LIMIT window the
+                # SAME way SQLite's BINARY comparison does, instead of by the database
+                # locale -- otherwise identical data yields a different top-N SET here.
+                thread_order = byte_ordered_text('thread_id', 'postgresql')
+                rows = await conn.fetch(f'''
                     SELECT thread_id, COUNT(*) as count FROM context_entries
-                    GROUP BY thread_id ORDER BY count DESC, thread_id ASC LIMIT 5
+                    GROUP BY thread_id ORDER BY count DESC, {thread_order} ASC LIMIT 5
                 ''')
                 most_active: list[dict[str, Any]] = [{'thread_id': row['thread_id'], 'count': row['count']} for row in rows]
                 stats['most_active_threads'] = most_active
 
+                tag_order = byte_ordered_text('tag', 'postgresql')
                 rows = await conn.fetch(
-                    'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, tag ASC LIMIT 10',
+                    f'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, {tag_order} ASC LIMIT 10',
                 )
                 top_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
                 stats['top_tags'] = top_tags
@@ -350,12 +362,17 @@ class StatisticsRepository(BaseRepository):
                     by_source[row['source']] = row['count']
                 stats['by_source'] = by_source
 
+                # GROUP BY rather than SELECT DISTINCT (same result set): PostgreSQL
+                # rejects an ORDER BY expression that is absent from a DISTINCT
+                # select list, and the collated sort term is such an expression.
+                # Both branches keep the same shape so the two cannot drift.
                 query3 = f'''
-                    SELECT DISTINCT t.tag
+                    SELECT t.tag
                     FROM tags t
                     JOIN context_entries c ON t.context_entry_id = c.id
                     WHERE c.thread_id = {self._placeholder(1)}
-                    ORDER BY t.tag
+                    GROUP BY t.tag
+                    ORDER BY {byte_ordered_text('t.tag', 'sqlite')}
                 '''
                 cursor.execute(query3, (thread_id,))
                 tags: list[str] = [row['tag'] for row in cursor.fetchall()]
@@ -406,12 +423,17 @@ class StatisticsRepository(BaseRepository):
                 by_source[row['source']] = row['count']
             stats['by_source'] = by_source
 
+            # GROUP BY rather than SELECT DISTINCT (same result set): PostgreSQL
+            # rejects an ORDER BY expression that is absent from a DISTINCT select
+            # list, and the collated sort term is such an expression. The collation
+            # makes this public tag list serialize in the same order as SQLite's.
             query3 = f'''
-                    SELECT DISTINCT t.tag
+                    SELECT t.tag
                     FROM tags t
                     JOIN context_entries c ON t.context_entry_id = c.id
                     WHERE c.thread_id = {self._placeholder(1)}
-                    ORDER BY t.tag
+                    GROUP BY t.tag
+                    ORDER BY {byte_ordered_text('t.tag', 'postgresql')}
                 '''
             rows = await conn.fetch(query3, thread_id)
             tags: list[str] = [row['tag'] for row in rows]
@@ -450,8 +472,10 @@ class StatisticsRepository(BaseRepository):
 
                 # `tag` is the unique secondary sort key: top_10_tags below slices the
                 # first ten rows, so a tie in `count` would otherwise decide the slice
-                # membership over an undefined ordering.
-                cursor.execute('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, tag ASC')
+                # membership over an undefined ordering. Byte-ordered so the slice
+                # admits the same tags on both backends.
+                tag_order = byte_ordered_text('tag', 'sqlite')
+                cursor.execute(f'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, {tag_order} ASC')
                 all_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
                 stats['all_tags'] = all_tags
                 stats['top_10_tags'] = all_tags[:10] if all_tags else []
@@ -480,8 +504,12 @@ class StatisticsRepository(BaseRepository):
 
             # `tag` is the unique secondary sort key: top_10_tags below slices the
             # first ten rows, so a tie in `count` would otherwise decide the slice
-            # membership over an undefined ordering.
-            rows = await conn.fetch('SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, tag ASC')
+            # membership over an undefined ordering. Byte-ordered so the slice admits
+            # the same tags SQLite's BINARY comparison admits, not the locale's.
+            tag_order = byte_ordered_text('tag', 'postgresql')
+            rows = await conn.fetch(
+                f'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, {tag_order} ASC',
+            )
             all_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
             stats['all_tags'] = all_tags
             stats['top_10_tags'] = all_tags[:10] if all_tags else []

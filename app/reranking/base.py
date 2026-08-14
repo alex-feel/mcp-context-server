@@ -28,7 +28,6 @@ class RerankingProvider(Protocol):
         RERANKING_PROVIDER: Provider name (default: flashrank)
         RERANKING_MODEL: Model name (default: ms-marco-MiniLM-L-12-v2)
         RERANKING_MAX_LENGTH: Max input length (default: 512)
-        RERANKING_OVERFETCH: Overfetch multiplier (default: 4)
         RERANKING_CACHE_DIR: Model cache directory (default: system cache)
     """
 

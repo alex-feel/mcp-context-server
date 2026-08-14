@@ -58,7 +58,7 @@ from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import EntryNotFoundError
 from app.tools._shared import build_store_response_message
 from app.tools._shared import build_update_response_message
-from app.tools._shared import cleanup_embeddings_for_delete
+from app.tools._shared import delete_entries_with_cleanup
 from app.tools._shared import embed_then_compress
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
@@ -66,9 +66,10 @@ from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import node_layer_active
-from app.tools._shared import reject_oversized_indexed_values
+from app.tools._shared import reject_invalid_indexed_values
 from app.tools._shared import reject_oversized_tags
 from app.tools._shared import reject_unstorable_input
+from app.tools._shared import reread_entry_version
 from app.tools._shared import run_generation
 from app.tools._shared import validate_and_normalize_images
 from app.types import ContextEntryDict
@@ -197,8 +198,10 @@ async def store_context(
         # Reject an over-long thread_id or indexed metadata value for the same reason,
         # and at the same point: each also lands in a PostgreSQL btree index whose
         # index-tuple ceiling aborts the INSERT inside the transaction where SQLite
-        # stores the identical value.
-        reject_oversized_indexed_values(thread_id=thread_id, metadata=metadata)
+        # stores the identical value. The same guard rejects a value that cannot
+        # survive the SQL cast a typed METADATA_INDEXED_FIELDS entry puts inside its
+        # expression index, which PostgreSQL evaluates on every INSERT.
+        reject_invalid_indexed_values(thread_id=thread_id, metadata=metadata)
 
         # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===
         # All generation happens BEFORE any database operation: if an
@@ -558,12 +561,28 @@ async def delete_context(
         Dict with success (bool), deleted_count (int), and message (str) fields.
 
     Raises:
-        ToolError: If neither context_ids nor thread_id provided, or deletion fails.
+        ToolError: If neither context_ids nor thread_id is provided, if BOTH are
+            provided, or if deletion fails.
     """
     try:
         # Ensure at least one parameter is provided (business logic validation)
         if not context_ids and not thread_id:
             raise ToolError('Must provide either context_ids or thread_id')
+
+        # Both provided is REFUSED, not silently resolved. The two parameters are
+        # documented as mutually exclusive and the dispatch below is if/elif, so
+        # accepting the combination would delete only the listed ids while the
+        # response reported success for a request that also named a whole thread --
+        # a partially executed irreversible delete the caller cannot detect. The
+        # sibling delete_context_batch takes the same two argument names and
+        # deliberately AND-combines them as criteria, which makes silent precedence
+        # here doubly misleading.
+        if context_ids and thread_id:
+            raise ToolError(
+                'context_ids and thread_id are mutually exclusive: provide exactly one. '
+                'To delete specific entries within a thread, use delete_context_batch, '
+                'which combines its criteria.',
+            )
 
         # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id before it
         # reaches delete_by_thread's bind: on PostgreSQL asyncpg would raise a
@@ -596,11 +615,12 @@ async def delete_context(
             # cancellation between the two would otherwise leave entries stripped
             # of their vectors while their rows survive, silently missing from
             # semantic and hybrid search with no path back short of a text edit.
-            # cleanup_embeddings_for_delete is a no-op on PostgreSQL, where
-            # ON DELETE CASCADE removes the embedding rows in the same statement.
-            async with backend.begin_transaction() as txn:
-                await cleanup_embeddings_for_delete(repos, txn, context_ids)
-                deleted = await repos.context.delete_by_ids(context_ids, txn=txn)
+            # The cleanup is a no-op on PostgreSQL, where ON DELETE CASCADE removes
+            # the embedding rows in the same statement. A transient lock collision
+            # rolls the whole thing back and is retried inside the helper, so a
+            # self-clearing SQLITE_BUSY neither fails the delete nor commits it with
+            # the vectors left behind.
+            deleted = await delete_entries_with_cleanup(repos, context_ids)
             logger.info(f'Deleted {deleted} context entries by IDs')
 
         elif thread_id:
@@ -624,9 +644,7 @@ async def delete_context(
                     thread_ids=[thread_id],
                 )
                 if thread_ids_to_delete:
-                    async with backend.begin_transaction() as txn:
-                        await cleanup_embeddings_for_delete(repos, txn, thread_ids_to_delete)
-                        deleted = await repos.context.delete_by_ids(thread_ids_to_delete, txn=txn)
+                    deleted = await delete_entries_with_cleanup(repos, thread_ids_to_delete)
             else:
                 deleted = await repos.context.delete_by_thread(thread_id)
             logger.info(f'Deleted {deleted} entries from thread {thread_id}')
@@ -731,14 +749,15 @@ async def update_context(
         # idx_tags_tag inside the transaction, after a wasted generation pass.
         reject_oversized_tags(tags)
 
-        # Reject an over-long value under an INDEXED metadata key, in both the
-        # replacement and the merge-patch form: each lands in that field's expression
-        # btree index (idx_metadata_<field>), whose index-tuple ceiling aborts the
-        # UPDATE inside the transaction where SQLite stores it. thread_id is immutable
-        # on this path, so only metadata is checked. Runs in the input-validation
-        # phase, alongside the tag caps and before any database work.
+        # Reject an over-long or cast-incompatible value under an INDEXED metadata key,
+        # in both the replacement and the merge-patch form: each lands in that field's
+        # expression btree index (idx_metadata_<field>), whose index-tuple ceiling --
+        # and, for a typed field, whose SQL cast -- aborts the UPDATE inside the
+        # transaction where SQLite stores it. thread_id is immutable on this path, so
+        # only metadata is checked. Runs in the input-validation phase, alongside the
+        # tag caps and before any database work.
         for meta_value in (metadata, metadata_patch):
-            reject_oversized_indexed_values(metadata=meta_value)
+            reject_invalid_indexed_values(metadata=meta_value)
 
         # Get repositories
         repos = await ensure_repositories()
@@ -883,23 +902,12 @@ async def update_context(
                         f'changing during the update. Retry the request.',
                     ) from None
                 version_conflicts += 1
-                try:
-                    exists, _src, current_version = await repos.context.check_entry_exists(context_id)
-                except Exception as reread_error:
-                    # A transient connection error during the conflict re-read must
-                    # get the same bounded backoff/retry as the rest of the loop,
-                    # not abort the whole update.
-                    if is_connection_error(reread_error) and attempt < max_retries:
-                        delay = 0.5 * (2 ** attempt)
-                        attempt += 1
-                        logger.warning(
-                            'Connection error during version-conflict re-read of %s; '
-                            'retrying in %.1fs (attempt %d/%d): %s',
-                            context_id, delay, attempt, max_retries, reread_error,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    raise
+                # Refresh the token before re-entering the write. A transient fault
+                # during the refresh is retried inside the helper, on the READ alone:
+                # re-running the write transaction with the token whose compare-and-set
+                # just failed is doomed by construction (version is monotonic) and would
+                # burn a conflict slot on what was only a connection blip.
+                exists, current_version = await reread_entry_version(repos, context_id)
                 if not exists:
                     raise ToolError(f'Context entry with ID {context_id} not found') from None
                 expected_version = current_version

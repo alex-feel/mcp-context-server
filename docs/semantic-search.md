@@ -461,7 +461,6 @@ Text chunking splits long context entries into smaller chunks for embedding gene
 | `CHUNK_SIZE`            | `1500`  | Target chunk size in characters                                                   |
 | `CHUNK_OVERLAP`         | `150`   | Overlap between consecutive chunks                                                |
 | `CHUNK_AGGREGATION`     | `max`   | How to aggregate chunk scores (only 'max' supported; avg, sum planned for future) |
-| `CHUNK_DEDUP_OVERFETCH` | `5`     | Multiplier for over-fetching chunks before deduplication                          |
 
 ### How It Works
 
@@ -507,15 +506,16 @@ uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-c
 | `RERANKING_PROVIDER`   | `flashrank`               | Reranking provider name                       |
 | `RERANKING_MODEL`      | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB)                       |
 | `RERANKING_MAX_LENGTH` | `512`                     | Maximum input length in tokens                |
-| `RERANKING_OVERFETCH`  | `4`                       | Multiplier for over-fetching before reranking |
 | `RERANKING_CACHE_DIR`  | None                      | Custom cache directory for model files        |
 
 ### How It Works
 
-1. **Over-fetching**: Search retrieves `limit * RERANKING_OVERFETCH` candidates
+1. **Candidate retrieval**: Search retrieves the full ranked depth of candidates
 2. **Cross-Encoder Scoring**: FlashRank scores each candidate against the query
 3. **Re-ordering**: Results sorted by cross-encoder score (higher = more relevant)
-4. **Limiting**: Top `limit` results returned
+4. **Paging**: The requested page is cut from that ordering
+
+Every ranked search serves its page from ONE ordering of at most 100 candidates (the ranked depth, which equals the largest page a single request can ask for), so the candidate pool is the same for every page of a query and does not scale with the requested `limit` or `offset`. A page whose window reaches past that depth is served short, and the response says so through the `rank_depth_limit` key.
 
 ### Available Models
 

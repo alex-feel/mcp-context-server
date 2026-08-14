@@ -50,6 +50,7 @@ from pydantic import ValidationError
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.postgresql_backend import apply_session_gucs
 from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
 from app.cli.migrate import mask_credentials
 from app.cli.migrate import parse_backend_url
@@ -200,10 +201,11 @@ async def _decompress_needs_vector(address: str) -> bool:
     with zero compressed rows, so a fresh compressed database that never wrote
     an embedding lands exactly here).
 
-    The connection reuses :func:`build_asyncpg_connect_kwargs` so the
-    ``search_path`` matches the bare-name DML the reverse path runs, and
-    ``EXISTS`` is used instead of ``COUNT(*)`` so the probe stops at the first
-    row rather than scanning a large compressed table.
+    The connection reuses :func:`build_asyncpg_connect_kwargs` and applies the
+    session parameters through :func:`apply_session_gucs`, so the ``search_path``
+    matches the bare-name DML the reverse path runs. ``EXISTS`` is used instead of
+    ``COUNT(*)`` so the probe stops at the first row rather than scanning a large
+    compressed table.
 
     Args:
         address: PostgreSQL connection string (the parsed ``--source-url``).
@@ -220,6 +222,7 @@ async def _decompress_needs_vector(address: str) -> bool:
         **connect_kwargs,
     )
     try:
+        await apply_session_gucs(conn)
         reachable = bool(
             await conn.fetchval(
                 "SELECT to_regclass('vec_context_embeddings_compressed') IS NOT NULL",
@@ -961,9 +964,12 @@ async def _execute_compress(
 ) -> None:
     """Encode every fp32 row and write the compressed payload table.
 
-    The whole operation runs inside a single
+    The DATA MOVEMENT runs inside a single
     :meth:`StorageBackend.begin_transaction` transaction on both backends,
-    committing on success and rolling back on exception. Each branch locks
+    committing on success and rolling back on exception. The SCHEMA step does not
+    share that guarantee on SQLite, where the ``IF NOT EXISTS`` table DDL autocommits
+    through ``executescript()`` before ``BEGIN IMMEDIATE`` opens (see the branch
+    docstrings); on PostgreSQL the DDL is transactional and rolls back with the rest. Each branch locks
     the source table (``BEGIN IMMEDIATE`` / ``LOCK TABLE ... ACCESS
     EXCLUSIVE``) BEFORE streaming and recounts it INSIDE the transaction, so
     no planning-time row count is consumed here.
@@ -1427,9 +1433,12 @@ async def _execute_decompress(
 ) -> None:
     """Decode every compressed row and write the fp32 vec table.
 
-    The whole operation runs inside a single
+    The DATA MOVEMENT runs inside a single
     :meth:`StorageBackend.begin_transaction` transaction on both backends,
-    committing on success and rolling back on exception. With ZERO compressed rows the
+    committing on success and rolling back on exception. The SCHEMA step does not
+    share that guarantee on SQLite, where the ``IF NOT EXISTS`` table DDL autocommits
+    through ``executescript()`` before ``BEGIN IMMEDIATE`` opens (see the branch
+    docstrings); on PostgreSQL the DDL is transactional and rolls back with the rest. With ZERO compressed rows the
     zero-data reverse path runs instead: it drops the empty compressed table
     and clears the provenance row WITHOUT provisioning any fp32
     infrastructure, so the disable direction also works on deployments whose

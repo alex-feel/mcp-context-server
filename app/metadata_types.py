@@ -15,7 +15,9 @@ The :class:`MetadataFilter` ``value`` field accepts string values, so no
 type extension is required to support UUIDv7 identifiers.
 """
 
+import json
 import math
+import re
 from enum import StrEnum
 from typing import cast
 
@@ -185,6 +187,226 @@ def non_finite_metadata_error(metadata: object) -> str | None:
             if message is not None:
                 return message
     return None
+
+
+# PostgreSQL's INTEGER is 32-bit, so a JSON number outside this range renders as
+# text the ``::INTEGER`` expression-index cast rejects as out of range.
+_PG_INT32_MIN = -(2 ** 31)
+_PG_INT32_MAX = 2 ** 31 - 1
+
+# The whitespace PostgreSQL's scalar input functions trim, which is ASCII ONLY: their
+# scanners run under the C locale and test isspace() on single bytes, so U+00A0, U+3000,
+# U+2028, U+0085, U+205F and the other Unicode space characters are ordinary content that
+# makes the cast fail. Python's argument-less str.strip() removes all of those as well,
+# so trimming with it would accept values PostgreSQL rejects -- exactly the divergence
+# this validation exists to close. Verified against PostgreSQL 18: chr(9..13) and chr(32)
+# are trimmed on integer, boolean and numeric input; chr(160), chr(133) and chr(8232) are
+# not.
+_PG_ASCII_WHITESPACE = ' \t\n\v\f\r'
+
+# The widest significant digit run each accepted integer base can hold inside a 32-bit
+# INTEGER. A longer run is out of range by inspection, which also keeps the int()
+# conversion below clear of the interpreter's string-to-int digit ceiling for an absurdly
+# long decimal run.
+_PG_INT32_MAX_SIGNIFICANT_DIGITS = {2: 32, 8: 11, 10: 10, 16: 8}
+
+# The literals PostgreSQL's boolean input accepts, case-insensitively and with
+# surrounding whitespace trimmed -- every unambiguous prefix of "true"/"false"/"yes"/"no",
+# the two-character-and-longer prefixes of "on"/"off" (a lone 'o' is ambiguous between
+# them and is rejected), and the single characters '1'/'0'.
+_PG_BOOLEAN_LITERALS = frozenset({
+    't', 'tr', 'tru', 'true', 'y', 'ye', 'yes', 'on', '1',
+    'f', 'fa', 'fal', 'fals', 'false', 'n', 'no', 'of', 'off', '0',
+})
+
+# The non-finite values PostgreSQL's NUMERIC input accepts by name.
+_PG_NUMERIC_SPECIALS = frozenset({
+    'nan', 'inf', '+inf', '-inf', 'infinity', '+infinity', '-infinity',
+})
+
+# PostgreSQL 16 extended the INTEGER and NUMERIC input functions with non-decimal
+# literals (0x hexadecimal, 0o octal, 0b binary) and '_' digit separators, so a value
+# like '0x10' or '1_000' casts successfully and must not be refused here -- refusing it
+# would block a store on BOTH backends that previously succeeded on both. A separator
+# may sit directly after a base prefix but never leads, trails, or doubles.
+_PG_NON_DECIMAL_INTEGER_RES = (
+    (16, re.compile(r'^(?P<sign>[+-]?)0[xX](?P<digits>(?:_?[0-9a-fA-F])+)$')),
+    (8, re.compile(r'^(?P<sign>[+-]?)0[oO](?P<digits>(?:_?[0-7])+)$')),
+    (2, re.compile(r'^(?P<sign>[+-]?)0[bB](?P<digits>(?:_?[01])+)$')),
+)
+_PG_DECIMAL_INTEGER_RE = re.compile(r'^(?P<sign>[+-]?)(?P<digits>[0-9](?:_?[0-9])*)$')
+_PG_DECIMAL_DIGITS = r'[0-9](?:_?[0-9])*'
+_PG_NUMERIC_RE = re.compile(
+    rf'^[+-]?(?:{_PG_DECIMAL_DIGITS}(?:\.(?:{_PG_DECIMAL_DIGITS})?)?|\.{_PG_DECIMAL_DIGITS})'
+    rf'(?:[eE][+-]?{_PG_DECIMAL_DIGITS})?$',
+)
+
+# The METADATA_INDEXED_FIELDS type hints app/migrations/metadata.py turns into a hard
+# SQL cast inside the PostgreSQL expression index. 'string' adds no cast, and
+# 'array'/'object' build no expression index at all (the always-present GIN index
+# serves them), so neither can fail a cast.
+_PG_CAST_HINTS = frozenset({'integer', 'boolean', 'float'})
+
+
+def _truncate_for_message(text: str, limit: int = 60) -> str:
+    """Shorten a client value so it can be quoted inside an error message.
+
+    Args:
+        text: The value's text rendering.
+        limit: Maximum characters to keep before eliding.
+
+    Returns:
+        The text, elided with a trailing ellipsis when longer than ``limit``.
+    """
+    return text if len(text) <= limit else f'{text[:limit]}...'
+
+
+def _pg_integer_input(candidate: str) -> tuple[bool, int | None]:
+    """Parse a text value the way PostgreSQL's INTEGER input function would.
+
+    Accepts everything PostgreSQL 16+ accepts: an optional sign, then either a decimal
+    run or a ``0x``/``0o``/``0b`` non-decimal run, with ``_`` digit separators permitted
+    between digits and directly after a base prefix but never leading, trailing, or
+    doubled. Surrounding whitespace is the caller's responsibility.
+
+    Args:
+        candidate: The whitespace-trimmed text rendering of the value.
+
+    Returns:
+        ``(matches_grammar, value)``. ``matches_grammar`` is False when PostgreSQL would
+        report invalid input syntax. ``value`` is the parsed integer, or None when the
+        literal is well-formed but carries more significant digits than a 32-bit INTEGER
+        can hold -- which is decided by inspecting the digit run, so an absurdly long
+        decimal literal never reaches the interpreter's string-to-int digit ceiling.
+    """
+    for base, pattern in _PG_NON_DECIMAL_INTEGER_RES:
+        match = pattern.match(candidate)
+        if match is not None:
+            digits = match['digits'].replace('_', '').lstrip('0')
+            if len(digits) > _PG_INT32_MAX_SIGNIFICANT_DIGITS[base]:
+                return True, None
+            magnitude = int(digits, base) if digits else 0
+            return True, -magnitude if match['sign'] == '-' else magnitude
+    decimal = _PG_DECIMAL_INTEGER_RE.match(candidate)
+    if decimal is None:
+        return False, None
+    digits = decimal['digits'].replace('_', '').lstrip('0')
+    if len(digits) > _PG_INT32_MAX_SIGNIFICANT_DIGITS[10]:
+        return True, None
+    magnitude = int(digits) if digits else 0
+    return True, -magnitude if decimal['sign'] == '-' else magnitude
+
+
+def pg_indexed_cast_error(field: str, value: object, type_hint: str) -> str | None:
+    """Return an error message when a value cannot survive its index's SQL cast.
+
+    A ``METADATA_INDEXED_FIELDS`` entry may carry a type hint, and on PostgreSQL
+    ``integer``/``boolean``/``float`` become a hard cast inside the expression index
+    (``((metadata->>'<field>')::INTEGER)`` and siblings). PostgreSQL evaluates an
+    expression index ON INSERT, so a value that satisfies the index's
+    ``IS NOT NULL`` predicate but does not survive the cast aborts the write with a
+    raw driver error -- after a full generation pass, inside the transaction, and
+    charging the circuit breaker -- while SQLite's uncast ``json_extract`` index
+    stores the identical value happily. Validating here at the write boundary makes
+    both backends accept and reject identically, before any generation runs.
+
+    The checks mirror PostgreSQL's own input parsers applied to the TEXT rendering
+    ``->>`` produces, so a value PostgreSQL would accept is not refused: a JSON
+    string ``"5"`` renders as ``5`` and casts fine, whereas a JSON number ``5.5``
+    renders as ``5.5`` and does not cast to INTEGER.
+
+    Args:
+        field: The metadata key, used in the message.
+        value: The client-supplied value stored under that key.
+        type_hint: The configured type hint for the field.
+
+    Returns:
+        An error message when the value cannot be cast, or None when it can (or when
+        the hint produces no cast).
+    """
+    if type_hint not in _PG_CAST_HINTS:
+        return None
+    # A JSON null renders as SQL NULL, which the index's own
+    # ``WHERE metadata->>'<field>' IS NOT NULL`` predicate excludes, so no cast runs.
+    if value is None:
+        return None
+
+    # Booleans are checked before the int branch: bool is an int subclass in Python,
+    # but JSON true/false render as the text 'true'/'false', not as 1/0.
+    if isinstance(value, bool):
+        rendered = 'true' if value else 'false'
+    elif isinstance(value, str):
+        rendered = value
+    elif isinstance(value, (int, float)):
+        rendered = json.dumps(value)
+    else:
+        # A JSON array or object renders as its JSON text, which casts to no scalar
+        # type; any other Python type could not have arrived as JSON at all.
+        return (
+            f'metadata field {field!r} is indexed as {type_hint} and a '
+            f'{type(value).__name__} value cannot be stored in it'
+        )
+
+    candidate = rendered.strip(_PG_ASCII_WHITESPACE)
+    invalid = (
+        f'metadata field {field!r} is indexed as {type_hint} and its value is not a '
+        f'valid {type_hint}: {_truncate_for_message(rendered)!r}'
+    )
+
+    if type_hint == 'integer':
+        matches_grammar, parsed = _pg_integer_input(candidate)
+        if not matches_grammar:
+            return invalid
+        if parsed is None or not (_PG_INT32_MIN <= parsed <= _PG_INT32_MAX):
+            return (
+                f'metadata field {field!r} is indexed as integer and its value is out of '
+                f'range: {_truncate_for_message(rendered)} (the supported range is '
+                f'{_PG_INT32_MIN} to {_PG_INT32_MAX})'
+            )
+        return None
+
+    if type_hint == 'boolean':
+        return None if candidate.lower() in _PG_BOOLEAN_LITERALS else invalid
+
+    # 'float' -> ::NUMERIC. NUMERIC accepts every INTEGER literal form as well, including
+    # the non-decimal bases, so the integer grammar is consulted before declaring the
+    # value invalid ('0x10'::numeric is 16 on PostgreSQL 16+).
+    if _PG_NUMERIC_RE.match(candidate) or candidate.lower() in _PG_NUMERIC_SPECIALS:
+        return None
+    return None if _pg_integer_input(candidate)[0] else invalid
+
+
+def pg_indexed_metadata_text(value: object) -> str | None:
+    """Return the text ``metadata->>'<field>'`` yields for a decoded JSON value.
+
+    The single source of truth for "what does the PostgreSQL expression index on
+    ``context_entries((metadata->>'<field>'))`` actually store". PostgreSQL's ``->>``
+    operator returns a JSON string UNQUOTED and every other JSON value in its
+    serialized form, so a list or object stored under an indexed key is indexed as
+    its whole serialized text -- which a check that inspects only ``str`` values
+    misses entirely, letting an oversized container reach the INSERT and abort it
+    with a raw btree index-tuple error that SQLite's uncast ``json_extract`` index
+    never produces. A JSON ``null`` yields SQL NULL, which the expression index
+    excludes through its ``WHERE ... IS NOT NULL`` predicate, so it has no indexed
+    text at all.
+
+    Both the write-boundary guard and the migration CLI's pre-check measure the value
+    through this function, so the two can never disagree about what the index holds.
+
+    Args:
+        value: A decoded top-level metadata value.
+
+    Returns:
+        The text the expression index would hold, or None when the value indexes as
+        SQL NULL.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    # jsonb renders container members with ', ' and ': ' separators, so encoding with
+    # the same separators measures what the index actually stores.
+    return json.dumps(value, ensure_ascii=False, separators=(', ', ': '))
 
 
 def pg_bind_reject_reason(text: str) -> str | None:

@@ -22,9 +22,9 @@ def _patch_server_migrations() -> AbstractContextManager[Any]:
     well under CPython's static nested-block limit (each parenthesized context
     manager is a nested block; adding the new ``apply_version_migration`` step tipped
     the deepest block over the limit). Reproduces the EXACT set every full-migration
-    lifespan test mocked, plus ``apply_version_migration`` -- the optimistic-concurrency
-    ``version`` column migration wired into the lifespan, which otherwise runs against
-    the MagicMock backend and raises ``object MagicMock can't be used in 'await'``.
+    lifespan test mocked. Every step wired into the lifespan must appear here: one that
+    does not runs against the MagicMock backend and raises ``object MagicMock can't be
+    used in 'await'``.
 
     Returns:
         The ``patch.multiple`` context manager neutralizing every lifespan step.
@@ -43,6 +43,7 @@ def _patch_server_migrations() -> AbstractContextManager[Any]:
         apply_summary_migration=AsyncMock(),
         apply_content_hash_migration=AsyncMock(),
         apply_version_migration=AsyncMock(),
+        apply_tag_uniqueness_migration=AsyncMock(),
     )
 
 
@@ -702,6 +703,7 @@ class TestSearchToolRegistrationMatrix:
         fts_enabled: bool,
         hybrid_enabled: bool,
         provider_present: bool,
+        fts_probe_error: BaseException | None = None,
     ) -> set[str]:
         """Run lifespan() with mocked dependencies and capture registered tools.
 
@@ -712,6 +714,8 @@ class TestSearchToolRegistrationMatrix:
             provider_present: When True, an embedding provider is created and set
                 so get_embedding_provider() returns it; when False, embedding
                 generation is disabled and no provider is initialized.
+            fts_probe_error: When given, the FTS availability probe raises it instead
+                of reporting availability, modeling an operational fault at boot.
 
         Returns:
             The set of registered tool function names captured from the
@@ -732,7 +736,10 @@ class TestSearchToolRegistrationMatrix:
         mock_backend.execute_read = AsyncMock(return_value=None)
 
         mock_repos = MagicMock()
-        mock_repos.fts.is_available = AsyncMock(return_value=True)
+        if fts_probe_error is None:
+            mock_repos.fts.is_available = AsyncMock(return_value=True)
+        else:
+            mock_repos.fts.is_available = AsyncMock(side_effect=fts_probe_error)
         mock_repos.context = MagicMock()
         mock_repos.embedding = MagicMock()
 
@@ -882,3 +889,46 @@ class TestSearchToolRegistrationMatrix:
         assert 'fts_search_context' in registered
         # Hybrid registers because at least one mode (FTS) is available.
         assert 'hybrid_search_context' in registered
+
+
+class TestDiagnosticStartupProbesDoNotAbortStartup:
+    """A startup probe whose only consumer is a log line cannot take the server down.
+
+    The FTS availability probe reports whether the index is already provisioned; the tool is
+    registered either way and re-checks migration status on every call. The probe deliberately
+    lets operational faults propagate rather than reporting them as "not migrated", so an
+    external VACUUM or backup holding the database lock past the read retry budget at the
+    moment the server boots raises here. Inside the startup try that shuts every provider down
+    and re-raises, that transient made EVERY tool unavailable; it must degrade to a warning.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fts_availability_probe_fault_leaves_the_server_running(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A locked database during the probe warns, registers the tool, and starts up."""
+        import logging
+        import sqlite3
+
+        caplog.set_level(logging.INFO, logger='app.server')
+
+        registered = await TestSearchToolRegistrationMatrix._run_lifespan(
+            semantic_mode='false',
+            fts_enabled=True,
+            hybrid_enabled=True,
+            provider_present=False,
+            fts_probe_error=sqlite3.OperationalError('database is locked'),
+        )
+
+        # Startup completed: the FTS tool and every other tool are still registered.
+        assert 'fts_search_context' in registered
+        assert 'hybrid_search_context' in registered
+        assert 'store_context' in registered
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and 'full-text search availability' in r.message
+        ]
+        assert len(warnings) == 1
+        assert 'database is locked' in warnings[0].message

@@ -21,6 +21,10 @@ import contextlib
 import socket
 import unittest.mock
 from collections.abc import AsyncIterator
+from collections.abc import Awaitable
+from collections.abc import Callable
+from typing import Any
+from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
@@ -766,3 +770,119 @@ class TestPgpoolProbeFaultScope:
         await backend._detect_pgpool_ii()
 
         assert backend._pgpool_version == '4.5.2 (firebrick)'
+
+
+class TestPgvectorInitCallbackClassification:
+    """The pool's pgvector init callback must not relabel transient faults.
+
+    asyncpg re-raises an ``init`` failure VERBATIM out of ``pool.acquire()``, so
+    whatever type this callback raises IS the type the caller classifies. Its two
+    awaits are real server round-trips, so it sees the whole transient transport
+    family; turning one of those into ConfigurationError makes a self-clearing
+    blip permanent -- no retry at runtime, and exit 78 (never retried by the
+    supervisor) at boot, where the identical fault one line later is retried five
+    times or exits 69.
+    """
+
+    @staticmethod
+    async def _init_callback(monkeypatch: pytest.MonkeyPatch) -> 'Callable[[Any], Awaitable[None]]':
+        """Boot a backend against a fake pool and return the pool's init callback.
+
+        Args:
+            monkeypatch: Fixture used to stub the boot steps around pool creation.
+
+        Returns:
+            The ``init`` callable asyncpg would run for every new connection.
+        """
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+        monkeypatch.setattr(backend, '_resolve_provision_vector', AsyncMock(return_value=True))
+        monkeypatch.setattr(backend, '_ensure_pgvector_extension', AsyncMock())
+        monkeypatch.setattr(backend, '_verify_connectivity', AsyncMock())
+        monkeypatch.setattr(backend, '_detect_pgpool_ii', AsyncMock())
+        monkeypatch.setattr(backend, '_detect_session_mode_pooler', MagicMock())
+        create_pool = AsyncMock(return_value=MagicMock())
+        monkeypatch.setattr('app.backends.postgresql_backend.asyncpg.create_pool', create_pool)
+
+        await backend.initialize()
+
+        await_args = create_pool.await_args
+        assert await_args is not None
+        init_callback = await_args.kwargs['init']
+        assert callable(init_callback)
+        return cast('Callable[[Any], Awaitable[None]]', init_callback)
+
+    @staticmethod
+    def _connection_failing_the_extension_probe(error: BaseException) -> MagicMock:
+        """Build a connection whose pg_extension probe raises.
+
+        Args:
+            error: The exception the probe raises.
+
+        Returns:
+            The configured connection mock.
+        """
+        conn = MagicMock()
+        conn.fetchrow = AsyncMock(side_effect=error)
+        conn.set_type_codec = AsyncMock()
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_lost_connection_stays_retryable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A backend that disappears mid-registration keeps its retryable type."""
+        init_callback = await self._init_callback(monkeypatch)
+        conn = self._connection_failing_the_extension_probe(
+            asyncpg.exceptions.ConnectionDoesNotExistError('connection was closed'),
+        )
+
+        with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError):
+            await init_callback(conn)
+
+    @pytest.mark.asyncio
+    async def test_timeout_stays_retryable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A command timeout during registration keeps its retryable type."""
+        init_callback = await self._init_callback(monkeypatch)
+        conn = self._connection_failing_the_extension_probe(TimeoutError())
+
+        with pytest.raises(TimeoutError):
+            await init_callback(conn)
+
+    @pytest.mark.asyncio
+    async def test_socket_fault_stays_retryable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A reset socket during registration keeps its retryable type."""
+        init_callback = await self._init_callback(monkeypatch)
+        conn = self._connection_failing_the_extension_probe(
+            ConnectionResetError('connection reset by peer'),
+        )
+
+        with pytest.raises(ConnectionResetError):
+            await init_callback(conn)
+
+    @pytest.mark.asyncio
+    async def test_permanent_fault_is_still_a_configuration_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A genuinely permanent registration fault still reaches exit 78."""
+        from app.errors import ConfigurationError
+
+        init_callback = await self._init_callback(monkeypatch)
+        conn = self._connection_failing_the_extension_probe(RuntimeError('codec table corrupted'))
+
+        with pytest.raises(ConfigurationError, match='RuntimeError: codec table corrupted'):
+            await init_callback(conn)
+
+    @pytest.mark.asyncio
+    async def test_missing_extension_is_still_a_configuration_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A database without the pgvector extension still fails fast at boot."""
+        from app.errors import ConfigurationError
+
+        init_callback = await self._init_callback(monkeypatch)
+        conn = MagicMock()
+        conn.fetchrow = AsyncMock(return_value=None)
+        conn.set_type_codec = AsyncMock()
+
+        with pytest.raises(ConfigurationError, match='pgvector extension is not installed'):
+            await init_callback(conn)
