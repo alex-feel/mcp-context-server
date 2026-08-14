@@ -599,6 +599,62 @@ class EmbeddingRepository(BaseRepository):
             return await _delete_compressed_pg(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(cast(Any, _delete_compressed_pg))
 
+    async def _delete_all_chunks_compressed_bulk(
+        self,
+        context_ids: list[str],
+        txn: 'TransactionContext | None' = None,
+    ) -> int:
+        """Delete compressed chunk rows + embedding_metadata for many contexts on SQLite.
+
+        The bulk counterpart to :meth:`_delete_all_chunks_compressed`, issuing
+        one bounded ``IN (...)`` statement per slice instead of one write round
+        trip per id. Both deletes cover every id in the slice, matching the fp32
+        bulk branch: the callers are delete paths, so the entries (and therefore
+        their ``embedding_metadata`` rows) are going away regardless of whether
+        any compressed payload row survived for them.
+
+        Args:
+            context_ids: The ids whose compressed embedding rows must be removed.
+            txn: Optional transaction context so the cleanup commits with the row
+                delete. When None, each slice runs as its own write.
+
+        Returns:
+            Number of compressed chunk rows deleted.
+        """
+        deleted_total = 0
+        for start in range(0, len(context_ids), _SQLITE_IN_CLAUSE_BATCH):
+            chunk = context_ids[start : start + _SQLITE_IN_CLAUSE_BATCH]
+
+            def _delete_compressed_chunk_sqlite(conn: sqlite3.Connection, ids: list[str] = chunk) -> int:
+                placeholders = ', '.join('?' * len(ids))
+                cursor = conn.execute(
+                    'SELECT COUNT(*) FROM vec_context_embeddings_compressed '
+                    f'WHERE context_id IN ({placeholders})',
+                    ids,
+                )
+                deleted = int(cursor.fetchone()[0])
+                conn.execute(
+                    f'DELETE FROM vec_context_embeddings_compressed WHERE context_id IN ({placeholders})',
+                    ids,
+                )
+                conn.execute(
+                    f'DELETE FROM embedding_metadata WHERE context_id IN ({placeholders})',
+                    ids,
+                )
+                return deleted
+
+            if txn:
+                deleted_total += await self._run_sqlite_txn(
+                    _delete_compressed_chunk_sqlite, cast(sqlite3.Connection, txn.connection),
+                )
+            else:
+                deleted_total += await self.backend.execute_write(_delete_compressed_chunk_sqlite)
+
+        logger.debug(
+            f'Deleted {deleted_total} compressed chunk embeddings for {len(context_ids)} contexts (SQLite bulk)',
+        )
+        return deleted_total
+
     async def delete_all_chunks(
         self,
         context_id: str,
@@ -721,12 +777,19 @@ class EmbeddingRepository(BaseRepository):
         Here each bounded chunk of ids costs ONE executor hop issuing multi-row
         statements, turning O(entries) round trips into O(chunks).
 
-        Only the SQLite fp32 layout actually needs bulk statements: it is the one
-        configuration whose vectors live in the FK-less ``vec_context_embeddings``
-        vec0 virtual table, reachable only through the ``embedding_chunks`` bridge.
-        Every other configuration either cascades automatically or is never reached
-        with an uncapped list, so it delegates to the per-id method rather than
-        carrying a second, unexercised bulk implementation.
+        Both SQLite layouts get a bulk implementation, because both are reachable
+        with an uncapped list. The fp32 layout needs one because its vectors live
+        in the FK-less ``vec_context_embeddings`` vec0 virtual table, reachable
+        only through the ``embedding_chunks`` bridge. The compressed layout needs
+        one because its ``ON DELETE CASCADE`` only fires while
+        ``PRAGMA foreign_keys`` is ON: with ``SQLITE_FOREIGN_KEYS=false`` the
+        delete path's own gate still routes every id here, so a per-id fallback
+        would reinstate exactly the writer monopolization this method removes.
+
+        PostgreSQL delegates to the per-id method: cascade always removes the
+        embedding rows inside the row-delete statement there, so the delete path
+        never calls this at all and a second bulk implementation would be
+        unexercised.
 
         Args:
             context_ids: The ids whose embedding rows must be removed.
@@ -741,11 +804,14 @@ class EmbeddingRepository(BaseRepository):
 
         from app.settings import get_settings
         backend_type = txn.backend_type if txn else self.backend.backend_type
-        if get_settings().compression.enabled or backend_type != 'sqlite':
+        if backend_type != 'sqlite':
             total = 0
             for context_id in context_ids:
                 total += await self.delete_all_chunks(context_id, txn=txn)
             return total
+
+        if get_settings().compression.enabled:
+            return await self._delete_all_chunks_compressed_bulk(context_ids, txn=txn)
 
         deleted_total = 0
         for start in range(0, len(context_ids), _SQLITE_IN_CLAUSE_BATCH):

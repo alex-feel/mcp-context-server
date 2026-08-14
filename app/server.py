@@ -71,6 +71,7 @@ from app.migrations import apply_index_tree_migration
 from app.migrations import apply_jsonb_merge_patch_migration
 from app.migrations import apply_semantic_search_migration
 from app.migrations import apply_summary_migration
+from app.migrations import apply_tag_uniqueness_migration
 from app.migrations import apply_version_migration
 from app.migrations import check_provider_dependencies
 from app.migrations import check_vector_storage_dependencies
@@ -260,6 +261,10 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         # update_context_batch compare-and-set and bumped by the dedup-store UPDATE).
         await apply_content_hash_migration(backend=backend)
         await apply_version_migration(backend=backend)
+        # Repair duplicate tag rows and install the unique index that prevents new
+        # ones. The delete is the only thing that reaches entries already stored with
+        # a repeated label, which every reader would otherwise keep returning twice.
+        await apply_tag_uniqueness_migration(backend=backend)
         # 11) Apply compression migration: REPLACES fp32 vec table with compressed
         # storage when ENABLE_EMBEDDING_COMPRESSION=true; no-op when disabled.
         # Must run before validate_compression_provenance because the validator

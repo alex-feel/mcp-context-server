@@ -25,6 +25,7 @@ from typing import cast
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 from app.types import ImageDict
+from app.types import JsonValue
 
 if TYPE_CHECKING:
     import asyncpg
@@ -32,6 +33,69 @@ if TYPE_CHECKING:
     from app.backends.base import TransactionContext
 
 logger = logging.getLogger(__name__)
+
+
+def encode_image_metadata(metadata: object) -> str | None:
+    """Render a per-image metadata value for the ``image_metadata`` column.
+
+    The gate is ``is not None``, NOT truthiness. Per-image metadata crosses the
+    tool boundary as a JSON-ENCODED STRING, and the empty string is the one
+    valid payload Python considers falsy. Coercing it to SQL NULL would make a
+    deliberately empty value indistinguishable from metadata never supplied,
+    breaking the documented verbatim round trip. Entry-level metadata already
+    gates on ``is not None`` everywhere; this keeps per-image metadata on the
+    same rule.
+
+    Args:
+        metadata: The caller-supplied per-image metadata value, or ``None`` when
+            the caller supplied none.
+
+    Returns:
+        The JSON encoding of ``metadata``, or ``None`` to store SQL NULL.
+    """
+    if metadata is None:
+        return None
+    return json.dumps(metadata)
+
+
+def decode_image_metadata(raw: object, context_id: object) -> tuple[bool, JsonValue]:
+    """Decode a stored ``image_metadata`` payload without ever raising.
+
+    A malformed payload MUST NOT abort the read. SQLite's ``image_metadata``
+    column has TEXT affinity and validates nothing, so a row copied verbatim
+    from a legacy or externally produced database can hold a value that is not
+    JSON at all. An unguarded decode would raise inside the read callable,
+    failing the whole tool call (every id in the batch, or the entire search
+    page) and charging the SQLite backend's failure accounting on every retry,
+    eventually opening the circuit breaker against unrelated operations. The
+    entry-level metadata readers already degrade the identical decode to "no
+    metadata"; this does the same for images.
+
+    The presence flag is returned separately from the value so a stored JSON
+    ``null`` (a legal payload that decodes to ``None``) stays distinguishable
+    from an absent or unreadable one.
+
+    Args:
+        raw: The raw column value (``None`` when the column is SQL NULL).
+        context_id: Identifier of the owning context entry, for the warning log.
+
+    Returns:
+        ``(True, value)`` when the payload decoded, ``(False, None)`` when the
+        column was NULL or the payload was unreadable.
+    """
+    if raw is None:
+        return False, None
+    try:
+        # TypeError joins the ValueError family here because SQLite's TEXT
+        # affinity also hands back int/float for a legacy numeric bind, which
+        # json.loads rejects by type rather than by content.
+        return True, cast(JsonValue, json.loads(cast(Any, raw)))
+    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+        logger.warning(
+            'Skipping unreadable image_metadata for context %s; the stored value is not valid JSON',
+            context_id,
+        )
+        return False, None
 
 
 class ImageRepository(BaseRepository):
@@ -63,7 +127,9 @@ class ImageRepository(BaseRepository):
             context_id: ID of the context entry
             image_data: Binary image data
             mime_type: MIME type of the image
-            metadata: Optional image metadata
+            metadata: Optional image metadata. Only ``None`` means "no metadata";
+                an empty value is stored and read back as supplied
+                (see :func:`encode_image_metadata`).
             position: Position/order of the image
         """
         if self.backend.backend_type == 'sqlite':
@@ -78,7 +144,7 @@ class ImageRepository(BaseRepository):
                 '''
                 cursor.execute(
                     query,
-                    (context_id, image_data, mime_type, json.dumps(metadata) if metadata else None, position),
+                    (context_id, image_data, mime_type, encode_image_metadata(metadata), position),
                 )
 
             await self.backend.execute_write(_store_image_sqlite)
@@ -96,7 +162,7 @@ class ImageRepository(BaseRepository):
                     context_id,
                     image_data,
                     mime_type,
-                    json.dumps(metadata) if metadata else None,
+                    encode_image_metadata(metadata),
                     position,
                 )
 
@@ -112,7 +178,8 @@ class ImageRepository(BaseRepository):
 
         Args:
             context_id: ID of the context entry
-            images: List of image dictionaries containing data, mime_type, and optional metadata
+            images: List of image dictionaries containing data, mime_type, and optional
+                metadata (only an absent or ``None`` metadata value stores SQL NULL)
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
@@ -148,7 +215,7 @@ class ImageRepository(BaseRepository):
                             context_id,
                             image_binary,
                             img.get('mime_type', 'image/png'),
-                            json.dumps(img.get('metadata')) if img.get('metadata') else None,
+                            encode_image_metadata(img.get('metadata')),
                             idx,
                         ),
                     )
@@ -187,7 +254,7 @@ class ImageRepository(BaseRepository):
                         context_id,
                         image_binary,
                         img.get('mime_type', 'image/png'),
-                        json.dumps(img.get('metadata')) if img.get('metadata') else None,
+                        encode_image_metadata(img.get('metadata')),
                         idx,
                     )
                     stored_count += 1
@@ -246,8 +313,9 @@ class ImageRepository(BaseRepository):
                             mime_type=img_row['mime_type'],
                         )
 
-                    if img_row['image_metadata']:
-                        img_data['metadata'] = json.loads(img_row['image_metadata'])
+                    present, metadata_value = decode_image_metadata(img_row['image_metadata'], context_id)
+                    if present:
+                        img_data['metadata'] = metadata_value
                     images.append(img_data)
                 return images
 
@@ -284,8 +352,9 @@ class ImageRepository(BaseRepository):
                         mime_type=img_row['mime_type'],
                     )
 
-                if img_row['image_metadata']:
-                    img_data['metadata'] = json.loads(img_row['image_metadata'])
+                present, metadata_value = decode_image_metadata(img_row['image_metadata'], context_id)
+                if present:
+                    img_data['metadata'] = metadata_value
                 images.append(img_data)
             return images
 
@@ -346,8 +415,9 @@ class ImageRepository(BaseRepository):
                             mime_type=row['mime_type'],
                         )
 
-                    if row['image_metadata']:
-                        img_data['metadata'] = json.loads(row['image_metadata'])
+                    present, metadata_value = decode_image_metadata(row['image_metadata'], ctx_id)
+                    if present:
+                        img_data['metadata'] = metadata_value
                     result[ctx_id].append(img_data)
 
                 for ctx_id in context_ids:
@@ -395,8 +465,9 @@ class ImageRepository(BaseRepository):
                         mime_type=row['mime_type'],
                     )
 
-                if row['image_metadata']:
-                    img_data['metadata'] = json.loads(row['image_metadata'])
+                present, metadata_value = decode_image_metadata(row['image_metadata'], ctx_id)
+                if present:
+                    img_data['metadata'] = metadata_value
                 result[ctx_id].append(img_data)
 
             for ctx_id in context_ids:
@@ -459,7 +530,8 @@ class ImageRepository(BaseRepository):
 
         Args:
             context_id: ID of the context entry
-            images: List of image dictionaries containing data, mime_type, and optional metadata
+            images: List of image dictionaries containing data, mime_type, and optional
+                metadata (only an absent or ``None`` metadata value stores SQL NULL)
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
@@ -501,7 +573,7 @@ class ImageRepository(BaseRepository):
                             context_id,
                             image_binary,
                             img.get('mime_type', 'image/png'),
-                            json.dumps(img.get('metadata')) if img.get('metadata') else None,
+                            encode_image_metadata(img.get('metadata')),
                             idx,
                         ),
                     )
@@ -542,7 +614,7 @@ class ImageRepository(BaseRepository):
                         context_id,
                         image_binary,
                         img.get('mime_type', 'image/png'),
-                        json.dumps(img.get('metadata')) if img.get('metadata') else None,
+                        encode_image_metadata(img.get('metadata')),
                         idx,
                     )
 

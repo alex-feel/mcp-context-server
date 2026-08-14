@@ -6,10 +6,19 @@ tags associated with context entries.
 """
 
 
+from collections.abc import Awaitable
+from collections.abc import Callable
+from typing import Any
+from typing import TypeVar
+from typing import cast
+
 import pytest
 
 from app.backends import StorageBackend
 from app.ids import generate_id
+from app.repositories.tag_repository import TagRepository
+
+T = TypeVar('T')
 
 
 @pytest.mark.asyncio
@@ -345,7 +354,12 @@ class TestTagRepository:
     async def test_store_tags_idempotent_duplicate_tags(
         self, async_db_initialized: StorageBackend,
     ) -> None:
-        """Storing same tags twice appends duplicates (INSERT-only semantics)."""
+        """Storing the same tags twice leaves one row per label.
+
+        Tags are a set: the second call says exactly what the stored rows already say,
+        so it adds nothing. Appending instead would surface the label twice in every
+        reader's response and count it twice in the tag statistics.
+        """
         from app.repositories import RepositoryContainer
 
         backend = async_db_initialized
@@ -362,7 +376,7 @@ class TestTagRepository:
         await repos.tags.store_tags(context_id, ['python', 'testing'])
 
         tags = await repos.tags.get_tags_for_context(context_id)
-        assert len(tags) == 4
+        assert tags == ['python', 'testing']
 
     async def test_tags_shared_across_multiple_contexts(
         self, async_db_initialized: StorageBackend,
@@ -423,3 +437,208 @@ class TestTagRepository:
         assert 'upper' in tags
         assert 'mixed' in tags
         assert 'spaced' in tags
+
+
+@pytest.mark.asyncio
+class TestTagDeduplicationWithinOneWrite:
+    """One write stores each distinct label exactly once.
+
+    Tags are a set of labels: an entry either carries a label or it does not.
+    The stored rows are returned verbatim by ``get_context_by_ids`` and by every
+    search tool, and they are counted by the tag statistics, so a duplicate row
+    is visible in every response and inflates ``top_tags``. Normalization makes
+    this reachable from ordinary input too, because trimming and lower-casing
+    turn distinct wire values (``'Alpha'`` and ``'alpha'``) into one label.
+
+    These assertions compare the RAW list, never a ``set``, since wrapping the
+    actual value in ``set()`` passes whether two rows were stored or five.
+    """
+
+    async def test_store_tags_stores_each_repeated_tag_once(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """A repeated tag in one call produces a single row."""
+        from app.repositories import RepositoryContainer
+
+        repos = RepositoryContainer(async_db_initialized)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='dedup-store-thread',
+            source='user',
+            content_type='text',
+            text_content='Duplicate tags in a single write',
+            metadata=None,
+        )
+
+        await repos.tags.store_tags(context_id, ['alpha', 'beta', 'alpha', 'beta', 'alpha'])
+
+        tags = await repos.tags.get_tags_for_context(context_id)
+        assert tags == ['alpha', 'beta']
+
+    async def test_store_tags_collapses_case_and_whitespace_collisions(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """Values that only differ before normalization collapse to one row."""
+        from app.repositories import RepositoryContainer
+
+        repos = RepositoryContainer(async_db_initialized)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='dedup-case-thread',
+            source='user',
+            content_type='text',
+            text_content='Case-colliding tags',
+            metadata=None,
+        )
+
+        await repos.tags.store_tags(context_id, ['Tag', 'tag', 'TAG', '  tag  '])
+
+        tags = await repos.tags.get_tags_for_context(context_id)
+        assert tags == ['tag']
+
+    async def test_replace_tags_stores_each_repeated_tag_once(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """The update path deduplicates exactly like the store path."""
+        from app.repositories import RepositoryContainer
+
+        repos = RepositoryContainer(async_db_initialized)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='dedup-replace-thread',
+            source='user',
+            content_type='text',
+            text_content='Duplicate tags on replacement',
+            metadata=None,
+        )
+
+        await repos.tags.store_tags(context_id, ['initial'])
+        await repos.tags.replace_tags_for_context(context_id, ['Gamma', 'gamma', 'delta', 'DELTA'])
+
+        tags = await repos.tags.get_tags_for_context(context_id)
+        assert tags == ['delta', 'gamma']
+
+    async def test_batch_reader_also_returns_one_row_per_label(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """The multi-context reader sees the same deduplicated rows."""
+        from app.repositories import RepositoryContainer
+
+        repos = RepositoryContainer(async_db_initialized)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='dedup-batch-thread',
+            source='agent',
+            content_type='text',
+            text_content='Duplicate tags read in batch',
+            metadata=None,
+        )
+        await repos.tags.store_tags(context_id, ['shared', 'SHARED', 'unique'])
+
+        by_context = await repos.tags.get_tags_for_contexts([context_id])
+        assert by_context[context_id] == ['shared', 'unique']
+
+    async def test_normalize_tags_preserves_first_seen_order(self) -> None:
+        """Deduplication keeps the caller's ordering of the surviving labels."""
+        assert TagRepository.normalize_tags(
+            ['Zulu', ' yankee ', 'zulu', 'XRAY', 'yankee'],
+        ) == ['zulu', 'yankee', 'xray']
+
+    async def test_normalize_tags_drops_blank_entries(self) -> None:
+        """Blank and whitespace-only tags never become rows."""
+        assert TagRepository.normalize_tags(['', '   ', '\t\n', 'kept']) == ['kept']
+
+
+class _OrderRecordingConnection:
+    """Async stub recording the SQL text the PostgreSQL tag readers emit."""
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def fetch(self, query: str, *_args: object) -> list[dict[str, object]]:
+        """Record the query and return no rows.
+
+        Args:
+            query: SQL text emitted by the repository.
+            _args: Bound parameters (unused).
+
+        Returns:
+            An empty row list.
+        """
+        self.queries.append(' '.join(query.split()))
+        return []
+
+
+class _OrderRecordingBackend:
+    """Minimal backend stub selecting the PostgreSQL branch of every tag reader."""
+
+    backend_type = 'postgresql'
+
+    def __init__(self) -> None:
+        self.connection = _OrderRecordingConnection()
+
+    async def execute_read(self, operation: Callable[[Any], Awaitable[T]]) -> T:
+        """Run the repository's async closure against the recording connection.
+
+        Args:
+            operation: The async closure the repository passes to the backend.
+
+        Returns:
+            Whatever the closure returns.
+        """
+        return await operation(self.connection)
+
+
+@pytest.mark.asyncio
+class TestTagOrderingIsByteWiseOnBothBackends:
+    """The public ``tags`` array serializes in the same order on both backends.
+
+    ``ORDER BY tag`` alone is deterministic per backend but not ACROSS backends:
+    SQLite compares TEXT byte-wise while PostgreSQL uses the database locale
+    collation, which ranks punctuation differently. The same stored entry then
+    serializes its ``tags`` array differently depending on the backend -- visible
+    to any client that diffs or hashes a response, and reachable through the
+    supported cross-backend migration path. PostgreSQL therefore needs an
+    explicit byte-wise collation on the sort term.
+    """
+
+    async def test_sqlite_orders_tags_byte_wise(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """Punctuation sorts before letters, as raw byte comparison requires."""
+        from app.repositories import RepositoryContainer
+
+        repos = RepositoryContainer(async_db_initialized)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='tag-order-thread',
+            source='user',
+            content_type='text',
+            text_content='Collation-sensitive tags',
+            metadata=None,
+        )
+        await repos.tags.store_tags(context_id, ['ra', 'r-z'])
+
+        # '-' (0x2D) precedes 'a' (0x61), so byte ordering puts 'r-z' first.
+        # A locale collation that ignores punctuation would return the reverse.
+        assert await repos.tags.get_tags_for_context(context_id) == ['r-z', 'ra']
+
+    async def test_postgresql_single_context_reader_forces_byte_collation(self) -> None:
+        """The single-entry reader pins the sort term to byte order."""
+        backend = _OrderRecordingBackend()
+        repo = TagRepository(cast(Any, backend))
+
+        await repo.get_tags_for_context('0190abcdef1234567890abcdef123456')
+
+        assert backend.connection.queries
+        assert 'ORDER BY tag COLLATE "C"' in backend.connection.queries[0]
+
+    async def test_postgresql_batch_reader_forces_byte_collation(self) -> None:
+        """The multi-entry reader pins the same sort term."""
+        backend = _OrderRecordingBackend()
+        repo = TagRepository(cast(Any, backend))
+
+        await repo.get_tags_for_contexts(['0190abcdef1234567890abcdef123456'])
+
+        assert backend.connection.queries
+        assert 'ORDER BY context_entry_id, tag COLLATE "C"' in backend.connection.queries[0]

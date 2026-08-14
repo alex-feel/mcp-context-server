@@ -51,6 +51,7 @@ from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
 from app.migrations.summary import apply_summary_migration
+from app.migrations.tag_uniqueness import apply_tag_uniqueness_migration
 from app.migrations.version import apply_version_migration
 
 __all__ = [
@@ -81,6 +82,7 @@ __all__ = [
     # Content hash
     'apply_content_hash_migration',
     # Version (optimistic concurrency)
+    'apply_tag_uniqueness_migration',
     'apply_version_migration',
     # Compression
     'apply_compression_migration',
