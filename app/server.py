@@ -285,36 +285,48 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         # (DB-truth), not the raw env vars, because the validator may have
         # adopted an inherited row in a multi-pod race scenario.
         if settings.compression.enabled:
-            db_meta = await read_compression_metadata(backend)
-            if db_meta is not None:
-                logger.info(
-                    f'Embedding compression enabled with provider: {db_meta.provider} '
-                    f'(bits={db_meta.bits}, variant={db_meta.variant}, '
-                    f'dim={db_meta.dim}, seed={db_meta.seed}, '
-                    f'max_concurrent={settings.compression.max_concurrent})',
-                )
-            elif not settings.embedding.generation_enabled:
-                # Embedding storage is provisioned from
-                # ENABLE_EMBEDDING_GENERATION; with generation off and nothing
-                # previously compressed, no provenance row exists by design
-                # (the validator skips seeding, and the migration provisions
-                # the schema only when embedding infrastructure exists), so
-                # the absent row is the expected idle state, not an error. A
-                # populated fp32 store cannot reach this branch: the
-                # enable-direction guard exits 78 in the migration first.
-                logger.info(
-                    'Embedding compression enabled but idle: embedding '
-                    'generation is disabled and no compressed data exists',
+            # This read feeds a log line and nothing else: step 14 above already read the
+            # same singleton row for validation and aborts on a genuine provenance
+            # problem. A transient operational fault on a logging-only read (an external
+            # writer holding the database lock past the read retry budget at the moment
+            # the server boots) must therefore not abort startup and take every tool down
+            # with it; announce the failure and continue.
+            try:
+                db_meta = await read_compression_metadata(backend)
+            except Exception as compression_meta_error:
+                logger.warning(
+                    f'Could not read the compression configuration to announce it: {compression_meta_error}',
                 )
             else:
-                # Defensive: validate_compression_provenance ran above and
-                # would have raised ConfigurationError if the singleton row
-                # were missing. Surface the inconsistency loudly rather
-                # than silently.
-                logger.info(
-                    'Embedding compression enabled but provenance row missing '
-                    '(validator should have raised; check startup order)',
-                )
+                if db_meta is not None:
+                    logger.info(
+                        f'Embedding compression enabled with provider: {db_meta.provider} '
+                        f'(bits={db_meta.bits}, variant={db_meta.variant}, '
+                        f'dim={db_meta.dim}, seed={db_meta.seed}, '
+                        f'max_concurrent={settings.compression.max_concurrent})',
+                    )
+                elif not settings.embedding.generation_enabled:
+                    # Embedding storage is provisioned from
+                    # ENABLE_EMBEDDING_GENERATION; with generation off and nothing
+                    # previously compressed, no provenance row exists by design
+                    # (the validator skips seeding, and the migration provisions
+                    # the schema only when embedding infrastructure exists), so
+                    # the absent row is the expected idle state, not an error. A
+                    # populated fp32 store cannot reach this branch: the
+                    # enable-direction guard exits 78 in the migration first.
+                    logger.info(
+                        'Embedding compression enabled but idle: embedding '
+                        'generation is disabled and no compressed data exists',
+                    )
+                else:
+                    # Defensive: validate_compression_provenance ran above and
+                    # would have raised ConfigurationError if the singleton row
+                    # were missing. Surface the inconsistency loudly rather
+                    # than silently.
+                    logger.info(
+                        'Embedding compression enabled but provenance row missing '
+                        '(validator should have raised; check startup order)',
+                    )
         else:
             logger.info('Embedding compression disabled (ENABLE_EMBEDDING_COMPRESSION=false)')
         # 16) Initialize repositories with the backend
@@ -612,12 +624,24 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             # The tool itself checks migration status and returns informative response
             register_tool(mcp, fts_search_context, description=fts_description)
 
-            # Check if FTS is available and log status
-            fts_available = await repos.fts.is_available()
-            if fts_available:
-                logger.info(f'Full-text search enabled and available (backend: {backend.backend_type})')
+            # Report whether the FTS index is already provisioned. The probe is purely
+            # diagnostic -- the tool is registered above either way and checks migration
+            # status itself on every call -- so a transient operational fault here (an
+            # external VACUUM or backup holding the SQLite write lock past the read retry
+            # budget at the moment the server boots) must not abort startup and take every
+            # OTHER tool down with it. is_available() deliberately lets such faults
+            # propagate rather than reporting them as "not migrated", so this call site
+            # absorbs them and treats availability as unknown, mirroring the FTS migration
+            # step's own handling.
+            try:
+                fts_available = await repos.fts.is_available()
+            except Exception as fts_probe_error:
+                logger.warning(f'Could not determine full-text search availability: {fts_probe_error}')
             else:
-                logger.warning('FTS enabled but index may need initialization or migration')
+                if fts_available:
+                    logger.info(f'Full-text search enabled and available (backend: {backend.backend_type})')
+                else:
+                    logger.warning('FTS enabled but index may need initialization or migration')
         else:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('fts_search_context not registered (feature disabled)')

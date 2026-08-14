@@ -104,18 +104,29 @@ class TestFtsGrammarErrorClassification:
     """The grammar-error classifier distinguishes query errors from operational faults."""
 
     def test_grammar_errors_are_recognized(self) -> None:
-        """FTS5 query-grammar messages classify as grammar errors (eligible for degradation)."""
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('fts5: syntax error near "("')) is True
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('no such column: error')) is True
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('unterminated string')) is True
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('malformed MATCH expression')) is True
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('unknown special query: error')) is True
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('expected integer, got "x"')) is True
+        """A rejected MATCH expression classifies as a query error, eligible for degradation.
+
+        These instances carry no result code (they are constructed in Python, as a
+        wrapper or a test does), which exercises the canonical-message fallback: none of
+        them names a database fault, so each is attributed to the query.
+        """
+        for message in (
+            'fts5: syntax error near "("',
+            'no such column: error',
+            'unterminated string',
+            'malformed MATCH expression',
+            'unknown special query: error',
+            'expected integer, got "x"',
+            'fts5: parser stack overflow',
+        ):
+            assert _is_fts5_grammar_error(
+                sqlite3.OperationalError(message), relations_present=True,
+            ) is True, message
 
     def test_operational_faults_are_not_grammar_errors(self) -> None:
         """A locked database or disk fault is NOT a grammar error and must propagate."""
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('database is locked')) is False
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('disk I/O error')) is False
+        assert _is_fts5_grammar_error(sqlite3.OperationalError('database is locked'), relations_present=True) is False
+        assert _is_fts5_grammar_error(sqlite3.OperationalError('disk I/O error'), relations_present=True) is False
 
 
 class TestFtsBooleanMalformedDegradation:

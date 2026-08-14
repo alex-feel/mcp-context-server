@@ -15,6 +15,7 @@ from typing import Literal
 from typing import cast
 
 from app.backends.base import StorageBackend
+from app.backends.sqlite_backend import is_sqlite_locked_error
 from app.errors import ControlFlowError
 from app.metadata_types import pg_bind_reject_reason
 from app.repositories.base import BaseRepository
@@ -108,35 +109,209 @@ def sanitize_sqlite_fts_terms(tokens: list[str], language: str = 'english') -> l
     return terms
 
 
-_FTS5_GRAMMAR_ERROR_FRAGMENTS = (
-    'fts5: syntax error',
-    'unterminated',
-    'no such column',
-    'malformed match expression',
-    'unknown special query',
-    'expected integer',
+# Primary SQLite result codes of the DATABASE-FAULT families: a problem with the database file,
+# its environment, or the permissions guarding it -- never a defect in the query text. Extended
+# result codes (e.g. SQLITE_IOERR_READ = 266) carry the primary code in their low byte, so the
+# comparison masks with 0xFF. The SQLITE_BUSY / SQLITE_LOCKED contention family is deliberately
+# absent here: it has ONE definition, the shared ``is_sqlite_locked_error`` predicate the backend
+# retry loops and the tool layer already classify with, and this module reuses that rather than
+# restating it.
+_SQLITE_FAULT_PRIMARY_CODES = frozenset({
+    sqlite3.SQLITE_PERM,
+    sqlite3.SQLITE_NOMEM,
+    sqlite3.SQLITE_READONLY,
+    sqlite3.SQLITE_INTERRUPT,
+    sqlite3.SQLITE_IOERR,
+    sqlite3.SQLITE_CORRUPT,
+    sqlite3.SQLITE_FULL,
+    sqlite3.SQLITE_CANTOPEN,
+    sqlite3.SQLITE_PROTOCOL,
+    sqlite3.SQLITE_AUTH,
+    sqlite3.SQLITE_NOTADB,
+})
+
+# Canonical sqlite3 messages for the fault families above, consulted ONLY for an exception that
+# carries no ``sqlite_errorcode`` -- an instance constructed in Python by a wrapper or a test.
+# Every exception the sqlite3 module itself raises on Python 3.12+ carries the code, so this is
+# a compatibility fallback, not the primary classifier.
+_SQLITE_FAULT_MESSAGE_FRAGMENTS = (
+    'disk i/o error',
+    'database disk image is malformed',
+    'database or disk is full',
+    'unable to open database file',
+    'attempt to write a readonly database',
+    'file is not a database',
+    'out of memory',
+    'access permission denied',
+    'locking protocol',
+    'authorization denied',
 )
 
+# The relations the FTS search statement reads. A missing relation reports SQLITE_ERROR -- the
+# same primary code FTS5 uses for a MATCH grammar error -- so the code cannot separate the two
+# and the message must not be trusted either: FTS5 echoes client tokens back into its messages,
+# so matching a phrase like 'no such table' against the text lets a crafted query steer its own
+# classification. The catalog is consulted instead (see _fts_relations_present), which is
+# provenance the client cannot influence.
+_FTS_SEARCH_RELATIONS = frozenset({'context_entries', 'context_entries_fts'})
 
-def _is_fts5_grammar_error(exc: sqlite3.OperationalError) -> bool:
-    """Return True if exc is an FTS5 MATCH query-grammar error (not an operational fault).
 
-    Boolean mode forwards the user's raw query to FTS5 MATCH to expose native FTS5 boolean
-    syntax. Malformed input (unbalanced parentheses, a leading/trailing/bare operator, a stray
-    ':' column filter, an unterminated string, a leading '*' that FTS5 reads as an unknown
-    special-query token, or a NEAR() clause whose distance argument is not an integer) makes
-    FTS5 raise one of a small set of grammar errors; those are the only cases the boolean search
-    path degrades to a safe term match. Any other OperationalError (locked database, disk I/O,
-    missing table) is an operational fault and MUST propagate unchanged.
+def _fts_relations_present(conn: sqlite3.Connection) -> bool:
+    """Return True when both relations the FTS search statement reads exist.
+
+    Runs only on the error path, where one catalog lookup is free. A probe that itself
+    fails cannot establish provenance, so it reports "absent", which routes the original
+    error to the database-fault branch -- the conservative reading when the database is
+    demonstrably not answering.
+
+    Args:
+        conn: The connection the failed statement ran on.
+
+    Returns:
+        True when both relations exist and the failure therefore cannot be a missing index.
+    """
+    try:
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name IN (?, ?)",
+            tuple(sorted(_FTS_SEARCH_RELATIONS)),
+        )
+        present = {str(row[0]) for row in cursor.fetchall()}
+    except sqlite3.Error:
+        return False
+    return present >= _FTS_SEARCH_RELATIONS
+
+
+def _is_fts5_grammar_error(exc: sqlite3.OperationalError, *, relations_present: bool) -> bool:
+    """Return True if exc is attributable to the client's MATCH expression, not a database fault.
+
+    The FTS search statement mixes server-authored SQL with exactly ONE client-controlled
+    fragment: the MATCH expression, forwarded verbatim in boolean mode and sanitized in the
+    other modes. Whatever the engine rejects in that fragment is a CLIENT-INPUT failure, and the
+    set of messages FTS5 can produce for it is open-ended -- 'fts5: parser stack overflow' from
+    deeply nested parentheses is one such message. Enumerating the accepted grammar messages
+    therefore misclassifies the ones nobody enumerated: they look like server faults, propagate
+    as hard errors, and charge the process-global circuit breaker, so a client repeating one
+    malformed query opens the breaker and rejects every other caller's reads and writes.
+
+    Classification is inverted for that reason: the DATABASE-FAULT families are the closed set
+    (the SQLITE_BUSY / SQLITE_LOCKED contention family via the shared predicate, the
+    disk / permission / durability result codes, and an un-provisioned FTS index), and everything
+    else raised out of this statement is attributed to the MATCH expression. The caller then
+    degrades a malformed boolean query to the sanitized term match or reports a structured
+    validation error, neither of which charges the breaker.
+
+    Every input to the decision is provenance the client cannot reach: a result code the engine
+    assigns, and the catalog state of the relations the statement reads. No part of the error
+    TEXT participates except as a compatibility fallback for an exception carrying no result
+    code at all, so no wording a client can push through the MATCH expression -- FTS5 echoes
+    client tokens into its messages -- can steer a query error onto the breaker.
 
     Args:
         exc: The OperationalError raised while executing a MATCH query.
+        relations_present: Whether the relations the statement reads exist, from
+            :func:`_fts_relations_present`. False means the FTS index is not provisioned,
+            which is a server-side schema state that must reach the operator.
 
     Returns:
-        True if the error message identifies an FTS5 query-grammar error.
+        True if the error is a client query-grammar failure rather than a database fault.
     """
-    message = str(exc).lower()
-    return any(fragment in message for fragment in _FTS5_GRAMMAR_ERROR_FRAGMENTS)
+    if is_sqlite_locked_error(exc):
+        return False
+    errorcode = getattr(exc, 'sqlite_errorcode', None)
+    if isinstance(errorcode, int):
+        if (errorcode & 0xFF) in _SQLITE_FAULT_PRIMARY_CODES:
+            return False
+    # No result code to classify with (a Python-constructed instance): fall back to the
+    # canonical fault messages.
+    elif any(fragment in str(exc).lower() for fragment in _SQLITE_FAULT_MESSAGE_FRAGMENTS):
+        return False
+    return relations_present
+
+
+# The SQLSTATE classes PostgreSQL reserves for a failure of the DATABASE or its environment
+# rather than of the statement text: 08 connection_exception, 53 insufficient_resources
+# (disk full, out of memory, connection slots exhausted), 57 operator_intervention (admin
+# shutdown, backend termination, statement timeout), 58 system_error (I/O error, missing
+# file). A failure in one of these classes says something about the server's health, which is
+# exactly what the circuit breaker exists to track.
+_PG_FAULT_SQLSTATE_CLASSES = frozenset({'08', '53', '57', '58'})
+
+# Individual SQLSTATEs outside those classes that are still database faults: on-disk
+# corruption, and the provisioning states that mean the schema this server expects is not
+# there (a missing table or text-search configuration, an unreachable schema, a revoked
+# privilege). These mirror the SQLite side's un-provisioned-index branch.
+_PG_FAULT_SQLSTATES = frozenset({
+    'XX001',  # data_corrupted
+    'XX002',  # index_corrupted
+    '42P01',  # undefined_table
+    '42704',  # undefined_object (a missing text search configuration)
+    '42501',  # insufficient_privilege
+    '3D000',  # invalid_catalog_name
+    '3F000',  # invalid_schema_name
+})
+
+
+# The one client-facing detail for a query the search engine could not process, shared by both
+# backends so the same input reports the same thing regardless of which one answers. It replaces
+# the engine's own wording on purpose: that wording is an internal detail, differs between FTS5
+# and PostgreSQL for identical input, and echoes fragments of the query back at the caller.
+_FTS_UNPARSEABLE_QUERY_DETAIL = 'The full-text search engine could not process this query'
+
+
+def _is_postgresql_query_failure(exc: BaseException) -> bool:
+    """Return True if exc is attributable to the client's query text, not a database fault.
+
+    The PostgreSQL counterpart of :func:`_is_fts5_grammar_error`, and it exists for the same
+    reason: the FTS statement's tsquery argument is client-controlled, PostgreSQL can reject it
+    at EXECUTION rather than at parse time (a query of many thousands of terms raises 'invalid
+    memory alloc request size' while building the tsquery), and an unclassified failure charges
+    the process-global PostgreSQL circuit breaker. Ten such calls open it for every caller, which
+    is the same client-triggered denial of service the SQLite path closes -- so the two backends
+    classify the same way rather than diverging on which inputs are survivable.
+
+    The fault set is closed and consists of SQLSTATEs that describe the SERVER's condition; a
+    statement-level rejection describes the STATEMENT, is perfectly reproducible, and says
+    nothing about database health. An exception with no SQLSTATE at all never came from the
+    server (a driver, transport, or cancellation failure) and is treated as a fault so the pool
+    and breaker still see it.
+
+    Args:
+        exc: The exception raised while executing the FTS statement.
+
+    Returns:
+        True if the failure is attributable to the client-supplied query text.
+    """
+    sqlstate = getattr(exc, 'sqlstate', None)
+    if not isinstance(sqlstate, str) or len(sqlstate) != 5:
+        return False
+    if sqlstate in _PG_FAULT_SQLSTATES:
+        return False
+    return sqlstate[:2] not in _PG_FAULT_SQLSTATE_CLASSES
+
+
+def fts_query_validation_errors(query: str) -> list[str] | None:
+    """Return the validation messages for a query the FTS path cannot bind, else None.
+
+    An embedded NUL (U+0000) and an unpaired UTF-16 surrogate both pass JSON and Pydantic
+    validation yet are fatal on the query path: FTS5's MATCH parser reads the bound query
+    as a NUL-terminated C string (truncating a quoted literal into an unterminated-string
+    grammar error that quoting cannot neutralize), and asyncpg rejects any NUL-carrying or
+    non-UTF-8-encodable text bind on PostgreSQL. The shared ``pg_bind_reject_reason`` probe
+    catches both sequences, including the lone surrogate a bare ``\\x00`` scan misses.
+
+    Kept as a standalone predicate so the repository's own guard and any caller that wants
+    to decide the same thing without running a search share one wording and one rule.
+
+    Args:
+        query: The client-supplied search query.
+
+    Returns:
+        The validation messages, or None when the query is bindable on both backends.
+    """
+    reason = pg_bind_reject_reason(query)
+    if reason is None:
+        return None
+    return [f'Query contains {reason}, which full-text search cannot parse']
 
 
 def desired_sqlite_fts_tokenizer(language: str) -> str:
@@ -280,12 +455,9 @@ class FtsRepository(BaseRepository):
         # backends: the tools layer converts it to a clean error response, and its
         # ControlFlowError parentage keeps it out of circuit-breaker failure accounting
         # (an unparseable query can never succeed, so it says nothing about DB health).
-        bind_reason = pg_bind_reject_reason(query)
-        if bind_reason is not None:
-            raise FtsValidationError(
-                'FTS query validation failed',
-                [f'Query contains {bind_reason}, which full-text search cannot parse'],
-            )
+        bind_errors = fts_query_validation_errors(query)
+        if bind_errors is not None:
+            raise FtsValidationError('FTS query validation failed', bind_errors)
 
         if self.backend.backend_type == 'sqlite':
             # Log warning if non-English language is requested with SQLite backend
@@ -552,14 +724,17 @@ class FtsRepository(BaseRepository):
                 cursor = conn.execute(sql_query, params)
                 rows = cursor.fetchall()
             except sqlite3.OperationalError as exc:
-                # Any non-grammar OperationalError (locked DB, disk I/O) is an operational
-                # fault and propagates unchanged for normal error handling. The read-path
-                # backend wrapper charges the breaker for the disk-I/O subset but EXEMPTS the
-                # SQLITE_BUSY/SQLITE_LOCKED contention family (routine self-clearing
+                # An OperationalError from one of the DATABASE-FAULT families (locked DB, disk
+                # I/O, a missing FTS table) propagates unchanged for normal error handling. The
+                # read-path backend wrapper charges the breaker for the disk-I/O subset but
+                # EXEMPTS the SQLITE_BUSY/SQLITE_LOCKED contention family (routine self-clearing
                 # cross-process contention that execute_read retries with bounded backoff on
                 # fresh reader connections, re-raising uncharged only after the retry budget
                 # is exhausted), matching the write path.
-                # Grammar errors are CLIENT-INPUT failures and are handled per mode below.
+                # Everything else is attributed to the one client-controlled fragment of this
+                # statement -- the MATCH expression -- and handled per mode below without ever
+                # reaching the breaker, so no malformed query a client can send (however
+                # unusual the engine's wording for it) can open the breaker on every caller.
                 #
                 # Boolean mode forwards the raw query to FTS5 MATCH so native FTS5 boolean
                 # syntax (AND/OR/NOT, parentheses, quoted phrases) reaches the engine intact
@@ -575,7 +750,7 @@ class FtsRepository(BaseRepository):
                 # never reaches here, while a malformed one returns best-effort results
                 # instead of erroring -- matching PostgreSQL's tolerant contract without
                 # altering the documented native syntax.
-                if not _is_fts5_grammar_error(exc):
+                if not _is_fts5_grammar_error(exc, relations_present=_fts_relations_present(conn)):
                     raise
                 if mode != 'boolean':
                     # The match/prefix/phrase transforms sanitize every token into a
@@ -587,7 +762,7 @@ class FtsRepository(BaseRepository):
                     # client failure out of circuit-breaker failure accounting.
                     raise FtsValidationError(
                         'FTS query validation failed',
-                        ['Query contains characters the full-text search engine cannot parse'],
+                        [_FTS_UNPARSEABLE_QUERY_DETAIL],
                     ) from exc
                 safe_query = self._transform_query_sqlite(query, 'match', language)
                 if not safe_query.strip():
@@ -596,8 +771,21 @@ class FtsRepository(BaseRepository):
                         'searchable terms; 0 rows.',
                     )
                 params = [*filter_params, safe_query, limit, offset]
-                cursor = conn.execute(sql_query, params)
-                rows = cursor.fetchall()
+                try:
+                    cursor = conn.execute(sql_query, params)
+                    rows = cursor.fetchall()
+                except sqlite3.OperationalError as retry_exc:
+                    # The sanitized retry can fail too (an input the transform reduces to
+                    # something FTS5 still rejects). Left bare, that second failure would
+                    # propagate and charge the breaker for the very client input the
+                    # degradation exists to keep off it, so it is classified exactly like
+                    # the first and reported as a client validation error.
+                    if not _is_fts5_grammar_error(retry_exc, relations_present=_fts_relations_present(conn)):
+                        raise
+                    raise FtsValidationError(
+                        'FTS query validation failed',
+                        [_FTS_UNPARSEABLE_QUERY_DETAIL],
+                    ) from retry_exc
 
             results = [dict(row) for row in rows]
 
@@ -859,7 +1047,25 @@ class FtsRepository(BaseRepository):
             # Add transformed query, limit, offset to params
             filter_params.extend([transformed_query, limit, offset])
 
-            rows = await conn.fetch(sql_query, *filter_params)
+            try:
+                rows = await conn.fetch(sql_query, *filter_params)
+            except Exception as exc:
+                # PostgreSQL's tsquery constructors do not raise for malformed input the way
+                # FTS5 does, but they DO fail at execution on an input that is merely too big
+                # (a query of many thousands of terms aborts with 'invalid memory alloc request
+                # size' while the tsquery is assembled). Unclassified, that failure charges the
+                # process-global circuit breaker, so a client repeating one oversized query
+                # rejects every other caller's reads and writes -- the same denial of service
+                # the SQLite path closes, and the same reason both paths classify by provenance
+                # rather than by the engine's wording. A statement-level rejection becomes a
+                # structured, breaker-exempt validation error; a fault of the server or the
+                # connection propagates unchanged.
+                if not _is_postgresql_query_failure(exc):
+                    raise
+                raise FtsValidationError(
+                    'FTS query validation failed',
+                    [_FTS_UNPARSEABLE_QUERY_DETAIL],
+                ) from exc
 
             results = [dict(row) for row in rows]
 
