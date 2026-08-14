@@ -474,13 +474,6 @@ class RerankingSettings(CommonSettings):
         le=2048,
         description='Maximum input length for reranking (default: 512 tokens)',
     )
-    overfetch: int = Field(
-        default=4,
-        alias='RERANKING_OVERFETCH',
-        ge=1,
-        le=20,
-        description='Multiplier for over-fetching results before reranking (default: 4x)',
-    )
     cache_dir: str | None = Field(
         default=None,
         alias='RERANKING_CACHE_DIR',

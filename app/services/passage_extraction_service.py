@@ -44,11 +44,13 @@ class HighlightRegion:
     end: int
 
 
-def parse_highlight_positions(highlighted: str) -> list[HighlightRegion]:
-    """Parse <mark> tags and return positions in original text coordinates.
+def _tag_offset_regions(highlighted: str) -> list[HighlightRegion]:
+    """Map every <mark> pair to original coordinates by cumulative tag offset.
 
-    The highlighted text contains <mark> tags that shift positions. This function
-    tracks cumulative tag offsets to map back to original text positions.
+    Correct exactly when every tag in ``highlighted`` was inserted by the search
+    engine, which holds whenever the source text carries no literal markup of its
+    own -- both SQLite ``highlight()`` and PostgreSQL ``ts_headline()`` return the
+    document verbatim with markers added.
 
     Args:
         highlighted: Text with <mark>term</mark> tags from FTS highlight.
@@ -56,10 +58,6 @@ def parse_highlight_positions(highlighted: str) -> list[HighlightRegion]:
     Returns:
         List of HighlightRegion with start/end positions in ORIGINAL text
         (without tags). Sorted by start position.
-
-    Example:
-        >>> parse_highlight_positions('Hello <mark>world</mark>!')
-        [HighlightRegion(start=6, end=11)]
     """
     regions: list[HighlightRegion] = []
     tag_offset = 0  # Cumulative offset from tags seen so far
@@ -85,6 +83,97 @@ def parse_highlight_positions(highlighted: str) -> list[HighlightRegion]:
         regions.append(HighlightRegion(start=original_start, end=original_end))
 
     return regions
+
+
+def _aligned_regions(highlighted: str, text_content: str) -> list[HighlightRegion] | None:
+    """Map <mark> pairs to original coordinates by aligning against the source text.
+
+    Walks the highlighted string and the original text together. A tag occurrence
+    that the original does NOT also carry at the same point is one the search engine
+    inserted, and only those shift coordinates; a tag the original does carry is
+    ordinary document text and is matched through like any other characters. The
+    engine only ever opens a marker at the first character of a token, so an opening
+    marker can never be confused with a literal '<mark>' in the source.
+
+    Args:
+        highlighted: Text with <mark>term</mark> tags from FTS highlight.
+        text_content: The original document text the highlight was produced from.
+
+    Returns:
+        The highlighted regions in original coordinates, or None when the two
+        strings cannot be reconciled (the highlight does not correspond to this
+        text), in which case no trustworthy positions exist.
+    """
+    regions: list[HighlightRegion] = []
+    open_starts: list[int] = []
+    highlighted_pos = 0
+    original_pos = 0
+    highlighted_len = len(highlighted)
+    original_len = len(text_content)
+
+    while highlighted_pos < highlighted_len:
+        opens_here = highlighted.startswith(MARK_OPEN, highlighted_pos)
+        closes_here = highlighted.startswith(MARK_CLOSE, highlighted_pos)
+        if opens_here and not text_content.startswith(MARK_OPEN, original_pos):
+            open_starts.append(original_pos)
+            highlighted_pos += MARK_OPEN_LEN
+        elif (
+            closes_here
+            and open_starts
+            and not text_content.startswith(MARK_CLOSE, original_pos)
+        ):
+            regions.append(HighlightRegion(start=open_starts.pop(), end=original_pos))
+            highlighted_pos += MARK_CLOSE_LEN
+        elif original_pos < original_len and highlighted[highlighted_pos] == text_content[original_pos]:
+            highlighted_pos += 1
+            original_pos += 1
+        else:
+            return None
+
+    if original_pos != original_len or open_starts:
+        return None
+
+    regions.sort(key=lambda region: (region.start, region.end))
+    return regions
+
+
+def parse_highlight_positions(highlighted: str, text_content: str | None = None) -> list[HighlightRegion]:
+    """Parse <mark> tags and return positions in original text coordinates.
+
+    The highlighted text contains <mark> tags that shift positions, so recovering
+    original coordinates means deciding which tags the search engine inserted.
+    Neither SQLite ``highlight()`` nor PostgreSQL ``ts_headline()`` escapes markup
+    already present in the document, so a literal '<mark>' stored in the text is
+    indistinguishable from an inserted marker by shape alone -- counting every tag
+    as inserted subtracts a phantom offset and shifts every later region, pointing
+    the extracted passage at unrelated text. Passing ``text_content`` resolves that:
+    the two strings are aligned, and only the tags the source does not itself carry
+    are treated as markers.
+
+    Args:
+        highlighted: Text with <mark>term</mark> tags from FTS highlight.
+        text_content: The original document text, when available. Without it the
+            positions can only be derived by assuming every tag was inserted.
+
+    Returns:
+        List of HighlightRegion with start/end positions in ORIGINAL text
+        (without tags). Sorted by start position. Empty when the highlight cannot
+        be reconciled with the supplied text, since no position derived from it
+        would be trustworthy.
+
+    Example:
+        >>> parse_highlight_positions('Hello <mark>world</mark>!')
+        [HighlightRegion(start=6, end=11)]
+    """
+    if text_content is None or (MARK_OPEN not in text_content and MARK_CLOSE not in text_content):
+        # No literal markup in the source: every tag in the highlight was inserted.
+        return _tag_offset_regions(highlighted)
+
+    aligned = _aligned_regions(highlighted, text_content)
+    if aligned is None:
+        logger.debug('Highlight could not be aligned with the source text; no positions derived')
+        return []
+    return aligned
 
 
 def expand_to_boundary(
@@ -240,7 +329,8 @@ def extract_rerank_passage(
 
     Algorithm:
     1. Parse <mark> positions from highlighted text
-    2. Map positions to original text (accounting for tag offsets)
+    2. Map positions to original text (aligning against it, so markup already
+       present in the document is not mistaken for an inserted marker)
     3. Apply window around each match
     4. Expand windows to sentence boundaries (using separators)
     5. Merge overlapping/nearby windows
@@ -278,12 +368,13 @@ def extract_rerank_passage(
         logger.debug('No highlighted text, returning document beginning')
         return strip_tags(text_content[:max_passage_size])
 
-    # Step 1: Parse highlight positions
-    regions = parse_highlight_positions(highlighted)
+    # Step 1: Parse highlight positions against the original text, so a literal
+    # <mark> stored in the document cannot be mistaken for an inserted marker.
+    regions = parse_highlight_positions(highlighted, text_content)
 
     if not regions:
-        # No matches found in highlight, return beginning
-        logger.debug('No <mark> tags found, returning document beginning')
+        # No usable match positions, return beginning
+        logger.debug('No usable <mark> positions, returning document beginning')
         return strip_tags(text_content[:max_passage_size])
 
     logger.debug(f'Found {len(regions)} highlighted regions')

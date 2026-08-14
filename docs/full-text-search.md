@@ -285,11 +285,13 @@ When reranking is enabled (default), FTS results are refined using a cross-encod
 
 ### How FTS Reranking Works
 
-1. **Over-fetching**: FTS retrieves `limit * RERANKING_OVERFETCH` candidates
+1. **Candidate retrieval**: FTS retrieves the full ranked depth of candidates
 2. **Passage Extraction**: For each candidate, a passage around the FTS match is extracted
 3. **Cross-Encoder Scoring**: FlashRank scores query-passage pairs
 4. **Re-ordering**: Results are sorted by cross-encoder score
-5. **Final Selection**: Top `limit` results returned
+5. **Final Selection**: The requested page is cut from that ordering
+
+Every ranked search serves its page from ONE ordering of at most 100 candidates (the ranked depth, which equals the largest page a single request can ask for), so the candidate pool is the same for every page of a query and does not scale with the requested `limit` or `offset`. A page whose window reaches past that depth is served short, and the response says so through the `rank_depth_limit` key.
 
 ### Configuration
 
@@ -298,7 +300,6 @@ When reranking is enabled (default), FTS results are refined using a cross-encod
 | `ENABLE_RERANKING`       | `true`                    | Enable cross-encoder reranking                 |
 | `RERANKING_PROVIDER`     | `flashrank`               | Reranking provider                             |
 | `RERANKING_MODEL`        | `ms-marco-MiniLM-L-12-v2` | Model (~34MB, downloads on startup)            |
-| `RERANKING_OVERFETCH`    | `4`                       | Multiplier for over-fetching before reranking  |
 | `FTS_RERANK_WINDOW_SIZE` | `750`                     | Characters around match for passage extraction |
 | `FTS_RERANK_GAP_MERGE`   | `100`                     | Gap threshold for merging adjacent highlights  |
 
