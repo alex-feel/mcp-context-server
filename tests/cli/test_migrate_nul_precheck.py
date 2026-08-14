@@ -325,6 +325,42 @@ class TestNonFiniteJsonNumbers:
         assert len(stats.errors) == 1
         assert 'row 1' in stats.errors[0]
 
+    def test_discarded_rewrites_are_not_reported_as_rewritten(self) -> None:
+        """Remappings the encoder rejects are not counted as remappings that landed.
+
+        The walker counts each remapping as it mutates the parsed structure, but the
+        re-encode then fails and the ORIGINAL metadata -- still carrying the integer ids
+        -- is what reaches the target. Counting those remappings makes the run summary and
+        the --report JSON claim rewrites the target does not have, contradicting the error
+        the same branch records.
+        """
+        stats = MigrationStats()
+        metadata_json = '{"references": {"context_ids": [1, 2, 3]}, "score": 1e400}'
+        mapping = {1: 'a' * 32, 2: 'b' * 32, 3: 'c' * 32}
+
+        rewritten = rewrite_metadata_references(metadata_json, mapping, stats, 5)
+
+        assert rewritten == metadata_json
+        assert json.loads(rewritten)['references']['context_ids'] == [1, 2, 3]
+        assert stats.references_rewritten == 0
+        assert len(stats.errors) == 1
+        assert 'row 5' in stats.errors[0]
+
+    def test_successful_rewrites_are_still_counted(self) -> None:
+        """The rollback is confined to the discard branch."""
+        stats = MigrationStats()
+        rewritten = rewrite_metadata_references(
+            '{"references": {"context_ids": [1, 2]}, "score": 1e300}',
+            {1: 'a' * 32, 2: 'b' * 32},
+            stats,
+            6,
+        )
+
+        assert rewritten is not None
+        assert json.loads(rewritten)['references']['context_ids'] == ['a' * 32, 'b' * 32]
+        assert stats.references_rewritten == 2
+        assert stats.errors == []
+
     @pytest.mark.parametrize(
         'metadata_json',
         ['{"score": Infinity}', '{"a": NaN}', '{"score": -Infinity}'],

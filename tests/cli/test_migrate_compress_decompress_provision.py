@@ -48,6 +48,21 @@ class _FakeProbeConn:
         self.has_rows = has_rows
         self.closed = False
         self.queries: list[str] = []
+        self.statements: list[str] = []
+
+    async def execute(self, sql: str, *args: object) -> str:
+        """Record the session-parameter statements applied right after the dial.
+
+        Args:
+            sql: The statement issued on the freshly opened connection.
+            args: Unused bind parameters.
+
+        Returns:
+            The asyncpg-style command tag.
+        """
+        del args
+        self.statements.append(sql)
+        return 'SET'
 
     async def fetchval(self, sql: str, *args: object) -> object:
         """Answer the source-presence and existence probes; record the SQL.
@@ -90,7 +105,8 @@ class _ConnectRecorder:
         Args:
             dsn: The connection string passed by the probe.
             kwargs: The connect kwargs (``timeout`` plus the shared
-                :func:`build_asyncpg_connect_kwargs` mapping).
+                :func:`build_asyncpg_connect_kwargs` mapping, which carries no
+                startup parameters).
 
         Returns:
             The configured :class:`_FakeProbeConn`.
@@ -152,8 +168,10 @@ async def test_decompress_needs_vector_false_when_no_compressed_rows(
     assert any('to_regclass' in q for q in conn.queries)
     assert any('EXISTS' in q for q in conn.queries)
     assert conn.closed is True
-    # The throwaway connection reuses the shared search_path kwargs.
-    assert 'server_settings' in recorder.kwargs
+    # The throwaway connection configures its own session parameters, exactly as the
+    # server pool does through its setup callback -- without them the bare-name probes
+    # would resolve through the server's default search_path.
+    assert any('SET search_path' in statement for statement in conn.statements)
     assert recorder.dsn == 'postgresql://u:p@h:5432/db'
 
 
