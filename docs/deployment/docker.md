@@ -519,7 +519,7 @@ POSTGRESQL_DATABASE=postgres
 POSTGRESQL_SSL_MODE=require
 ```
 
-See the [Supabase section in README.md](../../README.md#using-with-supabase) for detailed connection setup.
+See the [Using with Supabase section in the Database Backends Guide](../database-backends.md#using-with-supabase) for detailed connection setup.
 
 ### Optional .env for Ollama Configurations
 
