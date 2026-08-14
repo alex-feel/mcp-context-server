@@ -21,6 +21,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+from collections.abc import AsyncIterator
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -277,6 +278,70 @@ class MCPServerIntegrationTest:
 
         # Should not reach here with current FastMCP, but return error for safety
         return {'success': False, 'error': 'Unable to extract content from result'}
+
+    @contextlib.asynccontextmanager
+    async def _second_server(self, extra_env: dict[str, str]) -> AsyncIterator[Client[Any]]:
+        """Run a SECOND server subprocess carrying extra environment overrides.
+
+        Some behavior is decided once, at server startup -- a feature toggle, a pool
+        timeout, the indexed-metadata configuration -- so it cannot be exercised against
+        the long-lived server ``connect_client`` connected to. The overrides are applied
+        on top of that same environment, and backend routing matches the harness's own:
+        PostgreSQL reuses the shared test database, while SQLite gets an isolated
+        temporary file so the second server never contends with the primary client's
+        database.
+
+        ``PythonStdioTransport(env=...)`` passes the dict explicitly on both backends,
+        because the MCP SDK env whitelist used by ``Client(str(...))`` strips
+        app-specific variables.
+
+        Args:
+            extra_env: Environment overrides applied last, so they win over the
+                harness defaults.
+
+        Yields:
+            A connected client for the second server.
+        """
+        wrapper_script = Path(__file__).parent.parent / 'run_server.py'
+        server_env: dict[str, str] = {
+            **os.environ,
+            'MCP_TEST_MODE': '1',
+            'DISABLED_TOOLS': '',
+            'ENABLE_SEMANTIC_SEARCH': 'true',
+            'ENABLE_FTS': 'true',
+            'ENABLE_HYBRID_SEARCH': 'true',
+            'ENABLE_EMBEDDING_COMPRESSION': 'false',
+            'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
+            'SUMMARY_ANTHROPIC_EFFORT': 'low',
+        }
+        second_db_path: Path | None = None
+        if self.backend == 'postgresql':
+            server_env['STORAGE_BACKEND'] = 'postgresql'
+            server_env['POSTGRESQL_CONNECTION_STRING'] = self.pg_url or ''
+        else:
+            server_env['STORAGE_BACKEND'] = 'sqlite'
+            second_db_dir = tempfile.mkdtemp(prefix='mcp_harness_second_')
+            second_db_path = Path(second_db_dir) / 'second_server.db'
+            server_env['DB_PATH'] = str(second_db_path)
+        server_env.update(extra_env)
+
+        transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
+        second_client: Client[Any] = Client(transport)
+        try:
+            await second_client.__aenter__()
+            await second_client.ping()
+            yield second_client
+        finally:
+            with contextlib.suppress(Exception):
+                await second_client.__aexit__(None, None, None)
+            if second_db_path is not None:
+                for suffix in ('-wal', '-shm', ''):
+                    candidate = AsyncPath(str(second_db_path) + suffix)
+                    with contextlib.suppress(Exception):
+                        if await candidate.exists():
+                            await candidate.unlink()
+                with contextlib.suppress(Exception):
+                    await AsyncPath(second_db_path.parent).rmdir()
 
     async def test_store_context(self) -> bool:
         """Test storing text and multimodal context.
@@ -13135,6 +13200,1078 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_transactional_write_moves_total_queries(self) -> bool:
+        """A committed transactional write is counted in ``connection_metrics.total_queries``.
+
+        ``total_queries`` and ``failed_queries`` are published side by side, so an
+        operator (or an alert rule) reads them as ONE population and computes a failure
+        rate from the pair. The store, update and delete write paths run entirely inside
+        ``begin_transaction``, whose failure arm charged ``failed_queries`` while its
+        success arm counted nothing: a run of deletes moved ``total_queries`` by zero on
+        both backends, so every transactional write was missing from the denominator.
+        The commit now counts one completed operation on both backends.
+
+        The probe is a delete by ids, which performs exactly ONE counted operation (its
+        transaction) and no other counted read, so the delta isolates the commit.
+        ``get_statistics`` itself issues a fixed number of counted reads per call, and
+        the back-to-back baseline measures exactly that, so the assertion is
+        "a write costs strictly more than an idle interval".
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'transactional_write_moves_total_queries'
+        assert self.client is not None
+        thread = f'{self.test_thread_id}_query_counter'
+
+        async def _total_queries() -> int | None:
+            """Read connection_metrics.total_queries, or None when it is unreadable."""
+            assert self.client is not None
+            stats = self._extract_content(await self.client.call_tool('get_statistics', {}))
+            metrics = stats.get('connection_metrics')
+            if not isinstance(metrics, dict):
+                return None
+            value = metrics.get('total_queries')
+            if not isinstance(value, int) or isinstance(value, bool):
+                return None
+            return value
+
+        try:
+            stored = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Entry deleted while measuring the completed-operation counter',
+            }))
+            if not stored.get('success'):
+                self.test_results.append((test_name, False, f'Store failed: {stored}'))
+                return False
+            entry_id = str(stored['context_id'])
+
+            # Warm whatever a first statistics call initializes, so the baseline below
+            # measures a steady-state call rather than a one-off.
+            await self.client.call_tool('get_statistics', {})
+            first = await _total_queries()
+            second = await _total_queries()
+            third = await _total_queries()
+            if first is None or second is None or third is None:
+                self.test_results.append((test_name, False, 'connection_metrics.total_queries is not an integer'))
+                return False
+            baseline = max(second - first, third - second)
+
+            deleted = self._extract_content(await self.client.call_tool('delete_context', {
+                'context_ids': [entry_id],
+            }))
+            if not deleted.get('success') or deleted.get('deleted_count') != 1:
+                self.test_results.append((test_name, False, f'Delete failed: {deleted}'))
+                return False
+            after_delete = await _total_queries()
+            if after_delete is None:
+                self.test_results.append((test_name, False, 'connection_metrics.total_queries is not an integer'))
+                return False
+            delete_delta = after_delete - third
+            if delete_delta <= baseline:
+                self.test_results.append((
+                    test_name, False,
+                    (
+                        f'A committed delete transaction moved total_queries by '
+                        f'{delete_delta - baseline} beyond the {baseline}-query idle baseline'
+                    ),
+                ))
+                return False
+
+            stored_again = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Entry stored while measuring the completed-operation counter',
+            }))
+            if not stored_again.get('success'):
+                self.test_results.append((test_name, False, f'Second store failed: {stored_again}'))
+                return False
+            after_store = await _total_queries()
+            if after_store is None:
+                self.test_results.append((test_name, False, 'connection_metrics.total_queries is not an integer'))
+                return False
+            store_delta = after_store - after_delete
+            if store_delta <= baseline:
+                self.test_results.append((
+                    test_name, False,
+                    (
+                        f'A committed store moved total_queries by {store_delta - baseline} '
+                        f'beyond the {baseline}-query idle baseline'
+                    ),
+                ))
+                return False
+
+            self.test_results.append((
+                test_name, True,
+                (
+                    f'Delete and store moved total_queries by {delete_delta} and {store_delta} '
+                    f'against a {baseline}-query idle baseline'
+                ),
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_idle_writer_recycle_is_invisible_to_callers(self) -> bool:
+        """Recycling the idle SQLite writer neither fails a call nor charges the breaker.
+
+        SQLite keeps ONE writer connection for the whole process, and the health-check
+        loop now closes it once it has been idle past ``POOL_IDLE_TIMEOUT_S`` so an idle
+        server stops pinning the database file and its -wal/-shm siblings; the next write
+        recreates it lazily. Closing a connection a caller might still hold is the risk
+        that behavior introduces, and it would surface as a failed call, a charged
+        ``failed_queries``, or a circuit state no longer HEALTHY. A second server with a
+        one-second idle timeout and health-check interval makes the recycle happen inside
+        a test-sized window: write, idle past the recycle, write again, burst once more,
+        then assert every call succeeded, every entry is retrievable, and the failure
+        counters never moved.
+
+        Both settings are SQLite-only; on PostgreSQL, whose pool manages its own
+        connections, the same traffic is a plain idle-durability check.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'idle_writer_recycle_is_invisible_to_callers'
+        thread = f'{self.test_thread_id}_writer_recycle'
+        # The recycle needs BOTH a one-second idle writer and a health-check tick to
+        # observe it. The pool clamps its health-check cadence to five seconds whenever
+        # it detects a test environment, whatever the interval setting asks for, so the
+        # idle window below is sized to contain one tick with margin rather than to the
+        # configured interval.
+        recycle_env = {'POOL_IDLE_TIMEOUT_S': '1', 'POOL_HEALTH_CHECK_INTERVAL_S': '1'}
+        idle_window_s = 7.0
+        try:
+            async with self._second_server(recycle_env) as client:
+
+                async def _failure_metrics(active_client: Client[Any]) -> tuple[int, str] | None:
+                    """Read (failed_queries, circuit_state), or None when unreadable."""
+                    stats = self._extract_content(await active_client.call_tool('get_statistics', {}))
+                    metrics = stats.get('connection_metrics')
+                    if not isinstance(metrics, dict):
+                        return None
+                    failed = metrics.get('failed_queries')
+                    if not isinstance(failed, int) or isinstance(failed, bool):
+                        return None
+                    return failed, str(metrics.get('circuit_state'))
+
+                stored_ids: list[str] = []
+                before: tuple[int, str] | None = None
+                for index, idle in enumerate((0.0, idle_window_s, 0.0)):
+                    if idle:
+                        await asyncio.sleep(idle)
+                    store = self._extract_content(await asyncio.wait_for(
+                        client.call_tool('store_context', {
+                            'thread_id': thread, 'source': 'agent',
+                            'text': f'writer-recycle entry {index}',
+                        }),
+                        timeout=180.0,
+                    ))
+                    if not store.get('success'):
+                        self.test_results.append((test_name, False, f'Store {index} failed: {store}'))
+                        return False
+                    stored_ids.append(str(store['context_id']))
+                    if index == 0:
+                        before = await _failure_metrics(client)
+
+                after = await _failure_metrics(client)
+                if before is None or after is None:
+                    self.test_results.append((test_name, False, 'connection_metrics did not expose the failure counters'))
+                    return False
+                if after[0] != before[0]:
+                    self.test_results.append((
+                        test_name, False,
+                        f'failed_queries moved from {before[0]} to {after[0]} across the idle window',
+                    ))
+                    return False
+                if after[1] != 'healthy':
+                    self.test_results.append((
+                        test_name, False, f'circuit_state is {after[1]!r} after the idle window, expected healthy',
+                    ))
+                    return False
+
+                got = self._extract_content(await client.call_tool('get_context_by_ids', {'context_ids': stored_ids}))
+                returned = {str(row.get('id')) for row in got.get('results', [])}
+                if returned != set(stored_ids):
+                    self.test_results.append((
+                        test_name, False, f'Retrieved {sorted(returned)} but stored {sorted(stored_ids)}',
+                    ))
+                    return False
+
+            self.test_results.append((
+                test_name, True, 'Writes across an idle recycle window all succeeded with no failure charge',
+            ))
+            return True
+        except TimeoutError:
+            self.test_results.append((test_name, False, 'A write never returned after the idle window'))
+            return False
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def _ranked_search_legs(self, thread: str, query: str) -> list[tuple[str, dict[str, Any]]]:
+        """Build the call arguments for every ranked search tool currently available.
+
+        Args:
+            thread: Thread the ranked query is scoped to.
+            query: Free-text query passed to each tool.
+
+        Returns:
+            A (tool_name, arguments) pair per available ranked tool; empty when none is.
+        """
+        assert self.client is not None
+        tool_names = {t.name for t in await self.client.list_tools()}
+        stats_data = self._extract_content(await self.client.call_tool('get_statistics', {}))
+        fts_info = stats_data.get('fts', {})
+        fts_ok = bool(fts_info.get('enabled')) and bool(fts_info.get('available'))
+        semantic_ok = bool(stats_data.get('semantic_search', {}).get('available'))
+
+        legs: list[tuple[str, dict[str, Any]]] = []
+        if fts_ok and 'fts_search_context' in tool_names:
+            legs.append(('fts_search_context', {'query': query, 'mode': 'match', 'thread_id': thread}))
+        if semantic_ok and 'semantic_search_context' in tool_names:
+            legs.append(('semantic_search_context', {'query': query, 'thread_id': thread}))
+        if (fts_ok or semantic_ok) and 'hybrid_search_context' in tool_names:
+            legs.append(('hybrid_search_context', {'query': query, 'thread_id': thread}))
+        return legs
+
+    async def test_ranked_pagination_union_matches_single_page(self) -> bool:
+        """Paging a ranked result set yields exactly the rows the single call yields.
+
+        Semantic, FTS and hybrid search decide their FINAL order after the database
+        returns rows -- cross-encoder reranking, RRF fusion, or both -- so sizing the
+        candidate window from the requested page built page N and page N+1 from
+        DIFFERENT candidate pools: a document that only entered the larger pool could
+        outrank rows already served, pushing them onto a later page a second time while
+        other rows were never returned by any page. The candidate depth is now fixed and
+        page-independent, so one query has ONE ordering and limit/offset merely select a
+        window inside it.
+
+        The assertion is the union property that guarantees: four two-row pages
+        concatenated must equal the first eight rows of a single eight-row call, in the
+        same order and with no id repeated. The corpus is deliberately larger than the
+        window so the pool sizes under the old scheme would have differed.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'ranked_pagination_union_matches_single_page'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_rank_pages'
+            corpus_size = 25
+            entries = [
+                {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': (
+                        f'Ranked pagination corpus document {index:02d} discussing paginated '
+                        f'retrieval windows, ordering stability and page offsets'
+                    ),
+                }
+                for index in range(corpus_size)
+            ]
+            batch = self._extract_content(await self.client.call_tool('store_context_batch', {
+                'entries': entries, 'atomic': True,
+            }))
+            if batch.get('succeeded') != corpus_size:
+                self.test_results.append((test_name, False, f'Corpus store failed: {batch}'))
+                return False
+
+            legs = await self._ranked_search_legs(thread, 'paginated retrieval windows')
+            if not legs:
+                self.test_results.append((test_name, True, 'Skipped (no ranked search tool available)'))
+                return True
+
+            page_size = 2
+            window = 8
+            for tool, args in legs:
+                single = self._extract_content(
+                    await self.client.call_tool(tool, {**args, 'limit': window, 'offset': 0}),
+                )
+                single_ids = [str(row.get('id')) for row in single.get('results', [])]
+                if len(single_ids) != window:
+                    self.test_results.append((
+                        test_name, False, f'{tool} returned {len(single_ids)} rows for a {window}-row page',
+                    ))
+                    return False
+
+                paged_ids: list[str] = []
+                for offset in range(0, window, page_size):
+                    page = self._extract_content(
+                        await self.client.call_tool(tool, {**args, 'limit': page_size, 'offset': offset}),
+                    )
+                    rows = page.get('results', [])
+                    if len(rows) != page_size:
+                        self.test_results.append((
+                            test_name, False,
+                            f'{tool} page at offset {offset} returned {len(rows)} rows, expected {page_size}',
+                        ))
+                        return False
+                    paged_ids.extend(str(row.get('id')) for row in rows)
+
+                if len(set(paged_ids)) != len(paged_ids):
+                    self.test_results.append((
+                        test_name, False, f'{tool} returned the same id on two pages: {paged_ids}',
+                    ))
+                    return False
+                if paged_ids != single_ids:
+                    self.test_results.append((
+                        test_name, False,
+                        f'{tool} paged ids {paged_ids} differ from the single-call ids {single_ids}',
+                    ))
+                    return False
+
+            self.test_results.append((
+                test_name, True,
+                f'Paged and unpaged ids agree across {len(legs)} ranked tool(s) over {corpus_size} documents',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_indexed_metadata_container_length_parity(self) -> bool:
+        """A container under an indexed metadata field is capped by its INDEXED width.
+
+        PostgreSQL's ``->>`` renders a list or object as its whole serialized JSON, and
+        that text is what ``idx_metadata_<field>`` stores -- under a btree index-tuple
+        ceiling. A cap that inspected only string values let an oversized container reach
+        the INSERT, which PostgreSQL aborted inside the store transaction (after a full
+        generation pass, charging the circuit breaker) while SQLite stored it happily. The
+        write boundary now measures the text the index would hold, so both backends refuse
+        the same value up front -- and a small container still stores, so the cap did not
+        become a blanket ban on containers.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'indexed_metadata_container_length_parity'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_indexed_container'
+            oversized = ['x' * 100] * 40
+
+            refused = False
+            try:
+                response = self._extract_content(await self.client.call_tool('store_context', {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': 'Oversized container under an indexed metadata field',
+                    'metadata': {'project': oversized},
+                }))
+            except Exception:
+                refused = True
+            else:
+                refused = response.get('success') is not True
+            if not refused:
+                self.test_results.append((
+                    test_name, False, 'An oversized container under an indexed field was accepted',
+                ))
+                return False
+
+            stored = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Small container under an indexed metadata field',
+                'metadata': {'project': ['alpha', 'beta']},
+            }))
+            if not stored.get('success'):
+                self.test_results.append((
+                    test_name, False, f'A small container under an indexed field was refused: {stored}',
+                ))
+                return False
+
+            self.test_results.append((
+                test_name, True, 'Indexed metadata containers are capped by their indexed width on both backends',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_ranked_depth_limit_hint(self) -> bool:
+        """A ranked page reaching past the fixed depth is reported, not silently empty.
+
+        Ranked search serves every page from one ordering at most 100 rows deep (the
+        depth the tool documentation advertises), so a window past that depth comes back
+        short -- empty when the offset alone is past it. Without the hint a client cannot
+        tell that from an exhausted result set and pages forever. The hint therefore
+        appears exactly when ``offset + limit`` exceeds the depth, echoing the window it
+        describes, and is ABSENT for an ordinary page.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'ranked_depth_limit_hint'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_rank_depth'
+            entries = [
+                {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': f'Depth hint probe document {index} about paginated ranking depth',
+                }
+                for index in range(3)
+            ]
+            batch = self._extract_content(await self.client.call_tool('store_context_batch', {
+                'entries': entries, 'atomic': True,
+            }))
+            if batch.get('succeeded') != len(entries):
+                self.test_results.append((test_name, False, f'Probe store failed: {batch}'))
+                return False
+
+            legs = await self._ranked_search_legs(thread, 'paginated ranking depth')
+            if not legs:
+                self.test_results.append((test_name, True, 'Skipped (no ranked search tool available)'))
+                return True
+
+            expected_hint = {'requested_offset': 99, 'requested_limit': 5, 'rank_depth': 100}
+            for tool, args in legs:
+                deep = self._extract_content(
+                    await self.client.call_tool(tool, {**args, 'limit': 5, 'offset': 99}),
+                )
+                if deep.get('rank_depth_limit') != expected_hint:
+                    self.test_results.append((
+                        test_name, False,
+                        f'{tool} reported rank_depth_limit {deep.get("rank_depth_limit")!r}, expected {expected_hint}',
+                    ))
+                    return False
+                if deep.get('results'):
+                    self.test_results.append((
+                        test_name, False, f'{tool} returned rows for a window past the ranked depth: {deep}',
+                    ))
+                    return False
+
+                ordinary = self._extract_content(
+                    await self.client.call_tool(tool, {**args, 'limit': 5, 'offset': 0}),
+                )
+                if 'rank_depth_limit' in ordinary:
+                    self.test_results.append((
+                        test_name, False, f'{tool} reported rank_depth_limit for an ordinary page: {ordinary}',
+                    ))
+                    return False
+
+                # A window that STARTS at the depth is empty by arithmetic alone, so the
+                # tool answers it without retrieving or scoring anything -- and must still
+                # report the same shape rather than an error or a bare empty page.
+                past = self._extract_content(
+                    await self.client.call_tool(tool, {**args, 'limit': 10, 'offset': 100}),
+                )
+                if past.get('rank_depth_limit') != {
+                    'requested_offset': 100, 'requested_limit': 10, 'rank_depth': 100,
+                } or past.get('results') or past.get('count') != 0:
+                    self.test_results.append((
+                        test_name, False, f'{tool} mis-reported a page starting past the ranked depth: {past}',
+                    ))
+                    return False
+
+            self.test_results.append((
+                test_name, True, f'rank_depth_limit reported only past the ranked depth on {len(legs)} tool(s)',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_delete_context_rejects_both_selectors(self) -> bool:
+        """delete_context refuses a request naming BOTH context_ids and thread_id.
+
+        The two parameters are documented as mutually exclusive and the dispatch is
+        if/elif, so a request carrying both used to delete only the listed ids while the
+        response read as full success -- a partially executed irreversible delete the
+        caller had no way to detect, with the rest of the named thread quietly surviving.
+        The combination is now refused outright, and nothing is deleted.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'delete_context_rejects_both_selectors'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_delete_exclusive'
+            stored_ids: list[str] = []
+            for index in range(2):
+                stored = self._extract_content(await self.client.call_tool('store_context', {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': f'Entry {index} that must survive a refused delete',
+                }))
+                if not stored.get('success'):
+                    self.test_results.append((test_name, False, f'Store {index} failed: {stored}'))
+                    return False
+                stored_ids.append(str(stored['context_id']))
+
+            refused = False
+            try:
+                response = self._extract_content(await self.client.call_tool('delete_context', {
+                    'context_ids': [stored_ids[0]], 'thread_id': thread,
+                }))
+            except Exception:
+                refused = True
+            else:
+                refused = response.get('success') is not True
+            if not refused:
+                self.test_results.append((
+                    test_name, False, 'delete_context accepted both context_ids and thread_id',
+                ))
+                return False
+
+            got = self._extract_content(await self.client.call_tool('get_context_by_ids', {
+                'context_ids': stored_ids,
+            }))
+            survivors = {str(row.get('id')) for row in got.get('results', [])}
+            if survivors != set(stored_ids):
+                self.test_results.append((
+                    test_name, False,
+                    f'A refused delete still removed entries: {sorted(set(stored_ids) - survivors)}',
+                ))
+                return False
+
+            self.test_results.append((
+                test_name, True, 'Both selectors together are refused and every entry survives',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_typed_indexed_metadata_cast_parity(self) -> bool:
+        """A typed indexed metadata field accepts and rejects identically on both backends.
+
+        A ``METADATA_INDEXED_FIELDS`` entry carrying an ``integer`` type hint becomes a
+        hard SQL cast inside the PostgreSQL expression index, which PostgreSQL evaluates
+        on every INSERT. A non-numeric value therefore aborted the write with a raw
+        driver error -- after a full generation pass, inside the transaction, charging the
+        circuit breaker -- while SQLite's uncast ``json_extract`` index stored the same
+        value happily. The write boundary now rejects it up front on both backends, and a
+        castable value still stores, which on PostgreSQL also proves the real expression
+        index accepts it.
+
+        The field must exist in the server's configuration at startup, so this runs
+        against a second server whose ``METADATA_INDEXED_FIELDS`` declares it.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'typed_indexed_metadata_cast_parity'
+        field = 'castprobe'
+        try:
+            async with self._second_server({'METADATA_INDEXED_FIELDS': f'{field}:integer'}) as client:
+                thread = f'{self.test_thread_id}_typed_metadata'
+
+                async def _refused(tool: str, args: dict[str, Any]) -> bool:
+                    """Report whether a call was refused, by raised error or unsuccessful response."""
+                    try:
+                        data = self._extract_content(await client.call_tool(tool, args))
+                    except Exception:
+                        return True
+                    return data.get('success') is not True
+
+                if not await _refused('store_context', {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': 'Store carrying a non-numeric value under an integer-indexed field',
+                    'metadata': {field: 'not-a-number'},
+                }):
+                    self.test_results.append((
+                        test_name, False, f'A non-numeric {field} value was accepted on {self.backend}',
+                    ))
+                    return False
+
+                stored = self._extract_content(await client.call_tool('store_context', {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': 'Store carrying a castable value under an integer-indexed field',
+                    'metadata': {field: 42},
+                }))
+                if not stored.get('success'):
+                    self.test_results.append((test_name, False, f'A castable {field} value was refused: {stored}'))
+                    return False
+                entry_id = str(stored['context_id'])
+
+                got = self._extract_content(await client.call_tool('get_context_by_ids', {'context_ids': [entry_id]}))
+                rows = got.get('results', [])
+                if len(rows) != 1 or rows[0].get('metadata', {}).get(field) != 42:
+                    self.test_results.append((test_name, False, f'The castable value did not round-trip: {got}'))
+                    return False
+
+                if not await _refused('update_context', {
+                    'context_id': entry_id, 'metadata_patch': {field: 'still-not-a-number'},
+                }):
+                    self.test_results.append((
+                        test_name, False, f'A non-numeric {field} patch was accepted on {self.backend}',
+                    ))
+                    return False
+
+                batch = self._extract_content(await client.call_tool('store_context_batch', {
+                    'entries': [
+                        {'thread_id': thread, 'source': 'agent', 'text': 'batch entry with a castable value',
+                         'metadata': {field: 7}},
+                        {'thread_id': thread, 'source': 'agent', 'text': 'batch entry with a non-numeric value',
+                         'metadata': {field: 'nope'}},
+                    ],
+                    'atomic': False,
+                }))
+                batch_errors = [str(r.get('error', '')) for r in batch.get('results', []) if not r.get('success')]
+                if batch.get('succeeded') != 1 or batch.get('failed') != 1:
+                    self.test_results.append((
+                        test_name, False,
+                        f'store_context_batch reported {batch.get("succeeded")} succeeded / {batch.get("failed")} failed',
+                    ))
+                    return False
+                if not any('indexed as integer' in message for message in batch_errors):
+                    self.test_results.append((
+                        test_name, False, f'The batch rejection lacks the index-type reason: {batch_errors}',
+                    ))
+                    return False
+
+            self.test_results.append((
+                test_name, True, f'A {field}:integer field accepts and rejects identically on {self.backend}',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_collation_ordering_parity(self) -> bool:
+        """Ordered text comes back byte-ordered on BOTH backends, not locale-ordered.
+
+        SQLite compares TEXT with its BINARY (byte) collation while PostgreSQL uses the
+        database locale, which ranks punctuation and case differently, so byte-identical
+        data serialized in a DIFFERENT order on the two backends: an entry's public
+        ``tags`` array, and the tiebreak deciding which rows survive the statistics
+        LIMIT. Every observable ordering site now renders an explicit byte-wise
+        collation, so two expectations hold on both backends:
+
+        * an entry's tags come back byte-ordered ('t-z' before 'ta', because '-' sorts
+          below 'a' by byte while the locale ranks it after), identically from
+          get_context_by_ids and from every search tool;
+        * inside the statistics top-N lists, rows sharing a count are byte-ordered --
+          asserted over deliberately collation-sensitive tags seeded at a count that
+          places them inside the top_tags window, and over whatever else the window
+          holds.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'collation_ordering_parity'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_collation'
+            entry_tags = ['ta', 'tb', 't-z']
+            expected_tags = sorted(entry_tags)
+            stored = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Collation ordering probe entry mentioning ferroniobium alloys',
+                'tags': entry_tags,
+            }))
+            if not stored.get('success'):
+                self.test_results.append((test_name, False, f'Store failed: {stored}'))
+                return False
+            entry_id = str(stored['context_id'])
+
+            got = self._extract_content(await self.client.call_tool('get_context_by_ids', {'context_ids': [entry_id]}))
+            rows = got.get('results', [])
+            if len(rows) != 1 or rows[0].get('tags') != expected_tags:
+                self.test_results.append((
+                    test_name, False,
+                    f'get_context_by_ids returned tags {rows[0].get("tags") if rows else None}, expected {expected_tags}',
+                ))
+                return False
+
+            legs: list[tuple[str, dict[str, Any]]] = [('search_context', {'thread_id': thread, 'limit': 10})]
+            legs.extend(await self._ranked_search_legs(thread, 'ferroniobium alloys'))
+            for tool, args in legs:
+                data = self._extract_content(await self.client.call_tool(tool, {**args, 'limit': 10}))
+                row = next((r for r in data.get('results', []) if str(r.get('id')) == entry_id), None)
+                if row is None:
+                    self.test_results.append((test_name, False, f'{tool} did not return the tagged entry'))
+                    return False
+                if row.get('tags') != expected_tags:
+                    self.test_results.append((
+                        test_name, False, f'{tool} returned tags {row.get("tags")}, expected {expected_tags}',
+                    ))
+                    return False
+
+            # Six collation-sensitive labels whose byte order ('-' below 'a') differs
+            # from the locale order, seeded across six equally-sized threads so both
+            # statistics tiebreaks see them.
+            collation_names = ['coll-a', 'coll-b', 'coll-c', 'colla', 'collb', 'collc']
+            seed_entries = [
+                {
+                    'thread_id': f'{thread}_{collation_names[index % len(collation_names)]}',
+                    'source': 'agent',
+                    'text': f'Collation tie seed {index}',
+                    'tags': collation_names,
+                }
+                for index in range(len(collation_names) * 2)
+            ]
+            seeded = self._extract_content(await self.client.call_tool('store_context_batch', {
+                'entries': seed_entries, 'atomic': True,
+            }))
+            if seeded.get('succeeded') != len(seed_entries):
+                self.test_results.append((test_name, False, f'Collation seed store failed: {seeded}'))
+                return False
+
+            stats = self._extract_content(await self.client.call_tool('get_statistics', {}))
+            top_tags = stats.get('top_tags', [])
+            most_active = stats.get('most_active_threads', [])
+            seeded_order = [str(row.get('tag')) for row in top_tags if str(row.get('tag')) in set(collation_names)]
+            if len(seeded_order) < 2:
+                self.test_results.append((
+                    test_name, False,
+                    f'The seeded collation tags did not reach the top_tags window: {top_tags}',
+                ))
+                return False
+            if seeded_order != sorted(seeded_order):
+                self.test_results.append((
+                    test_name, False, f'Tied seeded tags came back as {seeded_order}, expected byte order',
+                ))
+                return False
+
+            for label, listed, key in (('top_tags', top_tags, 'tag'), ('most_active_threads', most_active, 'thread_id')):
+                previous_key: str | None = None
+                previous_count: object = None
+                for row in listed:
+                    current_key = str(row.get(key))
+                    current_count = row.get('count')
+                    if previous_key is not None and current_count == previous_count and current_key < previous_key:
+                        self.test_results.append((
+                            test_name, False,
+                            f'{label} ties are not byte-ordered: {previous_key!r} precedes {current_key!r}',
+                        ))
+                        return False
+                    previous_key, previous_count = current_key, current_count
+
+            self.test_results.append((
+                test_name, True, f'Tags and tied statistics rows are byte-ordered on {self.backend}',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_tag_deduplication_across_write_paths(self) -> bool:
+        """A repeated tag is stored once, on all four write paths and both backends.
+
+        Tags are a SET of labels, and every reader exposes the stored rows verbatim, so
+        inserting the same label twice leaked a duplicate into every response and
+        inflated the tag counts. Normalization itself manufactures the collision --
+        'DEDUPA' and 'dedupa' are distinct on the wire and identical once trimmed and
+        lower-cased -- so deduplication happens after it, at the single chokepoint every
+        write path funnels through. The list is compared RAW, never through ``set()``,
+        so a duplicate cannot hide behind the comparison.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'tag_deduplication_across_write_paths'
+        assert self.client is not None
+        raw_tags = ['dedup-z', 'dedupa', 'dedup-z', 'DEDUPA']
+        # Byte order puts the hyphen below 'a', and the read path is byte-ordered on
+        # both backends.
+        expected_tags = ['dedup-z', 'dedupa']
+
+        async def _tags_of(entry_id: str) -> list[str] | None:
+            """Read one entry's stored tag list, or None when the entry is missing."""
+            assert self.client is not None
+            got = self._extract_content(
+                await self.client.call_tool('get_context_by_ids', {'context_ids': [entry_id]}),
+            )
+            rows = got.get('results', [])
+            if len(rows) != 1:
+                return None
+            return list(rows[0].get('tags', []))
+
+        async def _assert_tags(label: str, entry_id: str) -> bool:
+            """Report whether the entry's stored tags are exactly the deduplicated list."""
+            tags = await _tags_of(entry_id)
+            if tags == expected_tags:
+                return True
+            self.test_results.append((test_name, False, f'{label} stored tags {tags}, expected {expected_tags}'))
+            return False
+
+        try:
+            thread = f'{self.test_thread_id}_tag_dedup'
+            stored = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Entry whose tag list repeats a label', 'tags': raw_tags,
+            }))
+            if not stored.get('success'):
+                self.test_results.append((test_name, False, f'Store failed: {stored}'))
+                return False
+            single_id = str(stored['context_id'])
+            if not await _assert_tags('store_context', single_id):
+                return False
+
+            # Each path is asserted immediately after it writes, so a leak on one
+            # cannot be masked by the next path replacing the list correctly.
+            updated = self._extract_content(await self.client.call_tool('update_context', {
+                'context_id': single_id, 'tags': raw_tags,
+            }))
+            if not updated.get('success'):
+                self.test_results.append((test_name, False, f'Update failed: {updated}'))
+                return False
+            if not await _assert_tags('update_context', single_id):
+                return False
+
+            batch = self._extract_content(await self.client.call_tool('store_context_batch', {
+                'entries': [{
+                    'thread_id': thread, 'source': 'agent',
+                    'text': 'Batch entry whose tag list repeats a label', 'tags': raw_tags,
+                }],
+                'atomic': True,
+            }))
+            if batch.get('succeeded') != 1:
+                self.test_results.append((test_name, False, f'Batch store failed: {batch}'))
+                return False
+            batch_id = str(batch['results'][0]['context_id'])
+            if not await _assert_tags('store_context_batch', batch_id):
+                return False
+
+            batch_updated = self._extract_content(await self.client.call_tool('update_context_batch', {
+                'updates': [{'context_id': batch_id, 'tags': raw_tags}], 'atomic': True,
+            }))
+            if batch_updated.get('succeeded') != 1:
+                self.test_results.append((test_name, False, f'Batch update failed: {batch_updated}'))
+                return False
+            if not await _assert_tags('update_context_batch', batch_id):
+                return False
+
+            self.test_results.append((
+                test_name, True, f'All four write paths store {expected_tags} once on {self.backend}',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_image_metadata_empty_string_preserved(self) -> bool:
+        """A deliberately EMPTY per-image metadata value survives the round trip.
+
+        Per-image metadata crosses the boundary as a JSON-encoded string, and the empty
+        string is the one valid payload Python considers falsy. Gating the write on
+        truthiness stored it as SQL NULL, which the read path then reports as metadata
+        never supplied -- so "supplied empty" and "never supplied" collapsed into the
+        same response and a client could not tell them apart. The gate is now
+        ``is not None`` on both the write and the read side. The control case pins the
+        other half: an image with no metadata key must still come back without one.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'image_metadata_empty_string_preserved'
+        assert self.client is not None
+
+        async def _first_image(entry_id: str) -> dict[str, Any] | None:
+            """Read the first stored image of an entry, or None when there is none."""
+            assert self.client is not None
+            got = self._extract_content(await self.client.call_tool('get_context_by_ids', {
+                'context_ids': [entry_id], 'include_images': True,
+            }))
+            rows = got.get('results', [])
+            if len(rows) != 1:
+                return None
+            images = rows[0].get('images') or []
+            first = images[0] if images else None
+            return first if isinstance(first, dict) else None
+
+        try:
+            thread = f'{self.test_thread_id}_image_empty_meta'
+            supplied = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Entry whose image carries a deliberately empty metadata value',
+                'images': [{'data': self._create_test_image(), 'mime_type': 'image/png', 'metadata': ''}],
+            }))
+            if not supplied.get('success'):
+                self.test_results.append((test_name, False, f'Store with empty image metadata failed: {supplied}'))
+                return False
+            supplied_image = await _first_image(str(supplied['context_id']))
+            if supplied_image is None:
+                self.test_results.append((test_name, False, 'The entry came back without its image'))
+                return False
+            if 'metadata' not in supplied_image or supplied_image['metadata'] != '':
+                self.test_results.append((
+                    test_name, False,
+                    f'An empty image metadata value came back as {supplied_image.get("metadata")!r}',
+                ))
+                return False
+
+            absent = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Entry whose image carries no metadata value at all',
+                'images': [{'data': self._create_test_image(), 'mime_type': 'image/png'}],
+            }))
+            if not absent.get('success'):
+                self.test_results.append((test_name, False, f'Store without image metadata failed: {absent}'))
+                return False
+            absent_image = await _first_image(str(absent['context_id']))
+            if absent_image is None:
+                self.test_results.append((test_name, False, 'The control entry came back without its image'))
+                return False
+            if 'metadata' in absent_image:
+                self.test_results.append((
+                    test_name, False,
+                    f'An image with no metadata reported metadata {absent_image["metadata"]!r}',
+                ))
+                return False
+
+            self.test_results.append((
+                test_name, True, 'Supplied-empty and never-supplied image metadata stay distinguishable',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_literal_markup_survives_ranked_search(self) -> bool:
+        """A document containing literal <mark> markup stays searchable on both backends.
+
+        Neither SQLite's ``highlight()`` nor PostgreSQL's ``ts_headline()`` escapes
+        markup already present in a document, so a literal '<mark>' in the stored text is
+        indistinguishable by shape from a marker the engine inserted. The passage
+        extractor that feeds the cross-encoder used to count every tag as inserted,
+        subtracting a phantom offset that pointed the extracted passage at unrelated
+        text; it now aligns the highlight against the source instead. The observable
+        contract at the tool boundary is what this pins: the document is still returned
+        by the ranked tools, and its literal markup is stored and read back verbatim
+        rather than being consumed as a highlight marker.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'literal_markup_survives_ranked_search'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_literal_markup'
+            term = 'quarkbeacon'
+            text = (
+                f'Passage alignment probe: this document literally contains <mark>{term}</mark> '
+                f'markup around the term {term}, and continues with further prose so the passage '
+                f'extractor has a window of surrounding sentences to work with.'
+            )
+            stored = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent', 'text': text,
+            }))
+            if not stored.get('success'):
+                self.test_results.append((test_name, False, f'Store failed: {stored}'))
+                return False
+            entry_id = str(stored['context_id'])
+
+            got = self._extract_content(await self.client.call_tool('get_context_by_ids', {'context_ids': [entry_id]}))
+            rows = got.get('results', [])
+            if len(rows) != 1 or f'<mark>{term}</mark>' not in str(rows[0].get('text_content', '')):
+                self.test_results.append((test_name, False, 'The literal markup did not round-trip through storage'))
+                return False
+
+            legs = await self._ranked_search_legs(thread, term)
+            if not legs:
+                self.test_results.append((test_name, True, 'Skipped (no ranked search tool available)'))
+                return True
+            for tool, args in legs:
+                data = self._extract_content(await self.client.call_tool(tool, {**args, 'limit': 10}))
+                if not any(str(row.get('id')) == entry_id for row in data.get('results', [])):
+                    self.test_results.append((
+                        test_name, False, f'{tool} did not return the document carrying literal markup: {data}',
+                    ))
+                    return False
+
+            self.test_results.append((
+                test_name, True, f'Literal markup neither breaks nor is consumed by {len(legs)} ranked tool(s)',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_deeply_nested_boolean_query_degrades(self) -> bool:
+        """A deeply nested boolean query degrades instead of erroring, and spares the breaker.
+
+        Boolean mode forwards the client's query to the engine verbatim, and SQLite's
+        FTS5 rejects a deeply nested expression with its own parser message rather than
+        the handful of grammar messages that used to be enumerated as client errors.
+        Anything unenumerated read as a server fault: it propagated as a hard error where
+        PostgreSQL's tolerant websearch parser succeeded on the same input, and it charged
+        the PROCESS-GLOBAL circuit breaker, so a client repeating one malformed query
+        could open the breaker and have every other caller's reads and writes rejected.
+        Failure attribution is now inverted -- the database-fault families are the closed
+        set and everything else is attributed to the one client-controlled fragment -- so
+        the query degrades to the sanitized term match on SQLite, matches on PostgreSQL,
+        and neither backend charges a failure.
+
+        The repetition afterwards is the point of the breaker half: it exceeds the
+        consecutive-failure threshold that would have tripped it, and ordinary traffic on
+        the SAME server must still succeed.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_deeply_nested_boolean_query_degrades'
+        assert self.client is not None
+        try:
+            stats_data = self._extract_content(await self.client.call_tool('get_statistics', {}))
+            fts_info = stats_data.get('fts', {})
+            if not (fts_info.get('enabled') and fts_info.get('available')):
+                self.test_results.append((test_name, True, 'Skipped (FTS not available)'))
+                return True
+
+            thread = f'{self.test_thread_id}_fts_nested'
+            stored = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Deeply nested boolean probe describing an error condition in the ingest pipeline',
+            }))
+            if not stored.get('success'):
+                self.test_results.append((test_name, False, f'Store failed: {stored}'))
+                return False
+
+            nesting = 100
+            query = '(' * nesting + 'error' + ')' * nesting
+            repeats = 12
+            for attempt in range(repeats):
+                data = self._extract_content(await self.client.call_tool('fts_search_context', {
+                    'query': query, 'mode': 'boolean', 'thread_id': thread, 'limit': 10,
+                }))
+                if 'results' not in data:
+                    self.test_results.append((
+                        test_name, False, f'Nested boolean call {attempt} returned no result set: {data}',
+                    ))
+                    return False
+                if not data.get('results'):
+                    self.test_results.append((
+                        test_name, False, f'Nested boolean call {attempt} degraded to zero results',
+                    ))
+                    return False
+
+            browse = self._extract_content(await self.client.call_tool('search_context', {
+                'thread_id': thread, 'limit': 10,
+            }))
+            if not browse.get('results'):
+                self.test_results.append((
+                    test_name, False, f'Ordinary browse failed after {repeats} nested queries: {browse}',
+                ))
+                return False
+            follow_up = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': 'Write issued after the repeated nested boolean queries',
+            }))
+            if not follow_up.get('success'):
+                self.test_results.append((
+                    test_name, False, f'Ordinary write failed after {repeats} nested queries: {follow_up}',
+                ))
+                return False
+
+            after = self._extract_content(await self.client.call_tool('get_statistics', {}))
+            circuit_state = str(after.get('connection_metrics', {}).get('circuit_state'))
+            if circuit_state != 'healthy':
+                self.test_results.append((
+                    test_name, False, f'circuit_state is {circuit_state!r} after {repeats} nested queries',
+                ))
+                return False
+
+            self.test_results.append((
+                test_name, True,
+                f'{repeats} nested boolean queries returned results and left the breaker healthy on {self.backend}',
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -13379,6 +14516,24 @@ class MCPServerIntegrationTest:
             ('Image Metadata JSON String Contract', self.test_image_metadata_json_string_contract),
             ('Grep Context Request Caps Clamped', self.test_grep_context_request_caps_clamped),
             ('Delete Removes Embedding Rows', self.test_delete_removes_embedding_rows),
+            # Cross-backend parity regressions: the completed-operation counter for
+            # transactional writes, the idle writer recycle, fixed-depth ranked pagination
+            # and its depth hint, mutually exclusive delete selectors, typed indexed
+            # metadata casts, byte-wise text ordering, tag deduplication, per-image
+            # metadata fidelity, literal markup in a ranked document, and a deeply nested
+            # boolean query that must not charge the circuit breaker.
+            ('Transactional Write Moves total_queries', self.test_transactional_write_moves_total_queries),
+            ('Idle Writer Recycle Invisible To Callers', self.test_idle_writer_recycle_is_invisible_to_callers),
+            ('Ranked Pagination Union Matches Single Page', self.test_ranked_pagination_union_matches_single_page),
+            ('Ranked Depth Limit Hint', self.test_ranked_depth_limit_hint),
+            ('Delete Context Rejects Both Selectors', self.test_delete_context_rejects_both_selectors),
+            ('Indexed Metadata Container Length Parity', self.test_indexed_metadata_container_length_parity),
+            ('Typed Indexed Metadata Cast Parity', self.test_typed_indexed_metadata_cast_parity),
+            ('Collation Ordering Parity', self.test_collation_ordering_parity),
+            ('Tag Deduplication Across Write Paths', self.test_tag_deduplication_across_write_paths),
+            ('Image Metadata Empty String Preserved', self.test_image_metadata_empty_string_preserved),
+            ('Literal Markup Survives Ranked Search', self.test_literal_markup_survives_ranked_search),
+            ('FTS Deeply Nested Boolean Query Degrades', self.test_fts_deeply_nested_boolean_query_degrades),
         ]
 
         print('\nRunning tests...\n')

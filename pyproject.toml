@@ -155,6 +155,9 @@ dev = [
     "pytest-timeout>=2.4.0",
     "asyncpg-stubs>=0.31.1",
     "types-jsonschema>=4.23.0",
+    # PyYAML itself arrives with fastmcp; the stubs are what let the deploy tests parse
+    # the workflow files under the same strict type checking as the rest of the suite.
+    "types-PyYAML>=6.0.12",
 ]
 
 [tool.ruff]
