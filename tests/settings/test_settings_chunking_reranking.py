@@ -18,7 +18,6 @@ class TestChunkingSettings:
         assert settings.size == 1500
         assert settings.overlap == 150
         assert settings.aggregation == 'max'
-        assert settings.dedup_overfetch == 5
 
     def test_overlap_must_be_less_than_size(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -111,38 +110,6 @@ class TestChunkingSettings:
         with pytest.raises(ValidationError):
             ChunkingSettings()
 
-    def test_dedup_overfetch_minimum_valid(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Minimum valid dedup_overfetch should pass."""
-        monkeypatch.setenv('CHUNK_DEDUP_OVERFETCH', '1')
-        settings = ChunkingSettings()
-        assert settings.dedup_overfetch == 1
-
-    def test_dedup_overfetch_maximum_valid(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Maximum valid dedup_overfetch should pass."""
-        monkeypatch.setenv('CHUNK_DEDUP_OVERFETCH', '20')
-        settings = ChunkingSettings()
-        assert settings.dedup_overfetch == 20
-
-    def test_dedup_overfetch_below_minimum_fails(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """dedup_overfetch below minimum should fail."""
-        monkeypatch.setenv('CHUNK_DEDUP_OVERFETCH', '0')
-        with pytest.raises(ValidationError):
-            ChunkingSettings()
-
-    def test_dedup_overfetch_above_maximum_fails(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """dedup_overfetch above maximum should fail."""
-        monkeypatch.setenv('CHUNK_DEDUP_OVERFETCH', '21')
-        with pytest.raises(ValidationError):
-            ChunkingSettings()
-
     def test_environment_variable_aliases(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -151,14 +118,12 @@ class TestChunkingSettings:
         monkeypatch.setenv('CHUNK_SIZE', '2000')
         monkeypatch.setenv('CHUNK_OVERLAP', '200')
         monkeypatch.setenv('CHUNK_AGGREGATION', 'max')
-        monkeypatch.setenv('CHUNK_DEDUP_OVERFETCH', '10')
 
         settings = ChunkingSettings()
         assert settings.enabled is False
         assert settings.size == 2000
         assert settings.overlap == 200
         assert settings.aggregation == 'max'
-        assert settings.dedup_overfetch == 10
 
 
 class TestRerankingSettings:
@@ -171,7 +136,6 @@ class TestRerankingSettings:
         assert settings.provider == 'flashrank'
         assert settings.model == 'ms-marco-MiniLM-L-12-v2'
         assert settings.max_length == 512
-        assert settings.overfetch == 4
         assert settings.cache_dir is None
         assert settings.intra_op_threads == 0
         assert settings.batch_size == 32
@@ -204,34 +168,6 @@ class TestRerankingSettings:
         with pytest.raises(ValidationError):
             RerankingSettings()
 
-    def test_overfetch_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Minimum valid overfetch should pass."""
-        monkeypatch.setenv('RERANKING_OVERFETCH', '1')
-        settings = RerankingSettings()
-        assert settings.overfetch == 1
-
-    def test_overfetch_maximum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Maximum valid overfetch should pass."""
-        monkeypatch.setenv('RERANKING_OVERFETCH', '20')
-        settings = RerankingSettings()
-        assert settings.overfetch == 20
-
-    def test_overfetch_below_minimum_fails(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """overfetch below minimum should fail."""
-        monkeypatch.setenv('RERANKING_OVERFETCH', '0')
-        with pytest.raises(ValidationError):
-            RerankingSettings()
-
-    def test_overfetch_above_maximum_fails(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """overfetch above maximum should fail."""
-        monkeypatch.setenv('RERANKING_OVERFETCH', '21')
-        with pytest.raises(ValidationError):
-            RerankingSettings()
-
     def test_cache_dir_custom_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Custom cache_dir should be set."""
         monkeypatch.setenv('RERANKING_CACHE_DIR', '/custom/path')
@@ -251,7 +187,6 @@ class TestRerankingSettings:
         monkeypatch.setenv('RERANKING_PROVIDER', 'custom')
         monkeypatch.setenv('RERANKING_MODEL', 'custom-model')
         monkeypatch.setenv('RERANKING_MAX_LENGTH', '1024')
-        monkeypatch.setenv('RERANKING_OVERFETCH', '8')
         monkeypatch.setenv('RERANKING_CACHE_DIR', '/cache')
         monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '2')
         monkeypatch.setenv('RERANKING_BATCH_SIZE', '16')
@@ -261,7 +196,6 @@ class TestRerankingSettings:
         assert settings.provider == 'custom'
         assert settings.model == 'custom-model'
         assert settings.max_length == 1024
-        assert settings.overfetch == 8
         assert settings.cache_dir == '/cache'
         assert settings.intra_op_threads == 2
         assert settings.batch_size == 16
@@ -322,7 +256,6 @@ class TestAppSettingsIntegration:
         assert settings.chunking.enabled is True
         assert settings.reranking.enabled is True
         assert settings.hybrid_search.rrf_overfetch == 2
-        assert settings.search.default_sort_by == 'relevance'
 
     def test_hybrid_rrf_overfetch_minimum_valid(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -353,18 +286,6 @@ class TestAppSettingsIntegration:
     ) -> None:
         """hybrid_rrf_overfetch above maximum should fail."""
         monkeypatch.setenv('HYBRID_RRF_OVERFETCH', '11')
-        with pytest.raises(ValidationError):
-            AppSettings()
-
-    def test_sort_by_relevance(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """search_default_sort_by 'relevance' should be valid."""
-        monkeypatch.setenv('SEARCH_DEFAULT_SORT_BY', 'relevance')
-        settings = AppSettings()
-        assert settings.search.default_sort_by == 'relevance'
-
-    def test_sort_by_invalid_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Invalid search_default_sort_by should fail."""
-        monkeypatch.setenv('SEARCH_DEFAULT_SORT_BY', 'invalid')
         with pytest.raises(ValidationError):
             AppSettings()
 

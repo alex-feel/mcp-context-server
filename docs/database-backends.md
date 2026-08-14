@@ -102,11 +102,11 @@ POSTGRESQL_STATEMENT_CACHE_SIZE=0
 
 ### Configuration Reference
 
-| Environment Variable                         | Default | Description                                                                                     |
-|----------------------------------------------|---------|-------------------------------------------------------------------------------------------------|
-| `POSTGRESQL_STATEMENT_CACHE_SIZE`            | 100     | Prepared statement cache size. Set to `0` to disable caching for external pooler compatibility. |
-| `POSTGRESQL_MAX_CACHED_STATEMENT_LIFETIME_S` | 300     | Maximum lifetime of cached statements in seconds. Has no effect when cache size is 0.           |
-| `POSTGRESQL_MAX_CACHEABLE_STATEMENT_SIZE`    | 15360   | Maximum statement size to cache in bytes (15KB). Has no effect when cache size is 0.            |
+| Environment Variable                           | Default   | Description                                                                                       |
+|------------------------------------------------|-----------|---------------------------------------------------------------------------------------------------|
+| `POSTGRESQL_STATEMENT_CACHE_SIZE`              | 100       | Prepared statement cache size. Set to `0` to disable caching for external pooler compatibility.   |
+| `POSTGRESQL_MAX_CACHED_STATEMENT_LIFETIME_S`   | 300       | Maximum lifetime of cached statements in seconds. Has no effect when cache size is 0.             |
+| `POSTGRESQL_MAX_CACHEABLE_STATEMENT_SIZE`      | 15360     | Maximum statement size to cache in bytes (15KB). Has no effect when cache size is 0.              |
 
 ### Pooler-Specific Notes
 
@@ -114,6 +114,8 @@ POSTGRESQL_STATEMENT_CACHE_SIZE=0
 - Direct PostgreSQL connection (no pooler)
 - PgBouncer in **session mode** (1:1 client-to-backend mapping)
 - Supabase **Session Pooler** (maintains session state)
+
+This list is about the STATEMENT CACHE only. Every pooler in both lists is reached with a stock configuration, because the server sends no PostgreSQL startup parameters at all -- see [Startup Parameters and Pooler Allowlists](#startup-parameters-and-pooler-allowlists).
 
 **Requires `POSTGRESQL_STATEMENT_CACHE_SIZE=0`:**
 - PgBouncer in **transaction mode** (reassigns connections between transactions)
@@ -146,13 +148,29 @@ For environments using external connection poolers:
 }
 ```
 
+### Startup Parameters and Pooler Allowlists
+
+The server sends **no PostgreSQL startup-packet parameters**. Every session parameter it depends on is applied with `SET` on each connection instead:
+
+| Session parameter                              | Value                             | Purpose                                                                                                                |
+|------------------------------------------------|-----------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| `search_path`                                  | `"<POSTGRESQL_SCHEMA>", public`   | Makes bare table names resolve to the configured schema                                                                |
+| `extra_float_digits`                           | `1`                               | Pins float text output to the shortest round-trip form the numeric metadata-filter comparison depends on               |
+| `tcp_keepalives_idle` / `_interval` / `_count` | `POSTGRESQL_TCP_KEEPALIVES_*`     | Server-side keepalive probes; see [Connection Resilience](#connection-resilience)                                      |
+
+This matters because PgBouncer accepts only `client_encoding`, `datestyle`, `timezone`, `standard_conforming_strings` and `application_name` in the startup packet by default, and **refuses** the connection for anything else with `FATAL: unsupported startup parameter: <name>`. Sending even one non-allowlisted parameter would make a stock `pgbouncer.ini` reject every connection this server opens, before any query runs. Poolers that silently strip unknown startup parameters instead of rejecting them produce a subtler failure: the connection succeeds and the parameter is simply gone, so with a non-default `POSTGRESQL_SCHEMA` every query fails with `relation "context_entries" does not exist`, and float text reverts to the cluster default, which the numeric metadata-filter comparison relies on being pinned.
+
+Applying the parameters as statements avoids both. **No `ignore_startup_parameters` or `track_extra_parameters` entry is required for this server.**
+
+The pool re-applies them on every acquire, which is what makes the statement form safe: releasing a connection issues `RESET ALL`, and the next caller receives it configured again before its first query. One-off connections (the boot-time provisioning probes and both migration CLIs) apply the same statements immediately after dialing.
+
 ### Diagnostic Steps
 
 If you encounter connection errors with PostgreSQL:
 
-1. **Check the error message**: Look for `"connection was closed in the middle of operation"`, `"prepared statement does not exist"`, or similar
+1. **Check the error message**: Look for `"connection was closed in the middle of operation"`, `"prepared statement does not exist"`, `"unsupported startup parameter"`, or similar
 2. **Identify your pooler type**: Determine whether you're using an external pooler and its mode
-3. **Apply the fix**: Set `POSTGRESQL_STATEMENT_CACHE_SIZE=0` in your environment
+3. **Apply the fix**: Set `POSTGRESQL_STATEMENT_CACHE_SIZE=0` in your environment; for `unsupported startup parameter`, allowlist the two startup parameters in the pooler as shown above
 4. **Verify**: Restart the server and confirm operations complete successfully
 
 ### Additional Considerations
@@ -329,14 +347,14 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
 
 ### Which Connection Method Should I Use?
 
-| Consideration             | Direct Connection             | Session Pooler               |
-|---------------------------|-------------------------------|------------------------------|
-| **IPv6 Required**         | Yes (or paid IPv4 add-on)     | No - IPv4 compatible         |
-| **Latency**               | Lowest (~15-20ms)             | +5-10ms overhead             |
-| **Windows Compatibility** | May require IPv6 config       | Works universally            |
-| **Corporate Networks**    | May be blocked                | Usually works                |
-| **Configuration**         | Simpler (standard PostgreSQL) | Requires correct hostname    |
-| **Best For**              | VMs, servers with IPv6        | Windows, restricted networks |
+| Consideration               | Direct Connection               | Session Pooler                 |
+|-----------------------------|---------------------------------|--------------------------------|
+| **IPv6 Required**           | Yes (or paid IPv4 add-on)       | No - IPv4 compatible           |
+| **Latency**                 | Lowest (~15-20ms)               | +5-10ms overhead               |
+| **Windows Compatibility**   | May require IPv6 config         | Works universally              |
+| **Corporate Networks**      | May be blocked                  | Usually works                  |
+| **Configuration**           | Simpler (standard PostgreSQL)   | Requires correct hostname      |
+| **Best For**                | VMs, servers with IPv6          | Windows, restricted networks   |
 
 **Recommendation:**
 - **Try Direct Connection first** - it's simpler and faster
@@ -348,11 +366,11 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
 
 #### Supabase Session Pooler Limits by Tier
 
-| Plan                     | pool_size | Notes                 |
-|--------------------------|-----------|-----------------------|
-| Free (Nano)              | 15        | Shared infrastructure |
-| Pro (Micro/Small/Medium) | 15        | Dedicated compute     |
-| Pro (Large+)             | 30+       | Scales with compute   |
+| Plan                       | pool_size   | Notes                   |
+|----------------------------|-------------|-------------------------|
+| Free (Nano)                | 15          | Shared infrastructure   |
+| Pro (Micro/Small/Medium)   | 15          | Dedicated compute       |
+| Pro (Large+)               | 30+         | Scales with compute     |
 
 **Note:** These are Session Pooler limits. Direct Connection has higher limits (60-500+ depending on tier). Check your Supabase Dashboard -> Settings -> Database for exact values.
 
@@ -379,12 +397,12 @@ Use this formula to calculate safe pool settings:
 POSTGRESQL_POOL_MAX = floor(pool_size / replica_count) - 1
 ```
 
-| Replicas | Supabase pool_size | Recommended POSTGRESQL_POOL_MAX |
-|----------|--------------------|---------------------------------|
-| 1        | 15                 | 10                              |
-| 2        | 15                 | 6                               |
-| 3        | 15                 | 4                               |
-| 4        | 15                 | 3                               |
+| Replicas   | Supabase pool_size   | Recommended POSTGRESQL_POOL_MAX   |
+|------------|----------------------|-----------------------------------|
+| 1          | 15                   | 10                                |
+| 2          | 15                   | 6                                 |
+| 3          | 15                   | 4                                 |
+| 4          | 15                   | 3                                 |
 
 **Example for 3-replica Kubernetes deployment with Supabase Free tier:**
 
@@ -506,15 +524,15 @@ The PostgreSQL backend includes multi-layered protection against connection drop
 
 TCP keepalive is enabled by default on all PostgreSQL connections:
 
-| Setting        | Env Variable                           | Default | Description                             |
-|----------------|----------------------------------------|---------|-----------------------------------------|
-| Idle timeout   | `POSTGRESQL_TCP_KEEPALIVES_IDLE_S`     | 15      | Seconds before first keepalive probe    |
-| Probe interval | `POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S` | 5       | Seconds between keepalive probes        |
-| Probe count    | `POSTGRESQL_TCP_KEEPALIVES_COUNT`      | 3       | Failed probes before connection is dead |
+| Setting          | Env Variable                             | Default   | Description                               |
+|------------------|------------------------------------------|-----------|-------------------------------------------|
+| Idle timeout     | `POSTGRESQL_TCP_KEEPALIVES_IDLE_S`       | 15        | Seconds before first keepalive probe      |
+| Probe interval   | `POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S`   | 5         | Seconds between keepalive probes          |
+| Probe count      | `POSTGRESQL_TCP_KEEPALIVES_COUNT`        | 3         | Failed probes before connection is dead   |
 
 **How it works:**
-- **Client-side** (PRIMARY): Configured via `setsockopt()` on each connection's socket. Works through Supavisor, PgBouncer, and all connection proxies.
-- **Server-side** (SECONDARY): Configured via PostgreSQL GUC parameters. Effective for direct connections; silently ignored by Supavisor/PgBouncer.
+- **Client-side** (PRIMARY): Configured via `setsockopt()` on each connection's socket. This is the only layer that reaches the server's own socket, and the only one that applies at all when an external pooler terminates the connection.
+- **Server-side** (SECONDARY): The matching `tcp_keepalives_idle` / `tcp_keepalives_interval` / `tcp_keepalives_count` GUCs are applied with `SET` when a pooled connection is prepared, so they are also restored after the pool's `RESET ALL`. They are effective for direct connections. Behind a pooler they configure the pooler-to-server hop rather than the application's connection, and a transaction-mode pooler may not preserve them at all; the client-side layer covers that case. They are deliberately not sent as startup parameters, which a pooler would have to allowlist (see [Startup Parameters and Pooler Allowlists](#startup-parameters-and-pooler-allowlists)).
 
 **Cross-platform:** Uses `hasattr()` checks for socket constants. Works on Linux, macOS, and Windows 10 v1703+.
 

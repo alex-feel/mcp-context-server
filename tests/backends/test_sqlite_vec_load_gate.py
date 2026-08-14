@@ -1,5 +1,8 @@
-"""Regression test: the sqlite-vec (vec0) extension loads independently of the
-embedding-generation toggle.
+"""Regression tests for the sqlite-vec (vec0) extension load.
+
+Two properties are pinned here. First, the extension loads independently of the
+embedding-generation toggle. Second, the runtime extension-loading capability the
+load requires is withdrawn again even when the load fails.
 
 The fp32 ``vec_context_embeddings`` vec0 virtual table can physically persist
 from an earlier session that ran with embedding generation enabled. The
@@ -58,3 +61,39 @@ def test_vec_extension_loads_when_generation_disabled(
     finally:
         conn.close()
         get_settings.cache_clear()
+
+
+@requires_sqlite_vec
+def test_failed_vec_load_leaves_extension_loading_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A load that raises still leaves SQL-level load_extension() disabled.
+
+    ``sqlite_vec.load`` is a plain dlopen, so it raises whenever the bundled
+    shared object cannot be loaded on the host (a noexec mount, a musl base
+    image, a distroless image missing the runtime deps). The failure is
+    deliberately non-fatal, but the ``enable_load_extension(True)`` that preceded
+    it must not survive it: otherwise every writer and reader connection the
+    process ever opens accepts ``SELECT load_extension('...')`` from SQL for its
+    whole lifetime, turning any future SQL-injection defect into native code
+    execution instead of a 'not authorized' error.
+    """
+    import sqlite_vec
+
+    def _fail_to_load(_conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError('The specified module could not be found')
+
+    monkeypatch.setattr(sqlite_vec, 'load', _fail_to_load)
+
+    backend = SQLiteBackend(db_path=str(tmp_path / 'vecfail.db'))
+    conn = sqlite3.connect(':memory:', factory=ManagedConnection)
+    try:
+        # Graceful skip: the failure is logged, not raised.
+        backend._load_sqlite_vec_extension(conn)
+        assert getattr(conn, '_vec_loaded', False) is False
+
+        with pytest.raises(sqlite3.OperationalError, match='not authorized'):
+            conn.execute("SELECT load_extension('anything')")
+    finally:
+        conn.close()

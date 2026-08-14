@@ -12,6 +12,7 @@ The same fault must be counted exactly ONCE: the connection scope owns the
 bookkeeping, and the read wrapper above it records nothing.
 """
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -106,6 +107,36 @@ class TestSqliteChargedFailureMetrics:
             with pytest.raises(RuntimeError, match='schema step failed'):
                 async with backend.get_connection(allow_write=True):
                     raise RuntimeError('schema step failed')
+            _charged(backend, 'schema step failed')
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_direct_writer_failing_rollback_keeps_the_original_fault(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A rollback that itself fails must not displace the caller's error."""
+        # The rollback runs on the shared writer, which the periodic health check
+        # may have closed underneath this scope. An unguarded rollback then raised
+        # 'Cannot operate on a closed database' in place of the real fault: the
+        # caller lost the actual error, and the classification ladder below the
+        # rollback -- including the breaker charge -- was skipped entirely.
+        # begin_transaction guards the identical rollback the same way.
+        backend = await _sqlite_backend(tmp_path / 'writer_rollback_metrics.db')
+        try:
+            writer = backend._writer_conn
+            assert writer is not None
+
+            def _rollback_fails() -> None:
+                raise sqlite3.ProgrammingError('Cannot operate on a closed database')
+
+            monkeypatch.setattr(writer, 'rollback', _rollback_fails)
+
+            with pytest.raises(sqlite3.OperationalError, match='schema step failed'):
+                async with backend.get_connection(allow_write=True):
+                    raise sqlite3.OperationalError('schema step failed')
             _charged(backend, 'schema step failed')
         finally:
             await backend.shutdown()
@@ -212,6 +243,23 @@ class TestSqliteChargedFailureMetrics:
             with pytest.raises(sqlite3.OperationalError, match='database is locked'):
                 async with backend.get_connection(allow_write=True):
                     raise error
+            assert backend.circuit_breaker.failures == 0
+            assert backend.metrics.failed_queries == 0
+            assert backend.metrics.last_error is None
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_direct_writer_cancellation_records_nothing(self, tmp_path: Path) -> None:
+        """A cancellation unwinding the allow_write scope is rolled back, not charged."""
+        # Cancellation is not a database fault, and begin_transaction exempts the
+        # same unwind; the scope must still roll back so the next write on the
+        # shared writer cannot silently commit this one's partial state.
+        backend = await _sqlite_backend(tmp_path / 'writer_cancel_metrics.db')
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                async with backend.get_connection(allow_write=True):
+                    raise asyncio.CancelledError
             assert backend.circuit_breaker.failures == 0
             assert backend.metrics.failed_queries == 0
             assert backend.metrics.last_error is None
