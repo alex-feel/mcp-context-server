@@ -182,18 +182,22 @@ def check_file_relevance(
 
     # tool_input and tool_response are dicts for built-in tools, but the wire
     # format is not guaranteed (some tools report a plain-string tool_response),
-    # so non-dict values are treated as carrying no file path.
+    # so non-dict values are treated as carrying no file path. The path itself is
+    # required to be a string for the same reason: a number or a list reaches
+    # Path() below and raises TypeError, which would leave the calling hook with
+    # no verdict at all.
     tool_input = input_data.get('tool_input')
-    file_path: str | None = None
+    raw_path: Any = None
     if isinstance(tool_input, dict):
-        file_path = cast(dict[str, Any], tool_input).get('file_path')
-    if not file_path:
+        raw_path = cast(dict[str, Any], tool_input).get('file_path')
+    if not raw_path:
         tool_response = input_data.get('tool_response')
         if isinstance(tool_response, dict):
-            file_path = cast(dict[str, Any], tool_response).get('filePath')
+            raw_path = cast(dict[str, Any], tool_response).get('filePath')
 
-    if not file_path:
+    if not isinstance(raw_path, str) or not raw_path:
         return False, None
+    file_path: str = raw_path
 
     exclude_paths = cast(list[str], config.get('exclude_paths') or [])
     if exclude_paths and _path_is_excluded(file_path, exclude_paths):
