@@ -1,7 +1,7 @@
 ---
 name: issue-tracking-protocol
 description: |
-  Cross-project task tracker hosted on the context server. Use whenever you need to file an issue, bug report, feature request, improvement, or follow-up task for ANY project (your own or another); triage, prioritize, assign, or transition an issue through its lifecycle; comment on an issue; mark duplicates or blockers; or query the tracker (open work for a project, urgent issues across projects, sub-issues, blocked work, triage backlog). Trigger on phrases like "file an issue", "create a task", "track this", "заведи задачу", "add it to the backlog", or any request to record work for later -- even when no tracker is named explicitly.
+  Cross-project task tracker hosted on the context server. Use whenever you need to file an issue, bug report, feature request, improvement, or follow-up task for ANY project (your own or another); triage, prioritize, assign, or transition an issue through its lifecycle; pick up an issue and implement it; comment on an issue; mark duplicates or blockers; or query the tracker (open work for a project, urgent issues across projects, sub-issues, blocked work, triage backlog). Trigger on phrases like "file an issue", "create a task", "track this", "заведи задачу", "add it to the backlog", "start on issue N", or any request to record work for later or to act on work already recorded -- even when no tracker is named explicitly.
 ---
 
 <overview>
@@ -127,6 +127,20 @@ The queue you triage is your OWN project's. A `triage` entry for any other proje
 
 </triage>
 
+<picking_up>
+
+## Picking Up an Issue
+
+**Re-verify what the work will rest on before implementing it.** An issue body is a point-in-time observation written in the present tense, and that tense is exactly what makes a stale reading look like current state: an entry saying that a queue is empty, that an endpoint answers in some shape, or that a file still carries a line reads identically on the day it was filed and a month after it stopped being true. So take the live claims the implementation will stand on -- states read from an API, a queue, or the filesystem, timestamps, and anything else phrased in the present tense -- and check them against the artifact itself before building anything on them. Proportionate means exactly that set: the claims the work RESTS on, never every sentence in the body, and never the background it merely passes.
+
+**Acceptance criteria inherit the errors of the evidence they were derived from.** Criteria are written out of those same observations, so a stale or misread one yields a criterion that still looks satisfiable while prescribing the wrong thing -- and an agent that meets it faithfully ships something the artifact itself refutes, with every check green. A criterion whose ground has moved is therefore NOT satisfied by following it literally. Implement what is true and let the criteria follow the evidence, never the reverse.
+
+**Record the divergence instead of quietly absorbing it.** A comment carries it -- when found, or in the closing one at the latest -- naming what the body claimed, what the artifact actually shows, how that was established, and what was built instead. Leave the body's observation as filed: it records what was seen at that moment, and rewriting it to match the newer reading destroys the only trace that the reading ever changed.
+
+**When re-verification leaves nothing to implement, the entry is closed rather than built.** A defect that no longer reproduces and a capability that has since shipped both clear the evidence bar the triage section above sets for canceling an entry on your own initiative -- verifiable, and verified by you, with that check stated in the closing comment. When instead the premise is gone but the need behind it may survive, the call is the user's: leave the entry open and put it to them through the structured question tool.
+
+</picking_up>
+
 <anti_patterns>
 
 ## Anti-Patterns (Forbidden)
@@ -148,9 +162,9 @@ The queue you triage is your OWN project's. A `triage` entry for any other proje
 
 1. File: `store_context` into `issues` with kind `issue`, status `triage` (foreign project), priority 3, `links.commissioned_by` pointing at the user message -- returns ID 27401.
 2. Accept: a session working in the owning project queries its own open work, finds 27401 sitting in `triage`, and patches `{"status": "todo"}`.
-3. Start: `{"status": "in_progress", "assignee": "main-agent"}`.
+3. Start: re-verify the live claims the work will rest on, then patch `{"status": "in_progress", "assignee": "main-agent"}`.
 4. Discuss: a kind `comment` entry with `links.parent: [27401]`, body opening `Re issue 27401:`.
 5. Link: discovery that 27401 blocks 27130 -- read 27401's `links`, patch `{"links": {"blocks": [27130]}}`.
-6. Close: `{"status": "done", "completed_at": "..."}`, plus a closing comment citing the shipping commit in `links.git_commits`.
+6. Close: `{"status": "done", "completed_at": "..."}`, plus a closing comment citing the shipping commit in `links.git_commits` and stating any divergence from the body's evidence.
 
 </walkthrough>
