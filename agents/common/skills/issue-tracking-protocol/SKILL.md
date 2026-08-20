@@ -99,7 +99,7 @@ Comments attach to exactly one parent, never to another comment (discussions are
 
 All queries run against `thread_id="issues"` unless noted; search results are truncated previews for relevance triage -- retrieve full bodies with `get_context_by_ids` before acting on substance.
 
-- **A project's open work:** `search_context(thread_id="issues", metadata={"kind": "issue", "project": "<name>", "status": "todo"})`, repeated per open status (`triage`, `backlog`, `todo`, `in_progress`, `in_review`) or with `metadata_filters=[{"key": "status", "operator": "in", "value": ["triage", "backlog", "todo", "in_progress", "in_review"]}]`.
+- **A project's open work:** open means the five non-terminal statuses, so ask for all of them at once -- `search_context(thread_id="issues", metadata={"kind": "issue", "project": "<name>"}, metadata_filters=[{"key": "status", "operator": "in", "value": ["triage", "backlog", "todo", "in_progress", "in_review"]}])`. Narrowing to one status (`metadata={"kind": "issue", "project": "<name>", "status": "todo"}`) answers a different question -- what is already accepted and scheduled -- and is right only when that is the question you have.
 - **Cross-project urgency:** kind `issue` plus `priority gt 0 AND priority lt 3`, no project filter.
 - **By label:** the `tags` parameter (OR semantics); for a rare label-AND, run the narrower tag query and intersect client-side.
 - **By assignee:** `metadata={"kind": "issue", "assignee": "<name>"}`.
@@ -115,7 +115,15 @@ All queries run against `thread_id="issues"` unless noted; search results are tr
 
 ## Triage Discipline
 
-Each project's sessions periodically review their inbound triage queue -- `metadata={"kind": "issue", "project": "<own-project>", "status": "triage"}` -- and move each entry to `backlog`/`todo` (accepted), `canceled` (rejected, with a comment stating why), or `duplicate` (with `links.duplicate_of` filled). Issues stuck in `triage` are invisible to sessions that only pull `todo`, so an unreviewed queue silently loses work.
+**The trigger is a query, not a schedule.** Whenever you query your own project's open work and the result holds entries with status `triage`, those entries are the queue, and dispositioning them is part of that query -- do it before choosing what to work on. An entry sitting in `triage` is a request nobody has answered yet, and a queue you have not dispositioned cannot tell you what is worth doing next. A session that never consults the tracker owes nothing here; the obligation attaches to the moment you look.
+
+The queue you triage is your OWN project's. A `triage` entry for any other project -- one you filed there, or one you passed while querying across projects -- belongs to that project's queue, its sessions meet the same trigger there, and reporting its existence from here changes nothing, so leave it alone and say nothing about it.
+
+**Which transitions are yours to make.** The line runs between a disposition you can justify with EVIDENCE and one that rests on your PREFERENCE. Accepting needs no justification, because the filer already made the case: move the entry to `todo` (work the project intends to reach) or `backlog` (accepted, not scheduled) on your own initiative. `duplicate` is a factual finding -- when an existing issue demonstrably covers the same need, patch `{"status": "duplicate", "links": {"duplicate_of": [<canonical-id>]}}` and comment naming the canonical entry, because the need survives there rather than being discarded. `canceled` splits in two: cancel on your own initiative ONLY when the reason is verifiable and you verified it (the defect no longer reproduces, the capability has since shipped), stating that check in the closing comment; when the reason is instead that the work looks not worth doing, the decision is the user's, because the session that filed it saw something you cannot see from here.
+
+**When the decision is not yours,** leave the entry in `triage` and put the proposal to the user through the structured question tool, naming each entry and what you would do with it, batched into one question rather than a stream of them. An entry still in `triage` because nobody has answered is in the right state -- unaccepted, visible to the next query, not lost -- so never cancel by default to empty a queue.
+
+**What triage produces is the transitions.** Report what you changed. Do not additionally warn that unaccepted entries exist, or that a narrower query would have hidden them: you ran the query that does not hide them, and the entries it surfaced are now handled. A warning repeated every session in place of a disposition is the failure this section exists to prevent.
 
 </triage>
 
@@ -139,7 +147,7 @@ Each project's sessions periodically review their inbound triage queue -- `metad
 ## Lifecycle Walkthrough
 
 1. File: `store_context` into `issues` with kind `issue`, status `triage` (foreign project), priority 3, `links.commissioned_by` pointing at the user message -- returns ID 27401.
-2. Accept: the owning project's session reviews triage and patches `{"status": "todo"}`.
+2. Accept: a session working in the owning project queries its own open work, finds 27401 sitting in `triage`, and patches `{"status": "todo"}`.
 3. Start: `{"status": "in_progress", "assignee": "main-agent"}`.
 4. Discuss: a kind `comment` entry with `links.parent: [27401]`, body opening `Re issue 27401:`.
 5. Link: discovery that 27401 blocks 27130 -- read 27401's `links`, patch `{"links": {"blocks": [27130]}}`.
