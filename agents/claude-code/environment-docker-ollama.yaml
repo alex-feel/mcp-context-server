@@ -42,15 +42,32 @@ dependencies:
 
 # Environment variables
 os-env-variables:
-  MCP_TIMEOUT: "300000"
-  MAX_MCP_OUTPUT_TOKENS: "100000"
-  ENABLE_TOOL_SEARCH: "1"
+  # What belongs here is a variable some program OTHER than Claude Code reads. Claude
+  # Code's own settings (the `env` block under user-settings below) reach only the
+  # session's own process tree, so a consumer outside it -- a hook run by hand, a server
+  # started from a terminal -- would never see them.
 
   # Enable the context-saver hooks' diagnostic logging so a failed store
   # (for example, the context server still starting while Ollama pulls its
   # embedding and summary models) is recorded in the hook log instead of
   # failing silently. Log location: ~/.claude/hook_logs/user_prompt_context_saver.log
+  # Read by the hook script itself rather than by Claude Code, which is why it stays at
+  # the OS level: the same value then applies when the hook is run directly to debug it.
   CLAUDE_HOOK_DEBUG_ENABLED: "1"
+
+  # TRANSITIONAL -- deletions, not settings. These three now live in the user-settings
+  # `env` block below, and the nulls remove the OS-level copies that earlier installs of
+  # this environment created. They are spelled out rather than omitted because an
+  # omitted key leaves the stale OS value in place: harmless inside a session, since the
+  # settings value wins over it, but a misleading second source of truth for anyone
+  # inspecting the environment from a terminal.
+  #
+  # Retire this block once the machines running this environment have completed one
+  # install carrying it. Names parked here permanently also delete those variables for
+  # anything else on the machine that sets them.
+  ENABLE_TOOL_SEARCH: null
+  MAX_MCP_OUTPUT_TOKENS: null
+  MCP_TIMEOUT: null
 
 # Skills for context management
 skills:
@@ -173,6 +190,23 @@ hooks:
 # to ~/.claude/settings.json; a root-level permissions key is not part of the
 # configuration schema and would be silently ignored at install time.
 user-settings:
+  # Claude-level environment variables. Claude Code applies this block by assigning it
+  # into its own process environment at startup, so a value here takes effect at the
+  # next session start instead of only in terminals opened after the install, and it
+  # wins over an OS-level variable of the same name. Values must be strings; an
+  # unquoted YAML integer is rejected rather than coerced.
+  env:
+    # MCP server STARTUP budget in milliseconds (default 30000), not tool execution.
+    # Raised so a slow uvx-spawned stdio server survives a cold start.
+    MCP_TIMEOUT: "300000"
+
+    # Cap on a single MCP tool response.
+    MAX_MCP_OUTPUT_TOKENS: "100000"
+
+    # Defer MCP tools behind on-demand tool search instead of loading every schema
+    # upfront.
+    ENABLE_TOOL_SEARCH: "1"
+
   permissions:
     defaultMode: default
 
