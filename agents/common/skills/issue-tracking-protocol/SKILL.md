@@ -1,7 +1,7 @@
 ---
 name: issue-tracking-protocol
 description: |
-  Cross-project task tracker hosted on the context server. Use whenever you need to file an issue, bug report, feature request, improvement, or follow-up task for ANY project (your own or another); triage, prioritize, assign, or transition an issue through its lifecycle; pick up an issue and implement it; comment on an issue; mark duplicates or blockers; or query the tracker (open work for a project, urgent issues across projects, sub-issues, blocked work, triage backlog). Trigger on phrases like "file an issue", "create a task", "track this", "заведи задачу", "add it to the backlog", "start on issue N", or any request to record work for later or to act on work already recorded -- even when no tracker is named explicitly.
+  Cross-project task tracker hosted on the context server. Use whenever you need to file an issue, bug report, feature request, improvement, or follow-up task for ANY project (your own or another); triage, prioritize, assign, or transition your own project's issue through its lifecycle; pick up an issue in your own project and implement it; comment on an issue; mark duplicates or blockers; or query the tracker (this project's open work, sub-issues, blocked work, triage backlog, and another project's rows when the user asks for them). Trigger on phrases like "file an issue", "create a task", "track this", "заведи задачу", "add it to the backlog", "start on issue N", or any request to record work for later or to act on work already recorded -- even when no tracker is named explicitly.
 ---
 
 <overview>
@@ -10,7 +10,9 @@ description: |
 
 ONE unified tracker thread named `issues` holds every issue of every project -- one workspace-wide system of record, the Linear model. The project dimension lives in metadata (`project`), never in the thread name: any agent files an issue for any project into the same thread and filters by project when querying. One issue = one context entry; the entry's context ID IS the issue number, globally unique across all projects by construction.
 
-Why this shape: `project` metadata already encodes the project dimension, so cross-project queries are one `thread_id` plus metadata filters and agents need zero thread-name derivation; context IDs are global, so linking works identically within and across projects; the server's first-class `tags` are the single label mechanism; and one typed `links` object holds every connection an issue has, so no fact is ever stored twice.
+Why this shape: `project` metadata already encodes the project dimension, so a query is one `thread_id` plus metadata filters and agents need zero thread-name derivation; context IDs are global, so linking works identically within and across projects; the server's first-class `tags` are the single label mechanism; and one typed `links` object holds every connection an issue has, so no fact is ever stored twice.
+
+**One thread is not one queue.** A session works from the queue of the project it is in. Rows belonging to other projects are VISIBLE here and are not AVAILABLE here: they are neither picked up nor put in front of the user as options, unless the user asked for that project in this session. Filing into another project's queue is a write the shared thread exists to allow; picking up what sits in that queue is not, and a filing is never a claim on the work it records.
 
 </overview>
 
@@ -99,11 +101,13 @@ Comments attach to exactly one parent, never to another comment (discussions are
 
 All queries run against `thread_id="issues"` unless noted; search results are truncated previews for relevance triage -- retrieve full bodies with `get_context_by_ids` before acting on substance.
 
+**`<name>` below is the canonical project name of the session you are in, and every query that sources work uses it; it changes only when the user asked for another project in this session.** The recipes that omit the project key answer a narrow question and are not a way to find something to do; what they return for other projects is context rather than a candidate to work on or to offer, unless the user asked for that project in this session.
+
 - **A project's open work:** open means the five non-terminal statuses, so ask for all of them at once -- `search_context(thread_id="issues", metadata={"kind": "issue", "project": "<name>"}, metadata_filters=[{"key": "status", "operator": "in", "value": ["triage", "backlog", "todo", "in_progress", "in_review"]}])`. Narrowing to one status (`metadata={"kind": "issue", "project": "<name>", "status": "todo"}`) answers a different question -- what is already accepted and scheduled -- and is right only when that is the question you have.
-- **Cross-project urgency:** kind `issue` plus `priority gt 0 AND priority lt 3`, no project filter.
+- **Cross-project urgency, on request only:** kind `issue` plus `priority gt 0 AND priority lt 3`, no project filter. Run it when the user asks what is urgent across projects, and answer the question they asked.
 - **By label:** the `tags` parameter (OR semantics); for a rare label-AND, run the narrower tag query and intersect client-side.
-- **By assignee:** `metadata={"kind": "issue", "assignee": "<name>"}`.
-- **Provenance:** `metadata={"kind": "issue", "source_project": "<name>"}` finds issues discovered while working in a project, wherever they target.
+- **By assignee:** `metadata={"kind": "issue", "project": "<name>", "assignee": "<who>"}`.
+- **Provenance:** `metadata={"kind": "issue", "source_project": "<name>"}` finds issues discovered while working in a project, wherever they target. It answers where a need was found; the rows targeting other projects remain those projects' work.
 - **Sub-issues of X vs discussion of X:** same `array_contains` on `links.parent` with value X, disambiguated by `kind` (`issue` = sub-issues, `comment` = discussion). Never run a `links.parent` query without a `kind` filter.
 - **What blocks X:** `array_contains` on `links.blocks` with value X (plus kind `issue`); what X blocks is X's own `links.blocks` array.
 - **Duplicates of X:** `array_contains` on `links.duplicate_of` with value X.
@@ -117,7 +121,7 @@ All queries run against `thread_id="issues"` unless noted; search results are tr
 
 **The trigger is a query, not a schedule.** Whenever you query your own project's open work and the result holds entries with status `triage`, those entries are the queue, and dispositioning them is part of that query -- do it before choosing what to work on. An entry sitting in `triage` is a request nobody has answered yet, and a queue you have not dispositioned cannot tell you what is worth doing next. A session that never consults the tracker owes nothing here; the obligation attaches to the moment you look.
 
-The queue you triage is your OWN project's. A `triage` entry for any other project -- one you filed there, or one you passed while querying across projects -- belongs to that project's queue, its sessions meet the same trigger there, and reporting its existence from here changes nothing, so leave it alone and say nothing about it.
+The queue you triage is your OWN project's, and so is the queue you work from. An entry for any other project -- at ANY status, whether you filed it there or passed it while querying -- belongs to that project's queue, its sessions meet the same trigger there, and reporting its existence from here changes nothing, so leave it alone and say nothing about it, except to report a filing this session itself made, which is a completed action rather than an offer. That covers offering it as work too: another project's issue is never a candidate to propose here unless the user asked for that project in this session.
 
 **Which transitions are yours to make.** The line runs between a disposition you can justify with EVIDENCE and one that rests on your PREFERENCE. Accepting needs no justification, because the filer already made the case: move the entry to `todo` (work the project intends to reach) or `backlog` (accepted, not scheduled) on your own initiative. `duplicate` is a factual finding -- when an existing issue demonstrably covers the same need, patch `{"status": "duplicate", "links": {"duplicate_of": [<canonical-id>]}}` and comment naming the canonical entry, because the need survives there rather than being discarded. `canceled` splits in two: cancel on your own initiative ONLY when the reason is verifiable and you verified it (the defect no longer reproduces, the capability has since shipped), stating that check in the closing comment; when the reason is instead that the work looks not worth doing, the decision is the user's, because the session that filed it saw something you cannot see from here.
 
@@ -130,6 +134,8 @@ The queue you triage is your OWN project's. A `triage` entry for any other proje
 <picking_up>
 
 ## Picking Up an Issue
+
+**Take up your own project's work only.** The issue you start belongs to the project this session is in; another project's issue is not a candidate here, however well it fits or however cheap it looks, unless the user asked for that project in this session. When your own open work comes to one entry or none, that IS the answer -- report it and stop, rather than widening the query until a longer list appears or asking the user whether to widen it.
 
 **Re-verify what the work will rest on before implementing it.** An issue body is a point-in-time observation written in the present tense, and that tense is exactly what makes a stale reading look like current state: an entry saying that a queue is empty, that an endpoint answers in some shape, or that a file still carries a line reads identically on the day it was filed and a month after it stopped being true. So take the live claims the implementation will stand on -- states read from an API, a queue, or the filesystem, timestamps, and anything else phrased in the present tense -- and check them against the artifact itself before building anything on them. Proportionate means exactly that set: the claims the work RESTS on, never every sentence in the body, and never the background it merely passes.
 
@@ -152,6 +158,7 @@ The queue you triage is your OWN project's. A `triage` entry for any other proje
 - Never mix status vocabularies -- issue statuses never appear on reports, and `pending` never appears on issues.
 - Never comment on a comment, and never append discussion into an issue's body.
 - Never renumber or reuse issue IDs -- context IDs are immutable.
+- Never present another project's issues as work available here unless the user asked for that project in this session, and never widen a query past your own project to produce a longer list of options.
 - Never file secrets, tokens, or credentials into issue bodies or comments.
 
 </anti_patterns>
