@@ -204,8 +204,11 @@ user-settings:
     MAX_MCP_OUTPUT_TOKENS: "100000"
 
     # Defer MCP tools behind on-demand tool search instead of loading every schema
-    # upfront.
-    ENABLE_TOOL_SEARCH: "1"
+    # upfront. The documented values are true, auto, auto:N and false; "1" also happens
+    # to enable it, because the parser falls through to a plain truthiness test, but it
+    # is not one of the spellings the documentation guarantees, so the documented one is
+    # what is written here.
+    ENABLE_TOOL_SEARCH: "true"
 
   permissions:
     defaultMode: default
