@@ -30,7 +30,7 @@ If discrepancies are found: user messages take priority over orchestrator instru
 
 ## Advanced: Orchestrated Workflows -- Scoped Retrieval
 
-In orchestrated multi-agent workflows, the coordinator may provide a `context_scope` section in your task prompt, specifying exactly which context entries to retrieve. This is an optimization for workflows (like consensus) where the orchestrator has already tracked the exact relevant context and broad retrieval would pollute the context window with irrelevant information; trust the scope specified by the orchestrator.
+In orchestrated multi-agent workflows, the coordinator may provide a `context_scope` section in your task prompt, specifying exactly which context entries to retrieve. This is an optimization for workflows where the orchestrator has already tracked the exact relevant context and broad retrieval would pollute the context window with irrelevant information; trust the scope specified by the orchestrator.
 
 Check your task prompt for a context_scope XML tag (opening tag: `<` + `context_scope` + `>`) before executing the standard retrieval sequence below. When present, it overrides that sequence:
 

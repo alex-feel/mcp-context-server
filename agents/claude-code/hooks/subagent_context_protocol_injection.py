@@ -106,15 +106,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 'a context-server entry is not writing a file to disk; do it anyway if '
                 'you are capable.'
             ),
-            (
-                'If your prompt carries a "CONSENSUS TYPE:" line, your VERY FIRST action '
-                '-- before this context retrieval, before any task tracking, before '
-                'reading any file, before any other tool call -- MUST be to load the '
-                'consensus skill (and the matching reference for the named type), '
-                'because that skill sets the rules governing everything you do next. '
-                'If your prompt has no "CONSENSUS TYPE:" line, this does not apply to '
-                'you; ignore it.'
-            ),
         ],
     },
 }
