@@ -112,7 +112,7 @@ When updating an existing entry for plan revision:
            "revision_count": <current + 1 or 1 if first revision>,
            "status": "done"
        },
-       tags=["report", "implementation-guide", "research", ...]
+       tags=["report", "research", ...]
    )
    ```
 6. **Return SAME context_id** in status message
