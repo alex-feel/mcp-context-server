@@ -123,7 +123,7 @@ When updating an existing entry for plan revision:
 
 ## Environment Integration Patterns
 
-Context preservation operations can interact with environment-level hooks, validation gates, and orchestration workflows. Environment hooks may validate that stored context includes required metadata fields, correct tagging, and proper typed links; log storage operations for traceability, verifying that agents store work results before session completion; or reject entries lacking required structure (e.g., missing `kind`, `status`, or `agent_name`). In such environments, follow the metadata contract and compliance checklist rigorously to avoid validation failures.
+Context preservation operations can interact with environment-level hooks, validation gates, and orchestration workflows. Environment hooks may validate that stored context includes required metadata fields, correct tagging, and proper typed links; log storage operations for traceability, verifying that agents store work results before session completion; or reject entries lacking required structure (e.g., missing `kind`, `status`, or `agent_name`). In such hook-validated environments, follow the metadata contract and the storage steps above rigorously -- entries missing a required field are rejected outright, so a gap that would merely be incomplete elsewhere is a hard failure there.
 
 ### Metadata Patterns for Multi-Agent Coordination
 
@@ -166,6 +166,8 @@ When you have context-server store capability and produced substantive work this
    - Any other relevant information
    ```
 
+   **Match each section's length to what actually happened:** a short Results Achieved is correct for small work -- do not pad sections to look complete.
+
    **Front-load critical information:** Place key findings, decisions, recommendations, and conclusions in the opening section (Summary) of your stored entries. Search tools return truncated previews from the beginning of stored text -- information buried deep in an entry may be invisible during search-based discovery, causing other agents to misjudge relevance and skip retrieval of entries that contain important content.
 
 2. **Always use English** to write the report, REGARDLESS of the language requested by the calling party.
@@ -193,7 +195,7 @@ When you have context-server store capability and produced substantive work this
      ```
    - `tags`: The kind token plus relevant labels (e.g., `["report", ...]`)
 
-4. **After successfully saving**, capture the `context_id` from the `store_context` response and include it in your brief completion status to the calling party -- format: `"[Brief status summary]. Report ID: [context_id]"` (e.g., `"Implementation complete. 3 features implemented. Report ID: 2510"`). The caller can use this ID to retrieve the full report via `get_context_by_ids([context_id])`
+4. **Confirm the `store_context` call succeeded** before you rely on it -- check the response for `success: true` and a `context_id` rather than assuming the call landed, since a failed or malformed call leaves nothing durable behind despite looking complete in your working trace. Once confirmed, capture the `context_id` and include it in your brief completion status to the calling party -- format: `"[Brief status summary]. Report ID: [context_id]"` (e.g., `"Implementation complete. 3 features implemented. Report ID: 2510"`). The caller can use this ID to retrieve the full report via `get_context_by_ids([context_id])`
 
 This ensures your work is documented, preserved, and **retrievable by other agents** who need your detailed findings. A structured-output return value or any other in-window reply to your caller is SEPARATE from this durable record and does NOT substitute for it; the ephemeral reply is lost on compaction, the stored entry is not. A dispatch instruction that forbids writing report files to disk (for example a swarm or deep-research "do not write files to disk" contract) governs on-disk files only and does NOT relieve you of storing the context-server entry.
 
@@ -223,24 +225,6 @@ For tasks spanning multiple context windows or extended multi-step execution:
 - **Multi-agent handoff reports:** When another agent will continue your work, store a comprehensive handoff report that the receiving agent can understand without additional context: clear sections (Summary, Work Performed, Results, Next Steps, and others) covering goals, work performed, results, and explicit next steps; all relevant typed links so the receiving agent can trace the full work chain; and `kind`, `report_type`, and `agent_name` set accurately for precise filtering
 
 </context_continuity>
-
-<compliance_checklist>
-
-# Compliance Checklist
-
-Before returning to the calling party, verify the following whenever you had store capability and produced substantive work; completing this checklist is mandatory for reliable context preservation:
-
-- [ ] **Schema loaded**: Invoked `Skill(skill="context-metadata-schema")` before composing metadata
-- [ ] **Report created**: Comprehensive Markdown report documenting your work
-- [ ] **Report saved**: Called `store_context` with thread_id, source="agent", text, metadata, and tags
-- [ ] **Universal core complete**: Included `schema_version`, `kind`, `project` (plus `agent_name` and `status` for your kind)
-- [ ] **Kind-specific fields**: Populated correctly (e.g., `report_type` and `technologies` per task subject, not execution tools)
-- [ ] **Links typed**: Populated `links` with typed keys (`derived_from`, `commissioned_by`, `evidence`, ...); omitted or `{}` if none; never wrote a legacy untyped reference list
-- [ ] **Tags included**: Added the kind token plus relevant categorization tags
-- [ ] **Storage verified**: Confirmed `store_context` call succeeded before returning
-- [ ] **Report ID returned**: Included `context_id` from `store_context` response in status message
-
-</compliance_checklist>
 
 <examples>
 

@@ -376,7 +376,7 @@ For tasks spanning multiple context windows or requiring extended multi-step exe
 
 - Retrieve relevant user and agent context to understand the current task
 - Query the context server as many times as needed; you can return to it at any point during your work
-- Search iteratively and liberally -- all search results are truncated, so you can safely perform multiple searches with higher limits (10-20+) without overwhelming your context window. Use `get_context_by_ids` to retrieve full content only for entries that appear relevant
+- Search iteratively (see the tools section's Key notes for how aggressively you can search), and use `get_context_by_ids` to retrieve full content only for entries that appear relevant
 - Include `include_images: true` to capture visual context (diagrams, matrices, charts)
 
 </strategy>
@@ -385,46 +385,15 @@ For tasks spanning multiple context windows or requiring extended multi-step exe
 
 # Retrieval Patterns
 
-For every search pattern below: specify `thread_id` to search within the current session, and remember that results are truncated -- assess relevance from truncated text + summary + metadata, then use `get_context_by_ids` for full content of relevant entries.
+The Context Retrieval Sequence's Steps 1-4 above are the canonical enumeration of what to run; this section covers only the decision guidance those steps do not already state -- when to reach for one search tool over another. For every pattern below: specify `thread_id` to search within the current session, and remember that results are truncated -- assess relevance from truncated text + summary + metadata, then use `get_context_by_ids` for full content of relevant entries.
 
-## Pattern 1 - Browse and Retrieve (Default)
+## Choosing Among Step 3's Search Tools
 
-Default retrieval workflow (finding context by source and metadata):
+Step 3 covers `hybrid_search_context` as the recommended default for conceptual discovery: it is best for finding prior solutions, knowledge, principles, and conceptually related content, because documents found by BOTH FTS and semantic methods rank highest. Reach for `semantic_search_context` instead only when you specifically want meaning-based matches without the FTS half of hybrid search. Reach for `fts_search_context` when you need precise keyword control that hybrid search does not expose: `boolean` mode for complex queries (`"python AND async NOT deprecated"`), `phrase` mode for exact matches (`"error handling"`), and `highlight: true` to see matching snippets.
 
-1. Use `search_context` with `thread_id` and `source="user"`
-2. Use `search_context` with `thread_id` and `source="agent"`
-3. Browse truncated previews to identify ALL relevant entries
-4. Use `get_context_by_ids` to retrieve full content of selected entries
+## Choosing to Navigate Links (Step 4)
 
-## Pattern 2 - Hybrid Search (Recommended)
-
-Iterative conceptual discovery (combined FTS + semantic search):
-
-1. Use `hybrid_search_context` with a natural language query describing what you need; documents found by BOTH FTS and semantic methods rank highest
-2. Best for finding prior solutions, knowledge, principles, and conceptually related content
-3. Search iteratively: start broad with higher limits (10-20+), assess truncated previews + summaries, refine queries, then retrieve full content of best matches via `get_context_by_ids`
-
-**Use hybrid search aggressively.** Because results are lightweight (truncated), you can safely perform multiple rounds of searching with different queries and higher limits without overwhelming the context window. IF IN DOUBT - USE IT!
-
-## Pattern 3 - Semantic Search (Optional)
-
-Meaning-based discovery when hybrid search is not needed: use `semantic_search_context` with a query describing what you need.
-
-## Pattern 4 - Full-Text Search (Optional)
-
-Precise keyword matching with `fts_search_context`:
-
-1. Use `boolean` mode for complex queries: `"python AND async NOT deprecated"`
-2. Use `phrase` mode for exact matches: `"error handling"`
-3. Enable `highlight: true` to see matching snippets
-
-## Pattern 5 - Links Navigation (Optional)
-
-Follow the typed knowledge graph when deeper context is needed -- a plan's `derived_from` names the research behind it, a validation report's `evidence` names what it verified, `commissioned_by` restores the full user intent, and reverse `array_contains` queries answer who-builds-on-this and is-this-superseded:
-
-1. Retrieve entries using the retrieval sequence (Steps 1-2, optionally 3-4)
-2. Follow outgoing edges via `get_context_by_ids`; answer reverse questions with `array_contains` queries on the relevant `links.<key>`
-3. Repeat if those entries have further relevant links (depth limit: 2-3 levels)
+Follow the typed knowledge graph when deeper context is needed -- a plan's `derived_from` names the research behind it, a validation report's `evidence` names what it verified, `commissioned_by` restores the full user intent, and reverse `array_contains` queries answer who-builds-on-this and is-this-superseded (see Links-Based Navigation above for the full outgoing/incoming query forms).
 
 **Example:** a retrieved validation report (entry 3357) has `links.evidence: [3349, 3352]` -- the implementation plan and implementation report it verified. Retrieve them for the complete picture: `get_context_by_ids(context_ids=[3349, 3352])`.
 
@@ -466,22 +435,6 @@ Follow the typed knowledge graph when deeper context is needed -- a plan's `deri
 </example>
 
 </examples>
-
-<compliance_checklist>
-
-# Compliance Checklist
-
-Before proceeding with your task, consider verifying the following:
-
-- [ ] **User messages retrieved**: Called `search_context(source="user")`
-- [ ] **Agent reports retrieved**: Called `search_context(source="agent")`
-- [ ] **Full content retrieved**: Called `get_context_by_ids` for full content of relevant entries
-- [ ] **Hybrid search considered**: Evaluated whether `hybrid_search_context` is needed for additional context
-- [ ] **Links considered**: Checked the typed `links` object in retrieved entries (and legacy `references` on old entries); followed edges when deeper context was needed
-
-Completing this checklist is a best practice for reliable results.
-
-</compliance_checklist>
 
 <error_handling>
 
