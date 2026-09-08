@@ -30,12 +30,13 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           # Try release tag first, fall back to pyproject.toml
-          if [ -n '${{ github.event.release.tag_name }}' ]; then
-            tag='${{ github.event.release.tag_name }}'
-            version="${tag#v}"  # strip leading 'v' if present
+          if [ -n "$RELEASE_TAG" ]; then
+            version="${RELEASE_TAG#v}"  # strip leading 'v' if present
             echo "Using release tag version: ${version}"
           else
             version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
@@ -57,9 +58,11 @@ jobs:
           test -f uv.lock || { echo 'uv.lock was not created' >&2; exit 1; }
 
       - name: Assert uv.lock contains the release version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          version='${{ steps.version.outputs.version }}'
+          version="$VERSION"
           if [ -z "$version" ]; then
             echo "ERROR: Version not determined" >&2
             exit 1
@@ -156,9 +159,11 @@ jobs:
           ./mcp-publisher --help
 
       - name: Wait for PyPI to serve this release
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          version='${{ needs.build.outputs.version }}'
+          version="$VERSION"
           if [ -z "$version" ]; then
             echo "ERROR: Version not available from build job" >&2
             exit 1
