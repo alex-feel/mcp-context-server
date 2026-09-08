@@ -1061,11 +1061,60 @@
           "name": "MCP_AUTH_CLIENT_ID"
         },
         {
-          "description": "Authentication provider: none (default), simple_token",
+          "description": "Authentication provider: none (default), simple_token, jwt",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "MCP_AUTH_PROVIDER"
+        },
+        {
+          "description": "PEM-encoded public key (asymmetric algorithms) or shared secret (HS* algorithms) for JWT verification. Mutually exclusive with MCP_AUTH_JWT_JWKS_URI; exactly one is required when MCP_AUTH_PROVIDER=jwt",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "MCP_AUTH_JWT_PUBLIC_KEY"
+        },
+        {
+          "description": "JWKS endpoint URI for JWT verification with automatic key rotation. Mutually exclusive with MCP_AUTH_JWT_PUBLIC_KEY; exactly one is required when MCP_AUTH_PROVIDER=jwt",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_JWT_JWKS_URI"
+        },
+        {
+          "description": "Expected issuer (iss) claim value for JWT verification. Unset skips issuer validation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_JWT_ISSUER"
+        },
+        {
+          "description": "Expected audience (aud) claim value for JWT verification. Unset skips audience validation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_JWT_AUDIENCE"
+        },
+        {
+          "description": "JWT signing algorithm to accept (default RS256). Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_JWT_ALGORITHM"
+        },
+        {
+          "description": "Claim carrying the caller group memberships (default groups). Supports dotted paths and full-URL claim keys",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_GROUPS_CLAIM"
+        },
+        {
+          "description": "Claim carrying the caller roles (default roles). Supports dotted paths and full-URL claim keys",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_ROLES_CLAIM"
         },
         {
           "description": "Custom server instructions text. Overrides built-in default. Set to empty string to disable.",
@@ -2173,11 +2222,60 @@
           "name": "MCP_AUTH_CLIENT_ID"
         },
         {
-          "description": "Authentication provider: none (default), simple_token",
+          "description": "Authentication provider: none (default), simple_token, jwt",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "MCP_AUTH_PROVIDER"
+        },
+        {
+          "description": "PEM-encoded public key (asymmetric algorithms) or shared secret (HS* algorithms) for JWT verification. Mutually exclusive with MCP_AUTH_JWT_JWKS_URI; exactly one is required when MCP_AUTH_PROVIDER=jwt",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "MCP_AUTH_JWT_PUBLIC_KEY"
+        },
+        {
+          "description": "JWKS endpoint URI for JWT verification with automatic key rotation. Mutually exclusive with MCP_AUTH_JWT_PUBLIC_KEY; exactly one is required when MCP_AUTH_PROVIDER=jwt",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_JWT_JWKS_URI"
+        },
+        {
+          "description": "Expected issuer (iss) claim value for JWT verification. Unset skips issuer validation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_JWT_ISSUER"
+        },
+        {
+          "description": "Expected audience (aud) claim value for JWT verification. Unset skips audience validation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_JWT_AUDIENCE"
+        },
+        {
+          "description": "JWT signing algorithm to accept (default RS256). Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_JWT_ALGORITHM"
+        },
+        {
+          "description": "Claim carrying the caller group memberships (default groups). Supports dotted paths and full-URL claim keys",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_GROUPS_CLAIM"
+        },
+        {
+          "description": "Claim carrying the caller roles (default roles). Supports dotted paths and full-URL claim keys",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_ROLES_CLAIM"
         },
         {
           "description": "Custom server instructions text. Overrides built-in default. Set to empty string to disable.",
