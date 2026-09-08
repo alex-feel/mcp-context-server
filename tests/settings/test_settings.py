@@ -781,3 +781,45 @@ class TestMetadataIndexedFieldNames:
             fields = StorageSettings().metadata_indexed_fields
         assert 'status' in fields
         assert 'agent_name' in fields
+
+
+class TestEmbeddingQueryInstruction:
+    """Test the EMBEDDING_QUERY_INSTRUCTION field on EmbeddingSettings."""
+
+    def test_query_instruction_default_none(self) -> None:
+        """The instruction defaults to None so query embedding text stays bare."""
+        from app.settings import EmbeddingSettings
+
+        with env_var('EMBEDDING_QUERY_INSTRUCTION', None):
+            settings = EmbeddingSettings()
+        assert settings.query_instruction is None
+
+    def test_query_instruction_field_alias(self) -> None:
+        """The field maps to the EMBEDDING_QUERY_INSTRUCTION environment variable."""
+        from app.settings import EmbeddingSettings
+
+        field_info = EmbeddingSettings.model_fields['query_instruction']
+        assert field_info.alias == 'EMBEDDING_QUERY_INSTRUCTION'
+
+    def test_query_instruction_env_value_preserved_verbatim(self) -> None:
+        """A multi-line env value survives verbatim, including the embedded newline."""
+        from app.settings import EmbeddingSettings
+
+        value = 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:'
+        with env_var('EMBEDDING_QUERY_INSTRUCTION', value):
+            settings = EmbeddingSettings()
+        assert settings.query_instruction == value
+
+    def test_query_instruction_empty_env_is_falsy(self) -> None:
+        """An empty env value stays falsy so the query path treats it as unset."""
+        from app.settings import EmbeddingSettings
+
+        with env_var('EMBEDDING_QUERY_INSTRUCTION', ''):
+            settings = EmbeddingSettings()
+        assert not settings.query_instruction
+
+    def test_query_instruction_via_app_settings(self) -> None:
+        """The env value propagates through AppSettings.embedding."""
+        with env_var('EMBEDDING_QUERY_INSTRUCTION', 'Prefix: '):
+            settings = AppSettings()
+        assert settings.embedding.query_instruction == 'Prefix: '

@@ -246,6 +246,17 @@ class EmbeddingSettings(CommonSettings):
         le=4096,
         description='Embedding vector dimensions',
     )
+    query_instruction: str | None = Field(
+        default=None,
+        alias='EMBEDDING_QUERY_INSTRUCTION',
+        description='Instruction prefix prepended verbatim to the text embedded for search queries '
+                    '(semantic_search_context and the semantic leg of hybrid_search_context). '
+                    'Document embeddings on the store/update path always stay bare. '
+                    'Unset or empty string leaves query text unchanged. '
+                    'Instruct-aware models such as the default qwen3-embedding:0.6b prescribe an instructed '
+                    "query side ('Instruct: {task}\\nQuery:{query}'); cloud models such as OpenAI "
+                    'text-embedding-3-small need no prefix.',
+    )
 
     # Timeout and retry settings
     timeout_s: float = Field(
