@@ -99,7 +99,7 @@ For Kubernetes deployments, a Helm chart is provided with configurable values fo
 
 ## Authentication
 
-For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token configuration.
+For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token and IdP-issued JWT configuration.
 
 ## Getting Help
 

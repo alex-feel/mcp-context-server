@@ -34,13 +34,20 @@ FastMCP's `FASTMCP_STRICT_INPUT_VALIDATION` is intentionally INERT for this serv
 
 ## Authentication Settings
 
-| Variable               | Type     | Default        | Description                                                                            |
-|------------------------|----------|----------------|----------------------------------------------------------------------------------------|
-| `MCP_AUTH_PROVIDER`    | string   | `none`         | Authentication provider. Options: `none` (no auth), `simple_token` (bearer token)      |
-| `MCP_AUTH_TOKEN`       | secret   | _(none)_       | Bearer token for HTTP authentication. Required when `MCP_AUTH_PROVIDER=simple_token`   |
-| `MCP_AUTH_CLIENT_ID`   | string   | `mcp-client`   | Client ID assigned to authenticated requests. Used with `simple_token` provider        |
+| Variable                  | Type   | Default      | Description                                                                                                                                                                                                  |
+|---------------------------|--------|--------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `MCP_AUTH_PROVIDER`       | string | `none`       | Authentication provider. Options: `none` (no auth), `simple_token` (bearer token), `jwt` (IdP-issued JWT verification)                                                                                       |
+| `MCP_AUTH_TOKEN`          | secret | _(none)_     | Bearer token for HTTP authentication. Required when `MCP_AUTH_PROVIDER=simple_token`                                                                                                                         |
+| `MCP_AUTH_CLIENT_ID`      | string | `mcp-client` | Client ID assigned to authenticated requests. Used with `simple_token` provider                                                                                                                              |
+| `MCP_AUTH_JWT_PUBLIC_KEY` | secret | _(none)_     | PEM-encoded public key (asymmetric algorithms) or shared secret (HS* algorithms) for JWT verification. Mutually exclusive with `MCP_AUTH_JWT_JWKS_URI`; exactly one is required when `MCP_AUTH_PROVIDER=jwt` |
+| `MCP_AUTH_JWT_JWKS_URI`   | string | _(none)_     | JWKS endpoint URI for JWT verification with automatic key rotation. Mutually exclusive with `MCP_AUTH_JWT_PUBLIC_KEY`; exactly one is required when `MCP_AUTH_PROVIDER=jwt`                                  |
+| `MCP_AUTH_JWT_ISSUER`     | string | _(none)_     | Expected issuer (`iss`) claim value. Unset skips issuer validation                                                                                                                                           |
+| `MCP_AUTH_JWT_AUDIENCE`   | string | _(none)_     | Expected audience (`aud`) claim value. Unset skips audience validation                                                                                                                                       |
+| `MCP_AUTH_JWT_ALGORITHM`  | string | `RS256`      | JWT signing algorithm to accept. Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512                                                                                                       |
+| `MCP_AUTH_GROUPS_CLAIM`   | string | `groups`     | Claim carrying the caller group memberships (used with `jwt`). Supports dotted paths (`realm_access.roles`) and full-URL claim keys (`https://example.com/groups`)                                           |
+| `MCP_AUTH_ROLES_CLAIM`    | string | `roles`      | Claim carrying the caller roles (used with `jwt`). Supports dotted paths and full-URL claim keys                                                                                                             |
 
-For detailed authentication setup, see the [Authentication Guide](authentication.md).
+For detailed authentication setup, including per-IdP JWT configuration (Keycloak, Microsoft Entra ID, Auth0), see the [Authentication Guide](authentication.md).
 
 ## Server Instructions
 

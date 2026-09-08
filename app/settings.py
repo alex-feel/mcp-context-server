@@ -137,16 +137,25 @@ class AuthSettings(CommonSettings):
     """Authentication settings for HTTP transport.
 
     Configures the authentication provider passed to FastMCP's auth= parameter.
-    Supported providers: 'none' (default), 'simple_token'.
+    Supported providers: 'none' (default), 'simple_token', 'jwt'.
+
+    JWT provider configuration is intentionally NOT cross-validated here:
+    auth is architecturally inert on stdio transport (create_auth_provider()
+    is only called for HTTP transports), so requirements like "exactly one of
+    public key / JWKS URI" are enforced at provider construction in app.auth,
+    mirroring the simple_token precedent (MCP_AUTH_TOKEN presence is checked
+    in SimpleTokenVerifier, not here). A pydantic validator would crash stdio
+    startups over configuration that is never used.
     """
 
-    provider: Literal['none', 'simple_token'] = Field(
+    provider: Literal['none', 'simple_token', 'jwt'] = Field(
         default='none',
         alias='MCP_AUTH_PROVIDER',
         description=(
             'Authentication provider: '
             'none (no auth, default), '
-            'simple_token (bearer token)'
+            'simple_token (bearer token), '
+            'jwt (IdP-issued JWT verification)'
         ),
     )
     auth_token: SecretStr | None = Field(
@@ -158,6 +167,51 @@ class AuthSettings(CommonSettings):
         default='mcp-client',
         alias='MCP_AUTH_CLIENT_ID',
         description='Client ID to assign to authenticated requests (used with simple_token)',
+    )
+    jwt_public_key: SecretStr | None = Field(
+        default=None,
+        alias='MCP_AUTH_JWT_PUBLIC_KEY',
+        description='PEM-encoded public key (asymmetric algorithms) or shared secret (HS* algorithms) '
+                    'for JWT verification. Mutually exclusive with MCP_AUTH_JWT_JWKS_URI; '
+                    'exactly one is required when MCP_AUTH_PROVIDER=jwt',
+    )
+    jwt_jwks_uri: str | None = Field(
+        default=None,
+        alias='MCP_AUTH_JWT_JWKS_URI',
+        description='JWKS endpoint URI for JWT verification with automatic key rotation. '
+                    'Mutually exclusive with MCP_AUTH_JWT_PUBLIC_KEY; '
+                    'exactly one is required when MCP_AUTH_PROVIDER=jwt',
+    )
+    jwt_issuer: str | None = Field(
+        default=None,
+        alias='MCP_AUTH_JWT_ISSUER',
+        description='Expected issuer (iss) claim value for JWT verification. '
+                    'Unset skips issuer validation',
+    )
+    jwt_audience: str | None = Field(
+        default=None,
+        alias='MCP_AUTH_JWT_AUDIENCE',
+        description='Expected audience (aud) claim value for JWT verification. '
+                    'Unset skips audience validation',
+    )
+    jwt_algorithm: str = Field(
+        default='RS256',
+        alias='MCP_AUTH_JWT_ALGORITHM',
+        description='JWT signing algorithm to accept. '
+                    'Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512',
+    )
+    groups_claim: str = Field(
+        default='groups',
+        alias='MCP_AUTH_GROUPS_CLAIM',
+        description='Claim carrying the caller group memberships (used with jwt). '
+                    'Supports dotted paths (realm_access.roles) and full-URL claim keys '
+                    '(https://example.com/groups)',
+    )
+    roles_claim: str = Field(
+        default='roles',
+        alias='MCP_AUTH_ROLES_CLAIM',
+        description='Claim carrying the caller roles (used with jwt). '
+                    'Supports dotted paths and full-URL claim keys',
     )
 
 

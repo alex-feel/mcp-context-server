@@ -1,6 +1,6 @@
 """Tests for authentication module.
 
-This module tests the SimpleTokenVerifier authentication mechanism
+This module tests the SimpleTokenVerifier and JWT authentication mechanisms
 using centralized AuthSettings from app.settings.
 """
 
@@ -9,9 +9,16 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from fastmcp.server.auth.providers.jwt import RSAKeyPair
 
 from app.settings import AuthSettings
 from app.settings import get_settings
+
+
+@pytest.fixture(scope='module')
+def rsa_key_pair() -> RSAKeyPair:
+    """Generate one RSA key pair for all JWT tests in this module."""
+    return RSAKeyPair.generate()
 
 
 class TestAuthSettings:
@@ -310,6 +317,271 @@ class TestAuthFactory:
 
             with pytest.raises(ConfigurationError, match='cannot be empty'):
                 create_auth_provider()
+
+
+class TestJwtAuthSettings:
+    """Tests for the JWT fields on AuthSettings."""
+
+    def test_jwt_field_defaults(self) -> None:
+        """JWT key/issuer/audience default to unset; algorithm and claim keys have documented defaults."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith('MCP_AUTH')}
+        with patch.dict(os.environ, env, clear=True):
+            settings = AuthSettings()
+            assert settings.jwt_public_key is None
+            assert settings.jwt_jwks_uri is None
+            assert settings.jwt_issuer is None
+            assert settings.jwt_audience is None
+            assert settings.jwt_algorithm == 'RS256'
+            assert settings.groups_claim == 'groups'
+            assert settings.roles_claim == 'roles'
+
+    def test_jwt_fields_load_from_env(self) -> None:
+        """Every MCP_AUTH_JWT_* / claim-key env var maps onto its settings field."""
+        env_updates = {
+            'MCP_AUTH_PROVIDER': 'jwt',
+            'MCP_AUTH_JWT_PUBLIC_KEY': 'shared-secret',
+            'MCP_AUTH_JWT_ISSUER': 'https://issuer.test',
+            'MCP_AUTH_JWT_AUDIENCE': 'ctx-server',
+            'MCP_AUTH_JWT_ALGORITHM': 'HS256',
+            'MCP_AUTH_GROUPS_CLAIM': 'https://example.com/groups',
+            'MCP_AUTH_ROLES_CLAIM': 'realm_access.roles',
+        }
+        with patch.dict(os.environ, env_updates, clear=False):
+            settings = AuthSettings()
+            assert settings.provider == 'jwt'
+            assert settings.jwt_public_key is not None
+            assert settings.jwt_public_key.get_secret_value() == 'shared-secret'
+            assert settings.jwt_issuer == 'https://issuer.test'
+            assert settings.jwt_audience == 'ctx-server'
+            assert settings.jwt_algorithm == 'HS256'
+            assert settings.groups_claim == 'https://example.com/groups'
+            assert settings.roles_claim == 'realm_access.roles'
+
+    def test_jwt_public_key_is_secret(self) -> None:
+        """The key/secret value is masked in string representations."""
+        with patch.dict(os.environ, {'MCP_AUTH_JWT_PUBLIC_KEY': 'hs-shared-secret'}, clear=False):
+            settings = AuthSettings()
+            assert 'hs-shared-secret' not in str(settings.jwt_public_key)
+            assert 'hs-shared-secret' not in repr(settings.jwt_public_key)
+
+
+class TestJwtAuthFactory:
+    """Tests for the jwt arm of the auth provider factory."""
+
+    @pytest.fixture(autouse=True)
+    def clear_settings_cache(self) -> None:
+        """Clear the settings cache before each test."""
+        get_settings.cache_clear()
+
+    @staticmethod
+    def _jwt_env(**overrides: str) -> dict[str, str]:
+        """Build a clean environment for the jwt provider with the given vars."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith('MCP_AUTH')}
+        env['MCP_AUTH_PROVIDER'] = 'jwt'
+        env.update(overrides)
+        return env
+
+    def test_factory_raises_when_no_key_configured(self) -> None:
+        """Neither MCP_AUTH_JWT_PUBLIC_KEY nor MCP_AUTH_JWT_JWKS_URI is a startup misconfiguration."""
+        with patch.dict(os.environ, self._jwt_env(), clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match='exactly one of'):
+                create_auth_provider()
+
+    def test_factory_raises_when_both_keys_configured(self) -> None:
+        """Setting both key sources is rejected as mutually exclusive."""
+        env = self._jwt_env(
+            MCP_AUTH_JWT_PUBLIC_KEY='some-secret',
+            MCP_AUTH_JWT_JWKS_URI='https://idp.example.com/certs',
+        )
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match='mutually exclusive'):
+                create_auth_provider()
+
+    def test_factory_treats_whitespace_key_as_unset(self) -> None:
+        """A whitespace-only key value counts as unset, mirroring MCP_AUTH_TOKEN handling."""
+        with patch.dict(os.environ, self._jwt_env(MCP_AUTH_JWT_PUBLIC_KEY='   '), clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match='exactly one of'):
+                create_auth_provider()
+
+    def test_factory_creates_verifier_from_static_key(self, rsa_key_pair: RSAKeyPair) -> None:
+        """A PEM public key produces a JWTVerifier with issuer/audience/algorithm applied."""
+        env = self._jwt_env(
+            MCP_AUTH_JWT_PUBLIC_KEY=rsa_key_pair.public_key,
+            MCP_AUTH_JWT_ISSUER='https://issuer.test',
+            MCP_AUTH_JWT_AUDIENCE='ctx-server',
+        )
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+            from app.auth import create_auth_provider
+
+            provider = create_auth_provider()
+            assert isinstance(provider, JWTVerifier)
+            assert provider.issuer == 'https://issuer.test'
+            assert provider.audience == 'ctx-server'
+            assert provider.algorithm == 'RS256'
+            assert provider.jwks_uri is None
+
+    def test_factory_creates_verifier_from_jwks_uri(self) -> None:
+        """A JWKS URI produces a JWTVerifier in JWKS mode."""
+        env = self._jwt_env(MCP_AUTH_JWT_JWKS_URI='https://idp.example.com/certs')
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+            from app.auth import create_auth_provider
+
+            provider = create_auth_provider()
+            assert isinstance(provider, JWTVerifier)
+            assert provider.jwks_uri == 'https://idp.example.com/certs'
+            assert provider.public_key is None
+
+    def test_factory_raises_on_unsupported_algorithm(self) -> None:
+        """An unsupported MCP_AUTH_JWT_ALGORITHM value is a startup misconfiguration."""
+        env = self._jwt_env(
+            MCP_AUTH_JWT_PUBLIC_KEY='some-secret',
+            MCP_AUTH_JWT_ALGORITHM='none',
+        )
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match='Unsupported algorithm'):
+                create_auth_provider()
+
+    def test_factory_raises_on_symmetric_algorithm_with_jwks(self) -> None:
+        """HS* algorithms cannot fetch keys from a JWKS endpoint."""
+        env = self._jwt_env(
+            MCP_AUTH_JWT_JWKS_URI='https://idp.example.com/certs',
+            MCP_AUTH_JWT_ALGORITHM='HS256',
+        )
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match='cannot be used with jwks_uri'):
+                create_auth_provider()
+
+    def test_factory_raises_on_symmetric_algorithm_with_pem_key(self, rsa_key_pair: RSAKeyPair) -> None:
+        """HS* algorithms require a shared secret, not PEM public key material."""
+        env = self._jwt_env(
+            MCP_AUTH_JWT_PUBLIC_KEY=rsa_key_pair.public_key,
+            MCP_AUTH_JWT_ALGORITHM='HS256',
+        )
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match='shared secret'):
+                create_auth_provider()
+
+
+class TestJwtVerifierClaimsRoundTrip:
+    """Round-trip tests: minted JWTs through the factory-built verifier."""
+
+    @pytest.fixture(autouse=True)
+    def clear_settings_cache(self) -> None:
+        """Clear the settings cache before each test."""
+        get_settings.cache_clear()
+
+    @staticmethod
+    def _verifier_env(rsa_key_pair: RSAKeyPair) -> dict[str, str]:
+        """Build the environment for a static-key verifier with issuer/audience pinned."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith('MCP_AUTH')}
+        env.update({
+            'MCP_AUTH_PROVIDER': 'jwt',
+            'MCP_AUTH_JWT_PUBLIC_KEY': rsa_key_pair.public_key,
+            'MCP_AUTH_JWT_ISSUER': 'https://issuer.test',
+            'MCP_AUTH_JWT_AUDIENCE': 'ctx-server',
+        })
+        return env
+
+    @pytest.mark.asyncio
+    async def test_valid_token_carries_claims(self, rsa_key_pair: RSAKeyPair) -> None:
+        """A valid minted token verifies and its claims reach AccessToken.claims."""
+        with patch.dict(os.environ, self._verifier_env(rsa_key_pair), clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            provider = create_auth_provider()
+            assert provider is not None
+            token = rsa_key_pair.create_token(
+                subject='alice',
+                issuer='https://issuer.test',
+                audience='ctx-server',
+                additional_claims={'groups': ['team-a'], 'roles': ['publisher']},
+            )
+            access_token = await provider.verify_token(token)
+            assert access_token is not None
+            assert access_token.claims.get('sub') == 'alice'
+            assert access_token.claims.get('groups') == ['team-a']
+            assert access_token.claims.get('roles') == ['publisher']
+
+    @pytest.mark.asyncio
+    async def test_expired_token_is_rejected(self, rsa_key_pair: RSAKeyPair) -> None:
+        """An expired minted token is rejected."""
+        with patch.dict(os.environ, self._verifier_env(rsa_key_pair), clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            provider = create_auth_provider()
+            assert provider is not None
+            token = rsa_key_pair.create_token(
+                subject='alice',
+                issuer='https://issuer.test',
+                audience='ctx-server',
+                expires_in_seconds=-60,
+            )
+            assert await provider.verify_token(token) is None
+
+    @pytest.mark.asyncio
+    async def test_wrong_audience_is_rejected(self, rsa_key_pair: RSAKeyPair) -> None:
+        """A token minted for another audience is rejected."""
+        with patch.dict(os.environ, self._verifier_env(rsa_key_pair), clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            provider = create_auth_provider()
+            assert provider is not None
+            token = rsa_key_pair.create_token(
+                subject='alice',
+                issuer='https://issuer.test',
+                audience='other-service',
+            )
+            assert await provider.verify_token(token) is None
+
+    @pytest.mark.asyncio
+    async def test_wrong_signature_is_rejected(self, rsa_key_pair: RSAKeyPair) -> None:
+        """A token signed by a different key pair is rejected."""
+        with patch.dict(os.environ, self._verifier_env(rsa_key_pair), clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            provider = create_auth_provider()
+            assert provider is not None
+            other_pair = RSAKeyPair.generate()
+            token = other_pair.create_token(
+                subject='mallory',
+                issuer='https://issuer.test',
+                audience='ctx-server',
+            )
+            assert await provider.verify_token(token) is None
 
 
 class TestAuthTransportInteraction:

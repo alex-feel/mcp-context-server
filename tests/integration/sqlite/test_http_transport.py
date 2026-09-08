@@ -31,12 +31,15 @@ import httpx
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.server.auth.providers.jwt import RSAKeyPair
 
 # The HTTP transport mode the project exposes. main() registers /health and
 # wires auth for every non-stdio transport; 'http' maps to FastMCP's
 # streamable-http MCP endpoint mounted at /mcp.
 HTTP_TRANSPORT = 'http'
 TEST_TOKEN = 'integration-secret-token-123'
+JWT_ISSUER = 'https://issuer.integration.test'
+JWT_AUDIENCE = 'mcp-context-server-test'
 
 # run_server.py wrapper that configures sys.path and test mode, then calls main().
 WRAPPER_SCRIPT = Path(__file__).parent.parent.parent / 'run_server.py'
@@ -87,7 +90,31 @@ def _build_env(*, db_path: Path, port: int, auth: bool) -> dict[str, str]:
         env['MCP_AUTH_TOKEN'] = TEST_TOKEN
     else:
         env['MCP_AUTH_PROVIDER'] = 'none'
-        env.pop('MCP_AUTH_TOKEN', None)
+        env.pop('MCP_AUTH_TOKEN', '')
+    return env
+
+
+def _build_jwt_env(*, db_path: Path, port: int, public_key: str) -> dict[str, str]:
+    """Build the subprocess environment for a server verifying minted JWTs.
+
+    Starts from the no-auth environment, strips any inherited JWT configuration,
+    and enables the jwt provider with a static public key plus pinned issuer
+    and audience so only tokens minted by the test key pair are accepted.
+
+    Args:
+        db_path: Temporary SQLite database path for this server instance.
+        port: Loopback TCP port the HTTP server should bind.
+        public_key: PEM-encoded public key matching the test RSA key pair.
+
+    Returns:
+        A complete environment dict for ``subprocess.Popen``.
+    """
+    env = _build_env(db_path=db_path, port=port, auth=False)
+    env = {k: v for k, v in env.items() if not k.startswith('MCP_AUTH_JWT_')}
+    env['MCP_AUTH_PROVIDER'] = 'jwt'
+    env['MCP_AUTH_JWT_PUBLIC_KEY'] = public_key
+    env['MCP_AUTH_JWT_ISSUER'] = JWT_ISSUER
+    env['MCP_AUTH_JWT_AUDIENCE'] = JWT_AUDIENCE
     return env
 
 
@@ -194,6 +221,44 @@ def http_noauth_server(tmp_path: Path) -> Iterator[str]:
         _terminate(proc)
 
 
+@pytest.fixture(scope='module')
+def jwt_key_pair() -> RSAKeyPair:
+    """Generate one RSA key pair shared by all JWT tests in this module."""
+    return RSAKeyPair.generate()
+
+
+@pytest.fixture
+def http_jwt_server(tmp_path: Path, jwt_key_pair: RSAKeyPair) -> Iterator[str]:
+    """Launch a real HTTP server verifying JWTs against the test key pair.
+
+    Spawns ``tests/run_server.py`` with ``MCP_AUTH_PROVIDER=jwt`` and the test
+    key pair's public key (issuer and audience pinned), waits for ``/health``
+    readiness, yields the loopback origin, and terminates the subprocess in
+    teardown so no orphan process or port binding leaks.
+
+    Yields:
+        The server origin URL, e.g. ``http://127.0.0.1:<port>``.
+    """
+    port = _free_port()
+    base_url = f'http://127.0.0.1:{port}'
+    env = _build_jwt_env(
+        db_path=tmp_path / 'http_jwt.db',
+        port=port,
+        public_key=jwt_key_pair.public_key,
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(WRAPPER_SCRIPT)],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_for_health(base_url, proc)
+        yield base_url
+    finally:
+        _terminate(proc)
+
+
 def _initialize_payload() -> dict[str, object]:
     """Return a minimal MCP ``initialize`` JSON-RPC request body."""
     return {
@@ -263,6 +328,99 @@ async def test_http_request_with_correct_token_is_accepted(http_auth_server: str
                 'thread_id': thread_id,
                 'source': 'agent',
                 'text': 'HTTP bearer-auth end-to-end probe entry.',
+            },
+        )
+        store_data = store_result.structured_content
+        assert store_data is not None, 'store_context returned no structured content'
+        assert store_data.get('success') is True, f'store_context failed: {store_data}'
+
+        search_result = await client.call_tool('search_context', {'thread_id': thread_id})
+        search_data = search_result.structured_content
+        assert search_data is not None, 'search_context returned no structured content'
+        assert search_data.get('count') == 1, f'Expected 1 stored entry, got {search_data}'
+
+
+@pytest.mark.integration
+def test_http_jwt_request_without_token_is_rejected(http_jwt_server: str) -> None:
+    """An MCP request with NO Authorization header is rejected by the jwt provider."""
+    resp = httpx.post(
+        f'{http_jwt_server}/mcp',
+        json=_initialize_payload(),
+        headers={'Accept': 'application/json, text/event-stream'},
+        timeout=10.0,
+    )
+    assert resp.status_code == 401, (
+        f'Expected 401 for missing Authorization header, got {resp.status_code}: '
+        f'{resp.text[:300]}'
+    )
+
+
+@pytest.mark.integration
+def test_http_jwt_invalid_tokens_are_rejected(http_jwt_server: str, jwt_key_pair: RSAKeyPair) -> None:
+    """Wrong-signature, expired, and wrong-audience JWTs are all rejected."""
+    other_pair = RSAKeyPair.generate()
+    invalid_tokens = {
+        'wrong signature': other_pair.create_token(
+            subject='mallory',
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+        ),
+        'expired': jwt_key_pair.create_token(
+            subject='alice',
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+            expires_in_seconds=-60,
+        ),
+        'wrong audience': jwt_key_pair.create_token(
+            subject='alice',
+            issuer=JWT_ISSUER,
+            audience='some-other-service',
+        ),
+    }
+    for reason, token in invalid_tokens.items():
+        resp = httpx.post(
+            f'{http_jwt_server}/mcp',
+            json=_initialize_payload(),
+            headers={
+                'Accept': 'application/json, text/event-stream',
+                'Authorization': f'Bearer {token}',
+            },
+            timeout=10.0,
+        )
+        assert resp.status_code == 401, (
+            f'Expected 401 for {reason} token, got {resp.status_code}: '
+            f'{resp.text[:300]}'
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_jwt_valid_token_is_accepted(http_jwt_server: str, jwt_key_pair: RSAKeyPair) -> None:
+    """A valid minted JWT authenticates and can list and call tools."""
+    token = jwt_key_pair.create_token(
+        subject='integration-user',
+        issuer=JWT_ISSUER,
+        audience=JWT_AUDIENCE,
+        additional_claims={'groups': ['team-a'], 'roles': ['publisher']},
+    )
+    transport = StreamableHttpTransport(
+        url=f'{http_jwt_server}/mcp',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    async with Client(transport) as client:
+        await client.ping()
+
+        tools = await client.list_tools()
+        tool_names = {tool.name for tool in tools}
+        assert 'store_context' in tool_names, f'store_context missing from tools: {tool_names}'
+
+        thread_id = f'http_jwt_test_{int(time.time())}'
+        store_result = await client.call_tool(
+            'store_context',
+            {
+                'thread_id': thread_id,
+                'source': 'agent',
+                'text': 'HTTP JWT-auth end-to-end probe entry.',
             },
         )
         store_data = store_result.structured_content
