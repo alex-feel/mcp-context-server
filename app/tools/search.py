@@ -632,10 +632,17 @@ async def _semantic_search_raw(
     repos = await ensure_repositories()
 
     # Generate embedding for query, measuring the call so callers can surface the
-    # documented embedding_generation_ms stat.
+    # documented embedding_generation_ms stat. When EMBEDDING_QUERY_INSTRUCTION is
+    # set, it is prepended verbatim to the text handed to the embedding provider,
+    # because instruct-aware models condition query vectors on such a prefix. Only
+    # this embed_query call sees the prefix: reranking, the hybrid FTS leg, and the
+    # response echo all keep the bare query, and document embeddings on the
+    # store/update path are never prefixed.
+    query_instruction = settings.embedding.query_instruction
+    embedding_input = f'{query_instruction}{query}' if query_instruction else query
     embedding_start = time.perf_counter()
     try:
-        query_embedding = await embedding_provider.embed_query(query)
+        query_embedding = await embedding_provider.embed_query(embedding_input)
     except Exception as e:
         logger.error(f'Failed to generate query embedding: {e}')
         raise ToolError(f'Failed to generate embedding for query: {format_exception_message(e)}') from e

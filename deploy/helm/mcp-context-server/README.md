@@ -127,6 +127,9 @@ search:
     enabled: true
     model: "qwen3-embedding:0.6b"
     dim: 1024
+    # Optional query-side instruction for instruct-aware models such as qwen3-embedding
+    # (double-quoted scalar so \n becomes a real newline; applies to search queries only)
+    queryInstruction: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:"
   hybrid:
     enabled: true
     rrfK: 60

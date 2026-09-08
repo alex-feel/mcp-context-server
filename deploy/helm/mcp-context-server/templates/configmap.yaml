@@ -40,6 +40,9 @@ data:
   EMBEDDING_PROVIDER: {{ .Values.search.semantic.provider | quote }}
   EMBEDDING_MODEL: {{ .Values.search.semantic.model | quote }}
   EMBEDDING_DIM: {{ .Values.search.semantic.dim | quote }}
+  {{- if .Values.search.semantic.queryInstruction }}
+  EMBEDDING_QUERY_INSTRUCTION: {{ .Values.search.semantic.queryInstruction | quote }}
+  {{- end }}
   EMBEDDING_TIMEOUT_S: {{ .Values.search.semantic.timeout | quote }}
   EMBEDDING_RETRY_MAX_ATTEMPTS: {{ .Values.search.semantic.retryMaxAttempts | quote }}
   EMBEDDING_RETRY_BASE_DELAY_S: {{ .Values.search.semantic.retryBaseDelay | quote }}

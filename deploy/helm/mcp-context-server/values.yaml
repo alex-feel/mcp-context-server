@@ -118,6 +118,15 @@ search:
     provider: "ollama"
     model: "qwen3-embedding:0.6b"
     dim: 1024
+    # Query-side instruction prefix for instruct-aware embedding models, rendered as
+    # EMBEDDING_QUERY_INSTRUCTION. Prepended verbatim to the text embedded for search
+    # queries only; document embeddings on the store/update path always stay bare.
+    # Empty leaves query text unchanged. The default qwen3-embedding:0.6b model
+    # prescribes an instructed query side; set a double-quoted scalar so \n becomes
+    # a real newline, e.g.
+    # "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:"
+    # See docs/environment-variables.md for the full guidance.
+    queryInstruction: ""
     # Timeout and retry settings
     timeout: 240
     retryMaxAttempts: 5

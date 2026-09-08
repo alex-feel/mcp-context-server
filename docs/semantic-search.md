@@ -160,6 +160,8 @@ Ollama runs embedding models locally with no API costs.
 
 **Docker Networking**: Use `host.docker.internal:11434` (Windows/macOS) or `172.17.0.1:11434` (Linux) when running in containers.
 
+**Instructed queries**: the default `qwen3-embedding:0.6b` model is instruct-aware — its model card prescribes an instruction prefix on the query side and omitting it costs roughly 1-5% retrieval quality. Set `EMBEDDING_QUERY_INSTRUCTION` to enable the prefix for search queries; the recommended value and the multi-line quoting mechanics are documented in the [Environment Variables Reference](environment-variables.md#embedding-settings).
+
 #### Alternative Ollama Models
 
 | Model                | Dimensions | Notes                                              |

@@ -47,6 +47,9 @@ services:
       - OLLAMA_HOST=http://ollama:11434
       - EMBEDDING_MODEL=qwen3-embedding:0.6b
       - EMBEDDING_DIM=1024
+      # Query-side instruction for the instruct-aware qwen3 embedding model. Double-quoted
+      # YAML scalar so \n becomes a real newline; applies to search-query embeddings only.
+      - "EMBEDDING_QUERY_INSTRUCTION=Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:"
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true

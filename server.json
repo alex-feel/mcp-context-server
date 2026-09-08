@@ -488,6 +488,13 @@
           "name": "EMBEDDING_MAX_CONCURRENT"
         },
         {
+          "description": "Instruction prefix prepended verbatim to the text embedded for search queries (semantic and hybrid search); document embeddings on the store/update path always stay bare. Unset or empty leaves query text unchanged. Recommended for instruct-aware models such as the default qwen3-embedding:0.6b; cloud models such as OpenAI text-embedding-3-small need no prefix.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "EMBEDDING_QUERY_INSTRUCTION"
+        },
+        {
           "description": "Enable summary generation for stored context. Default true - server fails if dependencies not met. Set false to disable summaries.",
           "isRequired": false,
           "format": "boolean",
@@ -1591,6 +1598,13 @@
           "format": "number",
           "isSecret": false,
           "name": "EMBEDDING_MAX_CONCURRENT"
+        },
+        {
+          "description": "Instruction prefix prepended verbatim to the text embedded for search queries (semantic and hybrid search); document embeddings on the store/update path always stay bare. Unset or empty leaves query text unchanged. Recommended for instruct-aware models such as the default qwen3-embedding:0.6b; cloud models such as OpenAI text-embedding-3-small need no prefix.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "EMBEDDING_QUERY_INSTRUCTION"
         },
         {
           "description": "Enable summary generation for stored context. Default true - server fails if dependencies not met. Set false to disable summaries.",
