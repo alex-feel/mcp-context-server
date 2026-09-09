@@ -55,8 +55,8 @@ async def backend_and_repos(
 
         def _write(conn: sqlite3.Connection, cid: str = cid) -> None:
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                'VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, ?, ?, ?, ?, 'local')",
                 (cid, 't', 'agent', 'text', 'needle body'),
             )
 

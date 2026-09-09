@@ -27,6 +27,7 @@ from pydantic import TypeAdapter
 
 import app.tools._shared as shared_module
 from app.models import MAX_IMAGES_PER_ENTRY
+from app.repositories.context_repository import EntryProbe
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
 from app.summary.retry import SummaryRetryExhaustedError
@@ -730,6 +731,8 @@ class TestExecuteStoreInTransaction:
         """Store a new entry with no tags, images, or embeddings."""
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -753,6 +756,8 @@ class TestExecuteStoreInTransaction:
         """New entry stores tags via store_tags (not replace)."""
         await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=['tag1', 'tag2'], validated_images=[],
@@ -769,6 +774,8 @@ class TestExecuteStoreInTransaction:
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=(42, True))
         await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=['tag1'], validated_images=[],
@@ -790,6 +797,8 @@ class TestExecuteStoreInTransaction:
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
         await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=[], validated_images=[],
@@ -806,6 +815,8 @@ class TestExecuteStoreInTransaction:
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
         await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=[],
@@ -822,6 +833,8 @@ class TestExecuteStoreInTransaction:
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
         await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=[], images_provided=True,
@@ -841,6 +854,8 @@ class TestExecuteStoreInTransaction:
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
         await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=[], images_provided=False,
@@ -867,6 +882,8 @@ class TestExecuteStoreInTransaction:
         with pytest.raises(EmbeddingsReconcileRequiredError):
             await execute_store_in_transaction(
                 mock_repos, mock_txn,
+                owner_id='local',
+                visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='text', metadata_str=None, summary='reused summary',
                 tags=None, validated_images=[],
@@ -882,6 +899,8 @@ class TestExecuteStoreInTransaction:
         chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=[],
@@ -900,6 +919,8 @@ class TestExecuteStoreInTransaction:
         chunk_embeddings = cast(_ChunkEmbeddingList, [MagicMock()])
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=[],
@@ -917,6 +938,8 @@ class TestExecuteStoreInTransaction:
         with pytest.raises(ToolError, match='Failed to store context'):
             await execute_store_in_transaction(
                 mock_repos, mock_txn,
+                owner_id='local',
+                visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='text', metadata_str=None, summary=None,
                 tags=None, validated_images=[],
@@ -938,6 +961,8 @@ class TestExecuteStoreInTransaction:
         with pytest.raises(EmbeddingsReconcileRequiredError) as exc_info:
             await execute_store_in_transaction(
                 mock_repos, mock_txn,
+                owner_id='local',
+                visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='reconcile me', metadata_str=None, summary=None,
                 tags=None, validated_images=[],
@@ -956,6 +981,8 @@ class TestExecuteStoreInTransaction:
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
         _, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=[],
@@ -973,6 +1000,8 @@ class TestExecuteStoreInTransaction:
         chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
         _, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=[],
@@ -990,6 +1019,8 @@ class TestExecuteStoreInTransaction:
         """With generation disabled (default), a new INSERT with no embeddings is allowed."""
         _, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=[],
@@ -1008,6 +1039,8 @@ class TestExecuteStoreInTransaction:
         images = [{'data': 'abc', 'mime_type': 'image/png'}]
         await execute_store_in_transaction(
             mock_repos, mock_txn,
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='multimodal',
             text_content='text', metadata_str=None, summary=None,
             tags=None, validated_images=images,
@@ -1439,7 +1472,7 @@ class TestRereadEntryVersion:
         """A dropped connection during the refresh retries and yields the new version."""
         repos = MagicMock()
         repos.context.check_entry_exists = AsyncMock(
-            side_effect=[asyncpg.InterfaceError('connection recycled'), (True, 'agent', 7)],
+            side_effect=[asyncpg.InterfaceError('connection recycled'), EntryProbe(True, 'agent', 7, 'local')],
         )
         with patch('app.tools._shared.asyncio.sleep', new_callable=AsyncMock):
             exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456')
@@ -1451,7 +1484,7 @@ class TestRereadEntryVersion:
     async def test_missing_entry_is_reported_not_retried(self) -> None:
         """A deleted row is a clean answer, not a fault to retry."""
         repos = MagicMock()
-        repos.context.check_entry_exists = AsyncMock(return_value=(False, None, None))
+        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(False, None, None, None))
         exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456')
         assert exists is False
         assert version is None

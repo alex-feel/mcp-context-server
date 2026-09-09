@@ -51,6 +51,8 @@ class TestGhostReferencesNotRewritten:
     ) -> None:
         """``store_with_deduplication`` does not rewrite any substring in text_content."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content=GHOST_TEXT, metadata=None,
         )
@@ -65,6 +67,8 @@ class TestGhostReferencesNotRewritten:
     ) -> None:
         """``update_context_entry`` writes text_content verbatim without rewriting."""
         original_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='Old content', metadata=None,
         )
@@ -89,8 +93,8 @@ class TestGhostReferencesNotRewritten:
         def _insert(conn: sqlite3.Connection) -> None:
             conn.execute(
                 '''INSERT INTO context_entries
-                   (id, thread_id, source, content_type, text_content, summary)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
+                   (id, thread_id, source, content_type, text_content, summary, owner_id)
+                   VALUES (?, ?, ?, ?, ?, ?, 'local')''',
                 (new_id, 't', 'user', 'text', 'irrelevant', GHOST_TEXT),
             )
 

@@ -62,8 +62,8 @@ async def _insert_entries(
 
         def _write(conn: sqlite3.Connection, cid: str = cid, text: str = text) -> None:
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                'VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, ?, ?, ?, ?, 'local')",
                 (cid, thread_id, 'agent', 'text', text),
             )
 

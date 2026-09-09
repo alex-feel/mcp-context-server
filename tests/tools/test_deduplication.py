@@ -69,6 +69,8 @@ class TestDeduplication:
         """Test that identical consecutive entries update the timestamp instead of inserting."""
         # Store first entry
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -86,6 +88,8 @@ class TestDeduplication:
 
         # Store identical entry
         context_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -121,6 +125,8 @@ class TestDeduplication:
         """Test that non-identical entries still insert as new rows."""
         # Store first entry
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -134,6 +140,8 @@ class TestDeduplication:
 
         # Store different text content
         context_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -147,6 +155,8 @@ class TestDeduplication:
 
         # Store different source
         context_id3, was_updated3 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='agent',  # Different source
             content_type='text',
@@ -160,6 +170,8 @@ class TestDeduplication:
 
         # Store different thread
         context_id4, was_updated4 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='different-thread',  # Different thread
             source='agent',
             content_type='text',
@@ -182,6 +194,8 @@ class TestDeduplication:
         """Test that only the LATEST entry is checked for deduplication, not all entries."""
         # Store first entry
         context_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -191,6 +205,8 @@ class TestDeduplication:
 
         # Store different entry
         context_id2, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -200,6 +216,8 @@ class TestDeduplication:
 
         # Store third different entry
         context_id3, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -209,6 +227,8 @@ class TestDeduplication:
 
         # Now store duplicate of FIRST entry (should insert, not update)
         context_id4, was_updated4 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -222,6 +242,8 @@ class TestDeduplication:
 
         # Now store duplicate of LATEST entry (should update)
         context_id5, was_updated5 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -243,6 +265,8 @@ class TestDeduplication:
         """Test that return values (context_id and was_updated flag) are correct."""
         # First entry: should insert
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='agent',
             content_type='text',
@@ -257,6 +281,8 @@ class TestDeduplication:
 
         # Duplicate: should update
         context_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='agent',
             content_type='text',
@@ -271,6 +297,8 @@ class TestDeduplication:
 
         # Different content: should insert
         context_id3, was_updated3 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='agent',
             content_type='text',
@@ -290,6 +318,8 @@ class TestDeduplication:
         """Test that metadata changes don't affect deduplication logic."""
         # Store with metadata
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -301,6 +331,8 @@ class TestDeduplication:
 
         # Store same content with different metadata
         context_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -313,6 +345,8 @@ class TestDeduplication:
 
         # Store same content with no metadata
         context_id3, was_updated3 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -334,6 +368,8 @@ class TestDeduplication:
         """Test that content_type field doesn't affect deduplication (only thread_id, source, text_content)."""
         # Store as text type
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -345,6 +381,8 @@ class TestDeduplication:
 
         # Store same with multimodal type (should still deduplicate based on text)
         context_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='multimodal',  # Different content type
@@ -368,6 +406,8 @@ class TestDeduplication:
         results = []
         for i in range(5):
             context_id, was_updated = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='rapid-thread',
                 source='agent',
                 content_type='text',
@@ -390,6 +430,8 @@ class TestDeduplication:
         """Test deduplication with empty text content."""
         # Store empty content
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -401,6 +443,8 @@ class TestDeduplication:
 
         # Store duplicate empty content
         context_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -413,6 +457,8 @@ class TestDeduplication:
 
         # Store non-empty content
         context_id3, was_updated3 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -434,6 +480,8 @@ class TestDeduplication:
 
         # Store long content
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='agent',
             content_type='text',
@@ -445,6 +493,8 @@ class TestDeduplication:
 
         # Store duplicate long content
         context_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='agent',
             content_type='text',
@@ -458,6 +508,8 @@ class TestDeduplication:
         # Store slightly different long content
         different_long_text = 'A' * 10000 + ' DIFFERENT middle ' + 'B' * 10000
         context_id3, was_updated3 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='agent',
             content_type='text',
@@ -475,11 +527,15 @@ class TestDeduplication:
     async def test_metadata_updated_during_dedup(self, repos: RepositoryContainer) -> None:
         """Metadata is updated via COALESCE during deduplication."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Test content',
             metadata=json.dumps({'key': 'original'}),
         )
         context_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Test content',
             metadata=json.dumps({'key': 'updated', 'new_key': 'value'}),
@@ -493,11 +549,15 @@ class TestDeduplication:
     async def test_metadata_preserved_when_none_during_dedup(self, repos: RepositoryContainer) -> None:
         """Metadata is preserved via COALESCE when None is passed during deduplication."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Test content',
             metadata=json.dumps({'key': 'original'}),
         )
         context_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Test content',
             metadata=None,
@@ -510,10 +570,14 @@ class TestDeduplication:
     async def test_content_type_updated_during_dedup(self, repos: RepositoryContainer) -> None:
         """Content type is updated during deduplication."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Test content', metadata=None,
         )
         context_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='multimodal',
             text_content='Test content', metadata=None,
         )
@@ -524,11 +588,15 @@ class TestDeduplication:
     async def test_updated_at_changes_during_dedup(self, repos: RepositoryContainer) -> None:
         """updated_at timestamp changes after deduplication."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Test content', metadata=None,
         )
         await asyncio.to_thread(time.sleep, 1.1)  # SQLite has second precision
         context_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Test content', metadata=None,
         )
@@ -539,12 +607,16 @@ class TestDeduplication:
     async def test_tags_replaced_not_accumulated_during_dedup(self, repos: RepositoryContainer) -> None:
         """Tags are replaced (not accumulated) when replace_tags_for_context is used during dedup."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Tag test content', metadata=None,
         )
         await repos.tags.store_tags(context_id, ['a', 'b'])
         # Dedup with was_updated=True
         context_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Tag test content', metadata=None,
         )
@@ -556,12 +628,16 @@ class TestDeduplication:
     async def test_tags_preserved_when_none_during_dedup(self, repos: RepositoryContainer) -> None:
         """Tags are preserved when not provided during deduplication."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Tag preserve test', metadata=None,
         )
         await repos.tags.store_tags(context_id, ['existing'])
         # Dedup fires but no tag operation called (simulates tags=None)
         context_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Tag preserve test', metadata=None,
         )
@@ -578,6 +654,8 @@ class TestDuplicatePreCheck:
     async def test_check_latest_is_duplicate_found(self, repos: RepositoryContainer) -> None:
         """Pre-check detects duplicate content."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Duplicate text', metadata=None,
         )
@@ -590,6 +668,8 @@ class TestDuplicatePreCheck:
     async def test_check_latest_is_duplicate_not_found(self, repos: RepositoryContainer) -> None:
         """Pre-check returns None for different content."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Original text', metadata=None,
         )
@@ -608,6 +688,8 @@ class TestDuplicatePreCheck:
     async def test_check_latest_different_source(self, repos: RepositoryContainer) -> None:
         """Pre-check returns None when source differs."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Same text', metadata=None,
         )
@@ -619,10 +701,14 @@ class TestDuplicatePreCheck:
     async def test_check_latest_only_checks_latest(self, repos: RepositoryContainer) -> None:
         """Pre-check only checks the latest entry, not older ones."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Old matching text', metadata=None,
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='New different text', metadata=None,
         )
@@ -643,6 +729,8 @@ class TestDuplicatePreCheck:
         restored one, so the mismatched summary would persist via COALESCE.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='snap-t1', source='user', content_type='text',
             text_content='Snapshot text', metadata=None, summary='Snapshot summary',
         )
@@ -658,6 +746,8 @@ class TestDuplicatePreCheck:
     ) -> None:
         """A candidate without a stored summary yields summary=None in the snapshot."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='snap-t2', source='user', content_type='text',
             text_content='No summary here', metadata=None,
         )
@@ -684,16 +774,22 @@ class TestDeduplicationInterleaving:
         """Dedup is suppressed when an opposite-source entry exists after the candidate."""
         # User says "Proceed"
         id_a, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Proceed', metadata=None,
         )
         # Agent responds
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content='Working on it', metadata=None,
         )
         # User says "Proceed" again (new conversational turn)
         id_c, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Proceed', metadata=None,
         )
@@ -711,10 +807,14 @@ class TestDeduplicationInterleaving:
     ) -> None:
         """Dedup proceeds normally for genuine rapid duplicates (retry protection)."""
         id_a, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Hello', metadata=None,
         )
         id_b, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Hello', metadata=None,
         )
@@ -727,16 +827,22 @@ class TestDeduplicationInterleaving:
     ) -> None:
         """Interleaving check works for agent source with user interleaving."""
         id_a, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content='status update', metadata=None,
         )
         # User interleaves
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='acknowledged', metadata=None,
         )
         # Agent sends identical text again
         id_c, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content='status update', metadata=None,
         )
@@ -749,10 +855,14 @@ class TestDeduplicationInterleaving:
     ) -> None:
         """Pre-check method returns None when interleaving is detected."""
         id_a, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Proceed', metadata=None,
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content='Done', metadata=None,
         )
@@ -769,15 +879,21 @@ class TestDeduplicationInterleaving:
     ) -> None:
         """Dedup works normally in a single-source thread (no opposite-source entries)."""
         id_a, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Only users here', metadata=None,
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Different message', metadata=None,
         )
         # Store duplicate of first when latest is different -- should insert (not latest)
         id_c, was_updated_c = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Different message', metadata=None,
         )
@@ -794,6 +910,8 @@ class TestDeduplicationInterleaving:
         texts = ['Go', 'Done', 'Go', 'Done again', 'Go']
         for source, text in zip(sources, texts, strict=True):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='t1', source=source, content_type='text',
                 text_content=text, metadata=None,
             )
@@ -827,6 +945,8 @@ class TestBatchPreCheckInterleaving:
         generation for this entry, saving LLM API calls.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='batch-t1', source='user', content_type='text',
             text_content='Batch duplicate', metadata=None,
         )
@@ -850,10 +970,14 @@ class TestBatchPreCheckInterleaving:
         """
         # Store user entry, then agent entry (creates interleaving)
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='batch-t1', source='user', content_type='text',
             text_content='Batch entry', metadata=None,
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='batch-t1', source='agent', content_type='text',
             text_content='Agent response', metadata=None,
         )

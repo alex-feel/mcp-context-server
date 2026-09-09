@@ -115,6 +115,8 @@ class TestStoreContextEmbeddingDeduplication:
 
         # Pre-create entry WITHOUT embeddings via direct repository call
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-no-embed',
             source='agent',
             content_type='text',
@@ -272,6 +274,8 @@ class TestBatchStoreEmbeddingDeduplication:
 
         # Pre-create entry WITH embeddings via direct repository calls
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='batch-non-atomic',
             source='agent',
             content_type='text',
@@ -329,6 +333,8 @@ class TestEmbeddingRepositoryUpsert:
 
         # Create context entry
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-upsert',
             source='agent',
             content_type='text',
@@ -359,6 +365,8 @@ class TestEmbeddingRepositoryUpsert:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-upsert',
             source='agent',
             content_type='text',
@@ -390,6 +398,8 @@ class TestEmbeddingRepositoryUpsert:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-upsert-meta',
             source='agent',
             content_type='text',
@@ -441,6 +451,8 @@ class TestEmbeddingRepositoryUpsert:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-chunk-change',
             source='agent',
             content_type='text',
@@ -518,6 +530,8 @@ class TestEmbeddingExistsMethod:
 
         # Create entry without embeddings
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-exists',
             source='agent',
             content_type='text',
@@ -540,6 +554,8 @@ class TestEmbeddingExistsMethod:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-exists',
             source='agent',
             content_type='text',

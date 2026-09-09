@@ -27,6 +27,7 @@ import pytest_asyncio
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from app.repositories.context_repository import EntryProbe
 from app.schemas import load_schema
 from app.tools.context import store_context
 from app.tools.context import update_context
@@ -151,8 +152,8 @@ class TestUpdateContextEmbeddingFirst:
             existing_id = generate_id()
             conn.execute(
                 '''INSERT INTO context_entries
-                   (id, thread_id, source, text_content, content_type, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
+                   (id, thread_id, source, text_content, content_type, metadata, owner_id)
+                   VALUES (?, ?, ?, ?, ?, ?, 'local')''',
                 (existing_id, 'existing-thread', 'agent', 'Original content', 'text', '{"status": "original"}'),
             )
             conn.commit()
@@ -492,20 +493,20 @@ class TestUpdateContextBatchEmbeddingFirst:
             # Insert existing entries
             conn.execute(
                 '''INSERT INTO context_entries
-                   (id, thread_id, source, text_content, content_type)
-                   VALUES (?, ?, ?, ?, ?)''',
+                   (id, thread_id, source, text_content, content_type, owner_id)
+                   VALUES (?, ?, ?, ?, ?, 'local')''',
                 (generate_id(), 'batch-update-test', 'agent', 'Original 1', 'text'),
             )
             conn.execute(
                 '''INSERT INTO context_entries
-                   (id, thread_id, source, text_content, content_type)
-                   VALUES (?, ?, ?, ?, ?)''',
+                   (id, thread_id, source, text_content, content_type, owner_id)
+                   VALUES (?, ?, ?, ?, ?, 'local')''',
                 (generate_id(), 'batch-update-test', 'agent', 'Original 2', 'text'),
             )
             conn.execute(
                 '''INSERT INTO context_entries
-                   (id, thread_id, source, text_content, content_type)
-                   VALUES (?, ?, ?, ?, ?)''',
+                   (id, thread_id, source, text_content, content_type, owner_id)
+                   VALUES (?, ?, ?, ?, ?, 'local')''',
                 (generate_id(), 'batch-update-test', 'agent', 'Original 3', 'text'),
             )
             conn.commit()
@@ -889,7 +890,7 @@ class TestStatementTimeoutRetryToolLayer:
     async def test_update_context_retries_statement_timeout_then_succeeds(self) -> None:
         """update_context retries a 57014 cancellation, then commits once."""
         repos = MagicMock()
-        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
+        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
         state = {'calls': 0}
 
         @contextlib.asynccontextmanager

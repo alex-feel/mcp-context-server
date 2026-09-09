@@ -17,6 +17,7 @@ import app.server
 import app.startup
 import app.tools._shared as shared_tools
 import app.tools.search as search_tools
+from app.repositories.context_repository import EntryProbe
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.startup import ensure_repositories
 from app.startup import set_backend
@@ -58,6 +59,7 @@ def _patch_server_migrations() -> AbstractContextManager[Any]:
         apply_summary_migration=AsyncMock(),
         apply_content_hash_migration=AsyncMock(),
         apply_version_migration=AsyncMock(),
+        apply_access_control_migration=AsyncMock(),
         apply_tag_uniqueness_migration=AsyncMock(),
     )
 
@@ -81,7 +83,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(123, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -230,6 +232,8 @@ class TestSummaryStoreWithMocks:
             source='agent',
             content_type='text',
             text_content=long_text,
+            owner_id='local',
+            visibility='private',
             metadata=None,
             summary='Generated summary',
             preserve_content_type_on_dedup=True,
@@ -247,6 +251,8 @@ class TestSummaryIntegration:
         """Regenerate and store a new summary when text changes."""
         repos = await ensure_repositories()
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='update-summary-thread',
             source='agent',
             content_type='text',
@@ -283,6 +289,8 @@ class TestSummaryIntegration:
         """Leave an existing summary unchanged when only metadata is updated."""
         repos = await ensure_repositories()
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='metadata-preserve-thread',
             source='agent',
             content_type='text',
@@ -314,6 +322,8 @@ class TestSummaryIntegration:
         repos = await ensure_repositories()
         long_text = 'A' * 400
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='search-summary-thread',
             source='agent',
             content_type='text',
@@ -338,6 +348,8 @@ class TestSummaryIntegration:
         repos = await ensure_repositories()
         long_text = 'B' * 400
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='search-fallback-thread',
             source='agent',
             content_type='text',

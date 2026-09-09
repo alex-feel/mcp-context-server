@@ -41,6 +41,7 @@ from fastmcp.exceptions import ToolError
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from app.repositories.context_repository import EntryProbe
 from app.repositories.context_repository import VersionConflictError
 from app.schemas import load_schema
 from app.tools.context import update_context
@@ -66,8 +67,8 @@ class TestUpdateContextVersionGuard:
         with sqlite3.connect(str(db_path)) as conn:
             conn.executescript(schema_sql)
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, text_content, content_type, metadata) '
-                'VALUES (?, ?, ?, ?, ?, ?)',
+                'INSERT INTO context_entries (id, thread_id, source, text_content, content_type, metadata, owner_id) '
+                "VALUES (?, ?, ?, ?, ?, ?, 'local')",
                 (new_id, 'guard-thread', 'agent', 'Original text', 'text', '{}'),
             )
             conn.commit()
@@ -179,7 +180,7 @@ class TestUpdateContextVersionGuard:
         real_check = repos.context.check_entry_exists
         bumped = {'done': False}
 
-        async def check_then_bump(context_id: str) -> tuple[bool, str | None, int | None]:
+        async def check_then_bump(context_id: str) -> EntryProbe:
             result = await real_check(context_id)
             # On the very first capture (version 0), simulate a concurrent writer
             # committing a newer version out-of-band, so our captured version is
@@ -248,7 +249,7 @@ class TestUpdateContextVersionGuard:
         real_check = repos.context.check_entry_exists
         bumped = {'done': False}
 
-        async def check_then_bump(context_id: str) -> tuple[bool, str | None, int | None]:
+        async def check_then_bump(context_id: str) -> EntryProbe:
             result = await real_check(context_id)
             if not bumped['done'] and result[2] == 0:
                 bumped['done'] = True
@@ -356,14 +357,14 @@ class TestUpdateContextVersionGuard:
         real_check = repos.context.check_entry_exists
         check_calls = {'count': 0}
 
-        async def vanish_on_reread(context_id: str) -> tuple[bool, str | None, int | None]:
+        async def vanish_on_reread(context_id: str) -> EntryProbe:
             check_calls['count'] += 1
             # First call = the pre-generation capture: report the entry exists so the
             # transaction proceeds. Subsequent calls = the post-conflict re-read: the
             # entry has vanished.
             if check_calls['count'] == 1:
                 return await real_check(context_id)
-            return (False, None, None)
+            return EntryProbe(False, None, None, None)
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
@@ -404,13 +405,13 @@ class TestUpdateContextVersionGuard:
         check_calls = {'count': 0}
         versions_seen: list[int | None] = []
 
-        async def flaky_reread(context_id: str) -> tuple[bool, str | None, int | None]:
+        async def flaky_reread(context_id: str) -> EntryProbe:
             check_calls['count'] += 1
             if check_calls['count'] == 1:
                 return await real_check(context_id)  # pre-generation capture
             if check_calls['count'] == 2:
                 raise asyncpg.InterfaceError('connection recycled by the pooler')
-            return (True, 'agent', 3)
+            return EntryProbe(True, 'agent', 3, 'local')
 
         async def conflict_once(*_args: object, **kwargs: object) -> tuple[list[str], bool]:
             versions_seen.append(cast('int | None', kwargs.get('expected_version')))

@@ -43,7 +43,8 @@ class TestSQLiteTransactionContext:
 
                 # Insert test data
                 conn.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, text_content, content_type) VALUES (?, ?, ?, ?, ?)',
+                    "INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id) "
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (generate_id(), 'test-thread', 'agent', 'test content', 'text'),
                 )
 
@@ -77,7 +78,8 @@ class TestSQLiteTransactionContext:
             """Insert data and then raise an intentional error."""
             async with backend.begin_transaction() as txn:
                 txn.connection.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, text_content, content_type) VALUES (?, ?, ?, ?, ?)',
+                    "INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id) "
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (generate_id(), 'rollback-test', 'agent', 'should be rolled back', 'text'),
                 )
                 raise ValueError('Intentional failure')
@@ -119,7 +121,8 @@ class TestSQLiteTransactionContext:
                 # Insert context entry
                 inserted_id = generate_id()
                 conn.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, text_content, content_type) VALUES (?, ?, ?, ?, ?)',
+                    "INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id) "
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (inserted_id, 'multi-op-test', 'agent', 'test content', 'text'),
                 )
                 context_id = inserted_id
@@ -177,7 +180,8 @@ class TestSQLiteTransactionContext:
 
                 # First operation succeeds
                 conn.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, text_content, content_type) VALUES (?, ?, ?, ?, ?)',
+                    "INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id) "
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (generate_id(), 'partial-test', 'agent', 'first entry', 'text'),
                 )
 
@@ -284,7 +288,8 @@ class TestTransactionContextIntegration:
 
                 # Do some operations
                 txn.connection.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, text_content, content_type) VALUES (?, ?, ?, ?, ?)',
+                    "INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id) "
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (generate_id(), 'conn-test-1', 'agent', 'content 1', 'text'),
                 )
 
@@ -293,7 +298,8 @@ class TestTransactionContextIntegration:
 
                 # Another operation
                 txn.connection.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, text_content, content_type) VALUES (?, ?, ?, ?, ?)',
+                    "INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id) "
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (generate_id(), 'conn-test-2', 'agent', 'content 2', 'text'),
                 )
 

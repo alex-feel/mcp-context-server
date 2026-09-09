@@ -521,7 +521,7 @@ async def navigate_context(
         for _snapshot_attempt in range(3):
             version_before: int | None = None
             if want_node_summaries:
-                _exists, _probe_source, version_before = await repos.context.check_entry_exists(resolved_id)
+                version_before = (await repos.context.check_entry_exists(resolved_id)).version
             rows = await repos.context.get_by_ids([resolved_id])
             if not rows:
                 raise ToolError(f'Context entry not found: {context_id}')
@@ -543,7 +543,7 @@ async def navigate_context(
             # Stored per-node summaries are fetched by id and do NOT depend on the
             # parse, so they are loaded before the CPU-bound parse + serialize block.
             stored_nodes = await repos.index_nodes.get_nodes_for_context(resolved_id)
-            _exists, _probe_source, version_after = await repos.context.check_entry_exists(resolved_id)
+            version_after = (await repos.context.check_entry_exists(resolved_id)).version
             if version_after == version_before:
                 break
             logger.debug(

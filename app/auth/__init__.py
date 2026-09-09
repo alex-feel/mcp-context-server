@@ -28,6 +28,7 @@ See also:
     - app.auth.simple_token: SimpleTokenVerifier implementation
     - app.auth.claims: IdP-agnostic claim extraction helpers
     - app.auth.principal: per-request RequestPrincipal resolution
+    - app.auth.access: effective-principal resolution and the publish gate
     - app.settings.AuthSettings: Authentication configuration
     - FastMCP authentication docs: https://gofastmcp.com/servers/auth
 """
@@ -36,6 +37,8 @@ See also:
 import logging
 from typing import TYPE_CHECKING
 
+from app.auth.access import resolve_effective_principal
+from app.auth.access import visibility_denied_reason
 from app.auth.principal import RequestPrincipal
 from app.auth.principal import resolve_request_principal
 from app.auth.simple_token import SimpleTokenVerifier
@@ -54,7 +57,9 @@ __all__ = [
     'RequestPrincipal',
     'SimpleTokenVerifier',
     'create_auth_provider',
+    'resolve_effective_principal',
     'resolve_request_principal',
+    'visibility_denied_reason',
 ]
 
 

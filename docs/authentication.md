@@ -155,7 +155,7 @@ response = httpx.post(
 
 ## JWT Authentication
 
-> **Experimental and non-isolating.** The `jwt` provider verifies IdP-issued tokens and rejects unauthenticated requests, but the server does not yet isolate stored data between principals: any successfully authenticated caller can read and write ALL stored context. Use it today only where every token holder is trusted with the full data set; per-principal access control is under active development.
+> **Experimental and non-isolating.** The `jwt` provider verifies IdP-issued tokens and rejects unauthenticated requests, and every stored entry is stamped at write time with its owner (the token's principal) and a visibility value (see [Access Control Settings](environment-variables.md#access-control-settings)) — but reads are not yet filtered by them: any successfully authenticated caller can still read and update ALL stored context. Use it today only where every token holder is trusted with the full data set; read-path enforcement is under active development.
 
 ### When to Use
 

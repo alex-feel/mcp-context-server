@@ -66,6 +66,8 @@ class TestContextRepositoryTransaction:
         backend, repos = backend_with_repos
 
         context_id, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -92,6 +94,8 @@ class TestContextRepositoryTransaction:
 
         async with backend.begin_transaction() as txn:
             context_id, was_updated = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='test-thread',
                 source='agent',
                 content_type='text',
@@ -118,6 +122,8 @@ class TestContextRepositoryTransaction:
 
         # First create an entry
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -143,6 +149,8 @@ class TestContextRepositoryTransaction:
 
         # First create an entry
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -178,6 +186,8 @@ class TestTagRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -201,6 +211,8 @@ class TestTagRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -225,6 +237,8 @@ class TestTagRepositoryTransaction:
 
         # Create context with initial tags
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -255,6 +269,8 @@ class TestImageRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='multimodal',
@@ -280,6 +296,8 @@ class TestImageRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='multimodal',
@@ -309,6 +327,8 @@ class TestMultiRepositoryTransaction:
         async with backend.begin_transaction() as txn:
             # Store context
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='atomic-test',
                 source='agent',
                 content_type='text',
@@ -338,6 +358,8 @@ class TestMultiRepositoryTransaction:
         async with backend.begin_transaction() as txn:
             # Store context
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='multimodal-atomic',
                 source='user',
                 content_type='multimodal',
@@ -376,6 +398,8 @@ class TestMultiRepositoryTransaction:
             async with backend.begin_transaction() as txn:
                 # Store context - this should succeed
                 context_id, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='rollback-test',
                     source='user',
                     content_type='text',
@@ -411,6 +435,8 @@ class TestBackwardCompatibility:
 
         # ContextRepository methods
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='compat-test',
             source='user',
             content_type='text',
@@ -432,6 +458,8 @@ class TestBackwardCompatibility:
 
         # ImageRepository methods (create multimodal entry for images)
         mm_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='compat-test',
             source='user',
             content_type='multimodal',
@@ -485,6 +513,8 @@ class TestTxnAwareReadsUseTransactionConnection:
         await backend.execute_write(_create_embedding_metadata)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='conc-1', source='user', content_type='text',
             text_content='txn read target', metadata=None,
         )
@@ -511,6 +541,8 @@ class TestTxnAwareReadsUseTransactionConnection:
         # Backward compatibility: omitting txn keeps the pooled-read path unchanged.
         backend, repos = backend_with_repos
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='conc-1b', source='user', content_type='text',
             text_content='pool read target', metadata=None,
         )
@@ -582,6 +614,8 @@ class TestTransactionExecutorOffload:
         with patch.object(BaseRepository, '_run_sqlite_txn', staticmethod(_spy)):
             async with backend.begin_transaction() as txn:
                 context_id, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='offload-1', source='user', content_type='text',
                     text_content='offloaded txn write', metadata=None, txn=txn,
                 )
@@ -617,6 +651,8 @@ class TestTransactionExecutorOffload:
             """
             async with backend.begin_transaction() as txn:
                 await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='cancel-1', source='user', content_type='text',
                     text_content='must roll back', metadata=None, txn=txn,
                 )
@@ -631,6 +667,8 @@ class TestTransactionExecutorOffload:
         # ...the breaker stayed closed, and the writer connection is clean:
         # a follow-up write commits normally.
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='cancel-2', source='user', content_type='text',
             text_content='post-cancel write', metadata=None,
         )
@@ -692,6 +730,8 @@ class TestTransactionExecutorOffload:
         # The zombie write landed INSIDE the rolled-back transaction: a
         # follow-up commit must not resurrect it.
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='zombie-2', source='user', content_type='text',
             text_content='post-cancel commit', metadata=None,
         )
@@ -772,6 +812,8 @@ class TestTransactionExecutorOffload:
             """
             async with backend.begin_transaction() as txn:
                 await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='drain-rollback', source='user', content_type='text',
                     text_content='rollback via drain', metadata=None, txn=txn,
                 )
@@ -781,6 +823,8 @@ class TestTransactionExecutorOffload:
             # Success path -> commit routes through the drain.
             async with backend.begin_transaction() as txn:
                 await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='drain-commit', source='user', content_type='text',
                     text_content='commit via drain', metadata=None, txn=txn,
                 )

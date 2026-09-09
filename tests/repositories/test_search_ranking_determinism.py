@@ -65,8 +65,8 @@ async def fts_tied_repos(tmp_path: Path) -> AsyncGenerator[RepositoryContainer, 
         conn.executescript(fts_sql)
         for entry_id in _INSERT_ORDER:
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                'VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, ?, ?, ?, ?, 'local')",
                 (entry_id, 'tied-thread', 'agent', 'text', _TIED_TEXT),
             )
         conn.commit()
@@ -133,8 +133,8 @@ class TestSemanticTiedDistanceOrdering:
         def _insert(conn: sqlite3.Connection) -> None:
             for entry_id in _INSERT_ORDER:
                 conn.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                    'VALUES (?, ?, ?, ?, ?)',
+                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (entry_id, 'tied-thread', 'agent', 'text', _TIED_TEXT),
                 )
 

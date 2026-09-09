@@ -1117,6 +1117,37 @@
           "name": "MCP_AUTH_ROLES_CLAIM"
         },
         {
+          "description": "Principal id stamped as owner_id when a request carries no verified access token. Also the owner backfilled onto rows that predate the access-control columns. Default local.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_DEFAULT_PRINCIPAL",
+          "default": "local"
+        },
+        {
+          "description": "Visibility stamped on stored entries when the caller does not specify one: private (owner only), shared (owner + explicit grants), public (any principal). Default private.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_DEFAULT_VISIBILITY",
+          "default": "private"
+        },
+        {
+          "description": "Automatic group read grants on newly inserted entries: none (explicit shares only, default) or author_groups (every group of the writing principal receives a read grant).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_DEFAULT_GROUP_GRANTS",
+          "default": "none"
+        },
+        {
+          "description": "Role required to set visibility public. Unset (default) lets any owner publish; set to a role name to restrict publishing to callers whose verified roles claim carries that role.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_PUBLISH_ROLE"
+        },
+        {
           "description": "Custom server instructions text. Overrides built-in default. Set to empty string to disable.",
           "isRequired": false,
           "format": "string",
@@ -2276,6 +2307,37 @@
           "format": "string",
           "isSecret": false,
           "name": "MCP_AUTH_ROLES_CLAIM"
+        },
+        {
+          "description": "Principal id stamped as owner_id when a request carries no verified access token. Also the owner backfilled onto rows that predate the access-control columns. Default local.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_DEFAULT_PRINCIPAL",
+          "default": "local"
+        },
+        {
+          "description": "Visibility stamped on stored entries when the caller does not specify one: private (owner only), shared (owner + explicit grants), public (any principal). Default private.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_DEFAULT_VISIBILITY",
+          "default": "private"
+        },
+        {
+          "description": "Automatic group read grants on newly inserted entries: none (explicit shares only, default) or author_groups (every group of the writing principal receives a read grant).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_DEFAULT_GROUP_GRANTS",
+          "default": "none"
+        },
+        {
+          "description": "Role required to set visibility public. Unset (default) lets any owner publish; set to a role name to restrict publishing to callers whose verified roles claim carries that role.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_PUBLISH_ROLE"
         },
         {
           "description": "Custom server instructions text. Overrides built-in default. Set to empty string to disable.",

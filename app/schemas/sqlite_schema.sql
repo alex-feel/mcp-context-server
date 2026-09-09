@@ -28,6 +28,14 @@ CREATE TABLE IF NOT EXISTS context_entries (
     -- older-text update can never silently overwrite a newer one (and its
     -- index_tree node rows can never describe stale text).
     version INTEGER NOT NULL DEFAULT 0,
+    -- Access-control columns. owner_id is the server-stamped principal that
+    -- created the row (NEVER a tool parameter; the application always supplies
+    -- it explicitly on INSERT, so the column carries no default here).
+    -- visibility governs who may read the row once read scoping enforces it:
+    -- 'private' (owner only), 'shared' (owner + explicit grants in
+    -- context_entry_grants), 'public' (any principal).
+    owner_id TEXT NOT NULL,
+    visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private', 'shared', 'public')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -40,6 +48,13 @@ CREATE INDEX IF NOT EXISTS idx_thread_source ON context_entries(thread_id, sourc
 -- base schema so every initialization path -- server startup AND the migration CLI
 -- target init -- provisions it from inception, not only on a later server start.
 CREATE INDEX IF NOT EXISTS idx_context_entries_dedup_hash ON context_entries(thread_id, source, content_hash);
+-- The access-control lookup indexes (idx_context_owner, idx_context_owner_thread,
+-- idx_context_public) are NOT declared here: this script also runs against
+-- EXISTING databases whose context_entries predates owner_id/visibility, where an
+-- index on those columns would crash initialization before the column migration
+-- can run. apply_access_control_migration creates them right after adding the
+-- columns, unconditionally at every startup, so fresh and upgraded databases both
+-- get them on first boot.
 
 CREATE TABLE IF NOT EXISTS tags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,6 +83,26 @@ CREATE TABLE IF NOT EXISTS image_attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_id);
+
+-- Per-entry access grants for 'shared' visibility. Each row grants one
+-- principal ('user') or one group ('group') read or write access to one entry.
+-- granted_by records the principal that created the grant. The UNIQUE index
+-- makes grant insertion idempotent (ON CONFLICT DO NOTHING).
+CREATE TABLE IF NOT EXISTS context_entry_grants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    context_entry_id TEXT NOT NULL,
+    principal_type TEXT NOT NULL CHECK(principal_type IN ('user', 'group')),
+    principal_id TEXT NOT NULL,
+    permission TEXT NOT NULL CHECK(permission IN ('read', 'write')),
+    granted_by TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_grants_entry_principal
+ON context_entry_grants(context_entry_id, principal_type, principal_id, permission);
+CREATE INDEX IF NOT EXISTS idx_grants_principal
+ON context_entry_grants(principal_type, principal_id, context_entry_id);
 
 -- Metadata field expression indexes are NOT declared here. They are the single
 -- responsibility of handle_metadata_indexes (app/migrations/metadata.py), which

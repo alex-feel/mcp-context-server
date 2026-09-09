@@ -57,8 +57,8 @@ def _seed_entry(path: Path, entry_id: str, text: str) -> None:
     try:
         conn.execute(
             'INSERT INTO context_entries '
-            '(id, thread_id, source, content_type, text_content) '
-            "VALUES (?, 'thread-a', 'user', 'text', ?)",
+            '(id, thread_id, source, content_type, text_content, owner_id) '
+            "VALUES (?, 'thread-a', 'user', 'text', ?, 'local')",
             (entry_id, text),
         )
         conn.commit()

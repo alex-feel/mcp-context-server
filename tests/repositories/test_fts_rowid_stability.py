@@ -43,8 +43,8 @@ class TestRowidIntStability:
             for entry_id, text in ((id_a, 'first entry'), (id_b, 'second entry')):
                 conn.execute(
                     '''INSERT INTO context_entries
-                       (id, thread_id, source, content_type, text_content)
-                       VALUES (?, ?, ?, ?, ?)''',
+                       (id, thread_id, source, content_type, text_content, owner_id)
+                       VALUES (?, ?, ?, ?, ?, 'local')''',
                     (entry_id, 't', 'user', 'text', text),
                 )
             conn.commit()
@@ -78,8 +78,8 @@ class TestRowidIntStability:
             id_a = generate_id()
             conn.execute(
                 '''INSERT INTO context_entries
-                   (id, thread_id, source, content_type, text_content)
-                   VALUES (?, ?, ?, ?, ?)''',
+                   (id, thread_id, source, content_type, text_content, owner_id)
+                   VALUES (?, ?, ?, ?, ?, 'local')''',
                 (id_a, 't', 'user', 'text', 'searchable token unique12345'),
             )
             conn.commit()

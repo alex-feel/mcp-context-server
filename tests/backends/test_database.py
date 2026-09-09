@@ -49,7 +49,7 @@ class TestDatabaseInitialization:
                 ORDER BY name
             ''')
             tables = [row[0] for row in cursor.fetchall()]
-            assert set(tables) == {'context_entries', 'image_attachments', 'tags'}
+            assert set(tables) == {'context_entries', 'context_entry_grants', 'image_attachments', 'tags'}
 
             # Check indexes exist
             cursor.execute('''
@@ -71,6 +71,14 @@ class TestDatabaseInitialization:
                 'idx_thread_source',
                 # Deduplication lookup index, provisioned from the base schema.
                 'idx_context_entries_dedup_hash',
+                # Grants-table indexes ride the base schema (their table is created
+                # complete by this same script). The context_entries access indexes
+                # (idx_context_owner, idx_context_owner_thread, idx_context_public)
+                # deliberately do NOT: on an existing pre-access-control database
+                # they would reference columns only apply_access_control_migration
+                # adds, crashing initialization before that migration can run.
+                'idx_grants_entry_principal',
+                'idx_grants_principal',
             }
             # The base schema no longer declares any metadata expression index.
             # handle_metadata_indexes (run separately at server startup) is the
@@ -152,7 +160,7 @@ class TestDatabaseConnection:
             cursor = conn.cursor()
             _new_id = generate_id()
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
                 (_new_id, 'test', 'user', 'text'),
             )
             conn.commit()
@@ -164,7 +172,7 @@ class TestDatabaseConnection:
                 # This should fail due to CHECK constraint
                 _new_id = generate_id()
                 cursor.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                    "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
                     (_new_id, 'test', 'invalid_source', 'text'),
                 )
                 pytest.fail('Should have raised IntegrityError')
@@ -194,14 +202,14 @@ class TestDatabaseConnection:
 
         def op_fail(conn: sqlite3.Connection) -> None:
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
                 (leaked_id, 'test', 'user', 'text'),
             )
             raise ValueError('boom after partial write, before commit')
 
         def op_ok(conn: sqlite3.Connection) -> None:
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
                 (survivor_id, 'test', 'user', 'text'),
             )
 
@@ -246,7 +254,7 @@ class TestDatabaseConnection:
                 cursor = conn.cursor()
                 _new_id = generate_id()
                 cursor.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                    "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
                     (_new_id, 'test', 'invalid_source', 'text'),
                 )
                 pytest.fail('Should have raised IntegrityError')
@@ -264,7 +272,7 @@ class TestTagOperations:
         cursor = async_test_db.cursor()
         _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
             (_new_id, 'test', 'user', 'text'),
         )
         context_id = _new_id
@@ -298,7 +306,7 @@ class TestTagOperations:
         cursor = async_test_db.cursor()
         _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
             (_new_id, 'test', 'user', 'text'),
         )
         context_id = _new_id
@@ -318,7 +326,7 @@ class TestTagOperations:
         cursor = async_test_db.cursor()
         _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
             (_new_id, 'test', 'user', 'text'),
         )
         context_id = _new_id
@@ -345,7 +353,7 @@ class TestTagOperations:
         cursor = async_test_db.cursor()
         _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
             (_new_id, 'test', 'user', 'text'),
         )
         context_id = _new_id
@@ -381,7 +389,7 @@ class TestDatabaseIntegrity:
         # Insert context entry
         _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
             (_new_id, 'test', 'user', 'text'),
         )
         context_id = _new_id
@@ -421,7 +429,7 @@ class TestDatabaseIntegrity:
         bad_source_id = generate_id()
         with pytest.raises(sqlite3.IntegrityError) as exc_info:
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
                 (bad_source_id, 'test', 'invalid', 'text'),
             )
         assert 'CHECK constraint failed' in str(exc_info.value)
@@ -430,7 +438,7 @@ class TestDatabaseIntegrity:
         bad_ctype_id = generate_id()
         with pytest.raises(sqlite3.IntegrityError) as exc_info:
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
                 (bad_ctype_id, 'test', 'user', 'invalid'),
             )
         assert 'CHECK constraint failed' in str(exc_info.value)
@@ -447,7 +455,7 @@ class TestDatabasePerformance:
         for i in range(100):
             _new_id = generate_id()
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                "INSERT INTO context_entries (id, thread_id, source, content_type, owner_id) VALUES (?, ?, ?, ?, 'local')",
                 (_new_id, f'thread_{i % 10}', 'user' if i % 2 == 0 else 'agent', 'text'),
             )
         test_db.commit()

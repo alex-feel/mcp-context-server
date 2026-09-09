@@ -24,6 +24,7 @@ import pytest
 from pydantic import ValidationError
 
 import app.server
+from app.repositories.context_repository import EntryProbe
 from app.settings import SummarySettings
 from app.startup import ensure_repositories
 
@@ -105,7 +106,7 @@ def _make_mock_repos() -> MagicMock:
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
     repos.context.get_summary = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -429,6 +430,8 @@ class TestClearSummaryRepository:
 
         # First, store an entry with a summary
         entry_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-clear-summary',
             source='agent',
             content_type='text',
@@ -460,6 +463,8 @@ class TestClearSummaryRepository:
         repos = await ensure_repositories()
 
         entry_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-clear-precedence',
             source='agent',
             content_type='text',
@@ -486,6 +491,8 @@ class TestClearSummaryRepository:
         repos = await ensure_repositories()
 
         entry_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-preserve-summary',
             source='agent',
             content_type='text',
@@ -524,6 +531,8 @@ class TestDedupPreservesExistingSummary:
 
         # First, store an entry with a summary (simulates pre-threshold entry)
         entry_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-dedup-preserve',
             source='agent',
             content_type='text',
@@ -539,6 +548,8 @@ class TestDedupPreservesExistingSummary:
         # Now store the same text again as a duplicate, with summary=None
         # (simulating what happens when min_content_length skips generation)
         updated_id, was_dedup = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-dedup-preserve',
             source='agent',
             text_content='Short duplicate text',

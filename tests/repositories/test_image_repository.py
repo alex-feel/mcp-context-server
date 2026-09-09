@@ -28,6 +28,8 @@ class TestImageRepository:
 
         # Create a context entry first
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='user',
             content_type='text',
@@ -63,6 +65,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='multi-img-thread',
             source='user',
             content_type='multimodal',
@@ -107,6 +111,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='validation-thread',
             source='user',
             content_type='multimodal',
@@ -131,6 +137,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='invalid-base64-thread',
             source='user',
             content_type='multimodal',
@@ -155,6 +163,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='no-data-thread',
             source='user',
             content_type='multimodal',
@@ -192,6 +202,8 @@ class TestImageRepository:
         context_ids = []
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'batch-thread-{i}',
                 source='user',
                 content_type='multimodal',
@@ -262,6 +274,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='count-thread',
             source='user',
             content_type='multimodal',
@@ -305,6 +319,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='replace-thread',
             source='user',
             content_type='multimodal',
@@ -356,6 +372,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='empty-replace-thread',
             source='user',
             content_type='multimodal',
@@ -391,6 +409,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='metadata-thread',
             source='user',
             content_type='multimodal',
@@ -431,6 +451,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='position-thread',
             source='user',
             content_type='multimodal',
@@ -467,6 +489,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='cascade-thread',
             source='user',
             content_type='multimodal',
@@ -497,6 +521,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='large-img-thread',
             source='user',
             content_type='multimodal',
@@ -527,6 +553,8 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='default-mime-thread',
             source='user',
             content_type='multimodal',
@@ -575,6 +603,8 @@ class TestMalformedStoredImageMetadata:
 
         repos = RepositoryContainer(backend)
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='malformed-image-metadata-thread',
             source='agent',
             content_type='multimodal',
@@ -710,6 +740,8 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='image-metadata-fidelity-thread',
             source='user',
             content_type='multimodal',
@@ -731,6 +763,8 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='image-metadata-replace-thread',
             source='user',
             content_type='multimodal',
@@ -752,6 +786,8 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='image-metadata-absent-thread',
             source='user',
             content_type='multimodal',
@@ -778,6 +814,8 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='image-metadata-single-writer-thread',
             source='user',
             content_type='multimodal',
@@ -803,6 +841,8 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='image-metadata-batch-thread',
             source='user',
             content_type='multimodal',

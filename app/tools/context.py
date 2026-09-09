@@ -38,6 +38,8 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_effective_principal
+from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
@@ -119,6 +121,15 @@ async def store_context(
             f'each at most {MAX_TAG_LENGTH} characters',
         ),
     ] = None,
+    visibility: Annotated[
+        Literal['private', 'shared', 'public'] | None,
+        Field(
+            description='Access visibility for a newly stored entry: private (owner only), '
+            'shared (owner + explicit grants), public (any principal). Omitted uses the '
+            "server's configured default. Publishing as public may require a configured "
+            'role. Ignored when deduplication updates an existing entry.',
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> StoreContextSuccessDict:
     """Store a context entry.
@@ -130,6 +141,8 @@ async def store_context(
     - metadata: New values override existing; omitting metadata preserves current values
     - tags: REPLACED with new list if provided; preserved if tags=None
     - images: REPLACED with new list if provided; preserved if images=None
+    - visibility/ownership: NEVER changed by a deduplication update (a retransmit
+      must not re-own or re-publish the existing row)
 
     Deduplication is suppressed when opposite-source entries (e.g., agent entries
     for a user store) exist after the candidate duplicate. This preserves
@@ -168,6 +181,23 @@ async def store_context(
         # Log info if context is available
         if ctx:
             await ctx.info(f'Storing context for thread: {thread_id}')
+
+        # Resolve the effective principal (verified token, or the configured
+        # default principal) and the visibility to stamp, then enforce the
+        # publish gate on the EFFECTIVE value: a caller-omitted visibility that
+        # defaults to 'public' is still a publish and still needs the role.
+        principal = resolve_effective_principal()
+        effective_visibility: str = (
+            visibility if visibility is not None else settings.access_control.default_visibility
+        )
+        denial = visibility_denied_reason(effective_visibility, principal)
+        if denial is not None:
+            raise ToolError(denial)
+        author_group_grants: frozenset[str] = (
+            principal.groups
+            if settings.access_control.default_group_grants == 'author_groups'
+            else frozenset()
+        )
 
         # Determine content type and validate images
         validated_images, content_type, _ = validate_and_normalize_images(images, error_mode='raise')
@@ -308,6 +338,9 @@ async def store_context(
                         source=source,
                         content_type=content_type,
                         text_content=text,
+                        owner_id=principal.principal_id,
+                        visibility=effective_visibility,
+                        author_group_grants=author_group_grants,
                         metadata_str=metadata_str,
                         summary=summary_text,
                         tags=tags,
@@ -695,11 +728,19 @@ async def update_context(
             f'Max {MAX_IMAGES_PER_ENTRY} images',
         ),
     ] = None,
+    visibility: Annotated[
+        Literal['private', 'shared', 'public'] | None,
+        Field(
+            description='New access visibility: private (owner only), shared (owner + '
+            'explicit grants), public (any principal). Only the entry owner may change '
+            'visibility, and publishing as public may require a configured role.',
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> UpdateContextSuccessDict:
     """Update an existing context entry.
 
-    Immutable fields: id, thread_id, source, created_at (cannot be changed)
+    Immutable fields: id, thread_id, source, created_at, ownership (cannot be changed)
     Auto-managed: content_type (recalculated based on images), updated_at
 
     Metadata options (MUTUALLY EXCLUSIVE):
@@ -736,8 +777,15 @@ async def update_context(
             )
 
         # Validate that at least one field is provided for update
-        # Note: metadata_patch is also a valid update field
-        if text is None and metadata is None and metadata_patch is None and tags is None and images is None:
+        # Note: metadata_patch and visibility are also valid update fields
+        if (
+            text is None
+            and metadata is None
+            and metadata_patch is None
+            and tags is None
+            and images is None
+            and visibility is None
+        ):
             raise ToolError('At least one field must be provided for update')
 
         # Validate images early (before any operations)
@@ -773,11 +821,27 @@ async def update_context(
 
         # Check if entry exists; capture source and the optimistic-concurrency
         # version BEFORE generation so a concurrent writer that commits during
-        # our (slow) generation is caught by the conditional write below.
-        exists, entry_source, expected_version = await repos.context.check_entry_exists(context_id)
-        if not exists:
+        # our (slow) generation is caught by the conditional write below. The
+        # same probe returns the immutable owner_id backing the visibility gate.
+        probe = await repos.context.check_entry_exists(context_id)
+        if not probe.exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
+        entry_source = probe.source
+        expected_version = probe.version
         assert entry_source is not None  # guaranteed by exists=True
+
+        # Visibility changes are owner-only, and publishing as 'public' may
+        # additionally require the configured publish role. owner_id is
+        # immutable, so this pre-generation read cannot go stale.
+        if visibility is not None:
+            principal = resolve_effective_principal()
+            if probe.owner_id != principal.principal_id:
+                raise ToolError(
+                    f'Only the owner may change the visibility of context {context_id}',
+                )
+            denial = visibility_denied_reason(visibility, principal)
+            if denial is not None:
+                raise ToolError(denial)
 
         # Reject non-finite floats in metadata (full or patch) BEFORE generation:
         # they serialize to invalid JSON that PostgreSQL rejects, so the update
@@ -878,6 +942,7 @@ async def update_context(
                         metadata_patch=metadata_patch,
                         summary=summary_text,
                         clear_summary=clear_summary,
+                        visibility=visibility,
                         tags=tags,
                         images=images,
                         validated_images=validated_images,

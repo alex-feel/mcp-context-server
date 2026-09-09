@@ -114,8 +114,8 @@ class TestApplySummaryMigration:
             def _insert(conn: sqlite3.Connection) -> str:
                 conn.execute(
                     'INSERT INTO context_entries '
-                    '(id, thread_id, source, content_type, text_content) '
-                    "VALUES (?, 't1', 'user', 'text', 'hello')",
+                    '(id, thread_id, source, content_type, text_content, owner_id) '
+                    "VALUES (?, 't1', 'user', 'text', 'hello', 'local')",
                     (new_id,),
                 )
                 return new_id
@@ -157,8 +157,8 @@ class TestApplySummaryMigration:
             def _insert(conn: sqlite3.Connection) -> str:
                 conn.execute(
                     'INSERT INTO context_entries '
-                    '(id, thread_id, source, content_type, text_content, summary) '
-                    "VALUES (?, 't1', 'user', 'text', 'hello world', ?)",
+                    '(id, thread_id, source, content_type, text_content, summary, owner_id) '
+                    "VALUES (?, 't1', 'user', 'text', 'hello world', ?, 'local')",
                     (new_id, expected_summary),
                 )
                 return new_id
@@ -253,6 +253,8 @@ class TestStoreWithDeduplicationSummary:
 
         repos = await ensure_repositories()
         context_id, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-summary-store',
             source='agent',
             content_type='text',
@@ -275,6 +277,8 @@ class TestStoreWithDeduplicationSummary:
 
         repos = await ensure_repositories()
         context_id, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-summary-none',
             source='user',
             content_type='text',
@@ -297,6 +301,8 @@ class TestStoreWithDeduplicationSummary:
 
         # Store entry with summary
         context_id, _was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-summary-dedup',
             source='agent',
             content_type='text',
@@ -306,6 +312,8 @@ class TestStoreWithDeduplicationSummary:
 
         # Store same text (triggers dedup) without summary
         dedup_id, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-summary-dedup',
             source='agent',
             content_type='text',
@@ -330,6 +338,8 @@ class TestStoreWithDeduplicationSummary:
 
         # Store entry with summary
         context_id, _was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-summary-dedup-update',
             source='agent',
             content_type='text',
@@ -339,6 +349,8 @@ class TestStoreWithDeduplicationSummary:
 
         # Store same text with new summary
         dedup_id, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-summary-dedup-update',
             source='agent',
             content_type='text',
@@ -366,6 +378,8 @@ class TestUpdateContextEntrySummary:
 
         # Store entry without summary
         context_id, _was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-update-summary',
             source='user',
             content_type='text',
@@ -393,6 +407,8 @@ class TestUpdateContextEntrySummary:
         repos = await ensure_repositories()
 
         context_id, _was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-update-both',
             source='agent',
             content_type='text',
@@ -423,6 +439,8 @@ class TestUpdateContextEntrySummary:
 
         # Store with summary
         context_id, _was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-preserve-summary',
             source='user',
             content_type='text',

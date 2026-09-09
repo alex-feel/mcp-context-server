@@ -69,11 +69,15 @@ class TestDedupInterleavingCheck:
              NOT deduplicate against A, because B exists with id > A's id.
         """
         id_a_before, was_updated_a = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='message X', metadata=None,
         )
         assert was_updated_a is False
         id_b, was_updated_b = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='agent', content_type='text',
             text_content='reply Y', metadata=None,
         )
@@ -81,6 +85,8 @@ class TestDedupInterleavingCheck:
         assert id_b > id_a_before
 
         id_c, was_updated_c = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='message X', metadata=None,
         )

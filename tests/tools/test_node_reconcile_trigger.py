@@ -33,6 +33,8 @@ def _txn() -> MagicMock:
 async def _run(repos: MagicMock, *, nodes_pending: bool) -> tuple[str, bool, bool]:
     return await execute_store_in_transaction(
         repos, _txn(),
+        owner_id='local',
+        visibility='private',
         thread_id='t', source='user', content_type='text',
         text_content='body', metadata_str=None, summary=None,
         tags=None, validated_images=[],
@@ -84,6 +86,8 @@ async def test_empty_node_list_clears_reconcile_gate() -> None:
     with patch('app.tools._shared.transaction_heartbeat', new_callable=AsyncMock):
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             repos, _txn(),
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='body', metadata_str=None, summary=None,
             tags=None, validated_images=[],
@@ -109,6 +113,8 @@ async def test_empty_node_list_does_not_wipe_on_dedup_update() -> None:
     with patch('app.tools._shared.transaction_heartbeat', new_callable=AsyncMock):
         await execute_store_in_transaction(
             repos, _txn(),
+            owner_id='local',
+            visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='body', metadata_str=None, summary=None,
             tags=None, validated_images=[],
