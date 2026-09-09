@@ -113,6 +113,8 @@ def _seed_fp32_database(
                 vec = rng.standard_normal(DIM).astype(np.float32)
                 vec /= np.linalg.norm(vec)
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='stream-e2e',
                     source='user',
                     content_type='text',
@@ -592,6 +594,8 @@ def _seed_compressed_database(
                 vec = rng.standard_normal(DIM).astype(np.float32)
                 vec /= np.linalg.norm(vec)
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='lineage-b',
                     source='user',
                     content_type='text',

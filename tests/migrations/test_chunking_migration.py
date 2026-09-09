@@ -420,13 +420,13 @@ class TestApplyChunkingMigration:
             ''')
 
             conn.execute(
-                '''INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                   VALUES (?, ?, ?, ?, ?)''',
+                '''INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                   VALUES (?, ?, ?, ?, ?, 'local')''',
                 (ctx_id_a, 'thread-1', 'user', 'text', 'Test content 1'),
             )
             conn.execute(
-                '''INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                   VALUES (?, ?, ?, ?, ?)''',
+                '''INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                   VALUES (?, ?, ?, ?, ?, 'local')''',
                 (ctx_id_b, 'thread-1', 'agent', 'text', 'Test content 2'),
             )
 
@@ -852,8 +852,8 @@ class TestChunkingMigrationIntegration:
 
             # Insert test context entry
             conn.execute('''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                VALUES (1, 'thread-1', 'user', 'text', 'Long content that would be chunked')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                VALUES (1, 'thread-1', 'user', 'text', 'Long content that would be chunked', 'local')
             ''')
             conn.commit()
 
@@ -928,8 +928,8 @@ class TestChunkingMigrationIntegration:
 
             # Insert test context entry
             conn.execute('''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                VALUES (1, 'thread-1', 'user', 'text', 'Test content')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                VALUES (1, 'thread-1', 'user', 'text', 'Test content', 'local')
             ''')
             conn.commit()
 

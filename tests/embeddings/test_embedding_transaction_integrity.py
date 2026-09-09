@@ -258,9 +258,8 @@ class TestConcurrentEmbeddingOperations:
         with sqlite3.connect(str(backend.db_path)) as conn:
             for i in range(entry_count):
                 conn.execute(
-                    '''INSERT INTO context_entries
-                       (id, thread_id, source, text_content, content_type)
-                       VALUES (?, ?, ?, ?, ?)''',
+                    '''INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id)
+                       VALUES (?, ?, ?, ?, ?, 'local')''',
                     (generate_id(), f'update-test-{i}', 'agent', f'Original {i}', 'text'),
                 )
             conn.commit()
@@ -425,9 +424,8 @@ class TestTransactionRollbackComprehensive:
         with sqlite3.connect(str(backend.db_path)) as conn:
             for i in range(5):
                 conn.execute(
-                    '''INSERT INTO context_entries
-                       (id, thread_id, source, text_content, content_type)
-                       VALUES (?, ?, ?, ?, ?)''',
+                    '''INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id)
+                       VALUES (?, ?, ?, ?, ?, 'local')''',
                     (generate_id(), f'mixed-update-{i}', 'agent', f'Original {i}', 'text'),
                 )
             conn.commit()

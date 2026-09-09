@@ -148,13 +148,13 @@ def test_dry_run_emits_count_without_provider_call(
     try:
         conn.execute(
             "INSERT INTO context_entries "
-            '(id, thread_id, source, content_type, text_content) '
-            "VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'thread-a', 'user', 'text', 'doc A')",
+            '(id, thread_id, source, content_type, text_content, owner_id) '
+            "VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'thread-a', 'user', 'text', 'doc A', 'local')",
         )
         conn.execute(
             "INSERT INTO context_entries "
-            '(id, thread_id, source, content_type, text_content) '
-            "VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'thread-b', 'user', 'text', 'doc B')",
+            '(id, thread_id, source, content_type, text_content, owner_id) '
+            "VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'thread-b', 'user', 'text', 'doc B', 'local')",
         )
         conn.commit()
     finally:
@@ -278,8 +278,8 @@ def _seed_entry_with_embedding(
     try:
         conn.execute(
             'INSERT INTO context_entries '
-            '(id, thread_id, source, content_type, text_content) '
-            "VALUES (?, 'thread-a', 'user', 'text', ?)",
+            '(id, thread_id, source, content_type, text_content, owner_id) '
+            "VALUES (?, 'thread-a', 'user', 'text', ?, 'local')",
             (entry_id, text),
         )
         conn.execute(

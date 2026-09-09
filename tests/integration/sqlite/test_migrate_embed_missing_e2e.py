@@ -158,6 +158,8 @@ def _seed_missing_database(
             ids: list[str] = []
             for i in range(n_docs):
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='embed-missing-e2e',
                     source='user',
                     content_type='text',
@@ -421,6 +423,8 @@ def test_compress_then_embed_missing_composed(
                 vec = rng.standard_normal(DIM).astype(np.float32)
                 vec /= np.linalg.norm(vec)
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='compose-e2e',
                     source='user',
                     content_type='text',
@@ -459,6 +463,8 @@ def test_compress_then_embed_missing_composed(
             missing: list[str] = []
             for i in range(2):
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='compose-e2e',
                     source='user',
                     content_type='text',

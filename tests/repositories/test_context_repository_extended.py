@@ -78,12 +78,16 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching by thread_id."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread_a',
             source='user',
             content_type='text',
             text_content='Message A',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread_b',
             source='user',
             content_type='text',
@@ -103,12 +107,16 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching by source."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='source_thread',
             source='user',
             content_type='text',
             text_content='User message',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='source_thread',
             source='agent',
             content_type='text',
@@ -128,12 +136,16 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching by content_type."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='type_thread',
             source='user',
             content_type='text',
             text_content='Text only',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='type_thread',
             source='user',
             content_type='multimodal',
@@ -152,12 +164,16 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching by tags."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='tag_thread',
             source='user',
             content_type='text',
             text_content='Tagged 1',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='tag_thread',
             source='user',
             content_type='text',
@@ -180,6 +196,8 @@ class TestContextRepositorySearch:
         """Test searching with limit parameter."""
         for i in range(10):
             await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='limit_thread',
                 source='user',
                 content_type='text',
@@ -201,6 +219,8 @@ class TestContextRepositorySearch:
         """Test searching with offset parameter."""
         for i in range(10):
             await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='offset_thread',
                 source='user',
                 content_type='text',
@@ -222,6 +242,8 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching with simple metadata filter."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='meta_thread',
             source='user',
             content_type='text',
@@ -229,6 +251,8 @@ class TestContextRepositorySearch:
             metadata=json.dumps({'priority': 1}),
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='meta_thread',
             source='user',
             content_type='text',
@@ -253,6 +277,8 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching with explain_query=True."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='explain_thread',
             source='user',
             content_type='text',
@@ -275,18 +301,24 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching with multiple filters combined."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='combo_thread',
             source='user',
             content_type='text',
             text_content='User text',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='combo_thread',
             source='agent',
             content_type='text',
             text_content='Agent text',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='other_thread',
             source='user',
             content_type='text',
@@ -317,6 +349,8 @@ class TestContextRepositorySearch:
         identical arguments.
         """
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='count_thread',
             source='agent',
             content_type='text',
@@ -345,6 +379,8 @@ class TestContextRepositorySearch:
     ) -> None:
         """An unfiltered browse still reports zero applied filters."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='no_filter_thread',
             source='user',
             content_type='text',
@@ -417,6 +453,8 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Test that duplicate content updates timestamp instead of inserting."""
         ctx_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='dedup_thread',
             source='user',
             content_type='text',
@@ -425,6 +463,8 @@ class TestContextRepositoryDeduplication:
         assert was_updated1 is False  # First insert, not an update
 
         ctx_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='dedup_thread',
             source='user',
             content_type='text',
@@ -452,6 +492,8 @@ class TestContextRepositoryDeduplication:
         from app.repositories.context_repository import compute_content_hash
 
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='dedup_race_thread',
             source='user',
             content_type='text',
@@ -505,12 +547,16 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Test that different content creates new entry."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='dedup_thread',
             source='user',
             content_type='text',
             text_content='Content A',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='dedup_thread',
             source='user',
             content_type='text',
@@ -526,12 +572,16 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Test that same content from different source creates new entry."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='dedup_thread',
             source='user',
             content_type='text',
             text_content='Same content',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='dedup_thread',
             source='agent',  # Different source
             content_type='text',
@@ -547,12 +597,16 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Test that same content in different thread creates new entry."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread_1',
             source='user',
             content_type='text',
             text_content='Same content',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread_2',  # Different thread
             source='user',
             content_type='text',
@@ -567,6 +621,8 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Deduplication COALESCE: new metadata replaces existing."""
         ctx_id1, was_updated1 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='coalesce-thread',
             source='user',
             content_type='text',
@@ -576,6 +632,8 @@ class TestContextRepositoryDeduplication:
         assert was_updated1 is False
 
         ctx_id2, was_updated2 = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='coalesce-thread',
             source='user',
             content_type='text',
@@ -595,6 +653,8 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Deduplication COALESCE(NULL, existing) preserves existing metadata."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='preserve-meta-thread',
             source='user',
             content_type='text',
@@ -603,6 +663,8 @@ class TestContextRepositoryDeduplication:
         )
 
         ctx_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='preserve-meta-thread',
             source='user',
             content_type='text',
@@ -622,6 +684,8 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Deduplication COALESCE preserves existing summary when new is None."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='summary-coalesce-thread',
             source='user',
             content_type='text',
@@ -630,6 +694,8 @@ class TestContextRepositoryDeduplication:
         )
 
         ctx_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='summary-coalesce-thread',
             source='user',
             content_type='text',
@@ -654,6 +720,8 @@ class TestContextRepositoryDeduplication:
         assert expected_hash is not None
 
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='hash-dedup-thread',
             source='user',
             content_type='text',
@@ -661,6 +729,8 @@ class TestContextRepositoryDeduplication:
         )
 
         ctx_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='hash-dedup-thread',
             source='user',
             content_type='text',
@@ -675,6 +745,8 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Deduplication normalizes empty/whitespace summary to None."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='norm-summary-thread',
             source='user',
             content_type='text',
@@ -707,12 +779,16 @@ class TestContextRepositoryDelete:
     ) -> None:
         """Test deleting entries by thread_id."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='del_thread',
             source='user',
             content_type='text',
             text_content='To delete',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='keep_thread',
             source='user',
             content_type='text',
@@ -738,18 +814,24 @@ class TestContextRepositoryDelete:
     ) -> None:
         """Test deleting multiple entries from same thread."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='multi_del_thread',
             source='user',
             content_type='text',
             text_content='Message 1',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='multi_del_thread',
             source='agent',
             content_type='text',
             text_content='Message 2',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='multi_del_thread',
             source='user',
             content_type='text',
@@ -789,6 +871,8 @@ class TestContextRepositoryDelete:
         must contribute nothing to the count, and an unrelated entry stays intact.
         """
         keep_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='chunk_keep_thread',
             source='user',
             content_type='text',
@@ -798,6 +882,8 @@ class TestContextRepositoryDelete:
         real_ids: list[str] = []
         for i in range(5):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='chunk_del_thread',
                 source='user',
                 content_type='text',
@@ -836,6 +922,8 @@ class TestContextRepositoryGetById:
     ) -> None:
         """Test getting single entry by ID."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='get_thread',
             source='user',
             content_type='text',
@@ -856,6 +944,8 @@ class TestContextRepositoryGetById:
         ids = []
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='multi_get',
                 source='user',
                 content_type='text',
@@ -896,6 +986,8 @@ class TestContextRepositoryGetById:
     ) -> None:
         """Test getting mix of existing and nonexistent IDs."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='partial_get',
             source='user',
             content_type='text',
@@ -926,6 +1018,8 @@ class TestContextRepositoryGetById:
         real_ids: list[str] = []
         for i in range(5):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='chunk_get_thread',
                 source='user',
                 content_type='text',
@@ -963,22 +1057,26 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test checking if entry exists."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='exists_thread',
             source='user',
             content_type='text',
             text_content='Exists',
         )
 
-        exists, source, version = await repos.context.check_entry_exists(ctx_id)
-        assert exists is True
-        assert source == 'user'
-        assert isinstance(version, int)
-        assert version == 0
+        probe = await repos.context.check_entry_exists(ctx_id)
+        assert probe.exists is True
+        assert probe.source == 'user'
+        assert isinstance(probe.version, int)
+        assert probe.version == 0
+        assert probe.owner_id == 'local'
 
-        not_exists, no_source, no_version = await repos.context.check_entry_exists(generate_id())
-        assert not_exists is False
-        assert no_source is None
-        assert no_version is None
+        missing = await repos.context.check_entry_exists(generate_id())
+        assert missing.exists is False
+        assert missing.source is None
+        assert missing.version is None
+        assert missing.owner_id is None
 
     @pytest.mark.asyncio
     async def test_entry_exists(
@@ -987,6 +1085,8 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """entry_exists returns True for a stored id and False for an absent one."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='entry_exists_thread',
             source='user',
             content_type='text',
@@ -1040,6 +1140,8 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test getting content type by ID."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='type_thread',
             source='user',
             content_type='text',
@@ -1067,6 +1169,8 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test updating content type."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='update_type',
             source='user',
             content_type='text',
@@ -1088,6 +1192,8 @@ class TestContextRepositoryGetSummary:
     ) -> None:
         """get_summary returns summary string for entry with summary."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='summary-thread',
             source='user',
             content_type='text',
@@ -1103,6 +1209,8 @@ class TestContextRepositoryGetSummary:
     ) -> None:
         """get_summary returns None for entry without summary."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='no-summary-thread',
             source='user',
             content_type='text',
@@ -1117,6 +1225,8 @@ class TestContextRepositoryGetSummary:
     ) -> None:
         """get_summary normalizes empty/whitespace-only summary to None."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='empty-summary-thread',
             source='user',
             content_type='text',
@@ -1136,6 +1246,8 @@ class TestContextRepositoryCheckDuplicate:
     ) -> None:
         """Returns context_id when latest entry has identical content."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='dup-check-thread',
             source='user',
             content_type='text',
@@ -1155,6 +1267,8 @@ class TestContextRepositoryCheckDuplicate:
     ) -> None:
         """Returns None when latest entry has different content."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='no-dup-thread',
             source='user',
             content_type='text',
@@ -1173,6 +1287,8 @@ class TestContextRepositoryCheckDuplicate:
     ) -> None:
         """Returns None when content matches but thread_id differs."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread-a',
             source='user',
             content_type='text',
@@ -1195,6 +1311,8 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching adds a new key to existing metadata."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='patch-add-thread',
             source='user',
             content_type='text',
@@ -1217,6 +1335,8 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching updates an existing key's value."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='patch-update-thread',
             source='user',
             content_type='text',
@@ -1236,6 +1356,8 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching with null value deletes the key (RFC 7396)."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='patch-delete-thread',
             source='user',
             content_type='text',
@@ -1265,6 +1387,8 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Empty patch is a no-op for data but updates timestamp."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='patch-empty-thread',
             source='user',
             content_type='text',
@@ -1291,6 +1415,8 @@ class TestContextRepositoryBatchDelete:
         ids = []
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='batch-del-thread',
                 source='user',
                 content_type='text',
@@ -1310,6 +1436,8 @@ class TestContextRepositoryBatchDelete:
     ) -> None:
         """Batch delete with mix of existing and nonexistent IDs."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='partial-del-thread',
             source='user',
             content_type='text',
@@ -1339,6 +1467,8 @@ class TestContextRepositoryBatchDelete:
         criteria strings twice into the returned list.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='criteria-retry-thread',
             source='user',
             content_type='text',
@@ -1375,6 +1505,8 @@ class TestContextRepositoryBatchDelete:
         matching_ids: list[str] = []
         for i in range(2):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='crit-chunk-a',
                 source='user',
                 content_type='text',
@@ -1382,12 +1514,16 @@ class TestContextRepositoryBatchDelete:
             )
             matching_ids.append(ctx_id)
         agent_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='crit-chunk-a',
             source='agent',
             content_type='text',
             text_content='Criteria chunk agent entry',
         )
         other_thread_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='crit-chunk-b',
             source='user',
             content_type='text',
@@ -1428,6 +1564,8 @@ class TestContextRepositoryBatchDelete:
         user_ids: list[str] = []
         for i in range(2):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='del-chunk-thread',
                 source='user',
                 content_type='text',
@@ -1435,12 +1573,16 @@ class TestContextRepositoryBatchDelete:
             )
             user_ids.append(ctx_id)
         agent_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='del-chunk-thread',
             source='agent',
             content_type='text',
             text_content='Delete chunk agent survivor',
         )
         unlisted_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='del-chunk-thread',
             source='user',
             content_type='text',
@@ -1542,15 +1684,17 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """A freshly inserted entry starts at version 0 (schema DEFAULT 0)."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='cas-init-thread',
             source='user',
             content_type='text',
             text_content='Initial version content',
         )
 
-        exists, _source, version = await repos.context.check_entry_exists(ctx_id)
-        assert exists is True
-        assert version == 0
+        probe = await repos.context.check_entry_exists(ctx_id)
+        assert probe.exists is True
+        assert probe.version == 0
 
         _text, row_version = await self._read_row(context_repo, ctx_id)
         assert row_version == 0
@@ -1561,6 +1705,8 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """update with expected_version=0 succeeds and bumps version to 1."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='cas-success-thread',
             source='user',
             content_type='text',
@@ -1587,6 +1733,8 @@ class TestContextRepositoryVersionCAS:
         from app.repositories.context_repository import VersionConflictError
 
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='cas-stale-thread',
             source='user',
             content_type='text',
@@ -1612,6 +1760,8 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """Re-reading the current version (1) and retrying CAS succeeds, bumping to 2."""
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='cas-current-thread',
             source='user',
             content_type='text',
@@ -1637,6 +1787,8 @@ class TestContextRepositoryVersionCAS:
         CAS predicate and does NOT bump the version column.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='cas-legacy-thread',
             source='user',
             content_type='text',

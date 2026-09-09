@@ -156,6 +156,8 @@ async def _seed_random_corpus(
         v = rng.standard_normal(DIM).astype(np.float32)
         v /= np.linalg.norm(v)
         cid, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t-batched',
             source='user',
             content_type='text',

@@ -201,6 +201,8 @@ async def _seed_three_entries(
     cids: list[str] = []
     for i, vec in enumerate(docs):
         cid, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t-search',
             source='user',
             content_type='text',
@@ -295,6 +297,8 @@ async def test_search_compressed_thread_filter(
     other_vec = query + 0.05 * rng.standard_normal(DIM).astype(np.float32)
     other_vec /= np.linalg.norm(other_vec)
     other_cid, _ = await repos.context.store_with_deduplication(
+        owner_id='local',
+        visibility='private',
         thread_id='other-thread',
         source='user',
         content_type='text',
@@ -408,6 +412,8 @@ async def test_search_compressed_offloads_large_candidate_decode(
     payload = _encode_vector(query, variant='ip', bits=4)
 
     cid, _ = await repos.context.store_with_deduplication(
+        owner_id='local',
+        visibility='private',
         thread_id='t-offload', source='user', content_type='text',
         text_content='big', metadata=None,
     )
@@ -510,8 +516,8 @@ async def _seed_identical_compressed_entries(
     def _insert(conn: sqlite3.Connection) -> None:
         for entry_id in _TIE_INSERT_ORDER:
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                'VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, ?, ?, ?, ?, 'local')",
                 (entry_id, 't-tied', 'user', 'text', 'identical text'),
             )
 
@@ -604,6 +610,8 @@ async def test_search_compressed_best_chunk_tie_resolves_on_start_index(
     payload = _encode_vector(vec, variant='mse', bits=4)
 
     cid, _ = await repos.context.store_with_deduplication(
+        owner_id='local',
+        visibility='private',
         thread_id='t-chunk-tie',
         source='user',
         content_type='text',

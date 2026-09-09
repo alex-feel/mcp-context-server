@@ -138,6 +138,8 @@ async def compressed_corpus_backend(
             doc = doc.astype(np.float32)
             docs.append(doc)
             cid, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='search-e2e',
                 source='user',
                 content_type='text',
@@ -169,6 +171,8 @@ async def compressed_corpus_backend(
         bg = bg.astype(np.float32)
         docs.append(bg)
         cid, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='search-e2e',
             source='user',
             content_type='text',

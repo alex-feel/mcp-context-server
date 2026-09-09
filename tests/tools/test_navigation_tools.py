@@ -73,7 +73,8 @@ async def _store(backend: StorageBackend, text: str, *, thread_id: str = 't', of
 
     def _write(conn: sqlite3.Connection) -> None:
         conn.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) VALUES (?, ?, ?, ?, ?)',
+            "INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) "
+            "VALUES (?, ?, ?, ?, ?, 'local')",
             (cid, thread_id, 'agent', 'text', text),
         )
 

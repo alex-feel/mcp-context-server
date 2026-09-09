@@ -1020,6 +1020,24 @@ _SELECT_DISTINCT_TAGS_SQL = (
 # ---------------------------------------------------------------------------
 
 
+def access_backfill_values() -> tuple[str, str]:
+    """Return the (owner_id, visibility) pair stamped onto migrated rows.
+
+    Source databases predate the access-control columns, so every migrated row
+    is backfilled fail-closed: visibility 'private' and owner the configured
+    default principal -- the same values the server-side access-control
+    migration's ``ADD COLUMN ... DEFAULT`` backfill applies on an in-place
+    upgrade. Shared by all three copy paths (SQLite-to-SQLite, to-PostgreSQL,
+    and PostgreSQL-to-SQLite) so they cannot drift.
+
+    Returns:
+        The ``(owner_id, visibility)`` values for migrated context entries.
+    """
+    from app.settings import get_settings
+
+    return get_settings().access_control.default_principal, 'private'
+
+
 def copy_context_entries(
     source: sqlite3.Connection,
     target: sqlite3.Connection,
@@ -1063,9 +1081,10 @@ def copy_context_entries(
     insert_sql = (
         'INSERT INTO context_entries '
         '(id, thread_id, source, content_type, text_content, metadata, summary, content_hash, '
-        'created_at, updated_at) '
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'owner_id, visibility, created_at, updated_at) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
+    owner_id_backfill, visibility_backfill = access_backfill_values()
     inserted = 0
     for row in cursor:
         source_id = int(row['id'])
@@ -1082,6 +1101,8 @@ def copy_context_entries(
             rewritten_metadata,
             summary_value,
             content_hash_value,
+            owner_id_backfill,
+            visibility_backfill,
             row['created_at'],
             row['updated_at'],
         )
@@ -2704,11 +2725,12 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     pg_skipped_context_ids.add(source_id)
                     continue
                 if not options.dry_run:
+                    owner_id_backfill, visibility_backfill = access_backfill_values()
                     await target_conn.execute(
                         'INSERT INTO context_entries '
                         '(id, thread_id, source, content_type, text_content, metadata, summary, '
-                        'content_hash, created_at, updated_at) '
-                        'VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)',
+                        'content_hash, owner_id, visibility, created_at, updated_at) '
+                        'VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)',
                         new_id,
                         entry['thread_id'],
                         entry['source'],
@@ -2717,6 +2739,8 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                         rewritten_metadata,
                         entry['summary'],
                         entry['content_hash'],
+                        owner_id_backfill,
+                        visibility_backfill,
                         entry['created_at'],
                         entry['updated_at'],
                     )
@@ -3019,11 +3043,12 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     skipped_context_ids.add(source_id)
                     continue
                 if not options.dry_run:
+                    owner_id_backfill, visibility_backfill = access_backfill_values()
                     await target_conn.execute(
                         'INSERT INTO context_entries '
                         '(id, thread_id, source, content_type, text_content, metadata, summary, '
-                        'content_hash, created_at, updated_at) '
-                        'VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)',
+                        'content_hash, owner_id, visibility, created_at, updated_at) '
+                        'VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)',
                         new_id,
                         row['thread_id'],
                         row['source'],
@@ -3032,6 +3057,8 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                         rewritten_metadata,
                         row['summary'],
                         row['content_hash'],
+                        owner_id_backfill,
+                        visibility_backfill,
                         _stored_datetime_or_none(row['created_at']),
                         _stored_datetime_or_none(row['updated_at']),
                     )
@@ -3269,8 +3296,8 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                     target.execute(
                         'INSERT INTO context_entries '
                         '(id, thread_id, source, content_type, text_content, metadata, summary, '
-                        'content_hash, created_at, updated_at) '
-                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        'content_hash, owner_id, visibility, created_at, updated_at) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                         (
                             new_id,
                             row['thread_id'],
@@ -3280,6 +3307,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                             rewritten_metadata,
                             row['summary'],
                             row['content_hash'],
+                            *access_backfill_values(),
                             _sqlite_timestamp(row['created_at']),
                             _sqlite_timestamp(row['updated_at']),
                         ),

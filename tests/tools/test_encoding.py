@@ -15,6 +15,7 @@ import pytest
 import app.tools
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from app.repositories.context_repository import EntryProbe
 from app.types import MetadataDict
 
 # Get the actual async functions from app.tools
@@ -218,7 +219,7 @@ class TestUTF8Encoding:
         ]
 
         for text in unicode_texts:
-            self.mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
+            self.mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
             self.mock_repos.context.update_context_entry = AsyncMock(
                 return_value=(True, ['text_content']),
             )

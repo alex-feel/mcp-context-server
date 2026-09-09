@@ -27,6 +27,7 @@ import app.server
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from app.repositories.context_repository import EntryProbe
 from app.schemas import load_schema
 from app.tools.context import store_context
 from app.tools.context import update_context
@@ -55,7 +56,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.store_with_deduplication = AsyncMock(return_value=(100, False))
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
     repos.context.update_context_entry = AsyncMock(
         return_value=(True, ['text_content', 'summary']),
     )
@@ -343,8 +344,8 @@ class TestUpdateContextGenerationFirst:
         with sqlite3.connect(str(db_path)) as conn:
             conn.executescript(schema_sql)
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, text_content, content_type, metadata) '
-                'VALUES (?, ?, ?, ?, ?, ?)',
+                'INSERT INTO context_entries (id, thread_id, source, text_content, content_type, metadata, owner_id) '
+                "VALUES (?, ?, ?, ?, ?, ?, 'local')",
                 (new_id, 'upd-thread', 'agent', 'Original text', 'text', '{}'),
             )
             conn.commit()

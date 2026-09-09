@@ -545,9 +545,8 @@ def multiple_context_entries(test_db: sqlite3.Connection) -> list[str]:
         new_id = generate_id()
         cursor.execute(
             '''
-            INSERT INTO context_entries
-            (id, thread_id, source, content_type, text_content, metadata)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata, owner_id)
+            VALUES (?, ?, ?, ?, ?, ?, 'local')
             ''',
             (new_id, thread_id, source, content_type, text, metadata),
         )

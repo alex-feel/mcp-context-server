@@ -9,7 +9,7 @@ IdP-agnostic helpers in :mod:`app.auth.claims`.
 Resolution returns None when the request carries no verified token (stdio
 transport, or HTTP with MCP_AUTH_PROVIDER=none). Mapping that no-token case
 to the configured default principal is access-control policy, not token
-plumbing, and lives with the access-control settings rather than here.
+plumbing, and lives in :func:`app.auth.access.resolve_effective_principal`.
 """
 
 from dataclasses import dataclass

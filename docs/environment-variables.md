@@ -49,6 +49,17 @@ FastMCP's `FASTMCP_STRICT_INPUT_VALIDATION` is intentionally INERT for this serv
 
 For detailed authentication setup, including per-IdP JWT configuration (Keycloak, Microsoft Entra ID, Auth0), see the [Authentication Guide](authentication.md).
 
+## Access Control Settings
+
+Every stored entry carries a server-stamped `owner_id` (the verified request principal, or the configured default principal when the request carries no verified token) and a `visibility` value. The `visibility` parameter on `store_context`, `update_context`, and the batch variants is validated against these settings at write time: only the entry owner may change visibility, and publishing as `public` may require the configured role. Read-path filtering by visibility is not enforced yet: until it lands, all entries remain readable by any connected client, and multi-principal isolation under the `jwt` provider stays experimental.
+
+| Variable                              | Type   | Default   | Description                                                                                                                                                                                                                                                                                    |
+|---------------------------------------|--------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ACCESS_CONTROL_DEFAULT_PRINCIPAL`    | string | `local`   | Principal id stamped as `owner_id` when a request carries no verified access token (stdio transport, or `MCP_AUTH_PROVIDER` `none`/`simple_token`). Also the owner backfilled onto rows that predate the access-control columns. Restricted to 1-128 characters from `A-Z a-z 0-9 . _ @ : + -` |
+| `ACCESS_CONTROL_DEFAULT_VISIBILITY`   | string | `private` | Visibility stamped on stored entries when the caller does not specify one. Options: `private` (owner only), `shared` (owner + explicit grants), `public` (any principal)                                                                                                                       |
+| `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS` | string | `none`    | Automatic group read grants on newly inserted entries. Options: `none` (explicit shares only), `author_groups` (every group of the writing principal receives a read grant)                                                                                                                    |
+| `ACCESS_CONTROL_PUBLISH_ROLE`         | string | _(none)_  | Role required to set visibility `public`. Unset lets any owner publish; set to a role name to restrict publishing to callers whose verified roles claim carries that role                                                                                                                      |
+
 ## Server Instructions
 
 | Variable                    | Type     | Default                | Description                                                                                                                                                       |

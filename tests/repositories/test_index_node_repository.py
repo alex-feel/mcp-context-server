@@ -95,7 +95,8 @@ async def repos_with_table(tmp_path: Path) -> AsyncGenerator[tuple[StorageBacken
 
     def _insert(conn: sqlite3.Connection) -> None:
         conn.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) VALUES (?, ?, ?, ?, ?)',
+            "INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) "
+            "VALUES (?, ?, ?, ?, ?, 'local')",
             (cid, 't', 'agent', 'text', '# A\nbody'),
         )
 

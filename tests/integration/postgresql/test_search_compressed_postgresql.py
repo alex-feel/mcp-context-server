@@ -164,6 +164,8 @@ async def test_search_compressed_recall_postgresql(
                 doc /= np.linalg.norm(doc)
                 doc = doc.astype(np.float32)
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='pg-search-e2e',
                     source='user',
                     content_type='text',
@@ -194,6 +196,8 @@ async def test_search_compressed_recall_postgresql(
             bg /= np.linalg.norm(bg)
             bg = bg.astype(np.float32)
             cid, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='pg-search-e2e',
                 source='user',
                 content_type='text',

@@ -1389,8 +1389,8 @@ class TestFtsBooleanPathologicalQueryKeepsBreakerClosed:
             conn.executescript(load_schema('sqlite'))
             conn.executescript(fts_sql)
             conn.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                'VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, ?, ?, ?, ?, 'local')",
                 (generate_id(), 'fts-classification', 'agent', 'text', self._DOC_TEXT),
             )
             conn.commit()

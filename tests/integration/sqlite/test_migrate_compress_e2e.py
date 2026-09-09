@@ -122,6 +122,8 @@ def _seed_fp32_database(
                 vec /= np.linalg.norm(vec)
                 planted.append(vec)
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='compress-e2e',
                     source='user',
                     content_type='text',

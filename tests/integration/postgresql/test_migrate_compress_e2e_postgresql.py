@@ -145,6 +145,8 @@ async def _seed_fp32_pg(
             vec = rng.standard_normal(DIM).astype(np.float32)
             vec /= np.linalg.norm(vec)
             cid, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='pg-compress-e2e',
                 source='user',
                 content_type='text',

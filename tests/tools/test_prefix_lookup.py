@@ -81,8 +81,8 @@ class TestPrefixLookupMinimumLength:
         def _insert(conn: sqlite3.Connection) -> None:
             conn.execute(
                 '''INSERT INTO context_entries
-                   (id, thread_id, source, content_type, text_content)
-                   VALUES (?, ?, ?, ?, ?)''',
+                   (id, thread_id, source, content_type, text_content, owner_id)
+                   VALUES (?, ?, ?, ?, ?, 'local')''',
                 (canonical, 't', 'user', 'text', 'original'),
             )
 
@@ -110,8 +110,8 @@ class TestPrefixLookupAmbiguity:
             for entry_id in (base, sibling):
                 conn.execute(
                     '''INSERT INTO context_entries
-                       (id, thread_id, source, content_type, text_content)
-                       VALUES (?, ?, ?, ?, ?)''',
+                       (id, thread_id, source, content_type, text_content, owner_id)
+                       VALUES (?, ?, ?, ?, ?, 'local')''',
                     (entry_id, 't', 'user', 'text', 'x'),
                 )
 
@@ -133,8 +133,8 @@ class TestPrefixLookupAmbiguity:
         def _insert(conn: sqlite3.Connection) -> None:
             conn.execute(
                 '''INSERT INTO context_entries
-                   (id, thread_id, source, content_type, text_content)
-                   VALUES (?, ?, ?, ?, ?)''',
+                   (id, thread_id, source, content_type, text_content, owner_id)
+                   VALUES (?, ?, ?, ?, ?, 'local')''',
                 (full_id, 't', 'user', 'text', 'original'),
             )
 
@@ -150,8 +150,8 @@ def _insert_entry(conn: sqlite3.Connection, entry_id: str, text: str = 'x') -> N
     """Insert a single context entry directly for prefix-resolution tests."""
     conn.execute(
         '''INSERT INTO context_entries
-           (id, thread_id, source, content_type, text_content)
-           VALUES (?, ?, ?, ?, ?)''',
+           (id, thread_id, source, content_type, text_content, owner_id)
+           VALUES (?, ?, ?, ?, ?, 'local')''',
         (entry_id, 't', 'user', 'text', text),
     )
 

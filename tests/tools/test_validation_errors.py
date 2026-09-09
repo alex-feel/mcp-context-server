@@ -16,6 +16,7 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 from app.repositories import RepositoryContainer
+from app.repositories.context_repository import EntryProbe
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 store_context = app.server.store_context
@@ -55,7 +56,7 @@ def mock_repos():
     repos.context = AsyncMock()
     repos.context.backend = mock_backend
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.search_contexts = AsyncMock(return_value=([], {}))
     repos.context.get_by_ids = AsyncMock(return_value=[])
@@ -233,7 +234,7 @@ class TestUpdateContextValidation:
     async def test_nonexistent_context(self, mock_repos):
         """Test that updating non-existent context raises ToolError."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(False, None, None))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(False, None, None, None))
 
             with pytest.raises(ToolError) as exc_info:
                 await update_context(

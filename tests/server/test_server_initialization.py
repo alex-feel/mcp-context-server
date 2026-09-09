@@ -43,6 +43,7 @@ def _patch_server_migrations() -> AbstractContextManager[Any]:
         apply_summary_migration=AsyncMock(),
         apply_content_hash_migration=AsyncMock(),
         apply_version_migration=AsyncMock(),
+        apply_access_control_migration=AsyncMock(),
         apply_tag_uniqueness_migration=AsyncMock(),
     )
 

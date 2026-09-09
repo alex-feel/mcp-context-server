@@ -33,6 +33,7 @@ check inspects whatever schema ``search_path`` resolves to. See
 ``docs/embedding-compression.md`` for the full operator contract.
 """
 
+from app.migrations.access_control import apply_access_control_migration
 from app.migrations.chunking import apply_chunking_migration
 from app.migrations.compression import apply_compression_migration
 from app.migrations.content_hash import apply_content_hash_migration
@@ -84,6 +85,8 @@ __all__ = [
     # Version (optimistic concurrency)
     'apply_tag_uniqueness_migration',
     'apply_version_migration',
+    # Access control
+    'apply_access_control_migration',
     # Compression
     'apply_compression_migration',
 ]

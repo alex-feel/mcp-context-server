@@ -190,6 +190,22 @@ def describe_batch_delete_criteria(
     return criteria_used
 
 
+class EntryProbe(NamedTuple):
+    """Existence probe result for one context entry (see ``check_entry_exists``).
+
+    ``source``, ``version``, and ``owner_id`` are None when the entry does not
+    exist. ``version`` is the optimistic-concurrency token the update paths
+    capture BEFORE generation as their compare-and-set guard; ``owner_id`` backs
+    the owner-only visibility-change authorization (it is immutable, so a
+    pre-generation read of it cannot go stale).
+    """
+
+    exists: bool
+    source: str | None
+    version: int | None
+    owner_id: str | None
+
+
 class DuplicateCandidate(NamedTuple):
     """Statement-level snapshot of a likely-duplicate entry found by the pre-check.
 
@@ -260,6 +276,9 @@ class ContextRepository(BaseRepository):
         source: str,
         content_type: str,
         text_content: str,
+        *,
+        owner_id: str,
+        visibility: str,
         metadata: str | None = None,
         summary: str | None = None,
         preserve_content_type_on_dedup: bool = False,
@@ -271,11 +290,19 @@ class ContextRepository(BaseRepository):
         If found, updates metadata and summary (via COALESCE), content_type, content_hash,
         version (bumped by one), and updated_at. Otherwise, inserts new entry.
 
+        The access-control columns are stamped on INSERT only: a deduplication
+        UPDATE deliberately never touches ``owner_id`` or ``visibility`` (a
+        retransmit must not re-own or re-publish the existing row).
+
         Args:
             thread_id: Thread identifier
             source: 'user' or 'agent'
             content_type: 'text' or 'multimodal'
             text_content: The actual text content
+            owner_id: Server-resolved principal stamped as the row owner on a
+                fresh INSERT. Never caller-supplied at the tool boundary.
+            visibility: 'private', 'shared', or 'public'; stamped on a fresh
+                INSERT.
             metadata: JSON metadata string or None
             summary: LLM-generated summary text or None
             preserve_content_type_on_dedup: When True, a deduplication UPDATE keeps the
@@ -408,10 +435,14 @@ class ContextRepository(BaseRepository):
                 cursor.execute(
                     f'''
                     INSERT INTO context_entries
-                    (id, thread_id, source, content_type, text_content, metadata, summary, content_hash)
-                    VALUES ({self._placeholders(8)})
+                    (id, thread_id, source, content_type, text_content, metadata, summary, content_hash,
+                     owner_id, visibility)
+                    VALUES ({self._placeholders(10)})
                     ''',
-                    (new_id, thread_id, source, content_type, text_content, metadata, summary, content_hash),
+                    (
+                        new_id, thread_id, source, content_type, text_content, metadata, summary,
+                        content_hash, owner_id, visibility,
+                    ),
                 )
                 logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
                 return new_id, False
@@ -523,8 +554,9 @@ class ContextRepository(BaseRepository):
             await conn.execute(
                 f'''
                     INSERT INTO context_entries
-                    (id, thread_id, source, content_type, text_content, metadata, summary, content_hash)
-                    VALUES ({self._placeholders(8)})
+                    (id, thread_id, source, content_type, text_content, metadata, summary, content_hash,
+                     owner_id, visibility)
+                    VALUES ({self._placeholders(10)})
                     ''',
                 new_id,
                 thread_id,
@@ -534,6 +566,8 @@ class ContextRepository(BaseRepository):
                 metadata,
                 summary,
                 content_hash,
+                owner_id,
+                visibility,
             )
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
             return new_id, False
@@ -1448,10 +1482,14 @@ class ContextRepository(BaseRepository):
         metadata: str | None = None,
         summary: str | None = None,
         clear_summary: bool = False,
+        visibility: str | None = None,
         expected_version: int | None = None,
         txn: 'TransactionContext | None' = None,
     ) -> tuple[bool, list[str]]:
-        """Update text content and/or metadata of a context entry.
+        """Update text content, metadata, and/or visibility of a context entry.
+
+        ``owner_id`` is deliberately not updatable: ownership is stamped at
+        INSERT and immutable (there is no ownership-transfer operation).
 
         Args:
             context_id: ID of the context entry to update
@@ -1460,6 +1498,9 @@ class ContextRepository(BaseRepository):
             summary: New LLM-generated summary text (if provided)
             clear_summary: If True, explicitly set summary to NULL in the database.
                 Takes precedence over summary parameter.
+            visibility: New visibility value ('private', 'shared', or 'public')
+                if provided. The caller authorizes the change (owner-only) and
+                validates the value before it reaches this method.
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
@@ -1507,6 +1548,11 @@ class ContextRepository(BaseRepository):
                     update_parts.append(f'summary = {self._placeholder(len(params) + 1)}')
                     params.append(summary)
                     updated_fields.append('summary')
+
+                if visibility is not None:
+                    update_parts.append(f'visibility = {self._placeholder(len(params) + 1)}')
+                    params.append(visibility)
+                    updated_fields.append('visibility')
 
                 # If no fields to update, return early
                 if not update_parts:
@@ -1581,6 +1627,11 @@ class ContextRepository(BaseRepository):
                 params.append(summary)
                 updated_fields.append('summary')
 
+            if visibility is not None:
+                update_parts.append(f'visibility = {self._placeholder(len(params) + 1)}')
+                params.append(visibility)
+                updated_fields.append('visibility')
+
             # If no fields to update, return early
             if not update_parts:
                 return False, []
@@ -1613,44 +1664,56 @@ class ContextRepository(BaseRepository):
             return await _update_entry_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_update_entry_postgresql)
 
-    async def check_entry_exists(self, context_id: str) -> tuple[bool, str | None, int | None]:
-        """Check if a context entry exists and return its source and version.
+    async def check_entry_exists(self, context_id: str) -> EntryProbe:
+        """Check if a context entry exists and return its source, version, and owner.
 
         Args:
             context_id: ID of the context entry
 
         Returns:
-            Tuple of (exists, source, version). ``source`` and ``version`` are
-            None when the entry does not exist. When exists=True, source is
-            'user' or 'agent' and version is the current optimistic-concurrency
+            An :class:`EntryProbe`. When ``exists`` is True, ``source`` is
+            'user' or 'agent', ``version`` is the current optimistic-concurrency
             token -- update_context captures it BEFORE generation and passes it
             to update_context_entry as the compare-and-set guard, so a concurrent
-            writer that commits during generation is detected.
+            writer that commits during generation is detected -- and ``owner_id``
+            is the stamped owner backing the owner-only visibility-change check.
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _check_exists_sqlite(conn: sqlite3.Connection) -> tuple[bool, str | None, int | None]:
+            def _check_exists_sqlite(conn: sqlite3.Connection) -> EntryProbe:
                 cursor = conn.cursor()
                 cursor.execute(
-                    f'SELECT source, version FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                    f'SELECT source, version, owner_id FROM context_entries '
+                    f'WHERE id = {self._placeholder(1)} LIMIT 1',
                     (context_id,),
                 )
                 row = cursor.fetchone()
                 if row is None:
-                    return False, None, None
-                return True, cast(str, row['source']), cast(int, row['version'])
+                    return EntryProbe(False, None, None, None)
+                return EntryProbe(
+                    True,
+                    cast(str, row['source']),
+                    cast(int, row['version']),
+                    cast(str, row['owner_id']),
+                )
 
             return await self.backend.execute_read(_check_exists_sqlite)
 
         # PostgreSQL
-        async def _check_exists_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, str | None, int | None]:
+        async def _check_exists_postgresql(conn: 'asyncpg.Connection') -> EntryProbe:
             row = await conn.fetchrow(
-                f'SELECT source, version FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                f'SELECT source, version, owner_id FROM context_entries '
+                f'WHERE id = {self._placeholder(1)} LIMIT 1',
                 context_id,
             )
             if row is None:
-                return False, None, None
-            return True, cast(str, row['source']), cast(int, row['version'])
+                return EntryProbe(False, None, None, None)
+            return EntryProbe(
+                True,
+                cast(str, row['source']),
+                cast(int, row['version']),
+                cast(str, row['owner_id']),
+            )
 
         return await self.backend.execute_read(_check_exists_postgresql)
 

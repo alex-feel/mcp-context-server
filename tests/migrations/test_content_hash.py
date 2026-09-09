@@ -318,6 +318,8 @@ class TestHashStoredOnInsert:
         """New entries have content_hash populated."""
         text = 'Hello test content'
         context_id, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content=text, metadata=None,
         )
@@ -340,11 +342,15 @@ class TestHashStoredOnInsert:
         """When dedup fires, content_hash is refreshed (same value since text matches)."""
         text = 'Duplicate content'
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content=text, metadata=None,
         )
         # Store duplicate
         context_id2, was_updated = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content=text, metadata=None,
         )
@@ -374,6 +380,8 @@ class TestHashBasedPreCheck:
     async def test_hash_match_returns_id(self, repos: RepositoryContainer) -> None:
         """When content_hash matches, returns existing entry id."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Same text', metadata=None,
         )
@@ -386,6 +394,8 @@ class TestHashBasedPreCheck:
     async def test_hash_mismatch_returns_none(self, repos: RepositoryContainer) -> None:
         """When content_hash does not match, returns None."""
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Original', metadata=None,
         )
@@ -444,6 +454,8 @@ class TestNullHashFallback:
 
         # store_with_deduplication with same text should detect duplicate via fallback
         context_id, was_updated = await repos_pre_migration.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Legacy text', metadata=None,
         )
@@ -514,6 +526,8 @@ class TestHashRecomputationOnUpdate:
         """Updating text_content recomputes the content_hash."""
         original_text = 'Original content'
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content=original_text, metadata=None,
         )
@@ -543,6 +557,8 @@ class TestHashRecomputationOnUpdate:
         """Updating only metadata does NOT change content_hash."""
         text = 'Stable content'
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content=text, metadata=None,
         )
@@ -571,6 +587,8 @@ class TestHashRecomputationOnUpdate:
     ) -> None:
         """After updating text_content, dedup correctly uses the new hash."""
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Version 1', metadata=None,
         )

@@ -36,10 +36,14 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import RequestPrincipal
+from app.auth import resolve_effective_principal
+from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
 from app.metadata_types import non_finite_metadata_error
+from app.repositories.context_repository import ContextRepository
 from app.repositories.context_repository import VersionConflictError
 from app.repositories.context_repository import describe_batch_delete_criteria
 from app.repositories.embedding_repository import ChunkEmbedding
@@ -81,13 +85,169 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _validate_store_entry(
+    entry: dict[str, Any],
+    idx: int,
+    principal: 'RequestPrincipal',
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate one store_context_batch entry against the single-entry contract.
+
+    The single-entry store_context is Pydantic-typed at the tool boundary; the
+    batch path takes untyped dicts, so this helper re-imposes the same
+    rejections (types, image validity, tag caps, metadata storability, the
+    visibility enum, and the publish gate) so both paths accept and refuse
+    identical inputs.
+
+    Args:
+        entry: The raw caller-supplied entry dict.
+        idx: The entry's index in the caller's list (recorded in the result).
+        principal: The batch's effective principal, for the publish gate.
+
+    Returns:
+        ``(validated_entry, None)`` on success -- the dict carries the
+        normalized fields the transaction phase consumes, including the
+        entry's EFFECTIVE visibility -- or ``(None, error_message)`` on the
+        first failed check.
+    """
+    # Validate required fields
+    if 'thread_id' not in entry or not entry.get('thread_id'):
+        return None, 'Missing required field: thread_id'
+    if 'source' not in entry or entry.get('source') not in ('user', 'agent'):
+        return None, 'Missing or invalid source (must be "user" or "agent")'
+    if 'text' not in entry or not entry.get('text'):
+        return None, 'Missing required field: text'
+
+    # Clean input strings. Reject non-strings instead of str()-coercing:
+    # coercion would silently persist the Python repr of a truthy dict/
+    # list/number payload the Pydantic-typed single-entry store_context
+    # rejects at the tool boundary (parity with the metadata/tags/images
+    # rejections below).
+    thread_id_raw = entry['thread_id']
+    if not isinstance(thread_id_raw, str):
+        return None, 'thread_id must be a string'
+    text_raw = entry['text']
+    if not isinstance(text_raw, str):
+        return None, 'text must be a string'
+    thread_id = thread_id_raw.strip()
+    text = text_raw.strip()
+
+    if not thread_id:
+        return None, 'thread_id cannot be empty or whitespace'
+    if not text:
+        return None, 'text cannot be empty or whitespace'
+
+    # Validate visibility and enforce the publish gate on the EFFECTIVE
+    # value (a caller-omitted visibility that defaults to 'public' is
+    # still a publish). Runs BEFORE image validation, matching the
+    # single-entry store_context ordering so both paths surface the same
+    # first error for an entry that fails both checks.
+    entry_visibility = entry.get('visibility')
+    if entry_visibility is not None and entry_visibility not in ('private', 'shared', 'public'):
+        return None, "visibility must be one of 'private', 'shared', 'public'"
+    effective_visibility: str = (
+        entry_visibility
+        if entry_visibility is not None
+        else settings.access_control.default_visibility
+    )
+    visibility_denial = visibility_denied_reason(effective_visibility, principal)
+    if visibility_denial is not None:
+        return None, visibility_denial
+
+    # Validate images if present. images is None when the caller omitted
+    # the key OR passed an explicit None (both mean PRESERVE on a dedup
+    # UPDATE); a provided list -- including [] -- means REPLACE.
+    images = entry.get('images')
+    images_provided = images is not None
+    if images is not None and (
+        not isinstance(images, list) or not all(isinstance(i, dict) for i in images)
+    ):
+        # Parity with the single-entry, Pydantic-typed store_context (which rejects a
+        # non-list / non-object images). Without this, a dict-as-images or a list with a
+        # non-dict element would reach validate_and_normalize_images and raise a raw
+        # AttributeError/TypeError that aborts the whole non-atomic batch instead of
+        # recording a per-entry error.
+        return None, 'images must be a list of objects'
+    if images:
+        _, content_type_from_images, img_errors = validate_and_normalize_images(
+            cast(list[dict[str, str]], images), error_mode='collect',
+        )
+        if img_errors:
+            return None, img_errors[0]
+        content_type = content_type_from_images
+    else:
+        content_type = 'text'
+
+    # Validate metadata is a JSON object and tags is a list of strings.
+    # A non-dict metadata breaks search/metadata_filters, and a bare-string
+    # tags would be stored one character per tag.
+    metadata = entry.get('metadata')
+    if metadata is not None and not isinstance(metadata, dict):
+        return None, 'metadata must be a JSON object'
+    # Reject non-finite floats before generation (invalid JSON that
+    # PostgreSQL rejects, so parity divergence + a wasted generation pass).
+    if metadata is not None:
+        metadata_error = non_finite_metadata_error(cast('object', metadata))
+        if metadata_error is not None:
+            return None, metadata_error
+    tags = entry.get('tags')
+    if tags is not None and (
+        not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
+    ):
+        return None, 'tags must be a list of strings'
+
+    # Per-entry tag count / per-tag length caps. The single-entry
+    # store_context advertises both bounds in its wire schema; the shared
+    # chokepoint enforces them here for parity (an over-long tag otherwise
+    # stores on SQLite and aborts the PostgreSQL INSERT on idx_tags_tag
+    # inside the transaction).
+    tag_error = tag_limits_error(cast('list[str] | None', tags))
+    if tag_error is not None:
+        return None, tag_error
+
+    # Reject an embedded NUL or unpaired UTF-16 surrogate in any user string
+    # (thread_id, text, tags, metadata) before generation: PostgreSQL cannot
+    # store it, so the entry would store on SQLite but hard-fail on PostgreSQL
+    # after a wasted generation pass, charging the circuit breaker inside the
+    # transaction. Mirrors the single-entry store_context boundary guard.
+    # The same chokepoint also enforces the LENGTH caps on the values that land
+    # in a PostgreSQL btree index (thread_id, and every INDEXED metadata field)
+    # and the CAST compatibility of a typed indexed field: an oversized or
+    # uncastable value aborts the PostgreSQL INSERT where SQLite stores it.
+    entry_error = entry_boundary_error(
+        thread_id=thread_id,
+        text=text,
+        tags=cast('object', tags),
+        metadata=cast('object', metadata),
+    )
+    if entry_error is not None:
+        return None, entry_error
+
+    # Prepare validated entry. tags/images keep their None-ness so the
+    # store can distinguish PRESERVE (None) from REPLACE-with-empty ([])
+    # on a dedup UPDATE, matching the documented replacement contract.
+    return {
+        'index': idx,
+        'thread_id': thread_id,
+        'source': entry['source'],
+        'text_content': text,
+        'metadata': json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
+        'content_type': content_type,
+        'tags': tags,
+        'images': images if images is not None else [],
+        'images_provided': images_provided,
+        'visibility': effective_visibility,
+    }, None
+
+
 async def store_context_batch(
     entries: Annotated[
         list[dict[str, Any]],
         Field(
             description='List of context entries to store. Each entry must have: '
             'thread_id (str), source ("user" or "agent"), text (str). '
-            'Optional: metadata (dict), tags (list[str]), images (list[dict]).',
+            'Optional: metadata (dict), tags (list[str]), images (list[dict]), '
+            'visibility ("private", "shared", or "public"; omitted uses the server default, '
+            'publishing as public may require a configured role).',
             min_length=1,
             max_length=100,
         ),
@@ -136,136 +296,27 @@ async def store_context_batch(
 
         repos = await ensure_repositories()
 
+        # Resolve the effective principal ONCE for the whole batch (one request,
+        # one caller identity) plus the author-group grant policy; the publish
+        # gate is then enforced per entry on each entry's EFFECTIVE visibility.
+        principal = resolve_effective_principal()
+        author_group_grants: frozenset[str] = (
+            principal.groups
+            if settings.access_control.default_group_grants == 'author_groups'
+            else frozenset()
+        )
+
         # === PHASE 1: Validate all entries before processing ===
         validated_entries: list[dict[str, Any]] = []
         validation_errors: list[tuple[int, str]] = []
 
         for idx, entry in enumerate(entries):
-            # Validate required fields
-            if 'thread_id' not in entry or not entry.get('thread_id'):
-                validation_errors.append((idx, 'Missing required field: thread_id'))
+            validated_entry, entry_validation_error = _validate_store_entry(entry, idx, principal)
+            if entry_validation_error is not None:
+                validation_errors.append((idx, entry_validation_error))
                 continue
-            if 'source' not in entry or entry.get('source') not in ('user', 'agent'):
-                validation_errors.append((idx, 'Missing or invalid source (must be "user" or "agent")'))
-                continue
-            if 'text' not in entry or not entry.get('text'):
-                validation_errors.append((idx, 'Missing required field: text'))
-                continue
-
-            # Clean input strings. Reject non-strings instead of str()-coercing:
-            # coercion would silently persist the Python repr of a truthy dict/
-            # list/number payload the Pydantic-typed single-entry store_context
-            # rejects at the tool boundary (parity with the metadata/tags/images
-            # rejections below).
-            thread_id_raw = entry['thread_id']
-            if not isinstance(thread_id_raw, str):
-                validation_errors.append((idx, 'thread_id must be a string'))
-                continue
-            text_raw = entry['text']
-            if not isinstance(text_raw, str):
-                validation_errors.append((idx, 'text must be a string'))
-                continue
-            thread_id = thread_id_raw.strip()
-            text = text_raw.strip()
-
-            if not thread_id:
-                validation_errors.append((idx, 'thread_id cannot be empty or whitespace'))
-                continue
-            if not text:
-                validation_errors.append((idx, 'text cannot be empty or whitespace'))
-                continue
-
-            # Validate images if present. images is None when the caller omitted
-            # the key OR passed an explicit None (both mean PRESERVE on a dedup
-            # UPDATE); a provided list -- including [] -- means REPLACE.
-            images = entry.get('images')
-            images_provided = images is not None
-            if images is not None and (
-                not isinstance(images, list) or not all(isinstance(i, dict) for i in images)
-            ):
-                # Parity with the single-entry, Pydantic-typed store_context (which rejects a
-                # non-list / non-object images). Without this, a dict-as-images or a list with a
-                # non-dict element would reach validate_and_normalize_images and raise a raw
-                # AttributeError/TypeError that aborts the whole non-atomic batch instead of
-                # recording a per-entry error.
-                validation_errors.append((idx, 'images must be a list of objects'))
-                continue
-            if images:
-                _, content_type_from_images, img_errors = validate_and_normalize_images(
-                    cast(list[dict[str, str]], images), error_mode='collect',
-                )
-                if img_errors:
-                    validation_errors.append((idx, img_errors[0]))
-                    continue
-                content_type = content_type_from_images
-            else:
-                content_type = 'text'
-
-            # Validate metadata is a JSON object and tags is a list of strings.
-            # The single-entry store_context is Pydantic-typed and rejects these;
-            # the batch path takes untyped dicts, so check here for parity: a
-            # non-dict metadata breaks search/metadata_filters, and a bare-string
-            # tags would be stored one character per tag.
-            metadata = entry.get('metadata')
-            if metadata is not None and not isinstance(metadata, dict):
-                validation_errors.append((idx, 'metadata must be a JSON object'))
-                continue
-            # Reject non-finite floats before generation (invalid JSON that
-            # PostgreSQL rejects, so parity divergence + a wasted generation pass).
-            if metadata is not None:
-                metadata_error = non_finite_metadata_error(cast('object', metadata))
-                if metadata_error is not None:
-                    validation_errors.append((idx, metadata_error))
-                    continue
-            tags = entry.get('tags')
-            if tags is not None and (
-                not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
-            ):
-                validation_errors.append((idx, 'tags must be a list of strings'))
-                continue
-            # Per-entry tag count / per-tag length caps. The single-entry
-            # store_context advertises both bounds in its wire schema; the batch
-            # path takes untyped dicts, so the shared chokepoint enforces them
-            # here for parity (an over-long tag otherwise stores on SQLite and
-            # aborts the PostgreSQL INSERT on idx_tags_tag inside the transaction).
-            tag_error = tag_limits_error(cast('list[str] | None', tags))
-            if tag_error is not None:
-                validation_errors.append((idx, tag_error))
-                continue
-
-            # Reject an embedded NUL or unpaired UTF-16 surrogate in any user string
-            # (thread_id, text, tags, metadata) before generation: PostgreSQL cannot
-            # store it, so the entry would store on SQLite but hard-fail on PostgreSQL
-            # after a wasted generation pass, charging the circuit breaker inside the
-            # transaction. Mirrors the single-entry store_context boundary guard.
-            # The same chokepoint also enforces the LENGTH caps on the values that land
-            # in a PostgreSQL btree index (thread_id, and every INDEXED metadata field)
-            # and the CAST compatibility of a typed indexed field: an oversized or
-            # uncastable value aborts the PostgreSQL INSERT where SQLite stores it.
-            entry_error = entry_boundary_error(
-                thread_id=thread_id,
-                text=text,
-                tags=cast('object', tags),
-                metadata=cast('object', metadata),
-            )
-            if entry_error is not None:
-                validation_errors.append((idx, entry_error))
-                continue
-
-            # Prepare validated entry. tags/images keep their None-ness so the
-            # store can distinguish PRESERVE (None) from REPLACE-with-empty ([])
-            # on a dedup UPDATE, matching the documented replacement contract.
-            validated_entries.append({
-                'index': idx,
-                'thread_id': thread_id,
-                'source': entry['source'],
-                'text_content': text,
-                'metadata': json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
-                'content_type': content_type,
-                'tags': tags,
-                'images': images if images is not None else [],
-                'images_provided': images_provided,
-            })
+            assert validated_entry is not None  # guaranteed by error is None
+            validated_entries.append(validated_entry)
 
         # In atomic mode, fail fast if any validation errors
         if atomic and validation_errors:
@@ -589,6 +640,9 @@ async def store_context_batch(
                                     source=entry['source'],
                                     content_type=entry['content_type'],
                                     text_content=entry['text_content'],
+                                    owner_id=principal.principal_id,
+                                    visibility=entry['visibility'],
+                                    author_group_grants=author_group_grants,
                                     metadata_str=entry['metadata'],
                                     summary=entry_summaries.get(ve_idx),
                                     tags=entry.get('tags'),
@@ -730,6 +784,9 @@ async def store_context_batch(
                                     source=entry['source'],
                                     content_type=entry['content_type'],
                                     text_content=entry['text_content'],
+                                    owner_id=principal.principal_id,
+                                    visibility=entry['visibility'],
+                                    author_group_grants=author_group_grants,
                                     metadata_str=entry['metadata'],
                                     summary=entry_summaries.get(ve_idx),
                                     tags=entry.get('tags'),
@@ -957,6 +1014,154 @@ async def _reraise_disambiguated_cas_conflict(
     raise VersionConflictError(context_id) from None
 
 
+async def _validate_update_entry(
+    update: dict[str, Any],
+    idx: int,
+    context_repo: ContextRepository,
+) -> tuple[dict[str, Any] | None, str, str | None]:
+    """Validate one update_context_batch entry against the single-entry contract.
+
+    The single-entry update_context is Pydantic-typed at the tool boundary; the
+    batch path takes untyped dicts, so this helper re-imposes the same
+    rejections (id resolution, mutual exclusivity, types, image validity, tag
+    caps, metadata storability, and the visibility enum) so both paths accept
+    and refuse identical inputs. The owner-only visibility authorization runs
+    later, in the existence phase, once the entry's stamped owner is known.
+
+    Args:
+        update: The raw caller-supplied update dict.
+        idx: The entry's index in the caller's list (recorded in the result).
+        context_repo: Context repository used to resolve id prefixes.
+
+    Returns:
+        ``(validated_update, context_id, None)`` on success, or
+        ``(None, context_id, error_message)`` on the first failed check
+        (``context_id`` is ``''`` when the id itself could not be resolved,
+        matching the single-inline-loop error rows this replaced).
+    """
+    # Validate required context_id
+    if 'context_id' not in update:
+        return None, '', 'Missing required field: context_id'
+
+    context_id_raw = update['context_id']
+    if not isinstance(context_id_raw, str) or not context_id_raw.strip():
+        return None, '', 'context_id must be a non-empty string'
+
+    # Resolve to canonical 32-char hex (accept full or prefix)
+    try:
+        context_id = await resolve_or_normalize_id(context_id_raw, context_repo)
+    except ValueError as e:
+        return None, context_id_raw, f'Invalid context_id: {e}'
+
+    # Validate mutual exclusivity of metadata and metadata_patch
+    if update.get('metadata') is not None and update.get('metadata_patch') is not None:
+        return None, context_id, 'Cannot use both metadata and metadata_patch. Use one or the other.'
+
+    # Validate text if provided. Reject non-strings instead of
+    # str()-coercing: coercion would silently persist the Python repr
+    # of a dict/list/number payload the Pydantic-typed single-entry
+    # update_context rejects at the tool boundary (parity with the
+    # metadata/tags rejections below).
+    text = update.get('text')
+    if text is not None:
+        if not isinstance(text, str):
+            return None, context_id, 'text must be a string'
+        text = text.strip()
+        if not text:
+            return None, context_id, 'text cannot be empty or whitespace'
+
+    # Check that at least one field is provided for update
+    has_update = any(
+        update.get(field) is not None
+        for field in ['text', 'metadata', 'metadata_patch', 'tags', 'images', 'visibility']
+    )
+    if not has_update:
+        return None, context_id, 'At least one field must be provided for update'
+
+    # Validate visibility (parity with the single-entry Literal-typed
+    # update_context).
+    visibility_field = update.get('visibility')
+    if visibility_field is not None and visibility_field not in ('private', 'shared', 'public'):
+        return None, context_id, "visibility must be one of 'private', 'shared', 'public'"
+
+    # Validate metadata / metadata_patch are JSON objects and tags is a
+    # list of strings (parity with the single-entry, Pydantic-typed
+    # update_context, which rejects these).
+    metadata_field = update.get('metadata')
+    if metadata_field is not None and not isinstance(metadata_field, dict):
+        return None, context_id, 'metadata must be a JSON object'
+    metadata_patch_field = update.get('metadata_patch')
+    if metadata_patch_field is not None and not isinstance(metadata_patch_field, dict):
+        return None, context_id, 'metadata_patch must be a JSON object'
+    tags_field = update.get('tags')
+    if tags_field is not None and (
+        not isinstance(tags_field, list) or not all(isinstance(t, str) for t in tags_field)
+    ):
+        return None, context_id, 'tags must be a list of strings'
+    # Per-entry tag count / per-tag length caps (see the store batch for
+    # the full rationale): the untyped batch path must reject exactly what
+    # the wire-schema-bounded single-entry update_context rejects.
+    tag_error = tag_limits_error(cast('list[str] | None', tags_field))
+    if tag_error is not None:
+        return None, context_id, tag_error
+
+    # Validate images if provided
+    images = update.get('images')
+    if images is not None and (
+        not isinstance(images, list) or not all(isinstance(i, dict) for i in images)
+    ):
+        # Parity with the single-entry, Pydantic-typed update_context (which rejects a
+        # non-list / non-object images). Without this, a dict-as-images or a list with a
+        # non-dict element would reach validate_and_normalize_images and raise a raw
+        # AttributeError/TypeError that aborts the whole non-atomic batch instead of
+        # recording a per-entry error.
+        return None, context_id, 'images must be a list of objects'
+    if images:
+        _, _, img_errors = validate_and_normalize_images(
+            cast(list[dict[str, str]], images), error_mode='collect',
+        )
+        if img_errors:
+            return None, context_id, img_errors[0]
+
+    # Reject non-finite floats in metadata (full or patch) before
+    # generation: invalid JSON that PostgreSQL rejects, so parity
+    # divergence + a wasted generation pass.
+    for meta_value in (update.get('metadata'), update.get('metadata_patch')):
+        if meta_value is not None:
+            non_finite_error = non_finite_metadata_error(cast('object', meta_value))
+            if non_finite_error is not None:
+                return None, context_id, non_finite_error
+
+    # Reject an embedded NUL or unpaired UTF-16 surrogate in any user string
+    # (text, tags, metadata, metadata_patch) before generation, mirroring the
+    # single-entry update_context boundary guard: PostgreSQL cannot store it,
+    # so the update would succeed on SQLite but hard-fail on PostgreSQL after a
+    # wasted generation pass, charging the circuit breaker inside the transaction.
+    # The same chokepoint also enforces the length cap and, for a typed field,
+    # the cast compatibility of every INDEXED metadata field, in both the
+    # replacement and the merge-patch form: an oversized or uncastable value
+    # aborts the PostgreSQL UPDATE on idx_metadata_<field> where SQLite stores it.
+    entry_error = entry_boundary_error(
+        text=text,
+        tags=cast('object', tags_field),
+        metadata=cast('object', metadata_field),
+        metadata_patch=cast('object', metadata_patch_field),
+    )
+    if entry_error is not None:
+        return None, context_id, entry_error
+
+    return {
+        'index': idx,
+        'context_id': context_id,
+        'text': text,
+        'metadata': update.get('metadata'),
+        'metadata_patch': update.get('metadata_patch'),
+        'tags': update.get('tags'),
+        'images': images,
+        'visibility': visibility_field,
+    }, context_id, None
+
+
 async def update_context_batch(
     updates: Annotated[
         list[dict[str, Any]],
@@ -964,7 +1169,9 @@ async def update_context_batch(
             description='List of update operations. Each must have context_id (str, accepts 32-char hex, '
             '36-char hyphenated UUID, or 8-31 char hex prefix). '
             'Optional: text (str), metadata (dict - full replace), '
-            'metadata_patch (dict - RFC 7396 merge), tags (list[str]), images (list[dict]).',
+            'metadata_patch (dict - RFC 7396 merge), tags (list[str]), images (list[dict]), '
+            'visibility ("private", "shared", or "public"; owner-only, publishing as public '
+            'may require a configured role).',
             min_length=1,
             max_length=100,
         ),
@@ -987,8 +1194,9 @@ async def update_context_batch(
     Update semantics per entry:
     - Each update is identified by context_id
     - Only provided fields are modified
-    - Immutable fields (cannot be changed): id, thread_id, source, created_at
+    - Immutable fields (cannot be changed): id, thread_id, source, created_at, ownership
     - Auto-managed fields: content_type (recalculated based on images), updated_at
+    - visibility: owner-only; publishing as 'public' may require a configured role
     - Metadata options (MUTUALLY EXCLUSIVE per entry):
       - metadata: FULL REPLACEMENT of entire metadata object
       - metadata_patch: RFC 7396 JSON Merge Patch (new keys added, existing updated,
@@ -1020,147 +1228,14 @@ async def update_context_batch(
         validation_errors: list[tuple[int, str, str]] = []  # (index, context_id, error)
 
         for idx, update in enumerate(updates):
-            # Validate required context_id
-            if 'context_id' not in update:
-                validation_errors.append((idx, '', 'Missing required field: context_id'))
-                continue
-
-            context_id_raw = update['context_id']
-            if not isinstance(context_id_raw, str) or not context_id_raw.strip():
-                validation_errors.append((idx, '', 'context_id must be a non-empty string'))
-                continue
-
-            # Resolve to canonical 32-char hex (accept full or prefix)
-            try:
-                context_id = await resolve_or_normalize_id(context_id_raw, repos.context)
-            except ValueError as e:
-                validation_errors.append((idx, context_id_raw, f'Invalid context_id: {e}'))
-                continue
-
-            # Validate mutual exclusivity of metadata and metadata_patch
-            if update.get('metadata') is not None and update.get('metadata_patch') is not None:
-                validation_errors.append((
-                    idx,
-                    context_id,
-                    'Cannot use both metadata and metadata_patch. Use one or the other.',
-                ))
-                continue
-
-            # Validate text if provided. Reject non-strings instead of
-            # str()-coercing: coercion would silently persist the Python repr
-            # of a dict/list/number payload the Pydantic-typed single-entry
-            # update_context rejects at the tool boundary (parity with the
-            # metadata/tags rejections below).
-            text = update.get('text')
-            if text is not None:
-                if not isinstance(text, str):
-                    validation_errors.append((idx, context_id, 'text must be a string'))
-                    continue
-                text = text.strip()
-                if not text:
-                    validation_errors.append((idx, context_id, 'text cannot be empty or whitespace'))
-                    continue
-
-            # Check that at least one field is provided for update
-            has_update = any(
-                update.get(field) is not None
-                for field in ['text', 'metadata', 'metadata_patch', 'tags', 'images']
+            validated_update, entry_context_id, entry_validation_error = await _validate_update_entry(
+                update, idx, repos.context,
             )
-            if not has_update:
-                validation_errors.append((idx, context_id, 'At least one field must be provided for update'))
+            if entry_validation_error is not None:
+                validation_errors.append((idx, entry_context_id, entry_validation_error))
                 continue
-
-            # Validate metadata / metadata_patch are JSON objects and tags is a
-            # list of strings (parity with the single-entry, Pydantic-typed
-            # update_context, which rejects these).
-            metadata_field = update.get('metadata')
-            if metadata_field is not None and not isinstance(metadata_field, dict):
-                validation_errors.append((idx, context_id, 'metadata must be a JSON object'))
-                continue
-            metadata_patch_field = update.get('metadata_patch')
-            if metadata_patch_field is not None and not isinstance(metadata_patch_field, dict):
-                validation_errors.append((idx, context_id, 'metadata_patch must be a JSON object'))
-                continue
-            tags_field = update.get('tags')
-            if tags_field is not None and (
-                not isinstance(tags_field, list) or not all(isinstance(t, str) for t in tags_field)
-            ):
-                validation_errors.append((idx, context_id, 'tags must be a list of strings'))
-                continue
-            # Per-entry tag count / per-tag length caps (see the store batch for
-            # the full rationale): the untyped batch path must reject exactly what
-            # the wire-schema-bounded single-entry update_context rejects.
-            tag_error = tag_limits_error(cast('list[str] | None', tags_field))
-            if tag_error is not None:
-                validation_errors.append((idx, context_id, tag_error))
-                continue
-
-            # Validate images if provided
-            images = update.get('images')
-            if images is not None and (
-                not isinstance(images, list) or not all(isinstance(i, dict) for i in images)
-            ):
-                # Parity with the single-entry, Pydantic-typed update_context (which rejects a
-                # non-list / non-object images). Without this, a dict-as-images or a list with a
-                # non-dict element would reach validate_and_normalize_images and raise a raw
-                # AttributeError/TypeError that aborts the whole non-atomic batch instead of
-                # recording a per-entry error.
-                validation_errors.append((idx, context_id, 'images must be a list of objects'))
-                continue
-            if images:
-                _, _, img_errors = validate_and_normalize_images(
-                    cast(list[dict[str, str]], images), error_mode='collect',
-                )
-                if img_errors:
-                    validation_errors.append((idx, context_id, img_errors[0]))
-                    continue
-
-            # Check if entry already had validation errors from images
-            if any(idx == err[0] for err in validation_errors):
-                continue
-
-            # Reject non-finite floats in metadata (full or patch) before
-            # generation: invalid JSON that PostgreSQL rejects, so parity
-            # divergence + a wasted generation pass.
-            non_finite_error: str | None = None
-            for meta_value in (update.get('metadata'), update.get('metadata_patch')):
-                if meta_value is not None:
-                    non_finite_error = non_finite_metadata_error(cast('object', meta_value))
-                    if non_finite_error is not None:
-                        break
-            if non_finite_error is not None:
-                validation_errors.append((idx, context_id, non_finite_error))
-                continue
-
-            # Reject an embedded NUL or unpaired UTF-16 surrogate in any user string
-            # (text, tags, metadata, metadata_patch) before generation, mirroring the
-            # single-entry update_context boundary guard: PostgreSQL cannot store it,
-            # so the update would succeed on SQLite but hard-fail on PostgreSQL after a
-            # wasted generation pass, charging the circuit breaker inside the transaction.
-            # The same chokepoint also enforces the length cap and, for a typed field,
-            # the cast compatibility of every INDEXED metadata field, in both the
-            # replacement and the merge-patch form: an oversized or uncastable value
-            # aborts the PostgreSQL UPDATE on idx_metadata_<field> where SQLite stores it.
-            entry_error = entry_boundary_error(
-                text=text,
-                tags=cast('object', tags_field),
-                metadata=cast('object', metadata_field),
-                metadata_patch=cast('object', metadata_patch_field),
-            )
-            if entry_error is not None:
-                validation_errors.append((idx, context_id, entry_error))
-                continue
-
-            # Prepare validated update
-            validated_updates.append({
-                'index': idx,
-                'context_id': context_id,
-                'text': text,
-                'metadata': update.get('metadata'),
-                'metadata_patch': update.get('metadata_patch'),
-                'tags': update.get('tags'),
-                'images': images,
-            })
+            assert validated_update is not None  # guaranteed by error is None
+            validated_updates.append(validated_update)
 
         # In atomic mode, fail fast if any validation errors
         if atomic and validation_errors:
@@ -1194,28 +1269,50 @@ async def update_context_batch(
                 message='All updates failed validation',
             )
 
-        # === PHASE 2: Check all entries exist (fail fast in atomic mode) ===
+        # === PHASE 2: Check all entries exist and authorize visibility changes
+        # (fail fast in atomic mode) ===
         existence_errors: list[tuple[int, str, str]] = []  # (index, context_id, error)
         entry_sources: dict[str, str] = {}  # context_id -> source
         # context_id -> optimistic-concurrency version captured BEFORE generation;
         # passed to execute_update_in_transaction as the compare-and-set guard so a
         # concurrent writer that commits during generation is detected.
         entry_versions: dict[str, int] = {}
+        # Resolved lazily: only a batch that actually changes visibility needs
+        # the caller identity.
+        principal: RequestPrincipal | None = None
 
         for update in validated_updates:
             original_idx = update['index']
             context_id = update['context_id']
 
-            exists, entry_source, entry_version = await repos.context.check_entry_exists(context_id)
-            if not exists:
+            probe = await repos.context.check_entry_exists(context_id)
+            if not probe.exists:
                 if atomic:
                     raise ToolError(f'Context entry {context_id} not found at index {original_idx}')
                 existence_errors.append((original_idx, context_id, f'Context entry {context_id} not found'))
+                continue
+            assert probe.source is not None
+            assert probe.version is not None
+            entry_sources[context_id] = probe.source
+            entry_versions[context_id] = probe.version
+
+            # Visibility changes are owner-only, and publishing as 'public' may
+            # additionally require the configured publish role. owner_id is
+            # immutable, so this pre-generation read cannot go stale.
+            visibility_change = update.get('visibility')
+            if visibility_change is None:
+                continue
+            if principal is None:
+                principal = resolve_effective_principal()
+            auth_error: str | None = None
+            if probe.owner_id != principal.principal_id:
+                auth_error = f'Only the owner may change the visibility of context {context_id}'
             else:
-                assert entry_source is not None
-                assert entry_version is not None
-                entry_sources[context_id] = entry_source
-                entry_versions[context_id] = entry_version
+                auth_error = visibility_denied_reason(visibility_change, principal)
+            if auth_error is not None:
+                if atomic:
+                    raise ToolError(f'{auth_error} (index {original_idx})')
+                existence_errors.append((original_idx, context_id, auth_error))
 
         # In non-atomic mode, add existence errors to results
         if not atomic:
@@ -1498,6 +1595,7 @@ async def update_context_batch(
                                         metadata_patch=update.get('metadata_patch'),
                                         summary=update_summaries.get(vu_idx),
                                         clear_summary=vu_idx in update_clear_summaries,
+                                        visibility=update.get('visibility'),
                                         tags=update.get('tags'),
                                         images=update_images,
                                         validated_images=update_images or [],
@@ -1521,10 +1619,16 @@ async def update_context_batch(
                                 await _reraise_disambiguated_cas_conflict(repos, txn, context_id)
                             if summary_cleared:
                                 cleared_attempt += 1
-                            bumps_version = update.get('text') is not None or update.get('metadata') is not None
+                            bumps_version = (
+                                update.get('text') is not None
+                                or update.get('metadata') is not None
+                                or update.get('visibility') is not None
+                            )
                             if bumps_version and context_id in live_versions:
                                 # update_context_entry bumped version by 1; a later
                                 # same-id update in this batch must see the new value.
+                                # Mirrors the execute_update_in_transaction predicate:
+                                # text, metadata, AND visibility all ride the CAS write.
                                 live_versions[context_id] += 1
 
                             results_attempt.append(BulkUpdateResultItemDict(
@@ -1600,6 +1704,7 @@ async def update_context_batch(
                                     metadata_patch=update.get('metadata_patch'),
                                     summary=update_summaries.get(vu_idx),
                                     clear_summary=vu_idx in update_clear_summaries,
+                                    visibility=update.get('visibility'),
                                     tags=update.get('tags'),
                                     images=update_images,
                                     validated_images=update_images or [],
@@ -1621,7 +1726,11 @@ async def update_context_batch(
                         ))
                         if summary_cleared:
                             summaries_cleared_count += 1
-                        bumps_version = update.get('text') is not None or update.get('metadata') is not None
+                        bumps_version = (
+                            update.get('text') is not None
+                            or update.get('metadata') is not None
+                            or update.get('visibility') is not None
+                        )
                         if bumps_version and context_id in live_versions:
                             live_versions[context_id] += 1
                         break  # Success -- exit retry loop

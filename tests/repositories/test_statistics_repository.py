@@ -84,16 +84,16 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Insert test data
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd00000001', 'thread1', 'user', 'text', 'Test 1')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000001', 'thread1', 'user', 'text', 'Test 1', 'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd00000002', 'thread1', 'agent', 'text', 'Test 2')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000002', 'thread1', 'agent', 'text', 'Test 2', 'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd00000003', 'thread2', 'user', 'multimodal', 'Test 3')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000003', 'thread2', 'user', 'multimodal', 'Test 3', 'local')",
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -123,25 +123,30 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # thread_a: three monotonic UUIDv7 ids, distinct created_at
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
-                "VALUES ('0190abcdef1234567890abcd00000001', 'thread_a', 'user', 'text', 'A1', '2026-01-01 10:00:00')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000001', 'thread_a', 'user', 'text', 'A1', '2026-01-01 10:00:00', "
+                "'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
-                "VALUES ('0190abcdef1234567890abcd00000005', 'thread_a', 'agent', 'text', 'A2', '2026-01-01 10:00:01')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000005', 'thread_a', 'agent', 'text', 'A2', '2026-01-01 10:00:01', "
+                "'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
-                "VALUES ('0190abcdef1234567890abcd00000003', 'thread_a', 'user', 'text', 'A3', '2026-01-01 10:00:02')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000003', 'thread_a', 'user', 'text', 'A3', '2026-01-01 10:00:02', "
+                "'local')",
             )
             # thread_b: two ids, ordered so that the lex-max id is NOT the most recently inserted
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
-                "VALUES ('0190abcdef1234567890abcd00000099', 'thread_b', 'user', 'text', 'B1', '2026-01-01 10:00:10')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000099', 'thread_b', 'user', 'text', 'B1', '2026-01-01 10:00:10', "
+                "'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
-                "VALUES ('0190abcdef1234567890abcd00000010', 'thread_b', 'agent', 'text', 'B2', '2026-01-01 10:00:11')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000010', 'thread_b', 'agent', 'text', 'B2', '2026-01-01 10:00:11', "
+                "'local')",
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -201,18 +206,24 @@ class TestStatisticsRepository:
 
         # Insert context entries via repository
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread1',
             source='user',
             content_type='text',
             text_content='Test 1',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread1',
             source='agent',
             content_type='text',
             text_content='Test 2',
         )
         ctx_id3, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread1',
             source='user',
             content_type='multimodal',
@@ -257,12 +268,16 @@ class TestStatisticsRepository:
 
         # Thread 1: 2 entries, both sources, 1 multimodal
         ctx_id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread1',
             source='user',
             content_type='text',
             text_content='Test 1',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='thread1',
             source='agent',
             content_type='multimodal',
@@ -312,16 +327,16 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Insert context entries
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd00000004', 'thread1', 'user', 'text', 'Test 1')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000004', 'thread1', 'user', 'text', 'Test 1', 'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd00000005', 'thread1', 'agent', 'text', 'Test 2')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000005', 'thread1', 'agent', 'text', 'Test 2', 'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd00000006', 'thread2', 'user', 'text', 'Test 3')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000006', 'thread2', 'user', 'text', 'Test 3', 'local')",
             )
             # Tags: 'important' used 3 times, 'test' used 2 times, 'unique' used 1 time
             id_a = '0190abcdef1234567890abcd00000004'
@@ -366,8 +381,8 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Insert context entry
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd00000007', 'thread1', 'user', 'text', 'Test')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000007', 'thread1', 'user', 'text', 'Test', 'local')",
             )
             # Insert 15 tags to test top_10 filtering
             entry_id = '0190abcdef1234567890abcd00000007'
@@ -399,8 +414,8 @@ class TestStatisticsRepository:
         def _insert_data(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd00000008', 'thread1', 'user', 'text', 'Test')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd00000008', 'thread1', 'user', 'text', 'Test', 'local')",
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -434,20 +449,20 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Entry with valid summary
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
-                "VALUES (?, 't1', 'user', 'text', 'Content 1', 'Summary 1')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary, owner_id) '
+                "VALUES (?, 't1', 'user', 'text', 'Content 1', 'Summary 1', 'local')",
                 (generate_id(),),
             )
             # Entry with NULL summary
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES (?, 't1', 'agent', 'text', 'Content 2')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, 't1', 'agent', 'text', 'Content 2', 'local')",
                 (generate_id(),),
             )
             # Entry with valid summary
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
-                "VALUES (?, 't2', 'user', 'text', 'Content 3', 'Summary 3')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary, owner_id) '
+                "VALUES (?, 't2', 'user', 'text', 'Content 3', 'Summary 3', 'local')",
                 (generate_id(),),
             )
 
@@ -476,20 +491,20 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Entry with valid summary
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
-                "VALUES (?, 't1', 'user', 'text', 'Content 1', 'Valid summary')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary, owner_id) '
+                "VALUES (?, 't1', 'user', 'text', 'Content 1', 'Valid summary', 'local')",
                 (generate_id(),),
             )
             # Entry with empty string summary (edge case)
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
-                "VALUES (?, 't1', 'agent', 'text', 'Content 2', '')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary, owner_id) '
+                "VALUES (?, 't1', 'agent', 'text', 'Content 2', '', 'local')",
                 (generate_id(),),
             )
             # Entry with NULL summary
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES (?, 't2', 'user', 'text', 'Content 3')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, 't2', 'user', 'text', 'Content 3', 'local')",
                 (generate_id(),),
             )
 
@@ -512,18 +527,18 @@ class TestStatisticsRepository:
         def _insert_data(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES (?, 'ct-thread', 'user', 'text', 'Text entry')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, 'ct-thread', 'user', 'text', 'Text entry', 'local')",
                 (generate_id(),),
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES (?, 'ct-thread', 'user', 'multimodal', 'Multimodal entry')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, 'ct-thread', 'user', 'multimodal', 'Multimodal entry', 'local')",
                 (generate_id(),),
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES (?, 'ct-thread', 'agent', 'text', 'Another text entry')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, 'ct-thread', 'agent', 'text', 'Another text entry', 'local')",
                 (generate_id(),),
             )
 
@@ -542,6 +557,8 @@ class TestStatisticsRepository:
         repos = RepositoryContainer(stats_test_db)
 
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='del-stats-thread',
             source='user',
             content_type='text',
@@ -569,6 +586,8 @@ class TestRepositoryContainerStatistics:
         """Test a full statistics workflow with all repository operations."""
         # Store some context entries using correct API
         context_id1, _ = await repo_container.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='workflow_thread',
             source='user',
             content_type='text',
@@ -578,6 +597,8 @@ class TestRepositoryContainerStatistics:
         assert context_id1 is not None
 
         context_id2, _ = await repo_container.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='workflow_thread',
             source='agent',
             content_type='text',
@@ -631,13 +652,13 @@ class TestThreadListDetails:
         def _insert_data(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES (?, 'mm-thread', 'user', 'text', 'Text only')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, 'mm-thread', 'user', 'text', 'Text only', 'local')",
                 (generate_id(),),
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES (?, 'mm-thread', 'user', 'multimodal', 'With images')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, 'mm-thread', 'user', 'multimodal', 'With images', 'local')",
                 (generate_id(),),
             )
 
@@ -705,6 +726,8 @@ class TestStatisticsBackendField:
 
         for i in range(3):
             await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='active-thread',
                 source='user',
                 content_type='text',
@@ -712,6 +735,8 @@ class TestStatisticsBackendField:
             )
 
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='less-active-thread',
             source='user',
             content_type='text',
@@ -738,6 +763,8 @@ class TestStatisticsBackendField:
         repos = RepositoryContainer(stats_test_db)
 
         ctx_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='tags-thread',
             source='user',
             content_type='text',
@@ -766,13 +793,13 @@ class TestStatisticsBackendField:
             cursor = conn.cursor()
             for i in range(3):
                 cursor.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                    f"VALUES (?, 'busy-thread', 'user', 'text', 'Entry {i}')",
+                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                    f"VALUES (?, 'busy-thread', 'user', 'text', 'Entry {i}', 'local')",
                     (generate_id(),),
                 )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES (?, 'quiet-thread', 'user', 'text', 'Single entry')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES (?, 'quiet-thread', 'user', 'text', 'Single entry', 'local')",
                 (generate_id(),),
             )
 
@@ -797,6 +824,8 @@ class TestThreadStatisticsDetails:
         repos = RepositoryContainer(stats_test_db)
 
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='timestamp-thread',
             source='user',
             content_type='text',
@@ -821,18 +850,24 @@ class TestThreadStatisticsDetails:
         repos = RepositoryContainer(stats_test_db)
 
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='source-breakdown-thread',
             source='user',
             content_type='text',
             text_content='User entry 1',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='source-breakdown-thread',
             source='user',
             content_type='text',
             text_content='User entry 2',
         )
         await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='source-breakdown-thread',
             source='agent',
             content_type='text',
@@ -1131,16 +1166,16 @@ class TestSqliteTruthinessAlignment:
         def _insert_data(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd0000aa01', 't1', 'user', 'text', 'A')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd0000aa01', 't1', 'user', 'text', 'A', 'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd0000aa02', 't1', 'agent', 'text', 'B')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd0000aa02', 't1', 'agent', 'text', 'B', 'local')",
             )
             cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                "VALUES ('0190abcdef1234567890abcd0000aa03', 't2', 'user', 'text', 'C')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                "VALUES ('0190abcdef1234567890abcd0000aa03', 't2', 'user', 'text', 'C', 'local')",
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -1173,8 +1208,8 @@ class TestGetThreadListPagination:
         for entry_id, thread_id, created_at in rows:
             cursor.execute(
                 'INSERT INTO context_entries '
-                '(id, thread_id, source, content_type, text_content, created_at) '
-                "VALUES (?, ?, 'user', 'text', 'entry', ?)",
+                '(id, thread_id, source, content_type, text_content, created_at, owner_id) '
+                "VALUES (?, ?, 'user', 'text', 'entry', ?, 'local')",
                 (entry_id, thread_id, created_at),
             )
 
@@ -1298,8 +1333,8 @@ class TestTopNTiebreakDeterminism:
             for _ in range(2):
                 entry_id += 1
                 cursor.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                    'VALUES (?, ?, ?, ?, ?)',
+                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (
                         f'0190abcdef1234567890abcd{entry_id:08d}',
                         f'thread-{thread_index:02d}',
@@ -1463,8 +1498,8 @@ class TestTextOrderingIsByteWiseOnBothBackends:
                 entry_id += 1
                 context_id = f'0190abcdef1234567890abce{entry_id:08d}'
                 cursor.execute(
-                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
-                    'VALUES (?, ?, ?, ?, ?)',
+                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+                    "VALUES (?, ?, ?, ?, ?, 'local')",
                     (context_id, name, 'user', 'text', 'collation entry'),
                 )
                 cursor.execute(

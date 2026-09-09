@@ -42,26 +42,30 @@ def fts_enabled_db(tmp_path: Path) -> Path:
         # Insert test data
         conn.execute(
             '''
-            INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-            VALUES ('0190abcdef1234567890abcd00000001', 'test-thread', 'agent', 'text', 'Python programming language tutorial')
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+            VALUES ('0190abcdef1234567890abcd00000001', 'test-thread', 'agent', 'text', 'Python programming language tutorial',
+                    'local')
         ''',
         )
         conn.execute(
             '''
-            INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-            VALUES ('0190abcdef1234567890abcd00000002', 'test-thread', 'user', 'text', 'How to learn JavaScript quickly')
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+            VALUES ('0190abcdef1234567890abcd00000002', 'test-thread', 'user', 'text', 'How to learn JavaScript quickly',
+                    'local')
         ''',
         )
         conn.execute(
             '''
-            INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-            VALUES ('0190abcdef1234567890abcd00000003', 'test-thread', 'agent', 'text', 'Running Python scripts on Linux')
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+            VALUES ('0190abcdef1234567890abcd00000003', 'test-thread', 'agent', 'text', 'Running Python scripts on Linux',
+                    'local')
         ''',
         )
         conn.execute(
             '''
-            INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-            VALUES ('0190abcdef1234567890abcd00000004', 'other-thread', 'user', 'text', 'Database indexing strategies')
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+            VALUES ('0190abcdef1234567890abcd00000004', 'other-thread', 'user', 'text', 'Database indexing strategies',
+                    'local')
         ''',
         )
         conn.commit()
@@ -231,8 +235,9 @@ class TestFtsTriggerSync:
             # Insert new entry
             conn.execute(
                 '''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                VALUES ('0190abcdef1234567890abcd00000005', 'test-thread', 'agent', 'text', 'Unique searchable content XYZ123')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                VALUES ('0190abcdef1234567890abcd00000005', 'test-thread', 'agent', 'text', 'Unique searchable content XYZ123',
+                        'local')
             ''',
             )
             conn.commit()
@@ -378,8 +383,8 @@ class TestFtsWithFilters:
             entry_id = '0190abcdef1234567890abcd00000006'
             conn.execute(
                 '''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                VALUES (?, 'tag-thread', 'agent', 'text', 'Python programming with tags')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                VALUES (?, 'tag-thread', 'agent', 'text', 'Python programming with tags', 'local')
                 ''',
                 (entry_id,),
             )
@@ -423,8 +428,8 @@ class TestFtsWithFilters:
             # Insert multimodal entry
             conn.execute(
                 '''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                VALUES ('0190abcdef1234567890abcd00000007', 'type-thread', 'agent', 'multimodal', 'Python with image')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                VALUES ('0190abcdef1234567890abcd00000007', 'type-thread', 'agent', 'multimodal', 'Python with image', 'local')
                 ''',
             )
             conn.commit()
@@ -457,7 +462,7 @@ class TestFtsWithFilters:
             # Insert entry with metadata
             conn.execute(
                 '''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata)
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata, owner_id)
                 VALUES (
                     '0190abcdef1234567890abcd00000008',
                     'meta-thread',
@@ -465,12 +470,12 @@ class TestFtsWithFilters:
                     'text',
                     'Python data processing',
                     '{"priority": 5}'
-                )
+                , 'local')
                 ''',
             )
             conn.execute(
                 '''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata)
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata, owner_id)
                 VALUES (
                     '0190abcdef1234567890abcd00000009',
                     'meta-thread',
@@ -478,7 +483,7 @@ class TestFtsWithFilters:
                     'text',
                     'Python web development',
                     '{"priority": 3}'
-                )
+                , 'local')
                 ''',
             )
             conn.commit()
@@ -582,7 +587,8 @@ class TestFtsMultilingualUnicode61:
             for thread_id, source, content_type, text_content in test_entries:
                 conn.execute(
                     '''
-                    INSERT INTO context_entries (id, thread_id, source, content_type, text_content) VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                    VALUES (?, ?, ?, ?, ?, 'local')
                     ''',
                     (generate_id(), thread_id, source, content_type, text_content),
                 )
@@ -1146,14 +1152,14 @@ class TestInternalColumnsNotExposed:
             # Insert test data
             conn.execute(
                 '''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
                 VALUES (
                     '0190abcdef1234567890abcd0000000a',
                     'test-thread',
                     'agent',
                     'text',
                     'Test content for column exposure test'
-                )
+                , 'local')
             ''',
             )
             conn.commit()
@@ -1337,7 +1343,8 @@ class TestFtsHyphenatedQueries:
             for thread_id, source, content_type, text_content in test_entries:
                 conn.execute(
                     '''
-                    INSERT INTO context_entries (id, thread_id, source, content_type, text_content) VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                    VALUES (?, ?, ?, ?, ?, 'local')
                     ''',
                     (generate_id(), thread_id, source, content_type, text_content),
                 )

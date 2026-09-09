@@ -22,6 +22,7 @@ import base64
 import json
 import logging
 import time
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Literal
@@ -1445,7 +1446,7 @@ async def reread_entry_version(
     attempt = 0
     while True:
         try:
-            exists, _source, version = await repos.context.check_entry_exists(context_id)
+            probe = await repos.context.check_entry_exists(context_id)
         except Exception as exc:
             if is_connection_error(exc) and attempt < max_retries:
                 delay = 0.5 * (2 ** attempt)
@@ -1458,7 +1459,7 @@ async def reread_entry_version(
                 await asyncio.sleep(delay)
                 continue
             raise
-        return exists, version
+        return probe.exists, probe.version
 
 
 # ---------------------------------------------------------------------------
@@ -1846,6 +1847,9 @@ async def execute_store_in_transaction(
     source: str,
     content_type: str,
     text_content: str,
+    owner_id: str,
+    visibility: str,
+    author_group_grants: 'Collection[str]' = (),
     metadata_str: str | None,
     summary: str | None,
     tags: list[str] | None,
@@ -1861,11 +1865,13 @@ async def execute_store_in_transaction(
     """Execute all store operations within an existing transaction.
 
     Performs deduplication-aware storage of a single context entry:
-    1. Store entry with deduplication (store_with_deduplication)
-    2. Store/replace tags based on dedup outcome
-    3. Store/replace images based on dedup outcome
-    4. Store embeddings (skip if dedup + embeddings already exist)
-    5. Track embedding_stored flag for response message parity
+    1. Store entry with deduplication (store_with_deduplication), stamping
+       owner_id/visibility on a fresh INSERT
+    2. Store author-group read grants on a fresh INSERT (when configured)
+    3. Store/replace tags based on dedup outcome
+    4. Store/replace images based on dedup outcome
+    5. Store embeddings (skip if dedup + embeddings already exist)
+    6. Track embedding_stored flag for response message parity
 
     Args:
         repos: Repository container with context, tags, images, embeddings repos.
@@ -1874,6 +1880,14 @@ async def execute_store_in_transaction(
         source: 'user' or 'agent'.
         content_type: 'text' or 'multimodal'.
         text_content: The text content to store.
+        owner_id: Server-resolved effective principal stamped as the row owner
+            on a fresh INSERT (never caller-supplied at the tool boundary).
+        visibility: Validated visibility value stamped on a fresh INSERT. A
+            deduplication UPDATE leaves the existing row's owner_id and
+            visibility untouched.
+        author_group_grants: Group ids that receive a read grant when this
+            store INSERTs a new entry (the ACCESS_CONTROL_DEFAULT_GROUP_GRANTS
+            author_groups policy, resolved by the caller; empty means none).
         metadata_str: JSON-serialized metadata or None.
         summary: Generated/preserved summary or None.
         tags: Tag list or None. None PRESERVES existing tags on a dedup UPDATE;
@@ -1935,6 +1949,8 @@ async def execute_store_in_transaction(
         source=source,
         content_type=content_type,
         text_content=text_content,
+        owner_id=owner_id,
+        visibility=visibility,
         metadata=metadata_str,
         summary=summary,
         # Preserve the existing content_type on a dedup UPDATE only when no images
@@ -1971,6 +1987,17 @@ async def execute_store_in_transaction(
 
     # Heartbeat: keep connection alive between sequential operations
     await transaction_heartbeat(txn)
+
+    # Author-group read grants land only with a fresh INSERT: a deduplication
+    # UPDATE targets a row whose grants were stamped when it was inserted, and a
+    # retransmit must not widen (or re-attribute) existing access.
+    if not was_updated and author_group_grants:
+        await repos.grants.store_group_read_grants(
+            context_id,
+            author_group_grants,
+            granted_by=owner_id,
+            txn=txn,
+        )
 
     # Store or replace tags depending on deduplication outcome. The documented
     # contract distinguishes PROVIDED from None: an explicitly provided empty
@@ -2048,6 +2075,7 @@ async def execute_update_in_transaction(
     metadata_patch: dict[str, Any] | None,
     summary: str | None,
     clear_summary: bool,
+    visibility: str | None = None,
     tags: list[str] | None,
     images: list[dict[str, str]] | None,
     validated_images: list[dict[str, str]],
@@ -2059,7 +2087,7 @@ async def execute_update_in_transaction(
     """Execute all update operations within an existing transaction.
 
     Performs a complete update of a single context entry:
-    1. Update text/metadata/summary via update_context_entry (CHECK success)
+    1. Update text/metadata/summary/visibility via update_context_entry (CHECK success)
     2. Apply metadata_patch via patch_metadata (CHECK success)
     3. Replace tags if provided
     4. Replace images if provided (update content_type accordingly)
@@ -2077,6 +2105,10 @@ async def execute_update_in_transaction(
         metadata_patch: Metadata merge patch or None.
         summary: New summary or None.
         clear_summary: Whether to clear existing summary.
+        visibility: New visibility value or None. The caller validates the
+            value and authorizes the change (owner-only) BEFORE the
+            transaction; here it simply rides the update_context_entry write,
+            so it participates in the same compare-and-set as text/metadata.
         tags: New tags or None.
         images: Raw images parameter from caller (for None vs empty detection).
         validated_images: Validated image list (empty if images is None).
@@ -2110,8 +2142,8 @@ async def execute_update_in_transaction(
     # block below can stamp it exactly once for every update variant.
     entry_row_stamped = False
 
-    # Update text content and/or metadata (full replacement) if provided
-    if text is not None or metadata is not None:
+    # Update text content, metadata (full replacement), and/or visibility if provided
+    if text is not None or metadata is not None or visibility is not None:
         metadata_str: str | None = None
         if metadata is not None:
             metadata_str = json.dumps(metadata, ensure_ascii=False)
@@ -2122,6 +2154,7 @@ async def execute_update_in_transaction(
             metadata=metadata_str,
             summary=summary,
             clear_summary=clear_summary,
+            visibility=visibility,
             expected_version=expected_version,
             txn=txn,
         )
@@ -2161,6 +2194,7 @@ async def execute_update_in_transaction(
         text is None
         and metadata is None
         and metadata_patch is None
+        and visibility is None
         and (tags is not None or images is not None)
         and not await repos.context.entry_exists(context_id, txn=txn)
     ):

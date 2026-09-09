@@ -56,6 +56,8 @@ class TestSemanticSearchFilters:
         # Create 2 entries in "test-thread"
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='test-thread',
                 source='user',
                 content_type='text',
@@ -69,6 +71,8 @@ class TestSemanticSearchFilters:
         # Create 5 entries in other threads
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'other-thread-{i}',
                 source='user',
                 content_type='text',
@@ -110,6 +114,8 @@ class TestSemanticSearchFilters:
         # Create 3 entries with source="user"
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'thread-user-{i}',
                 source='user',
                 content_type='text',
@@ -121,6 +127,8 @@ class TestSemanticSearchFilters:
         # Create 5 entries with source="agent"
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'thread-agent-{i}',
                 source='agent',
                 content_type='text',
@@ -160,6 +168,8 @@ class TestSemanticSearchFilters:
         # Create 2 entries in "test-thread" with source="user"
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='test-thread',
                 source='user',
                 content_type='text',
@@ -171,6 +181,8 @@ class TestSemanticSearchFilters:
         # Create entries in test-thread with source="agent"
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='test-thread',
                 source='agent',
                 content_type='text',
@@ -212,6 +224,8 @@ class TestSemanticSearchFilters:
         # Create 5 entries
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'thread-{i}',
                 source='user' if i % 2 == 0 else 'agent',
                 content_type='text',
@@ -246,6 +260,8 @@ class TestSemanticSearchFilters:
         # Create entries in thread-a
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='thread-a',
                 source='user',
                 content_type='text',
@@ -281,6 +297,8 @@ class TestSemanticSearchFilters:
         # Create only 2 entries in small-thread
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='small-thread',
                 source='user',
                 content_type='text',
@@ -325,6 +343,8 @@ class TestSemanticSearchDateFiltering:
         # Create test entries - all will have current timestamp
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='date-filter-thread',
                 source='user',
                 content_type='text',
@@ -372,6 +392,8 @@ class TestSemanticSearchDateFiltering:
         # Create test entries
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='end-date-thread',
                 source='agent',
                 content_type='text',
@@ -419,6 +441,8 @@ class TestSemanticSearchDateFiltering:
         # Create test entries
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='range-thread',
                 source='user',
                 content_type='text',
@@ -470,6 +494,8 @@ class TestSemanticSearchDateFiltering:
         # Create entries in different threads
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='target-date-thread',
                 source='user',
                 content_type='text',
@@ -480,6 +506,8 @@ class TestSemanticSearchDateFiltering:
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='other-date-thread',
                 source='user',
                 content_type='text',
@@ -523,6 +551,8 @@ class TestSemanticSearchDateFiltering:
         # Create entries with different sources
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='mixed-source-thread',
                 source='user',
                 content_type='text',
@@ -533,6 +563,8 @@ class TestSemanticSearchDateFiltering:
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='mixed-source-thread',
                 source='agent',
                 content_type='text',
@@ -572,6 +604,8 @@ class TestSemanticSearchDateFiltering:
         # Create test entries
         for i in range(4):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='no-date-filter-thread',
                 source='user',
                 content_type='text',
@@ -613,6 +647,8 @@ class TestSemanticSearchPerformance:
         # Create 50 entries in target thread
         for i in range(50):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='target-thread',
                 source='user',
                 content_type='text',
@@ -624,6 +660,8 @@ class TestSemanticSearchPerformance:
         # Create 100 entries in other threads
         for i in range(100):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'other-thread-{i}',
                 source='user',
                 content_type='text',
@@ -664,6 +702,8 @@ class TestSemanticSearchPerformance:
         # Create 200 entries in target thread
         for i in range(200):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='medium-thread',
                 source='user',
                 content_type='text',
@@ -706,6 +746,8 @@ class TestSemanticSearchEdgeCases:
 
         # Create 1 entry in single-thread
         context_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='single-thread',
             source='user',
             content_type='text',
@@ -717,6 +759,8 @@ class TestSemanticSearchEdgeCases:
         # Create entries in other threads
         for i in range(5):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'other-{i}',
                 source='user',
                 content_type='text',
@@ -752,6 +796,8 @@ class TestSemanticSearchEdgeCases:
         # Create 10 entries all in "only-thread"
         for i in range(10):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='only-thread',
                 source='user',
                 content_type='text',
@@ -788,6 +834,8 @@ class TestSemanticSearchEdgeCases:
         # Create entries in multiple threads
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'thread-{i}',
                 source='user',
                 content_type='text',
@@ -825,6 +873,8 @@ class TestSemanticSearchEdgeCases:
         # Create entries with both sources
         for i in range(4):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id=f'thread-{i}',
                 source='user' if i % 2 == 0 else 'agent',
                 content_type='text',
@@ -870,6 +920,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with different status metadata
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='metadata-test-thread',
                 source='agent',
                 content_type='text',
@@ -880,6 +932,8 @@ class TestSemanticSearchMetadataFiltering:
 
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='metadata-test-thread',
                 source='agent',
                 content_type='text',
@@ -920,6 +974,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with different priority values
         for priority in [1, 3, 5, 7, 9]:
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='priority-test-thread',
                 source='user',
                 content_type='text',
@@ -962,6 +1018,8 @@ class TestSemanticSearchMetadataFiltering:
         task_names = ['refactor_auth', 'refactor_database', 'implement_api', 'fix_bug']
         for i, name in enumerate(task_names):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='taskname-test-thread',
                 source='agent',
                 content_type='text',
@@ -1002,6 +1060,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries - some with 'important' flag, some without
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='exists-test-thread',
                 source='user',
                 content_type='text',
@@ -1012,6 +1072,8 @@ class TestSemanticSearchMetadataFiltering:
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='exists-test-thread',
                 source='user',
                 content_type='text',
@@ -1052,6 +1114,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=agent and status=completed
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='combined-filter-thread',
                 source='agent',
                 content_type='text',
@@ -1063,6 +1127,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=user and status=completed
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='combined-filter-thread',
                 source='user',
                 content_type='text',
@@ -1074,6 +1140,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=agent and status=pending
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='combined-filter-thread',
                 source='agent',
                 content_type='text',
@@ -1119,6 +1187,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create test entries
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='invalid-filter-test-thread',
                 source='user',
                 content_type='text',
@@ -1162,6 +1232,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with status=active
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='no-match-thread',
                 source='agent',
                 content_type='text',
@@ -1200,6 +1272,8 @@ class TestSemanticSearchMetadataFiltering:
         categories = ['backend', 'frontend', 'devops', 'testing', 'docs']
         for i, category in enumerate(categories):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='in-operator-thread',
                 source='user',
                 content_type='text',
@@ -1246,6 +1320,8 @@ class TestSemanticSearchMetadataFiltering:
         priorities = [1, 3, 5, 7, 9]
         for i, priority in enumerate(priorities):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='in-operator-int-thread',
                 source='agent',
                 content_type='text',
@@ -1290,6 +1366,8 @@ class TestSemanticSearchMetadataFiltering:
         priorities = [1, 2, 3, 4, 5]
         for i, priority in enumerate(priorities):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='not-in-operator-int-thread',
                 source='user',
                 content_type='text',
@@ -1330,6 +1408,8 @@ class TestSemanticSearchMetadataFiltering:
         # Create test entries with various metadata
         for i in range(4):
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='none-filter-thread',
                 source='agent',
                 content_type='text',
@@ -1370,6 +1450,8 @@ class TestSemanticSearchContentTypeFilter:
 
         # Create text entry
         text_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='content-type-test',
             source='user',
             content_type='text',
@@ -1380,6 +1462,8 @@ class TestSemanticSearchContentTypeFilter:
 
         # Create multimodal entry
         multi_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='content-type-test',
             source='user',
             content_type='multimodal',
@@ -1415,6 +1499,8 @@ class TestSemanticSearchContentTypeFilter:
         # Create text entries
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='content-type-multimodal-test',
                 source='agent',
                 content_type='text',
@@ -1425,6 +1511,8 @@ class TestSemanticSearchContentTypeFilter:
 
         # Create multimodal entry
         multi_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='content-type-multimodal-test',
             source='agent',
             content_type='multimodal',
@@ -1459,6 +1547,8 @@ class TestSemanticSearchContentTypeFilter:
 
         # Create mixed entries
         text_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='content-type-none-test',
             source='user',
             content_type='text',
@@ -1468,6 +1558,8 @@ class TestSemanticSearchContentTypeFilter:
         await embedding_repo.store(text_id, [0.1] * embedding_dim, model='test-model')
 
         multi_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='content-type-none-test',
             source='user',
             content_type='multimodal',
@@ -1509,6 +1601,8 @@ class TestSemanticSearchTagsFilter:
 
         # Create entries with different tags
         id1, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='tags-test',
             source='user',
             content_type='text',
@@ -1519,6 +1613,8 @@ class TestSemanticSearchTagsFilter:
         await embedding_repo.store(id1, [0.1] * embedding_dim, model='test-model')
 
         id2, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='tags-test',
             source='user',
             content_type='text',
@@ -1529,6 +1625,8 @@ class TestSemanticSearchTagsFilter:
         await embedding_repo.store(id2, [0.2] * embedding_dim, model='test-model')
 
         id3, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='tags-test',
             source='user',
             content_type='text',
@@ -1568,6 +1666,8 @@ class TestSemanticSearchTagsFilter:
         # Create entries with various tags
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='single-tag-test',
                 source='agent',
                 content_type='text',
@@ -1604,6 +1704,8 @@ class TestSemanticSearchTagsFilter:
         # Create entries
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='empty-tags-test',
                 source='user',
                 content_type='text',
@@ -1640,6 +1742,8 @@ class TestSemanticSearchTagsFilter:
         # Create entries
         for i in range(4):
             ctx_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='none-tags-test',
                 source='agent',
                 content_type='text',
@@ -1674,6 +1778,8 @@ class TestSemanticSearchTagsFilter:
 
         # Create target entry: in target thread, user source, python tag
         target_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='combined-tags-thread',
             source='user',
             content_type='text',
@@ -1685,6 +1791,8 @@ class TestSemanticSearchTagsFilter:
 
         # Create non-matching: wrong source
         wrong_source_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='combined-tags-thread',
             source='agent',  # Different source
             content_type='text',
@@ -1696,6 +1804,8 @@ class TestSemanticSearchTagsFilter:
 
         # Create non-matching: wrong tag
         wrong_tag_id, _ = await repos.context.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='combined-tags-thread',
             source='user',
             content_type='text',

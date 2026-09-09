@@ -766,6 +766,8 @@ def test_patch_metadata_runtime_quotes_mixed_case_schema(
             await apply_jsonb_merge_patch_migration(backend=backend)
             repos = RepositoryContainer(backend)
             context_id, _ = await repos.context.store_with_deduplication(
+                owner_id='local',
+                visibility='private',
                 thread_id='mixed-patch', source='user', content_type='text',
                 text_content='patch target', metadata=None,
             )

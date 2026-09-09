@@ -201,8 +201,8 @@ class TestApplySemanticSearchMigration:
             ''')
             # Insert metadata with dimension 384 (different from configured 768)
             conn.execute('''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                VALUES ('0190abcdef1234567890abcd00000001', 'test', 'user', 'text', 'test content')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id)
+                VALUES ('0190abcdef1234567890abcd00000001', 'test', 'user', 'text', 'test content', 'local')
             ''')
             conn.execute('''
                 INSERT INTO embedding_metadata (context_id, model_name, dimensions)

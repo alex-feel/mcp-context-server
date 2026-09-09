@@ -27,6 +27,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 import app.server
+from app.repositories.context_repository import EntryProbe
 from app.types import MetadataDict
 
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time
@@ -71,7 +72,7 @@ def mock_repositories():
     # Mock context repository
     repos.context = Mock()
     repos.context.backend = mock_backend
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -457,7 +458,7 @@ class TestMetadataPatchValidation:
     @pytest.mark.asyncio
     async def test_context_not_found_error(self, mock_context, mock_repositories):
         """Test error when context entry doesn't exist."""
-        mock_repositories.context.check_entry_exists.return_value = (False, None, None)
+        mock_repositories.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:

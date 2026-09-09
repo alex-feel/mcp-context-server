@@ -177,6 +177,8 @@ class TestStoreWithDeduplicationEmptySummary:
 
         # Call store_with_deduplication with empty summary (duplicate text)
         context_id, was_updated = await repo.store_with_deduplication(
+            owner_id='local',
+            visibility='private',
             thread_id='test-thread',
             source='agent',
             content_type='text',

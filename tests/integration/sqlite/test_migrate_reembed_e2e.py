@@ -159,6 +159,8 @@ def _seed_fp32(
                 vec = rng.standard_normal(DIM).astype(np.float32)
                 vec /= np.linalg.norm(vec)
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='reembed-e2e',
                     source='user',
                     content_type='text',
@@ -197,6 +199,8 @@ def _seed_fp32(
             missing: list[str] = []
             for i in range(n_missing):
                 cid, _ = await repos.context.store_with_deduplication(
+                    owner_id='local',
+                    visibility='private',
                     thread_id='reembed-e2e',
                     source='user',
                     content_type='text',
