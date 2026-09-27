@@ -36,7 +36,9 @@ output_context_id: true
 # settles whether any supported release emits it.
 #
 # When creating a `type: prompt` hook, add its prompt-prefix pattern here so the
-# internal prompt is not saved as a user message.
+# internal prompt is not saved as a user message. The same goes for the fixed
+# prompt a scheduler sends to a headless session, such as the weekly
+# harness-refinement run.
 #
 # Write patterns as plain scalars, where a regex backslash stays literal. Quote
 # a pattern only when YAML requires it, such as the trailing space that keeps
@@ -50,6 +52,7 @@ skip_patterns:
   - ^Another Claude session sent a message
   - ^A peer session sent a message
   - ^You are a fast, single-purpose tool-routing gate
+  - "^/harness-refinement scheduled "
 
 # Pre-built Claude Code slash commands to skip saving
 # These are system-level operations that don't need context preservation
