@@ -1,7 +1,7 @@
 ---
 name: context-metadata-schema
 description: |
-  Normative metadata schema v1 for all context-server records. Defines the kind registry (user_message, report, plan, handoff, checkpoint, note, issue, comment), required and optional metadata fields per kind, status vocabularies, the typed links object with its design rules, and the filter recipes that make entries reliably queryable. Use whenever composing or updating context-server entry metadata, choosing kind or status values, linking entries to each other, or writing metadata / metadata_filters queries -- even when another skill already guides the surrounding workflow, this skill is the single source of truth for field names, value vocabularies, and link semantics.
+  Normative metadata schema v1 for all context-server records. Defines the kind registry (user_message, report, plan, handoff, checkpoint, note, issue, upstream_issue, comment), required and optional metadata fields per kind, status vocabularies, the typed links object with its design rules, and the filter recipes that make entries reliably queryable. Use whenever composing or updating context-server entry metadata, choosing kind or status values, linking entries to each other, or writing metadata / metadata_filters queries -- even when another skill already guides the surrounding workflow, this skill is the single source of truth for field names, value vocabularies, and link semantics.
 ---
 
 <overview>
@@ -29,16 +29,17 @@ Every new entry stored on the context server carries these metadata fields:
 
 ### Kind Registry v1
 
-| Kind           | What it is                                                                                                                          |
-|----------------|-------------------------------------------------------------------------------------------------------------------------------------|
-| `user_message` | A user prompt captured verbatim (normally written by an automatic hook). IMMUTABLE: never update, rewrite, or delete these entries. |
-| `report`       | A completed-work report: research, implementation, validation, or documentation results.                                            |
-| `plan`         | An executable plan or work-state artifact that a session is following or will follow.                                               |
-| `handoff`      | A session-handoff briefing: work completed, decisions, unresolved issues, recommended next steps.                                   |
-| `checkpoint`   | A mid-task milestone snapshot: progress, remaining work, blockers, modified files.                                                  |
-| `note`         | A durable knowledge-base entry (fact, how-to, convention) not tied to a single task.                                                |
-| `issue`        | A task-tracker issue in the unified `issues` thread.                                                                                |
-| `comment`      | A comment attached to any non-comment entry via `links.parent`.                                                                     |
+| Kind             | What it is                                                                                                                                      |
+|------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
+| `user_message`   | A user prompt captured verbatim (normally written by an automatic hook). IMMUTABLE: never update, rewrite, or delete these entries.             |
+| `report`         | A completed-work report: research, implementation, validation, or documentation results.                                                        |
+| `plan`           | An executable plan or work-state artifact that a session is following or will follow.                                                           |
+| `handoff`        | A session-handoff briefing: work completed, decisions, unresolved issues, recommended next steps.                                               |
+| `checkpoint`     | A mid-task milestone snapshot: progress, remaining work, blockers, modified files.                                                              |
+| `note`           | A durable knowledge-base entry (fact, how-to, convention) not tied to a single task.                                                            |
+| `issue`          | A task-tracker issue in the unified `issues` thread.                                                                                            |
+| `upstream_issue` | One third-party (upstream) defect, limitation, or missing feature and the local workarounds it forces, in the unified `upstream-issues` thread. |
+| `comment`        | A comment attached to any non-comment entry via `links.parent`.                                                                                 |
 
 The registry is open and additive: new kinds are legitimate, and readers MUST tolerate kind values they do not recognize (treat them as opaque record types, never as errors).
 
@@ -48,7 +49,7 @@ The REQUIRED markers above apply to schema-v1 entries prospectively. Entries sto
 
 ### Tags Convention
 
-Server-level `tags` (a separate first-class field, not metadata) follow one rule: agent-authored entries include their kind token as a tag (`report`, `plan`, `handoff`, `checkpoint`, `note`, `issue`, `comment`) plus any labels or topics. Hook-written `user_message` entries are exempt and carry no tags (`source='user'` plus metadata `kind` already discriminate them). Tags are the ONLY label mechanism -- never duplicate labels into a metadata field.
+Server-level `tags` (a separate first-class field, not metadata) follow one rule: agent-authored entries include their kind token as a tag (`report`, `plan`, `handoff`, `checkpoint`, `note`, `issue`, `upstream_issue`, `comment`) plus any labels or topics. Hook-written `user_message` entries are exempt and carry no tags (`source='user'` plus metadata `kind` already discriminate them). Tags are the ONLY label mechanism -- never duplicate labels into a metadata field.
 
 ### Project Name Derivation
 
@@ -60,22 +61,23 @@ When you need the canonical name of a project you cannot inspect (for example, f
 
 <agent_artifact_core>
 
-## Agent-Artifact Core (Kinds report, plan, handoff, checkpoint, note, issue, comment)
+## Agent-Artifact Core (Kinds report, plan, handoff, checkpoint, note, issue, upstream_issue, comment)
 
 - `agent_name` (string) REQUIRED for agent-authored entries: your agent identifier from your instructions; a main agent without a defined identifier uses the fallback `main-agent`. Human-authored entries (`source='user'`, e.g., a user filing an issue directly) omit `agent_name`.
-- `task_name` (string) RECOMMENDED for `report`, `plan`, `handoff`, `checkpoint`: a human-readable task description. Issues carry `title` instead.
-- `status` (string) REQUIRED for work artifacts and issues, with KIND-SCOPED vocabularies:
+- `task_name` (string) RECOMMENDED for `report`, `plan`, `handoff`, `checkpoint`: a human-readable task description. Issues and upstream issues carry `title` instead.
+- `status` (string) REQUIRED for work artifacts, issues, and upstream issues, with KIND-SCOPED vocabularies:
 
 | Kind family                                                | Allowed `status` values                                                                                                                                  |
 |------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Work artifacts (`report`, `plan`, `handoff`, `checkpoint`) | `pending` (work continues or plan is being executed), `done` (complete), `superseded` (replaced by a newer entry that links here via `links.supersedes`) |
 | Issues (`issue`)                                           | `triage`, `backlog`, `todo`, `in_progress`, `in_review`, `done`, `canceled`, `duplicate`                                                                 |
+| Upstream issues (`upstream_issue`)                         | `open`, `resolved_for_us`, `permanent`, `moot`, `resolved`, `refuted`, `duplicate` (meanings in the `upstream_issue` field reference below)              |
 
-The two vocabularies never mix: never use `triage`/`todo` on a report, never use `pending` on an issue. Note that `done` legitimately appears in BOTH vocabularies with different lifecycle meanings, which is why the compound-filter rule below is a MUST.
+The vocabularies never mix: never use `triage`/`todo` on a report, never use `pending` on an issue, never use `todo` or `done` on an upstream issue. Some values legitimately appear in more than one vocabulary with different lifecycle meanings -- `done` for work artifacts and issues, `duplicate` for issues and upstream issues -- which is why the compound-filter rule below is a MUST.
 
 **MUST rule -- never filter `status` without `kind`.** A bare `metadata={"status": "done"}` query silently merges finished reports with closed issues (this exact collision exists in live data). Always pair them: `metadata={"kind": "report", "status": "done"}` or `metadata={"kind": "issue", "status": "done"}`.
 
-Design note on the flat issue enum: terminal states (`canceled`, `duplicate`) are first-class statuses rather than a separate `status_reason` field. This follows the live tracker schema; the cross-vendor lesson that closed enums break strict readers is answered by the tolerant-reader MUST (readers treat unknown status values as opaque, never as errors), not by splitting the field. A `duplicate` status is always accompanied by a `links.duplicate_of` edge naming the canonical issue.
+Design note on the flat issue enum: terminal states (`canceled`, `duplicate`) are first-class statuses rather than a separate `status_reason` field. This follows the live tracker schema; the cross-vendor lesson that closed enums break strict readers is answered by the tolerant-reader MUST (readers treat unknown status values as opaque, never as errors), not by splitting the field. A `duplicate` status, on an issue or an upstream issue, is always accompanied by a `links.duplicate_of` edge naming the canonical entry.
 
 </agent_artifact_core>
 
@@ -99,9 +101,30 @@ Design note on the flat issue enum: terminal states (`canceled`, `duplicate`) ar
 
 Issue body (the entry `text`): Markdown, English, H1 title first line, then Problem/Goal, Context/Evidence, and Acceptance criteria sections; front-load the substance because search previews truncate from the start.
 
+### upstream_issue
+
+One entry per third-party defect, limitation, or missing feature, however many local projects it affects, stored in the unified `upstream-issues` thread. The universal `project` field is the project that first recorded the entry and never changes; the per-project dimension is `affected_projects`.
+
+| Field                | Type   | Requirement                           | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+|----------------------|--------|---------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `title`              | string | REQUIRED                              | The symptom as the affected projects experience it, not the upstream's internal cause; duplicated from the body's heading.                                                                                                                                                                                                                                                                                                                                                |
+| `status`             | string | REQUIRED                              | Upstream-issue vocabulary: `open` (defect live, workaround stands), `resolved_for_us` (verified working here while the upstream item stays open), `permanent` (upstream declined, or the behavior is deliberate design), `moot` (still present upstream, no longer reaches any affected project), `resolved` (fixed upstream and every affected project's workaround removed), `refuted` (investigated, not an upstream defect), `duplicate` (with `links.duplicate_of`). |
+| `status_note`        | string | RECOMMENDED                           | Short dated justification of the status, e.g. `mitigated by lockfiles, 2026-08-12`.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `upstream_repo`      | string | REQUIRED                              | Canonical tracker slug in lowercase: `owner/repo` on GitHub, host plus project path elsewhere.                                                                                                                                                                                                                                                                                                                                                                            |
+| `upstream_component` | string | REQUIRED                              | The upstream artifact and the subsystem inside it.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `filing`             | string | REQUIRED                              | Engagement with the upstream tracker: `candidate`, `not_filed`, `tracked` (a pre-existing upstream item covers it), `commented`, `filed`, `release_requested`.                                                                                                                                                                                                                                                                                                            |
+| `upstream_ref`       | string | REQUIRED once an upstream item exists | Primary upstream item as `owner/repo#N`, lowercase like `upstream_repo`; its full URL also goes in `links`.                                                                                                                                                                                                                                                                                                                                                               |
+| `upstream_state`     | string | OPTIONAL                              | Upstream closure recorded verbatim as a token, e.g. `open`, `closed_completed`, `closed_not_planned`, `merged`, `locked`. Independent of the local `status`.                                                                                                                                                                                                                                                                                                              |
+| `affected_projects`  | array  | REQUIRED                              | Canonical names of every local project that carries a workaround for the defect or is exposed to it.                                                                                                                                                                                                                                                                                                                                                                      |
+| `recheck_on`         | array  | RECOMMENDED                           | Lowercase tokens for the dependency moves that trigger a re-check (e.g. `uv`, `hugo`).                                                                                                                                                                                                                                                                                                                                                                                    |
+| `fixed_in`           | string | OPTIONAL                              | The upstream release, commit, or merged pull request that fixes the defect, once known.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `last_verified`      | string | OPTIONAL                              | ISO 8601 date of the latest live re-verification.                                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+External pointers use the open `{system}_{entity_type}s` link keys with full URLs (`github_issues`, `github_prs`, `gitlab_issues`, `gitlab_mrs`), plus `urls` for comments, release notes, and forum threads; `related` names other entries, including a tracker issue that schedules a workaround's retirement. Body (the entry `text`): Markdown, English, a heading naming the defect and its primary upstream reference, then **Why**, one labeled **Workaround** and **Remove when** block per affected project, and **Related watches** where sibling upstream items need watching; a `resolved` entry is rewritten in the past tense. Entries are never deleted: a retired defect's record is what keeps it from being investigated or reported again.
+
 ### comment
 
-A comment attaches to exactly one NON-comment entry of any kind (issue, report, plan, note, ...). Required shape: `links.parent` = a one-element array holding the target's context ID. Comment-on-comment is FORBIDDEN in schema v1 -- discussions are flat, like a timeline; if threading is ever needed, it will arrive as an additive extension. A comment is stored in the SAME THREAD as its parent (issues thread for issues, the session or knowledge thread for reports and notes). Tags are `["comment"]` with no labels. The body SHOULD open by naming its parent (for example `Re issue 27074:`) -- this keeps the comment readable standalone AND prevents the server's identical-text deduplication from collapsing short bodies like "Done." filed under different parents into one entry.
+A comment attaches to exactly one NON-comment entry of any kind (issue, report, plan, note, ...). Required shape: `links.parent` = a one-element array holding the target's context ID. Comment-on-comment is FORBIDDEN in schema v1 -- discussions are flat, like a timeline; if threading is ever needed, it will arrive as an additive extension. A comment is stored in the SAME THREAD as its parent (issues thread for issues, upstream-issues thread for upstream issues, the session or knowledge thread for reports and notes). Tags are `["comment"]` with no labels. The body SHOULD open by naming its parent (for example `Re issue 27074:`) -- this keeps the comment readable standalone AND prevents the server's identical-text deduplication from collapsing short bodies like "Done." filed under different parents into one entry.
 
 ### report
 
@@ -139,7 +162,7 @@ In-server targets are context IDs stored EXACTLY as the server returns them: JSO
 |---------------------------|---------------------------|----------------------------------------------------------------------------------------------------|
 | `parent`                  | context IDs (max one)     | Containment: a sub-issue points at its parent issue; a comment points at the entry it comments on. |
 | `blocks`                  | context IDs               | This issue blocks the targets. There is deliberately NO `blocked_by`.                              |
-| `duplicate_of`            | context IDs (max one)     | This issue duplicates the canonical target; set together with status `duplicate`.                  |
+| `duplicate_of`            | context IDs (max one)     | This entry duplicates the canonical target; set together with status `duplicate`.                  |
 | `related`                 | context IDs               | Symmetric relation, stored once by whichever side discovers it.                                    |
 | `derived_from`            | context IDs               | Entries this work builds upon (the successor of the legacy untyped reference list).                |
 | `evidence`                | context IDs               | Entries backing specific claims made in this entry.                                                |
@@ -172,7 +195,8 @@ These recipes are the supported query surface of the schema. All of them compose
 - **Is this plan current (supersession check):** before trusting a plan whose `status` is `pending` or `done`, run `array_contains` on `links.supersedes` with the plan's ID; a hit means a newer entry replaced it (the edge wins over a stale status; see the supersession sequence below).
 - **Priority bands (numeric):** urgent-or-high open work is `metadata={"kind": "issue"}` plus `metadata_filters=[{"key": "priority", "operator": "gt", "value": 0}, {"key": "priority", "operator": "lt", "value": 3}]`. Works only because `priority` is stored as a JSON number. Add `"project"` to the metadata unless the user asked about other projects: without it this spans every project, and another project's rows are context here rather than work to take up or offer.
 - **By technology:** `metadata_filters=[{"key": "technologies", "operator": "array_contains", "value": "python"}]`, or the server-level `tags` parameter for OR-logic.
-- **String-ID links filters -- always pass `case_sensitive: true`.** On PostgreSQL, `array_contains` is index-accelerated for integers, booleans, and case-SENSITIVE strings; the default case-insensitive string match falls back to a full function scan. Context-ID hex strings and other exact tokens are always exact-case, so add `"case_sensitive": true` to every string-valued links filter: `{"key": "links.parent", "operator": "array_contains", "value": "019cbd61...", "case_sensitive": true}`. Integer IDs need no flag. (SQLite backends scan object/array containment regardless; keep such queries narrow.)
+- **Upstream issues by local project or by upstream:** one local project's entries are `metadata={"kind": "upstream_issue"}` plus `metadata_filters=[{"key": "affected_projects", "operator": "array_contains", "value": "my-project", "case_sensitive": true}]`; everything recorded against one upstream is `metadata={"kind": "upstream_issue", "upstream_repo": "owner/repo"}`; a known upstream item is `metadata={"kind": "upstream_issue", "upstream_ref": "owner/repo#123"}`.
+- **Exact-token links filters pass `case_sensitive: true`; external-pointer filters do not.** On PostgreSQL, `array_contains` is index-accelerated for integers, booleans, and case-SENSITIVE strings; the default case-insensitive string match falls back to a full function scan. Context-ID hex strings and commit SHAs are exact tokens, issued in one canonical case, so a string filter on an entry-reference key or on `git_commits` adds the flag: `{"key": "links.parent", "operator": "array_contains", "value": "019cbd61...", "case_sensitive": true}`. Integer IDs need no flag. External pointers are the exception: `urls` and the `{system}_{entity_type}s` keys (`github_issues`, `github_prs`, `gitlab_issues`, `gitlab_mrs`, ...) hold identifiers copied in whatever case the writer met them, and the outside system usually ignores that case (GitHub resolves an owner and repository name in any case), so one item can be stored as `https://github.com/acme/PkgTool/issues/7` and looked up as `https://github.com/acme/pkgtool/issues/7`. Filter them at the default case-insensitive match and accept the scan: an extra candidate costs one read, while a missed match records a duplicate. (SQLite backends scan object/array containment regardless; keep such queries narrow.)
 - **Enum values are lowercase ASCII** because simple `metadata={...}` equality is ASCII-case-insensitive with no override; write and filter enums in lowercase and exact-match behavior follows on every backend.
 
 </filter_recipes>
@@ -260,6 +284,33 @@ A comment on that issue (same thread as its parent; body opens with `Re issue <i
   "agent_name": "main-agent",
   "links": {
     "parent": [27401]
+  }
+}
+```
+
+An upstream issue affecting two local projects (the upstream closed its item, but the local status stays `open` until the workarounds are removed):
+
+```json
+{
+  "schema_version": 1,
+  "kind": "upstream_issue",
+  "project": "my-project",
+  "agent_name": "main-agent",
+  "title": "Transient cache write failures during concurrent tool launches",
+  "status": "open",
+  "status_note": "fix released in 2.4.0; workaround removal pending, 2026-09-01",
+  "upstream_repo": "acme/pkgtool",
+  "upstream_component": "pkgtool -- cache persistence (src/fs)",
+  "filing": "filed",
+  "upstream_ref": "acme/pkgtool#2810",
+  "upstream_state": "closed_completed",
+  "affected_projects": ["my-project", "other-project"],
+  "recheck_on": ["pkgtool"],
+  "fixed_in": "2.4.0",
+  "last_verified": "2026-09-01",
+  "links": {
+    "github_issues": ["https://github.com/acme/pkgtool/issues/2810"],
+    "github_prs": ["https://github.com/acme/pkgtool/pull/2811"]
   }
 }
 ```
