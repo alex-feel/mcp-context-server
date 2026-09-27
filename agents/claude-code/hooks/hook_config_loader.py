@@ -30,7 +30,8 @@ Usage in hooks (dynamic loading via importlib.util)::
 Hooks that judge an edited file also use it to decide whether the file is one
 their configuration skips: check_file_relevance() for the file a tool names,
 and path_is_skipped() for a file a shell command writes. Two optional keys
-drive that decision. 'exclude_paths' lists path globs. 'exclude_temp_paths:
+drive that decision. 'exclude_paths' lists path patterns, each matched as a
+run of path segments anywhere in the path. 'exclude_temp_paths:
 true' also skips loose scratch files in the system's temporary locations, as
 judged by a function the calling hook passes in; this module holds no opinion
 on what a scratch file is, so a hook that passes no judge skips none.
@@ -212,39 +213,81 @@ def _comparable_path(file_path: str) -> str:
     return _outside_worktree(normalized)
 
 
-def _path_is_excluded(file_path: str, patterns: list[str]) -> bool:
-    """Return True when file_path falls under any exclusion glob in patterns.
+def _segments(text: str) -> list[str]:
+    """Split a path or a pattern into its segments, dropping empty and '.' ones."""
+    return [segment for segment in text.replace('\\', '/').split('/') if segment and segment != '.']
 
-    Matching is platform-neutral: backslashes are normalized to forward slashes
-    before comparison, and the path is first normalized and mapped out of any
-    Claude Code worktree (see _comparable_path). A pattern ending in ``/**`` (for
-    example ``.workflows/**``) matches that directory at any depth by path
-    segment; a bare directory name (for example ``.workflows``) matches when it
-    appears as a path segment; any other pattern is matched with ``fnmatch``
-    against the full normalized path.
+
+def _run_ends(segments: list[str], pattern: list[str], starts: range) -> set[int]:
+    """Return every position where a run of segments matching pattern can end.
+
+    Args:
+        segments: The path's segments.
+        pattern: The pattern's segments; '**' matches any number of whole
+            segments, and any other segment matches one path segment by fnmatch.
+        starts: The positions the run may begin at.
+
+    Returns:
+        The positions just past each matching run; empty when none matches.
+    """
+    positions: set[int] = set(starts)
+    for part in pattern:
+        if not positions:
+            break
+        if part == '**':
+            positions = set(range(min(positions), len(segments) + 1))
+        else:
+            positions = {index + 1 for index in positions if index < len(segments) and fnmatch(segments[index], part)}
+    return positions
+
+
+def _pattern_matches(segments: list[str], pattern: str) -> bool:
+    """Report whether one exclusion pattern matches a path's segments; see _path_is_excluded."""
+    spelled = pattern.replace('\\', '/')
+    parts = _segments(spelled)
+    if not parts:
+        return False
+    rooted = spelled.startswith('/') or (len(spelled) >= 2 and spelled[1] == ':' and spelled[0].isalpha())
+    starts = range(1) if rooted else range(len(segments) + 1)
+    if parts[-1] == '**' and len(parts) > 1:
+        # A directory pattern covers what lies strictly inside the directory.
+        return any(end < len(segments) for end in _run_ends(segments, parts[:-1], starts))
+    return bool(_run_ends(segments, parts, starts))
+
+
+def _path_is_excluded(file_path: str, patterns: list[str]) -> bool:
+    """Return True when file_path falls under any exclusion pattern in patterns.
+
+    The path is normalized and mapped out of any Claude Code worktree first (see
+    _comparable_path), and the path and each pattern are then compared as
+    sequences of segments, a backslash separating segments as a forward slash
+    does:
+
+    - A pattern matches a run of consecutive segments anywhere in the path, one
+      pattern segment per path segment: a bare name (``.workflows``) matches
+      that name at any depth, and ``src/generated`` matches those two segments
+      in that order at any depth.
+    - Within a segment, ``*``, ``?``, and ``[...]`` match as they do in the
+      shell and never reach across a separator, so ``src/gen/*.py`` matches the
+      Python files directly in ``src/gen``; a ``**`` segment matches any number
+      of whole segments, none included.
+    - A pattern ending in ``/**`` names a directory and matches every path
+      strictly inside it: ``src/generated/**`` matches ``src/generated/a/b.py``.
+    - A pattern that starts at a root (``/opt/app/**``, ``C:/work/**``) must match
+      from the path's first segment rather than anywhere.
+
+    Segments are compared the way the platform compares file names: without
+    regard to case on Windows, exactly elsewhere.
 
     Args:
         file_path: The candidate file path (absolute or relative).
-        patterns: Exclusion globs from the hook config's ``exclude_paths``.
+        patterns: Exclusion patterns from the hook config's ``exclude_paths``.
 
     Returns:
         True if the path matches any exclusion pattern, False otherwise.
     """
-    normalized = _comparable_path(file_path)
-    segments = [segment for segment in normalized.split('/') if segment]
-    for pattern in patterns:
-        normalized_pattern = pattern.replace('\\', '/')
-        if normalized_pattern.endswith('/**'):
-            directory = normalized_pattern[:-3].strip('/')
-            if directory and directory in segments:
-                return True
-            continue
-        bare = normalized_pattern.strip('/')
-        if bare and bare in segments:
-            return True
-        if fnmatch(normalized, normalized_pattern):
-            return True
-    return False
+    segments = _segments(_comparable_path(file_path))
+    return any(_pattern_matches(segments, pattern) for pattern in patterns)
 
 
 def _anchored(file_path: str, input_data: dict[str, Any]) -> str:
@@ -301,7 +344,7 @@ def path_is_skipped(
 ) -> bool:
     """Report whether a hook's configuration tells it to skip a file.
 
-    Two optional keys decide it. 'exclude_paths' lists path globs (see
+    Two optional keys decide it. 'exclude_paths' lists path patterns (see
     _path_is_excluded), matched against the location the path names: a relative
     path, which is how a shell command usually spells its target, is taken from
     the event's working directory, so a file is excluded or not the same way
@@ -344,7 +387,7 @@ def check_file_relevance(
 
     Reads 'file_extensions' from config and checks against the file path
     from the hook input data. When the config supplies an 'exclude_paths' list,
-    a file under any of those globs is treated as not relevant regardless of its
+    a file under any of those patterns is treated as not relevant regardless of its
     extension -- this lets hooks skip Claude-internal ephemeral directories (for
     example .workflows/ Workflow-tool scripts or .claude/ internals) that are
     tool-generated rather than project source. A file inside a Claude Code
@@ -355,7 +398,7 @@ def check_file_relevance(
 
     Args:
         config: Hook configuration dictionary (should contain 'file_extensions';
-            may contain an optional 'exclude_paths' list of path globs and an
+            may contain an optional 'exclude_paths' list of path patterns and an
             optional 'exclude_temp_paths' flag).
         input_data: Hook event input data (JSON from stdin).
         is_temporary: Judge for loose scratch files, or None.
