@@ -11,6 +11,10 @@ User Prompt Context Saver Hook for Claude Code.
 
 This hook captures user prompts from UserPromptSubmit events and stores them
 in the mcp-context-server for enhanced conversation context management.
+Pre-built slash commands and prompts matching a configured skip pattern are
+not stored; the patterns identify prompts that are not the user's own words,
+such as internal hook prompts and the tagged or framed turns Claude Code starts
+on the session's behalf.
 
 Note: Currently, the UserPromptSubmit event does not provide images from user
 requests, so this hook cannot save image content to the context server. Only
@@ -87,7 +91,7 @@ _JSON_OVERHEAD = 500  # Estimated bytes for JSON structure (thread_id, source, e
 DEFAULT_CONFIG: dict[str, Any] = {
     'enabled': True,
     'output_context_id': True,  # Output stored context_id via hookSpecificOutput.additionalContext
-    'skip_patterns': [],  # Regex patterns to skip (for internal hook prompts)
+    'skip_patterns': [],  # Regex patterns for prompts that are not the user's own words
     'prebuilt_commands': [
         'add-dir',
         'agents',
@@ -1322,11 +1326,24 @@ def is_prebuilt_slash_command(prompt: str, config: dict[str, Any]) -> bool:
 
 def matches_skip_pattern(prompt: str, config: dict[str, Any]) -> bool:
     """
-    Check if a prompt matches any skip pattern (for filtering internal hook prompts).
+    Check if a prompt matches any skip pattern, meaning it is not the user's own words.
 
-    This function filters out internal hook prompts from being saved to the context
-    server. When hooks of `type: prompt` are evaluated, they trigger UserPromptSubmit
-    events that would otherwise be captured and saved as user messages.
+    UserPromptSubmit fires for more than prompts the user typed. Evaluating a hook
+    of `type: prompt` triggers it with the hook's internal prompt, and Claude Code
+    triggers it for turns it starts on the session's behalf: its own notifications
+    (such as a Stop-hook wake), messages from another Claude Code session, and
+    channel-integration events. The hook input carries no field naming a turn's
+    origin (anthropics/claude-code#94675 asks for one), so the only signal is the
+    start of the text itself. Claude Code wraps such a turn in a tag such as
+    <task-notification>, <cross-session-message ...>, or <channel source="...">,
+    or frames a message from another session or a subagent with a leading
+    sentence such as "Another Claude session sent a message:" or "A peer session
+    sent a message while you were working:" ahead of the tagged content. A
+    matching prompt is therefore not stored as a user message.
+
+    Patterns are matched with re.match against the prompt with leading whitespace
+    stripped, so a start-anchored pattern still recognizes a tag or framing
+    sentence that follows a leading newline or indentation.
 
     Args:
         prompt: The prompt text to check
@@ -1340,9 +1357,11 @@ def matches_skip_pattern(prompt: str, config: dict[str, Any]) -> bool:
     if not skip_patterns:
         return False
 
+    stripped_prompt = prompt.lstrip()
+
     for pattern in skip_patterns:
         try:
-            if re.match(pattern, prompt):
+            if re.match(pattern, stripped_prompt):
                 log_always(f'Prompt matches skip pattern: {pattern[:50]}...')
                 return True
         except re.error as e:
@@ -1653,10 +1672,10 @@ def main() -> None:
         log_always('Skipping: Pre-built slash command detected')
         sys.exit(0)
 
-    # Check if this prompt matches any skip pattern (internal hook prompts)
+    # Skip prompts that are not the user's own words: internal hook prompts and
+    # tagged or framed turns Claude Code starts on the session's behalf
     if matches_skip_pattern(prompt, config):
-        # Skip internal hook prompts
-        log_always('Skipping: Internal hook prompt detected')
+        log_always('Skipping: Prompt matches a skip pattern')
         sys.exit(0)
 
     # Get Claude project directory
