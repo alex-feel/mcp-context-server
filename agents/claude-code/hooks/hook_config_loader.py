@@ -9,22 +9,42 @@ Base configuration loader for Claude Code hooks.
 This module provides standardized YAML/JSON config file loading
 with sensible defaults, error handling, and type safety.
 
-Usage in hooks:
-    import sys
+Usage in hooks (dynamic loading via importlib.util)::
+
+    import importlib.util
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent))
-    from hook_config_loader import get_config_from_argv
+    from types import ModuleType
+
+    def _load_config_loader() -> ModuleType:
+        loader_path = Path(__file__).parent / 'hook_config_loader.py'
+        spec = importlib.util.spec_from_file_location('hook_config_loader', loader_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f'Cannot load hook_config_loader from {loader_path}')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     DEFAULT_CONFIG = {'protected_files': ['LICENSE']}
-    config = get_config_from_argv(DEFAULT_CONFIG)
+    config = _load_config_loader().get_config_from_argv(DEFAULT_CONFIG)
+
+Hooks that judge an edited file also use it to decide whether the file is one
+their configuration skips: check_file_relevance() for the file a tool names,
+and path_is_skipped() for a file a shell command writes. Two optional keys
+drive that decision. 'exclude_paths' lists path globs. 'exclude_temp_paths:
+true' also skips loose scratch files in the system's temporary locations, as
+judged by a function the calling hook passes in; this module holds no opinion
+on what a scratch file is, so a hook that passes no judge skips none.
 """
 
 import json
+import os
+import posixpath
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from typing import Protocol
 from typing import cast
 
 yaml: ModuleType | None
@@ -39,6 +59,8 @@ STANDARD_EXTENSIONS: dict[str, list[str]] = {
     'python': ['.py'],
     'web': ['.ts', '.tsx', '.js', '.jsx'],
 }
+
+_WINDOWS = sys.platform == 'win32'
 
 
 def load_config(
@@ -119,14 +141,87 @@ def get_config_from_argv(defaults: dict[str, Any] | None = None) -> dict[str, An
     return load_config(config_path, defaults)
 
 
+def _fully_absolute(path: str) -> bool:
+    """Report whether a path names one location regardless of any current directory.
+
+    A Windows path rooted without a drive (``/tmp/x``) depends on the current
+    drive, so it does not qualify there.
+
+    Args:
+        path: The path to classify.
+
+    Returns:
+        True when the path is absolute in the platform's own full sense.
+    """
+    if _WINDOWS:
+        drive, rest = os.path.splitdrive(path)
+        return bool(drive) and rest.startswith(('\\', '/'))
+    return os.path.isabs(path)
+
+
+def _outside_worktree(normalized: str) -> str:
+    """Map a path inside a Claude Code worktree onto the same path in its checkout.
+
+    Claude Code creates a worktree at ``<repo>/.claude/worktrees/<name>/``. A
+    worktree is a full checkout of the project rather than harness internals, so
+    a file in it is judged as the file it mirrors in the main checkout: a
+    ``.claude/**`` exclusion keeps skipping the worktree's own ``.claude`` files
+    without swallowing everything else in it. A worktree created inside another
+    worktree maps through every level.
+
+    Args:
+        normalized: A forward-slash path with ``..`` segments already collapsed.
+
+    Returns:
+        The path with every worktree prefix removed, or the path unchanged when it
+        does not lie strictly inside a worktree.
+    """
+    segments = normalized.split('/')
+    while True:
+        for index in range(len(segments) - 3):
+            if segments[index] == '.claude' and segments[index + 1] == 'worktrees' and segments[index + 2]:
+                segments = segments[:index] + segments[index + 3:]
+                break
+        else:
+            return '/'.join(segments)
+
+
+def _comparable_path(file_path: str) -> str:
+    """Return a path in the form exclusion patterns are matched against.
+
+    An absolute path is resolved to its real location, which collapses ``..``
+    segments and follows links, so neither a spelling such as ``.claude/../src``
+    nor a link can move a file into or out of an exclusion. A relative path has
+    its ``..`` segments collapsed lexically, because resolving it would depend on
+    the directory the hook happens to run in.
+
+    Args:
+        file_path: The candidate file path (absolute or relative).
+
+    Returns:
+        The normalized forward-slash path, mapped out of any Claude Code worktree.
+    """
+    if _fully_absolute(file_path):
+        try:
+            resolved = os.path.realpath(file_path)
+        except (OSError, ValueError):
+            resolved = os.path.normpath(file_path)
+        normalized = resolved.replace('\\', '/')
+    else:
+        normalized = posixpath.normpath(file_path.replace('\\', '/'))
+    return _outside_worktree(normalized)
+
+
 def _path_is_excluded(file_path: str, patterns: list[str]) -> bool:
     """Return True when file_path falls under any exclusion glob in patterns.
 
     Matching is platform-neutral: backslashes are normalized to forward slashes
-    before comparison. A pattern ending in ``/**`` (for example ``.workflows/**``)
-    matches that directory at any depth by path segment; a bare directory name
-    (for example ``.workflows``) matches when it appears as a path segment; any
-    other pattern is matched with ``fnmatch`` against the full normalized path.
+    before comparison, and the path is first normalized and mapped out of any
+    Claude Code worktree (see _comparable_path). A pattern ending in ``/**`` (for
+    example ``.workflows/**``) matches that directory at any depth by path
+    segment; a bare directory name (for example ``.workflows``) matches when it
+    appears as a path segment; any other pattern is matched with ``fnmatch``
+    against the full normalized path.
 
     Args:
         file_path: The candidate file path (absolute or relative).
@@ -135,7 +230,7 @@ def _path_is_excluded(file_path: str, patterns: list[str]) -> bool:
     Returns:
         True if the path matches any exclusion pattern, False otherwise.
     """
-    normalized = file_path.replace('\\', '/')
+    normalized = _comparable_path(file_path)
     segments = [segment for segment in normalized.split('/') if segment]
     for pattern in patterns:
         normalized_pattern = pattern.replace('\\', '/')
@@ -152,9 +247,98 @@ def _path_is_excluded(file_path: str, patterns: list[str]) -> bool:
     return False
 
 
+def _anchored(file_path: str, input_data: dict[str, Any]) -> str:
+    """Join a relative path onto the event's working directory.
+
+    A path rooted in any way (a drive, a leading separator, a leading ``~``) is
+    returned unchanged, and so is every path when the event carries no absolute
+    working directory.
+
+    Args:
+        file_path: The path as the tool call or the shell command spelled it.
+        input_data: Hook event input data (JSON from stdin).
+
+    Returns:
+        The path the file names from the event's working directory.
+    """
+    if not file_path or file_path.startswith(('/', '\\', '~')) or os.path.splitdrive(file_path)[0]:
+        return file_path
+    cwd = input_data.get('cwd')
+    if isinstance(cwd, str) and _fully_absolute(cwd):
+        return os.path.join(cwd, file_path)
+    return file_path
+
+
+class TemporaryPathJudge(Protocol):
+    """Decides whether a path a hook event names is a loose scratch file.
+
+    The judgment needs the event itself, because a relative path is resolved
+    against the event's working directory and the session's own scratch
+    location is reported in the event.
+    """
+
+    def __call__(self, path: str, event: dict[str, Any], *, shell: bool = False) -> bool:
+        """Report whether the path is a loose scratch file in a temporary location.
+
+        Args:
+            path: The path as the tool call or the shell command spelled it.
+            event: The hook event input data.
+            shell: True when the path was taken from a shell command.
+
+        Returns:
+            True only for a loose scratch file.
+        """
+        ...
+
+
+def path_is_skipped(
+    config: dict[str, Any],
+    file_path: str,
+    input_data: dict[str, Any],
+    *,
+    is_temporary: TemporaryPathJudge | None = None,
+    shell: bool = False,
+) -> bool:
+    """Report whether a hook's configuration tells it to skip a file.
+
+    Two optional keys decide it. 'exclude_paths' lists path globs (see
+    _path_is_excluded), matched against the location the path names: a relative
+    path, which is how a shell command usually spells its target, is taken from
+    the event's working directory, so a file is excluded or not the same way
+    whichever tool writes it. 'exclude_temp_paths: true' also skips a loose
+    scratch file in the system's temporary locations; what counts as one is
+    decided by the is_temporary judge the calling hook supplies, and without a
+    judge nothing counts, so the key alone changes nothing. A hook whose
+    configuration carries neither key skips nothing.
+
+    Args:
+        config: Hook configuration dictionary.
+        file_path: The path as the tool call or the shell command spelled it.
+        input_data: Hook event input data (JSON from stdin).
+        is_temporary: Judge for loose scratch files, or None.
+        shell: True when the path was taken from a shell command.
+
+    Returns:
+        True when the configuration excludes the file.
+    """
+    exclude_paths = cast(list[str], config.get('exclude_paths') or [])
+    if exclude_paths and _path_is_excluded(_anchored(file_path, input_data), exclude_paths):
+        return True
+    if config.get('exclude_temp_paths') is not True or is_temporary is None:
+        return False
+    # Skipping is the relaxation, so a judge that fails renders "not skipped" and
+    # the hook applies, rather than raising and leaving the hook with no verdict.
+    try:
+        return is_temporary(file_path, input_data, shell=shell) is True
+    except Exception:
+        return False
+
+
 def check_file_relevance(
     config: dict[str, Any],
     input_data: dict[str, Any],
+    *,
+    is_temporary: TemporaryPathJudge | None = None,
 ) -> tuple[bool, str | None]:
     """Check if the edited file matches the hook's target file extensions.
 
@@ -163,13 +347,18 @@ def check_file_relevance(
     a file under any of those globs is treated as not relevant regardless of its
     extension -- this lets hooks skip Claude-internal ephemeral directories (for
     example .workflows/ Workflow-tool scripts or .claude/ internals) that are
-    tool-generated rather than project source. 'exclude_paths' defaults to empty,
-    so hooks that omit it are unaffected.
+    tool-generated rather than project source. A file inside a Claude Code
+    worktree (.claude/worktrees/<name>/) is matched as the file it mirrors in the
+    main checkout, so a .claude/ exclusion does not swallow the worktree itself.
+    'exclude_paths' defaults to empty, so hooks that omit it are unaffected.
+    'exclude_temp_paths' skips loose scratch files as path_is_skipped describes.
 
     Args:
         config: Hook configuration dictionary (should contain 'file_extensions';
-            may contain an optional 'exclude_paths' list of path globs).
+            may contain an optional 'exclude_paths' list of path globs and an
+            optional 'exclude_temp_paths' flag).
         input_data: Hook event input data (JSON from stdin).
+        is_temporary: Judge for loose scratch files, or None.
 
     Returns:
         Tuple of (is_relevant, file_path).
@@ -199,8 +388,7 @@ def check_file_relevance(
         return False, None
     file_path: str = raw_path
 
-    exclude_paths = cast(list[str], config.get('exclude_paths') or [])
-    if exclude_paths and _path_is_excluded(file_path, exclude_paths):
+    if path_is_skipped(config, file_path, input_data, is_temporary=is_temporary):
         return False, file_path
 
     ext = Path(file_path).suffix.lower()
