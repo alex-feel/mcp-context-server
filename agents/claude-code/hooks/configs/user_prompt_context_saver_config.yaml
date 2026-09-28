@@ -18,22 +18,20 @@ output_context_id: true
 # Claude Code also submits turns it starts on the session's behalf, and the
 # UserPromptSubmit hook input carries no field naming a turn's origin, so the
 # start of the prompt text is the only signal a hook has. Claude Code wraps such
-# content in a tag: <task-notification> for its own notifications (a Stop-hook
-# wake among them), <cross-session-message ...> for a message from another
-# Claude Code session, and <channel source="..."> for a channel-integration
-# event. A message from another session or a subagent can instead be framed by
-# a leading sentence ahead of the tagged content: "Another Claude session sent a
-# message:" (or "... while you were working:") or "A peer session sent a
-# message while you were working:". A peer message that arrives with neither a
-# tag nor a framing sentence cannot be told apart from a typed prompt, so it is
-# still stored, while a typed prompt that itself begins with one of these tags
-# or sentences is not. Claude Code issue anthropics/claude-code#94675 asks for
-# the missing origin field; the tag and framing patterns are needed only until
-# the hook input carries it.
-#
-# The ^<bash-notification> pattern names a tag that Claude Code 2.1.280 does not
-# emit, so it matches nothing on that release; it stays only until a live check
-# settles whether any supported release emits it.
+# content in a tag: <task-notification> for its own notifications (a finished
+# background command or subagent, or a Stop-hook wake),
+# <cross-session-message ...> for a message from another Claude Code session,
+# <agent-message from="..."> for a subagent's report to its caller or a message
+# a subagent sends to the session, and <channel source="..."> for a
+# channel-integration event. A message from another session or a subagent can
+# instead be framed by a leading sentence ahead of the tagged content: "Another
+# Claude session sent a message:" (or "... while you were working:") or "A peer
+# session sent a message while you were working:". A peer message that arrives
+# with neither a tag nor a framing sentence cannot be told apart from a typed
+# prompt, so it is still stored, while a typed prompt that itself begins with
+# one of these tags or sentences is not. Claude Code issue
+# anthropics/claude-code#94675 asks for the missing origin field; the tag and
+# framing patterns are needed only until the hook input carries it.
 #
 # When creating a `type: prompt` hook, add its prompt-prefix pattern here so the
 # internal prompt is not saved as a user message. The same goes for the fixed
@@ -42,12 +40,13 @@ output_context_id: true
 #
 # Write patterns as plain scalars, where a regex backslash stays literal. Quote
 # a pattern only when YAML requires it, such as the trailing space that keeps
-# the channel pattern from matching longer tag names; inside double quotes every
-# regex backslash must be doubled, because YAML reads "\b" as a backspace.
+# the agent-message and channel patterns from matching longer tag names; inside
+# double quotes every regex backslash must be doubled, because YAML reads "\b"
+# as a backspace.
 skip_patterns:
   - ^<task-notification>
-  - ^<bash-notification>
   - ^<cross-session-message
+  - "^<agent-message "
   - "^<channel "
   - ^Another Claude session sent a message
   - ^A peer session sent a message

@@ -1331,15 +1331,17 @@ def matches_skip_pattern(prompt: str, config: dict[str, Any]) -> bool:
     UserPromptSubmit fires for more than prompts the user typed. Evaluating a hook
     of `type: prompt` triggers it with the hook's internal prompt, and Claude Code
     triggers it for turns it starts on the session's behalf: its own notifications
-    (such as a Stop-hook wake), messages from another Claude Code session, and
+    (such as a finished background command or a Stop-hook wake), reports and
+    messages from its subagents, messages from another Claude Code session, and
     channel-integration events. The hook input carries no field naming a turn's
     origin (anthropics/claude-code#94675 asks for one), so the only signal is the
     start of the text itself. Claude Code wraps such a turn in a tag such as
-    <task-notification>, <cross-session-message ...>, or <channel source="...">,
-    or frames a message from another session or a subagent with a leading
-    sentence such as "Another Claude session sent a message:" or "A peer session
-    sent a message while you were working:" ahead of the tagged content. A
-    matching prompt is therefore not stored as a user message.
+    <task-notification>, <agent-message from="...">, <cross-session-message ...>,
+    or <channel source="...">, or frames a message from another session or a
+    subagent with a leading sentence such as "Another Claude session sent a
+    message:" or "A peer session sent a message while you were working:" ahead of
+    the tagged content. A matching prompt is therefore not stored as a user
+    message.
 
     Patterns are matched with re.match against the prompt with leading whitespace
     stripped, so a start-anchored pattern still recognizes a tag or framing
