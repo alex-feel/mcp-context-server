@@ -31,10 +31,12 @@ Hooks that judge an edited file also use it to decide whether the file is one
 their configuration skips: check_file_relevance() for the file a tool names,
 and path_is_skipped() for a file a shell command writes. Two optional keys
 drive that decision. 'exclude_paths' lists path patterns, each matched as a
-run of path segments anywhere in the path. 'exclude_temp_paths:
-true' also skips loose scratch files in the system's temporary locations, as
-judged by a function the calling hook passes in; this module holds no opinion
-on what a scratch file is, so a hook that passes no judge skips none.
+run of path segments anywhere in the path, and a file is skipped only when the
+location its path spells and the real location a link leads it to both match.
+'exclude_temp_paths: true' also skips loose scratch files in the system's
+temporary locations, as judged by a function the calling hook passes in; this
+module holds no opinion on what a scratch file is, so a hook that passes no
+judge skips none.
 """
 
 import json
@@ -187,30 +189,39 @@ def _outside_worktree(normalized: str) -> str:
             return '/'.join(segments)
 
 
-def _comparable_path(file_path: str) -> str:
-    """Return a path in the form exclusion patterns are matched against.
+def _real_path(file_path: str) -> str | None:
+    """Return an absolute path's real location with every link resolved, or None when it is relative or unreadable."""
+    if not _fully_absolute(file_path):
+        return None
+    try:
+        return os.path.realpath(file_path)
+    except (OSError, ValueError):
+        return None
 
-    An absolute path is resolved to its real location, which collapses ``..``
-    segments and follows links, so neither a spelling such as ``.claude/../src``
-    nor a link can move a file into or out of an exclusion. A relative path has
-    its ``..`` segments collapsed lexically, because resolving it would depend on
-    the directory the hook happens to run in.
+
+def _comparable_paths(file_path: str) -> tuple[str, ...]:
+    """Return the forms of a path that exclusion patterns are matched against.
+
+    A write lands both at the name it is spelled through and, when a link or a
+    directory junction lies on the way, at a real location of another name, so
+    an absolute path is compared in both forms: with its ``..`` segments
+    collapsed as spelled, and at its real location. A relative path has its
+    ``..`` segments collapsed lexically and nothing more, because resolving it
+    would depend on the directory the hook happens to run in.
 
     Args:
         file_path: The candidate file path (absolute or relative).
 
     Returns:
-        The normalized forward-slash path, mapped out of any Claude Code worktree.
+        The normalized forward-slash forms, each mapped out of any Claude Code
+        worktree, without repeats.
     """
-    if _fully_absolute(file_path):
-        try:
-            resolved = os.path.realpath(file_path)
-        except (OSError, ValueError):
-            resolved = os.path.normpath(file_path)
-        normalized = resolved.replace('\\', '/')
-    else:
-        normalized = posixpath.normpath(file_path.replace('\\', '/'))
-    return _outside_worktree(normalized)
+    spelled = os.path.normpath(file_path) if _fully_absolute(file_path) else posixpath.normpath(file_path.replace('\\', '/'))
+    forms = [spelled]
+    real = _real_path(file_path)
+    if real is not None:
+        forms.append(real)
+    return tuple(dict.fromkeys(_outside_worktree(form.replace('\\', '/')) for form in forms))
 
 
 def _segments(text: str) -> list[str]:
@@ -256,12 +267,14 @@ def _pattern_matches(segments: list[str], pattern: str) -> bool:
 
 
 def _path_is_excluded(file_path: str, patterns: list[str]) -> bool:
-    """Return True when file_path falls under any exclusion pattern in patterns.
+    """Return True when file_path falls under an exclusion pattern in patterns.
 
     The path is normalized and mapped out of any Claude Code worktree first (see
-    _comparable_path), and the path and each pattern are then compared as
-    sequences of segments, a backslash separating segments as a forward slash
-    does:
+    _comparable_paths), and each of its forms and each pattern are then compared
+    as sequences of segments, a backslash separating segments as a forward slash
+    does. The path is excluded only when every form is, so that neither a
+    spelling such as ``.claude/../src`` nor a link placed on either side of an
+    exclusion can carry a write into or out of it:
 
     - A pattern matches a run of consecutive segments anywhere in the path, one
       pattern segment per path segment: a bare name (``.workflows``) matches
@@ -284,10 +297,12 @@ def _path_is_excluded(file_path: str, patterns: list[str]) -> bool:
         patterns: Exclusion patterns from the hook config's ``exclude_paths``.
 
     Returns:
-        True if the path matches any exclusion pattern, False otherwise.
+        True if every form of the path matches an exclusion pattern, False otherwise.
     """
-    segments = _segments(_comparable_path(file_path))
-    return any(_pattern_matches(segments, pattern) for pattern in patterns)
+    return all(
+        any(_pattern_matches(_segments(form), pattern) for pattern in patterns)
+        for form in _comparable_paths(file_path)
+    )
 
 
 def _anchored(file_path: str, input_data: dict[str, Any]) -> str:
@@ -382,6 +397,7 @@ def check_file_relevance(
     input_data: dict[str, Any],
     *,
     is_temporary: TemporaryPathJudge | None = None,
+    through_links: bool = False,
 ) -> tuple[bool, str | None]:
     """Check if the edited file matches the hook's target file extensions.
 
@@ -395,6 +411,10 @@ def check_file_relevance(
     main checkout, so a .claude/ exclusion does not swallow the worktree itself.
     'exclude_paths' defaults to empty, so hooks that omit it are unaffected.
     'exclude_temp_paths' skips loose scratch files as path_is_skipped describes.
+    A hook that judges what is written INTO a file passes through_links, because
+    a write through a symbolic link or a directory junction lands in the file it
+    leads to: the extension of that real location then counts as well as the
+    extension the path is spelled with.
 
     Args:
         config: Hook configuration dictionary (should contain 'file_extensions';
@@ -402,6 +422,7 @@ def check_file_relevance(
             optional 'exclude_temp_paths' flag).
         input_data: Hook event input data (JSON from stdin).
         is_temporary: Judge for loose scratch files, or None.
+        through_links: True to count the extension of the file's real location.
 
     Returns:
         Tuple of (is_relevant, file_path).
@@ -434,5 +455,8 @@ def check_file_relevance(
     if path_is_skipped(config, file_path, input_data, is_temporary=is_temporary):
         return False, file_path
 
-    ext = Path(file_path).suffix.lower()
-    return ext in file_extensions, file_path
+    extensions = [Path(file_path).suffix.lower()]
+    real = _real_path(_anchored(file_path, input_data)) if through_links else None
+    if real is not None:
+        extensions.append(Path(real).suffix.lower())
+    return any(extension in file_extensions for extension in extensions), file_path
