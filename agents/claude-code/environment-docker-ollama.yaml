@@ -55,20 +55,6 @@ os-env-variables:
   # the OS level: the same value then applies when the hook is run directly to debug it.
   CLAUDE_HOOK_DEBUG_ENABLED: "1"
 
-  # TRANSITIONAL -- deletions, not settings. These three now live in the user-settings
-  # `env` block below, and the nulls remove the OS-level copies that earlier installs of
-  # this environment created. They are spelled out rather than omitted because an
-  # omitted key leaves the stale OS value in place: harmless inside a session, since the
-  # settings value wins over it, but a misleading second source of truth for anyone
-  # inspecting the environment from a terminal.
-  #
-  # Retire this block once the machines running this environment have completed one
-  # install carrying it. Names parked here permanently also delete those variables for
-  # anything else on the machine that sets them.
-  ENABLE_TOOL_SEARCH: null
-  MAX_MCP_OUTPUT_TOKENS: null
-  MCP_TIMEOUT: null
-
 # Skills for context management
 skills:
   - name: context-metadata-schema
