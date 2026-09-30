@@ -12,7 +12,8 @@ they pre-seed the compression schema (reproducing a database compressed
 while generation was on) before booting. The re-enable test instead boots
 with generation enabled (provisioning must run) and proves the regression
 by direct schema inspection. The compressed write path is exercised by the
-unit suite under ``tests/repositories/test_embedding_repository_compressed.py``.
+unit suite under
+``tests/repositories/embedding_repository/test_embedding_repository_compressed.py``.
 """
 
 from __future__ import annotations

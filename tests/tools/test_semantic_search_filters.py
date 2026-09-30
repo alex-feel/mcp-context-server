@@ -1178,7 +1178,7 @@ class TestSemanticSearchMetadataFiltering:
 
         from app.repositories import RepositoryContainer
         from app.repositories.embedding_repository import EmbeddingRepository
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -1939,7 +1939,7 @@ class TestSemanticValidationErrorStats:
         from unittest.mock import AsyncMock
         from unittest.mock import patch
 
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.tools.search import semantic_search_context
 
         with (
@@ -1980,7 +1980,7 @@ class TestSemanticValidationErrorStats:
         from unittest.mock import AsyncMock
         from unittest.mock import patch
 
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.tools.search import semantic_search_context
 
         with (

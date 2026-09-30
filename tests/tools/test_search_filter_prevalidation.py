@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 import app.tools.search as search_mod
-from app.repositories.embedding_repository import MetadataFilterValidationError
+from app.repositories.embedding_repository.records import MetadataFilterValidationError
 
 BAD_FILTER: list[dict[str, Any]] = [{'key': 'priority', 'operator': 'bogus_op', 'value': 5}]
 BLANK_TAGS = ['   ', '']

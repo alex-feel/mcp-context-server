@@ -18,7 +18,7 @@ import app.startup
 import app.tools._shared as shared_tools
 import app.tools.search as search_tools
 from app.repositories.context_repository.records import EntryProbe
-from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.startup import ensure_repositories
 from app.startup import set_backend
 from app.startup import set_chunking_service

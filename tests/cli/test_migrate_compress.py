@@ -21,7 +21,7 @@ from app.cli.migrate_compression import run_compress
 from app.cli.migrate_compression import run_decompress
 from app.compression.types import CompressionMetadata
 from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 from tests.conftest import requires_numpy
 

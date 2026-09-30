@@ -5,7 +5,8 @@ Dynamic imports avoid loading numpy when compression is disabled.
 
 This module also owns the process-wide cached provider singleton so
 both the encode (write) path in :mod:`app.tools._shared` and the
-search (read) path in :mod:`app.repositories.embedding_repository`
+search (read) path in
+:mod:`app.repositories.embedding_repository.compressed_search`
 share a single rotation matrix and codebook instance per process.
 """
 
@@ -99,7 +100,7 @@ async def get_cached_compression_provider() -> 'CompressionProvider':
     re-running the deterministic provider constructor on every call site
     and ensures the encode (write) path in :mod:`app.tools._shared` and
     the search (read) path in
-    :mod:`app.repositories.embedding_repository` share a single
+    :mod:`app.repositories.embedding_repository.compressed_search` share a single
     rotation matrix and codebook per process.
 
     Returns:

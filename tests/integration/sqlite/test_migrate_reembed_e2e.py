@@ -26,7 +26,7 @@ from app.cli.migrate_embeddings import run_embed_missing
 from app.cli.migrate_reembed import run_reembed
 from app.embeddings.base import EmbeddingProvider
 from app.repositories import RepositoryContainer
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 
 DIM = 1024

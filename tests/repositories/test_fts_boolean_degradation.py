@@ -352,6 +352,6 @@ class TestClientInputErrorsBypassBreaker:
         on semantic/hybrid search would be charged to the circuit breaker and ten such
         calls would open it into a process-wide outage. This pins the exemption parity.
         """
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
 
         assert issubclass(MetadataFilterValidationError, ControlFlowError)

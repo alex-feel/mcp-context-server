@@ -18,7 +18,7 @@ import pytest_asyncio
 from app.backends import StorageBackend
 from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
-from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
 
 # Conditional skip marker for tests requiring sqlite-vec package
@@ -237,78 +237,6 @@ class TestEmbeddingRepository:
             assert result['source'] == 'user'
 
     @requires_sqlite_vec
-    async def test_update_embedding(
-        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
-    ) -> None:
-        """Test updating an existing embedding."""
-        from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
-        from app.repositories.embedding_repository import EmbeddingRepository
-
-        backend = async_db_with_embeddings
-        repos = RepositoryContainer(backend)
-        embedding_repo = EmbeddingRepository(backend)
-
-        # Create entry and store initial embedding
-        context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
-            visibility='private',
-            thread_id='update-test',
-            source='user',
-            content_type='text',
-            text_content='Entry to update',
-            metadata=None,
-        )
-        await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
-
-        # Update embedding using ChunkEmbedding
-        new_embedding = [0.5] * embedding_dim
-        chunk_emb = ChunkEmbedding(embedding=new_embedding, start_index=0, end_index=15)
-        await embedding_repo.update(context_id, [chunk_emb], model='test-model')
-
-        # Verify update by searching
-        results, _ = await embedding_repo.search(
-            query_embedding=[0.5] * embedding_dim,
-            limit=1,
-        )
-
-        assert len(results) == 1
-        assert results[0]['id'] == context_id
-
-    @requires_sqlite_vec
-    async def test_delete_embedding(
-        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
-    ) -> None:
-        """Test deleting an embedding."""
-        from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import EmbeddingRepository
-
-        backend = async_db_with_embeddings
-        repos = RepositoryContainer(backend)
-        embedding_repo = EmbeddingRepository(backend)
-
-        # Create entry and store embedding
-        context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
-            visibility='private',
-            thread_id='delete-test',
-            source='user',
-            content_type='text',
-            text_content='Entry to delete',
-            metadata=None,
-        )
-        await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
-
-        # Verify exists
-        assert await embedding_repo.exists(context_id) is True
-
-        # Delete embedding
-        await embedding_repo.delete(context_id)
-
-        # Verify deleted
-        assert await embedding_repo.exists(context_id) is False
-
-    @requires_sqlite_vec
     async def test_exists_returns_false_for_nonexistent(
         self, async_db_with_embeddings: StorageBackend,
     ) -> None:
@@ -424,50 +352,6 @@ class TestEmbeddingRepository:
         assert stats['total_entries'] == 4
         # Coverage should be 3/4 = 75%
         assert stats['coverage_percentage'] == 75.0
-
-    @requires_sqlite_vec
-    async def test_get_table_dimension(
-        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
-    ) -> None:
-        """Test getting table dimension."""
-        from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import EmbeddingRepository
-
-        backend = async_db_with_embeddings
-        repos = RepositoryContainer(backend)
-        embedding_repo = EmbeddingRepository(backend)
-
-        # Create entry and store embedding
-        context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
-            visibility='private',
-            thread_id='dim-test',
-            source='user',
-            content_type='text',
-            text_content='Entry for dimension',
-            metadata=None,
-        )
-        await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
-
-        # Get dimension
-        dimension = await embedding_repo.get_table_dimension()
-
-        assert dimension == embedding_dim
-
-    @requires_sqlite_vec
-    async def test_get_table_dimension_empty(
-        self, async_db_with_embeddings: StorageBackend,
-    ) -> None:
-        """Test getting table dimension when no embeddings exist."""
-        from app.repositories.embedding_repository import EmbeddingRepository
-
-        backend = async_db_with_embeddings
-        embedding_repo = EmbeddingRepository(backend)
-
-        # Get dimension when no embeddings exist
-        dimension = await embedding_repo.get_table_dimension()
-
-        assert dimension is None
 
     @requires_sqlite_vec
     async def test_search_empty_database(

@@ -965,7 +965,7 @@ class TestHybridAllModesFailedValidationResponse:
 
     @pytest.mark.asyncio
     async def test_error_response_keys_and_deduplicated_messages(self) -> None:
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.repositories.fts_repository import FtsValidationError
         from app.tools.search import hybrid_search_context
 
@@ -1010,7 +1010,7 @@ class TestHybridAllModesFailedValidationResponse:
         semantic_count -- the always-present response-shape keys the success path,
         the docstring, and HybridSearchResponseDict declare, so a client reading
         them never hits a KeyError on the error branch."""
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.repositories.fts_repository import FtsValidationError
         from app.tools.search import hybrid_search_context
 
@@ -1047,7 +1047,7 @@ class TestHybridAllModesFailedValidationResponse:
         stats, a zeroed fusion_stats with the resolved rrf_k, and the adaptive FTS
         mode -- so a client reading response['stats'] under explain_query never hits
         a KeyError on the error branch."""
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.repositories.fts_repository import FtsValidationError
         from app.tools.search import hybrid_search_context
 
@@ -1176,7 +1176,7 @@ class TestHybridPartialDegradationResponse:
     @pytest.mark.asyncio
     async def test_semantic_failure_surfaces_warning_and_validation_errors(self) -> None:
         """Semantic fails validation, FTS succeeds: results returned, warning + details present."""
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.tools.search import hybrid_search_context
 
         semantic_messages = [

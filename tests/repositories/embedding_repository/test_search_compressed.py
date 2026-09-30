@@ -32,10 +32,10 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
-from app.repositories.embedding_repository import _COMPRESSED_OFFLOAD_MIN_ROWS
-from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.embedding_repository import EmbeddingRepository
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compressed_search import _COMPRESSED_OFFLOAD_MIN_ROWS
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
 
 DIM = 1024
@@ -126,7 +126,7 @@ async def compressed_backend_factory(
         await backend.initialize()
         await apply_compression_migration(backend=backend)
         # Seed the singleton provenance row so the read path's
-        # _get_cached_compression_metadata can find it.
+        # get_cached_compression_metadata can find it.
         from app.compression.provenance import insert_compression_metadata
         from app.compression.types import CompressionMetadata
 

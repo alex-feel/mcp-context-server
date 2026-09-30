@@ -29,8 +29,8 @@ from app.backends import create_backend
 from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
-from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.embedding_repository import EmbeddingRepository
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
 
 

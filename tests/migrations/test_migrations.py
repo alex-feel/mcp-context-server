@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 # Conditional skip marker for tests requiring the sqlite-vec package.
-# Defined locally (mirroring tests/repositories/test_embedding_repository.py) so
+# Defined locally (mirroring tests/repositories/embedding_repository/test_embedding_repository.py) so
 # the regression test that actually creates the vec0 virtual table self-skips on
 # platforms where the extension is not loadable.
 requires_sqlite_vec = pytest.mark.skipif(

@@ -215,7 +215,7 @@ class TestRankedStatementsCarryTheTiebreak:
 
     def test_both_semantic_branches_order_by_distance_then_context_id(self) -> None:
         """SQLite and PostgreSQL ranked output both resolve tied distances on the id."""
-        src = inspect.getsource(EmbeddingRepository.search)
+        src = inspect.getsource(EmbeddingRepository.search_fp32)
 
         assert src.count('ORDER BY bc.best_distance ASC, bc.context_id ASC') == 2
 
@@ -226,7 +226,7 @@ class TestRankedStatementsCarryTheTiebreak:
         rerank passage extraction, so leaving it to scan order makes the response text for an
         unchanged entry vary between identical queries.
         """
-        src = inspect.getsource(EmbeddingRepository.search)
+        src = inspect.getsource(EmbeddingRepository.search_fp32)
 
         # SQLite picks the best chunk with a ROW_NUMBER window; PostgreSQL with DISTINCT ON.
         assert 'ORDER BY cd.distance, cd.start_index' in src

@@ -21,7 +21,7 @@ from app.compression.factory import get_cached_compression_provider
 from app.compression.factory import reset_cached_compression_provider
 from app.compression.providers.turboquant._rotation import _get_cached_rotation
 from app.compression.providers.turboquant.provider import TurboQuantProvider
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 
 
 def test_warmup_primes_rotation_cache_single_threaded() -> None:

@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip('numpy')
 
 import app.tools._shared as shared_module
-from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
 
 

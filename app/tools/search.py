@@ -622,7 +622,7 @@ async def _semantic_search_raw(
     # embedding_generation_ms for the seconds it had just spent. The messages and the
     # exception type are the repository's, so the response a caller builds from them
     # is unchanged.
-    from app.repositories.embedding_repository import MetadataFilterValidationError
+    from app.repositories.embedding_repository.records import MetadataFilterValidationError
 
     structural_errors = structural_filter_errors(tags, metadata, metadata_filters)
     if structural_errors is not None:
@@ -1174,7 +1174,7 @@ async def semantic_search_context(
         need_reranking = reranking_provider is not None and settings.reranking.enabled
 
         # Import exception here to avoid circular imports at module level
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
 
         # A page starting at or past the ranked depth is deterministically empty, so it is
         # answered from the client's arguments alone rather than after an embedding round
@@ -1942,7 +1942,7 @@ async def hybrid_search_context(
         fts_stats: dict[str, Any] | None = None
         semantic_stats: dict[str, Any] | None = None
 
-        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.repositories.fts_repository import FtsValidationError
 
         # Determine adaptive FTS mode for hybrid search

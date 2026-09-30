@@ -16,7 +16,7 @@ from app.compression.providers.turboquant._qjl import _get_cached_qjl_impl
 from app.compression.providers.turboquant._rotation import _get_cached_rotation
 from app.compression.providers.turboquant.encoder import _get_ip_quantizer
 from app.compression.providers.turboquant.encoder import _get_mse_quantizer
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 
 
 def test_reset_clears_all_five_lru_factories() -> None:

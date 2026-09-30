@@ -746,7 +746,7 @@ class TestGenerationConformance:
     @pytest.mark.asyncio
     async def test_generation_conformance_embeddings_triggered(self) -> None:
         """E1: Both paths call generate_embeddings_with_timeout for the same text."""
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         mock_embedding = ChunkEmbedding(
             embedding=[0.1] * 1024,

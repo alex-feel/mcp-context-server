@@ -46,7 +46,7 @@ from app.metadata_types import non_finite_metadata_error
 from app.repositories.context_repository import ContextRepository
 from app.repositories.context_repository.helpers import describe_batch_delete_criteria
 from app.repositories.context_repository.records import VersionConflictError
-from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
 from app.startup import ensure_repositories

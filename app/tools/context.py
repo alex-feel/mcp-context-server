@@ -50,7 +50,7 @@ from app.models import MAX_TAGS_PER_ENTRY
 from app.models import MAX_THREAD_ID_LENGTH
 from app.repositories.base import canonical_timestamp
 from app.repositories.context_repository.records import VersionConflictError
-from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
 from app.startup import ensure_repositories

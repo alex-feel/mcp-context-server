@@ -6,8 +6,9 @@ the server used at first startup. The startup validator, the read path,
 and the migration CLI all consult this row to derive their behavior.
 
 Centralizing the SQL here avoids duplicating the read/write logic across
-``app.startup.compression_validator``, ``app.repositories.embedding_repository``,
-and ``app.cli.migrate_compression``.
+``app.startup.compression_validator``,
+``app.repositories.embedding_repository.compression_cache``, and
+``app.cli.migrate_compression``.
 """
 
 import sqlite3

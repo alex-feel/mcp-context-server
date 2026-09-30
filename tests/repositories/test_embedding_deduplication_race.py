@@ -267,7 +267,7 @@ class TestBatchStoreEmbeddingDeduplication:
         with the same content to trigger deduplication and test the fix.
         """
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -326,7 +326,7 @@ class TestEmbeddingRepositoryUpsert:
         Verifies the default behavior is unchanged.
         """
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -359,7 +359,7 @@ class TestEmbeddingRepositoryUpsert:
         Defense-in-depth test - verifies UPSERT works via delete-then-insert.
         """
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -392,7 +392,7 @@ class TestEmbeddingRepositoryUpsert:
     ) -> None:
         """upsert=True correctly updates metadata (model, dimensions)."""
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -445,7 +445,7 @@ class TestEmbeddingRepositoryUpsert:
     ) -> None:
         """upsert=True correctly handles changing chunk count."""
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -548,7 +548,7 @@ class TestEmbeddingExistsMethod:
     ) -> None:
         """exists() returns True for context with embeddings."""
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)

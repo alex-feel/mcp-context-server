@@ -14,7 +14,7 @@
 -- NOTE: Table and index DDL uses BARE names; operators with a
 -- non-default POSTGRESQL_SCHEMA must configure search_path so the
 -- migration creates tables in the intended schema. This matches the
--- BARE convention used by app/repositories/embedding_repository.py
+-- BARE convention used by app/repositories/embedding_repository/
 -- and the TABLE DDL in app/schemas/postgresql_schema.sql. The
 -- migration loader (app/migrations/compression.py) no longer
 -- substitutes {SCHEMA} for this file.

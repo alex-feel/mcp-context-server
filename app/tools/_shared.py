@@ -49,7 +49,7 @@ from app.models import MAX_TAG_LENGTH
 from app.models import MAX_TAGS_PER_ENTRY
 from app.models import MAX_THREAD_ID_LENGTH
 from app.models import normalize_base64_image_data
-from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.services.outline_service import OutlineNode
 from app.services.outline_service import parse_outline

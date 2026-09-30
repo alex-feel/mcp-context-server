@@ -26,9 +26,9 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
-from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.embedding_repository import EmbeddingRepository
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
 
 DIM = 256
@@ -272,9 +272,9 @@ async def test_search_compressed_reads_all_candidates_across_batches(
     one IN (...) with every id. Shrinking the batch size forces several batches
     over a tiny corpus, so a row dropped at a batch boundary would be observable.
     """
-    import app.repositories.embedding_repository as er
+    import app.repositories.embedding_repository.compressed_search as compressed_search_mod
 
-    monkeypatch.setattr(er, '_SQLITE_IN_CLAUSE_BATCH', 2)
+    monkeypatch.setattr(compressed_search_mod, 'SQLITE_IN_CLAUSE_BATCH', 2)
     backend, repos = await compressed_backend_factory('ip', 4)
     repo = EmbeddingRepository(backend)
     cids, query = await _seed_random_corpus(repos, repo, n=5, variant='ip', bits=4)

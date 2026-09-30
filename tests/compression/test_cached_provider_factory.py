@@ -66,7 +66,7 @@ async def test_reset_clears_cached_provider(
 def test_reset_compression_cache_clears_factory_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_reset_compression_cache() in embedding_repository delegates to factory."""
+    """_reset_compression_cache() in embedding_repository.compression_cache delegates to factory."""
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
     monkeypatch.setenv('COMPRESSION_SEED', '42')
     monkeypatch.setenv('EMBEDDING_DIM', '128')
@@ -75,7 +75,7 @@ def test_reset_compression_cache_clears_factory_cache(
 
     from app.compression import get_cached_compression_provider
     from app.compression import reset_cached_compression_provider
-    from app.repositories.embedding_repository import _reset_compression_cache
+    from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 
     reset_cached_compression_provider()
     try:

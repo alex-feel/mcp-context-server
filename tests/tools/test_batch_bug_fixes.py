@@ -853,7 +853,6 @@ class TestBatchDeleteEmbeddingCleanup:
 
             mock_repos.context.get_ids_matching_batch_criteria = AsyncMock()
             mock_repos.embeddings.embedding_tables_exist = AsyncMock()
-            mock_repos.embeddings.delete = AsyncMock()
             mock_repos.context.delete_by_ids = AsyncMock()
             mock_repos.context.delete_contexts_batch = AsyncMock(
                 return_value=(2, ['thread_ids: 1 threads']),
