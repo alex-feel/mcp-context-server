@@ -19,8 +19,8 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-from app.repositories.context_repository import DuplicateCandidate
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import DuplicateCandidate
+from app.repositories.context_repository.records import EntryProbe
 from app.settings import get_settings
 
 
@@ -598,7 +598,6 @@ class TestBatchStoreResponseParity:
                 side_effect=mock_store_with_dedup,
             )
             mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
-            mock_repos.context.get_summary = AsyncMock(return_value=None)
 
             # For entry 2 (deduplicated), embeddings already exist.
             # Accept the optional txn kwarg the store path now passes.

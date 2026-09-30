@@ -27,7 +27,7 @@ from pydantic import TypeAdapter
 
 import app.tools._shared as shared_module
 from app.models import MAX_IMAGES_PER_ENTRY
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
 from app.summary.retry import SummaryRetryExhaustedError

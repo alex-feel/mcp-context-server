@@ -1275,7 +1275,7 @@ class TestInternalColumnsNotExposed:
         This test ensures the column constant is maintained correctly and includes
         all columns defined in the ContextEntryDict TypedDict.
         """
-        from app.repositories.context_repository import CONTEXT_ENTRY_COLUMNS
+        from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
 
         # Parse the column string into a set
         columns = {col.strip() for col in CONTEXT_ENTRY_COLUMNS.split(',')}

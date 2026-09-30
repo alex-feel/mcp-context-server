@@ -48,8 +48,8 @@ from app.backends.base import TransactionContext
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository import EntryProbe
-from app.repositories.context_repository import VersionConflictError
+from app.repositories.context_repository.records import EntryProbe
+from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
 from app.tools.batch import update_context_batch
 

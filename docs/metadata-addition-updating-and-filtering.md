@@ -1691,7 +1691,7 @@ METADATA_INDEX_SYNC_MODE=auto
 
 - [`app/metadata_types.py`](../app/metadata_types.py) - MetadataFilter and MetadataOperator definitions
 - [`app/query_builder.py`](../app/query_builder.py) - SQL query construction with security validation
-- [`app/repositories/context_repository.py`](../app/repositories/context_repository.py) - Database operations for metadata filtering
+- [`app/repositories/context_repository/search.py`](../app/repositories/context_repository/search.py) - Database operations for metadata filtering
 
 ### Test Examples
 

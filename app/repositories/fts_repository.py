@@ -19,7 +19,7 @@ from app.backends.sqlite_backend import is_sqlite_locked_error
 from app.errors import ControlFlowError
 from app.metadata_types import pg_bind_reject_reason
 from app.repositories.base import BaseRepository
-from app.repositories.context_repository import count_applied_filters
+from app.repositories.entry_filters import count_applied_filters
 
 # Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
 # Matches word characters connected by one or more hyphens

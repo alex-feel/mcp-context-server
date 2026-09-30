@@ -17,7 +17,7 @@ import app.server
 import app.startup
 import app.tools._shared as shared_tools
 import app.tools.search as search_tools
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.startup import ensure_repositories
 from app.startup import set_backend
@@ -88,7 +88,6 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
-    repos.context.get_summary = AsyncMock(return_value=None)
 
     repos.tags = MagicMock()
     repos.tags.store_tags = AsyncMock()

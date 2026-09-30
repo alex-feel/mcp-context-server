@@ -24,7 +24,7 @@ from app.backends import create_backend
 from app.ids import generate_id
 from app.migrations.content_hash import apply_content_hash_migration
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository import compute_content_hash
+from app.repositories.context_repository.helpers import compute_content_hash
 
 # Module-level alias keeps `generate_id` reachable for ruff once test methods reference it.
 _make_id = generate_id
@@ -622,5 +622,5 @@ class TestContentHashNotExposed:
 
     def test_context_entry_columns_excludes_content_hash(self) -> None:
         """CONTEXT_ENTRY_COLUMNS should NOT include content_hash."""
-        from app.repositories.context_repository import CONTEXT_ENTRY_COLUMNS
+        from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
         assert 'content_hash' not in CONTEXT_ENTRY_COLUMNS

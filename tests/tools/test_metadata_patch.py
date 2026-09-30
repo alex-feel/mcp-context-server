@@ -27,7 +27,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 import app.server
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.types import MetadataDict
 
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time

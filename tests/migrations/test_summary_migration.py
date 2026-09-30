@@ -18,7 +18,7 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.ids import generate_id
 from app.migrations.summary import apply_summary_migration
-from app.repositories.context_repository import CONTEXT_ENTRY_COLUMNS
+from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
 
 
 class TestApplySummaryMigration:

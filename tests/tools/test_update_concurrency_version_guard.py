@@ -41,8 +41,8 @@ from fastmcp.exceptions import ToolError
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository import EntryProbe
-from app.repositories.context_repository import VersionConflictError
+from app.repositories.context_repository.records import EntryProbe
+from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
 from app.tools.context import update_context
 from app.types import UpdateContextSuccessDict

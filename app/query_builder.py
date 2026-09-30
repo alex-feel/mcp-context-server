@@ -1286,7 +1286,7 @@ class MetadataQueryBuilder:
         ``_`` (any single char) wildcards, for use with an explicit ``ESCAPE '\\'``
         clause on BOTH backends. Without this a filter value containing ``%`` or
         ``_`` (e.g. ``"50%"``) would be interpreted as a pattern and return
-        over-broad/wrong results. Mirrors ``_escape_like`` in context_repository.py.
+        over-broad/wrong results. Mirrors ``_escape_like`` in app/repositories/context_repository/search.py.
 
         Args:
             value: The literal substring to embed in a LIKE pattern.
@@ -1412,7 +1412,7 @@ class MetadataQueryBuilder:
             # - asyncpg sends integers/floats/booleans as type "unknown" to PostgreSQL
             # - This causes "could not determine polymorphic type" error
             # - By using json.dumps() in Python and ::jsonb cast in SQL, we avoid this issue
-            # This pattern is also used in context_repository.py for metadata patching.
+            # This pattern is also used in app/repositories/context_repository/updates.py for metadata patching.
             # IMPORTANT: We wrap in CASE WHEN jsonb_typeof() = 'array' to gracefully handle
             # non-array fields. Without this check, jsonb_array_elements_text() throws
             # "cannot extract elements from a scalar" error on scalar fields.

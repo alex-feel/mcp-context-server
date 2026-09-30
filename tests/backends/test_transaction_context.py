@@ -14,7 +14,7 @@ from app.backends.base import TransactionContext
 from app.backends.sqlite_backend import SQLiteBackend
 from app.backends.sqlite_backend import SQLiteTransactionContext
 from app.ids import generate_id
-from app.repositories.context_repository import VersionConflictError
+from app.repositories.context_repository.records import VersionConflictError
 
 
 class TestSQLiteTransactionContext:

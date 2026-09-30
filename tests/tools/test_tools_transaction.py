@@ -27,7 +27,7 @@ import pytest_asyncio
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.schemas import load_schema
 from app.tools.context import store_context
 from app.tools.context import update_context

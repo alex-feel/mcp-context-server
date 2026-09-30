@@ -18,7 +18,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import app.server
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 
 # Access the underlying functions directly - no longer wrapped by @mcp.tool() at import time
 store_context = app.server.store_context

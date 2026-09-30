@@ -24,7 +24,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-from app.repositories.context_repository import DuplicateCandidate
+from app.repositories.context_repository.records import DuplicateCandidate
 from app.tools._shared import EmbeddingsReconcileRequiredError
 
 

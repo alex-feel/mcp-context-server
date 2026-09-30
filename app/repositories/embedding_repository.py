@@ -19,7 +19,7 @@ from typing import cast
 from app.backends.base import StorageBackend
 from app.errors import ControlFlowError
 from app.repositories.base import BaseRepository
-from app.repositories.context_repository import count_applied_filters
+from app.repositories.entry_filters import count_applied_filters
 
 if TYPE_CHECKING:
     import asyncpg

@@ -24,7 +24,7 @@ import pytest
 from pydantic import ValidationError
 
 import app.server
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.settings import SummarySettings
 from app.startup import ensure_repositories
 
@@ -105,7 +105,6 @@ def _make_mock_repos() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
-    repos.context.get_summary = AsyncMock(return_value=None)
     repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -441,7 +440,7 @@ class TestClearSummaryRepository:
         )
 
         # Verify the summary was stored
-        stored_summary = await repos.context.get_summary(entry_id)
+        stored_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert stored_summary == 'Old summary that should be cleared'
 
         # Update with clear_summary=True
@@ -454,7 +453,7 @@ class TestClearSummaryRepository:
         assert 'summary' in fields
 
         # Verify the summary is now NULL
-        cleared_summary = await repos.context.get_summary(entry_id)
+        cleared_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert cleared_summary is None
 
     @pytest.mark.asyncio
@@ -482,7 +481,7 @@ class TestClearSummaryRepository:
         assert success is True
         assert 'summary' in fields
 
-        result_summary = await repos.context.get_summary(entry_id)
+        result_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert result_summary is None
 
     @pytest.mark.asyncio
@@ -511,7 +510,7 @@ class TestClearSummaryRepository:
         assert success is True
 
         # Summary should be preserved
-        result_summary = await repos.context.get_summary(entry_id)
+        result_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert result_summary == 'Summary that should be preserved'
 
 
@@ -542,7 +541,7 @@ class TestDedupPreservesExistingSummary:
         )
 
         # Verify summary exists
-        initial_summary = await repos.context.get_summary(entry_id)
+        initial_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert initial_summary == 'Pre-existing summary from before threshold'
 
         # Now store the same text again as a duplicate, with summary=None
@@ -563,5 +562,5 @@ class TestDedupPreservesExistingSummary:
         assert updated_id == entry_id
 
         # Summary should be PRESERVED via COALESCE(NULL, existing_summary)
-        preserved_summary = await repos.context.get_summary(entry_id)
+        preserved_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert preserved_summary == 'Pre-existing summary from before threshold'

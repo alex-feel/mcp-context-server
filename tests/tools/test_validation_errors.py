@@ -16,7 +16,7 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 store_context = app.server.store_context

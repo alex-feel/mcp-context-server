@@ -15,7 +15,7 @@ import pytest
 import app.tools
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.types import MetadataDict
 
 # Get the actual async functions from app.tools

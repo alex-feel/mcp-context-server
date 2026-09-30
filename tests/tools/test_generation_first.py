@@ -27,7 +27,7 @@ import app.server
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.schemas import load_schema
 from app.tools.context import store_context
 from app.tools.context import update_context
@@ -62,7 +62,6 @@ def _create_mock_repositories() -> MagicMock:
     )
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.update_content_type = AsyncMock(return_value=True)
-    repos.context.get_summary = AsyncMock(return_value=None)
 
     repos.tags = MagicMock()
     repos.tags.store_tags = AsyncMock()
