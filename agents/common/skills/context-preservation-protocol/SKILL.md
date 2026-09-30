@@ -1,9 +1,7 @@
 ---
 name: context-preservation-protocol
 description: |
-  Context preservation patterns for storing work results and session context via an MCP-compatible context server.
-  Provides patterns for documenting work, storing reports, and ensuring continuity between sessions.
-  Use when you need to preserve work results or session context.
+  Storage workflow for an MCP-compatible context server: how to write and store work reports, plans, handoffs, and checkpoints so work survives a context reset or compaction and stays retrievable by other agents and later sessions -- obtaining the thread ID, choosing between store_context and update_context, patching metadata and links, superseding an earlier entry, confirming the write succeeded, and falling back when storage fails. Use whenever you need to preserve work results or session context: before every store_context or update_context call, before ending any turn or subagent run that produced a plan, finding, implementation, decision, or report, before a context compaction, and when writing a session handoff or a mid-task checkpoint -- even when a dispatch forbids writing report files to disk, because a context-server entry is not a file.
 ---
 
 <overview>

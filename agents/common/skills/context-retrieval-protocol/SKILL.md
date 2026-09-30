@@ -1,9 +1,7 @@
 ---
 name: context-retrieval-protocol
 description: |
-  Context retrieval patterns for accessing session context via an MCP-compatible context server.
-  Provides patterns for browse and retrieve, hybrid search, semantic search, and full-text search.
-  Use when you need to retrieve previous context or search for relevant information.
+  Retrieval workflow for an MCP-compatible context server: browse and retrieve, hybrid, semantic, and full-text search; retrieving user messages first and agent reports second; verifying a delegated task against the stored user messages, whose wording outranks the orchestrator's; honoring an explicit context_scope; treating every search result as a truncated preview and reading full entries with get_context_by_ids before relying on them; following typed links; and scoping queries by thread, project, and worktree. Use whenever you need to retrieve previous context or search stored context for relevant information: at the start of any task that was delegated to you or resumes earlier work, immediately after a context compaction or reset, whenever a prompt cites context IDs or a previous context ID to revise, and before any search_context, hybrid_search_context, semantic_search_context, fts_search_context, or get_context_by_ids call. Not for web search or code search.
 ---
 
 <overview>
