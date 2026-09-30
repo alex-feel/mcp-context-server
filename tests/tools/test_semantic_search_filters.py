@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from app.backends import StorageBackend
+from tests.helpers import store_single_chunk_embedding
 
 # Conditional skip marker for tests requiring semantic search dependencies
 requires_semantic_search = pytest.mark.skipif(
@@ -66,7 +67,7 @@ class TestSemanticSearchFilters:
             )
             # Store mock embedding
             mock_embedding = [0.1 * (i + 1)] * embedding_dim
-            await embedding_repo.store(context_id, mock_embedding, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, mock_embedding)
 
         # Create 5 entries in other threads
         for i in range(5):
@@ -80,7 +81,7 @@ class TestSemanticSearchFilters:
                 metadata=None,
             )
             mock_embedding = [0.2 * (i + 1)] * embedding_dim
-            await embedding_repo.store(context_id, mock_embedding, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, mock_embedding)
 
         # Perform search with thread filter
         query_embedding = [0.1] * embedding_dim
@@ -122,7 +123,7 @@ class TestSemanticSearchFilters:
                 text_content=f'User entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Create 5 entries with source="agent"
         for i in range(5):
@@ -135,7 +136,7 @@ class TestSemanticSearchFilters:
                 text_content=f'Agent entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with source filter
         results, _ = await embedding_repo.search(
@@ -176,7 +177,7 @@ class TestSemanticSearchFilters:
                 text_content=f'User entry {i} in test-thread',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Create entries in test-thread with source="agent"
         for i in range(3):
@@ -189,7 +190,7 @@ class TestSemanticSearchFilters:
                 text_content=f'Agent entry {i} in test-thread',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with both filters
         results, _ = await embedding_repo.search(
@@ -232,7 +233,7 @@ class TestSemanticSearchFilters:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search without filters
         results, _ = await embedding_repo.search(
@@ -268,7 +269,7 @@ class TestSemanticSearchFilters:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with non-existent thread
         results, _ = await embedding_repo.search(
@@ -305,7 +306,7 @@ class TestSemanticSearchFilters:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for 10 but only 2 exist
         results, _ = await embedding_repo.search(
@@ -351,7 +352,7 @@ class TestSemanticSearchDateFiltering:
                 text_content=f'Date filter test entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with start_date in the past - should find all entries
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -400,7 +401,7 @@ class TestSemanticSearchDateFiltering:
                 text_content=f'End date filter entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with end_date in the future - should find all entries
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -449,7 +450,7 @@ class TestSemanticSearchDateFiltering:
                 text_content=f'Date range entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.15 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.15 * (i + 1)] * embedding_dim)
 
         # Search with valid date range (yesterday to tomorrow) - should find all
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -502,7 +503,7 @@ class TestSemanticSearchDateFiltering:
                 text_content=f'Target thread entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -514,7 +515,7 @@ class TestSemanticSearchDateFiltering:
                 text_content=f'Other thread entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with date filter and thread_id - should find 2 entries from target thread
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -559,7 +560,7 @@ class TestSemanticSearchDateFiltering:
                 text_content=f'User entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -571,7 +572,7 @@ class TestSemanticSearchDateFiltering:
                 text_content=f'Agent entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with date filter and source - should find 2 user entries
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -612,7 +613,7 @@ class TestSemanticSearchDateFiltering:
                 text_content=f'No date filter entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.25 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.25 * (i + 1)] * embedding_dim)
 
         # Search with None dates - should find all entries
         results, _ = await embedding_repo.search(
@@ -655,7 +656,7 @@ class TestSemanticSearchPerformance:
                 text_content=f'Target entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * ((i % 10) + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * ((i % 10) + 1)] * embedding_dim)
 
         # Create 100 entries in other threads
         for i in range(100):
@@ -668,7 +669,7 @@ class TestSemanticSearchPerformance:
                 text_content=f'Other entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * ((i % 10) + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * ((i % 10) + 1)] * embedding_dim)
 
         # Measure search time
         start_time = time.perf_counter()
@@ -710,7 +711,7 @@ class TestSemanticSearchPerformance:
                 text_content=f'Medium entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * ((i % 10) + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * ((i % 10) + 1)] * embedding_dim)
 
         # Measure search time
         start_time = time.perf_counter()
@@ -754,7 +755,7 @@ class TestSemanticSearchEdgeCases:
             text_content='Single entry',
             metadata=None,
         )
-        await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, context_id, [0.1] * embedding_dim)
 
         # Create entries in other threads
         for i in range(5):
@@ -767,7 +768,7 @@ class TestSemanticSearchEdgeCases:
                 text_content=f'Other {i}',
                 metadata=None,
             )
-            await embedding_repo.store(ctx_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, ctx_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search for single thread
         results, _ = await embedding_repo.search(
@@ -804,7 +805,7 @@ class TestSemanticSearchEdgeCases:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for 5 from only-thread
         results, _ = await embedding_repo.search(
@@ -842,7 +843,7 @@ class TestSemanticSearchEdgeCases:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with thread_id=None
         results, _ = await embedding_repo.search(
@@ -881,7 +882,7 @@ class TestSemanticSearchEdgeCases:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with source=None
         results, _ = await embedding_repo.search(
@@ -928,7 +929,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Completed task entry {i}',
                 metadata=json.dumps({'status': 'completed', 'index': i}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -940,7 +941,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Pending task entry {i}',
                 metadata=json.dumps({'status': 'pending', 'index': i}),
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with simple metadata filter for status=completed
         results, _ = await embedding_repo.search(
@@ -982,7 +983,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Task with priority {priority}',
                 metadata=json.dumps({'priority': priority}),
             )
-            await embedding_repo.store(context_id, [0.1 * priority] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * priority] * embedding_dim)
 
         # Search with metadata_filters for priority > 5
         results, _ = await embedding_repo.search(
@@ -1026,7 +1027,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Working on {name}',
                 metadata=json.dumps({'task_name': name}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for task_name containing 'refactor'
         results, _ = await embedding_repo.search(
@@ -1068,7 +1069,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Important entry {i}',
                 metadata=json.dumps({'important': True, 'index': i}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -1080,7 +1081,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Regular entry {i}',
                 metadata=json.dumps({'index': i}),
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search for entries where 'important' key exists
         results, _ = await embedding_repo.search(
@@ -1122,7 +1123,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Agent completed entry {i}',
                 metadata=json.dumps({'status': 'completed'}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Create entries in target thread with source=user and status=completed
         for i in range(2):
@@ -1135,7 +1136,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'User completed entry {i}',
                 metadata=json.dumps({'status': 'completed'}),
             )
-            await embedding_repo.store(context_id, [0.15 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.15 * (i + 1)] * embedding_dim)
 
         # Create entries in target thread with source=agent and status=pending
         for i in range(3):
@@ -1148,7 +1149,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Agent pending entry {i}',
                 metadata=json.dumps({'status': 'pending'}),
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with combined filters: thread_id + source + metadata
         results, _ = await embedding_repo.search(
@@ -1195,7 +1196,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Test entry {i}',
                 metadata=json.dumps({'status': 'active'}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with invalid metadata_filters (invalid key with SQL injection attempt)
         # Should raise MetadataFilterValidationError, not skip filter silently
@@ -1240,7 +1241,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Active entry {i}',
                 metadata=json.dumps({'status': 'active'}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for non-existent status
         results, _ = await embedding_repo.search(
@@ -1280,7 +1281,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Entry in {category}',
                 metadata=json.dumps({'category': category}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries in backend or frontend categories
         results, _ = await embedding_repo.search(
@@ -1328,7 +1329,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Task with priority {priority}',
                 metadata=json.dumps({'priority': priority}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries with priority IN [5, 9] - INTEGER array
         results, _ = await embedding_repo.search(
@@ -1374,7 +1375,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Task with priority {priority}',
                 metadata=json.dumps({'priority': priority}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries with priority NOT IN [1, 2, 3] - INTEGER array
         results, _ = await embedding_repo.search(
@@ -1416,7 +1417,7 @@ class TestSemanticSearchMetadataFiltering:
                 text_content=f'Entry {i}',
                 metadata=json.dumps({'index': i}),
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with None metadata and metadata_filters
         results, _ = await embedding_repo.search(
@@ -1458,7 +1459,7 @@ class TestSemanticSearchContentTypeFilter:
             text_content='Text only entry',
             metadata=None,
         )
-        await embedding_repo.store(text_id, [0.1] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, text_id, [0.1] * embedding_dim)
 
         # Create multimodal entry
         multi_id, _ = await repos.context.store_with_deduplication(
@@ -1470,7 +1471,7 @@ class TestSemanticSearchContentTypeFilter:
             text_content='Entry with image',
             metadata=None,
         )
-        await embedding_repo.store(multi_id, [0.2] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, multi_id, [0.2] * embedding_dim)
 
         # Search with content_type filter for text
         results, _ = await embedding_repo.search(
@@ -1507,7 +1508,7 @@ class TestSemanticSearchContentTypeFilter:
                 text_content=f'Text entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(ctx_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, ctx_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Create multimodal entry
         multi_id, _ = await repos.context.store_with_deduplication(
@@ -1519,7 +1520,7 @@ class TestSemanticSearchContentTypeFilter:
             text_content='Multimodal entry with image',
             metadata=None,
         )
-        await embedding_repo.store(multi_id, [0.5] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, multi_id, [0.5] * embedding_dim)
 
         # Search with content_type filter for multimodal
         results, _ = await embedding_repo.search(
@@ -1555,7 +1556,7 @@ class TestSemanticSearchContentTypeFilter:
             text_content='Text entry',
             metadata=None,
         )
-        await embedding_repo.store(text_id, [0.1] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, text_id, [0.1] * embedding_dim)
 
         multi_id, _ = await repos.context.store_with_deduplication(
             owner_id='local',
@@ -1566,7 +1567,7 @@ class TestSemanticSearchContentTypeFilter:
             text_content='Multimodal entry',
             metadata=None,
         )
-        await embedding_repo.store(multi_id, [0.2] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, multi_id, [0.2] * embedding_dim)
 
         # Search without content_type filter
         results, _ = await embedding_repo.search(
@@ -1610,7 +1611,7 @@ class TestSemanticSearchTagsFilter:
             metadata=None,
         )
         await repos.tags.store_tags(id1, ['python'])
-        await embedding_repo.store(id1, [0.1] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, id1, [0.1] * embedding_dim)
 
         id2, _ = await repos.context.store_with_deduplication(
             owner_id='local',
@@ -1622,7 +1623,7 @@ class TestSemanticSearchTagsFilter:
             metadata=None,
         )
         await repos.tags.store_tags(id2, ['javascript'])
-        await embedding_repo.store(id2, [0.2] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, id2, [0.2] * embedding_dim)
 
         id3, _ = await repos.context.store_with_deduplication(
             owner_id='local',
@@ -1634,7 +1635,7 @@ class TestSemanticSearchTagsFilter:
             metadata=None,
         )
         await repos.tags.store_tags(id3, ['rust'])
-        await embedding_repo.store(id3, [0.3] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, id3, [0.3] * embedding_dim)
 
         # Search with tags filter (OR logic)
         results, _ = await embedding_repo.search(
@@ -1676,7 +1677,7 @@ class TestSemanticSearchTagsFilter:
             )
             tag = 'important' if i == 0 else f'other-{i}'
             await repos.tags.store_tags(ctx_id, [tag])
-            await embedding_repo.store(ctx_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, ctx_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for only 'important' tagged entries
         results, _ = await embedding_repo.search(
@@ -1713,7 +1714,7 @@ class TestSemanticSearchTagsFilter:
                 metadata=None,
             )
             await repos.tags.store_tags(ctx_id, [f'tag-{i}'])
-            await embedding_repo.store(ctx_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, ctx_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with empty tags list
         results, _ = await embedding_repo.search(
@@ -1751,7 +1752,7 @@ class TestSemanticSearchTagsFilter:
                 metadata=None,
             )
             await repos.tags.store_tags(ctx_id, [f'tag-{i}'])
-            await embedding_repo.store(ctx_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, ctx_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with tags=None
         results, _ = await embedding_repo.search(
@@ -1787,7 +1788,7 @@ class TestSemanticSearchTagsFilter:
             metadata=None,
         )
         await repos.tags.store_tags(target_id, ['python'])
-        await embedding_repo.store(target_id, [0.1] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, target_id, [0.1] * embedding_dim)
 
         # Create non-matching: wrong source
         wrong_source_id, _ = await repos.context.store_with_deduplication(
@@ -1800,7 +1801,7 @@ class TestSemanticSearchTagsFilter:
             metadata=None,
         )
         await repos.tags.store_tags(wrong_source_id, ['python'])
-        await embedding_repo.store(wrong_source_id, [0.2] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, wrong_source_id, [0.2] * embedding_dim)
 
         # Create non-matching: wrong tag
         wrong_tag_id, _ = await repos.context.store_with_deduplication(
@@ -1813,7 +1814,7 @@ class TestSemanticSearchTagsFilter:
             metadata=None,
         )
         await repos.tags.store_tags(wrong_tag_id, ['javascript'])
-        await embedding_repo.store(wrong_tag_id, [0.3] * embedding_dim, model='test-model')
+        await store_single_chunk_embedding(embedding_repo, wrong_tag_id, [0.3] * embedding_dim)
 
         # Search with combined filters
         results, _ = await embedding_repo.search(

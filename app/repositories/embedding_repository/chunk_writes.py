@@ -29,33 +29,6 @@ class ChunkWriteMixin(BaseRepository):
     entries from the same table.
     """
 
-    async def store(
-        self,
-        context_id: str,
-        embedding: list[float],
-        model: str,
-        *,
-        start_index: int = 0,
-        end_index: int = 0,
-    ) -> None:
-        """Store embedding for a context entry.
-
-        This is a convenience method for storing a single embedding. It uses the chunked
-        storage architecture internally, creating a single-chunk entry for compatibility
-        with the 1:N embedding schema.
-
-        Args:
-            context_id: ID of the context entry
-            embedding: Embedding vector (dimension depends on provider/model configuration)
-            model: Model identifier (from settings.embedding.model)
-            start_index: Character offset where text starts (default: 0 for full document)
-            end_index: Character offset where text ends (default: 0 for legacy/unknown)
-        """
-        # Delegate to store_chunked with single embedding for unified storage logic
-        chunk_emb = ChunkEmbedding(embedding=embedding, start_index=start_index, end_index=end_index)
-        await self.store_chunked(context_id, [chunk_emb], model)
-        logger.debug(f'Stored embedding for context {context_id}')
-
     async def store_chunked(
         self,
         context_id: str,
@@ -67,9 +40,8 @@ class ChunkWriteMixin(BaseRepository):
     ) -> None:
         """Store multiple chunk embeddings with boundaries for a context entry atomically.
 
-        This method replaces store() for chunked content. All embeddings are
-        stored in a single transaction - either all succeed or all fail.
-        Chunk boundaries are stored for chunk-aware reranking.
+        All embeddings are stored in a single transaction - either all succeed
+        or all fail. Chunk boundaries are stored for chunk-aware reranking.
 
         When ``settings.compression.enabled`` is true the call is routed to
         the compressed write path which persists provider-encoded payload

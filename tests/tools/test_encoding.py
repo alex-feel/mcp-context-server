@@ -60,7 +60,6 @@ class TestUTF8Encoding:
 
         # Mock embeddings repository for generation-first transactional writes
         self.mock_repos.embeddings = AsyncMock()
-        self.mock_repos.embeddings.store = AsyncMock(return_value=None)
         self.mock_repos.embeddings.store_chunked = AsyncMock(return_value=None)
         self.mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 

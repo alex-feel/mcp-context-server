@@ -20,6 +20,7 @@ from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
+from tests.helpers import store_single_chunk_embedding
 
 # Conditional skip marker for tests requiring sqlite-vec package
 requires_sqlite_vec = pytest.mark.skipif(
@@ -31,69 +32,6 @@ requires_sqlite_vec = pytest.mark.skipif(
 @pytest.mark.asyncio
 class TestEmbeddingRepository:
     """Test EmbeddingRepository functionality."""
-
-    @requires_sqlite_vec
-    async def test_store_embedding(
-        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
-    ) -> None:
-        """Test storing embedding for context entry."""
-        from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import EmbeddingRepository
-
-        backend = async_db_with_embeddings
-        repos = RepositoryContainer(backend)
-        embedding_repo = EmbeddingRepository(backend)
-
-        # First create a context entry
-        context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
-            visibility='private',
-            thread_id='test-thread',
-            source='user',
-            content_type='text',
-            text_content='Test entry for embedding',
-            metadata=None,
-        )
-
-        # Store embedding
-        embedding = [0.1] * embedding_dim
-        await embedding_repo.store(context_id=context_id, embedding=embedding, model='test-model')
-
-        # Verify stored
-        exists = await embedding_repo.exists(context_id)
-        assert exists is True
-
-    @requires_sqlite_vec
-    async def test_store_embedding_with_model(
-        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
-    ) -> None:
-        """Test storing embedding with custom model name."""
-        from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import EmbeddingRepository
-
-        backend = async_db_with_embeddings
-        repos = RepositoryContainer(backend)
-        embedding_repo = EmbeddingRepository(backend)
-
-        context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
-            visibility='private',
-            thread_id='test-thread',
-            source='user',
-            content_type='text',
-            text_content='Test entry',
-            metadata=None,
-        )
-
-        # Store with custom model name
-        await embedding_repo.store(
-            context_id=context_id,
-            embedding=[0.1] * embedding_dim,
-            model='custom-model:latest',
-        )
-
-        exists = await embedding_repo.exists(context_id)
-        assert exists is True
 
     @requires_sqlite_vec
     async def test_search_basic(
@@ -120,7 +58,7 @@ class TestEmbeddingRepository:
             )
             # Create embeddings with varying values
             embedding = [0.1 * (i + 1)] * embedding_dim
-            await embedding_repo.store(context_id, embedding, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, embedding)
 
         # Search for similar embeddings
         query_embedding = [0.1] * embedding_dim
@@ -163,7 +101,7 @@ class TestEmbeddingRepository:
                 text_content=f'Target entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1] * embedding_dim)
 
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -175,7 +113,7 @@ class TestEmbeddingRepository:
                 text_content=f'Other entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2] * embedding_dim)
 
         # Search with thread filter
         results, _ = await embedding_repo.search(
@@ -211,7 +149,7 @@ class TestEmbeddingRepository:
                 text_content=f'User entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1] * embedding_dim)
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -223,7 +161,7 @@ class TestEmbeddingRepository:
                 text_content=f'Agent entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2] * embedding_dim)
 
         # Search with source filter
         results, _ = await embedding_repo.search(
@@ -273,7 +211,7 @@ class TestEmbeddingRepository:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Create entries without embeddings
         for i in range(3):
@@ -319,7 +257,7 @@ class TestEmbeddingRepository:
                 text_content=f'Target {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.1] * embedding_dim)
 
         # Create entry in target thread without embedding
         await repos.context.store_with_deduplication(
@@ -343,7 +281,7 @@ class TestEmbeddingRepository:
                 text_content=f'Other {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * embedding_dim, model='test-model')
+            await store_single_chunk_embedding(embedding_repo, context_id, [0.2] * embedding_dim)
 
         # Get statistics for target thread only
         stats = await embedding_repo.get_statistics(thread_id='target-stats')

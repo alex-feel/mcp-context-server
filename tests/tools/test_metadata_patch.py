@@ -89,7 +89,6 @@ def mock_repositories():
 
     # Mock embeddings repository for generation-first transactional writes
     repos.embeddings = Mock()
-    repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.store_chunked = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
     repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)

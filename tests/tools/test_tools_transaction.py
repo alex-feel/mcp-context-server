@@ -406,7 +406,6 @@ class TestStoreContextBatchEmbeddingFirst:
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
             patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             # Mock embedding repository to avoid vec_context_embeddings table issues
-            patch.object(repos.embeddings, 'store', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):
             from app.tools.batch import store_context_batch
@@ -617,7 +616,6 @@ class TestUpdateContextBatchEmbeddingFirst:
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
             patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             # Mock embedding repository to avoid vec_context_embeddings table issues
-            patch.object(repos.embeddings, 'store', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock(return_value=None)),
         ):

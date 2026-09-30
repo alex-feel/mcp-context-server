@@ -123,7 +123,6 @@ def _make_mock_repos() -> MagicMock:
     repos.embeddings = MagicMock()
     repos.embeddings.store_chunked = AsyncMock()
     repos.embeddings.exists = AsyncMock(return_value=False)
-    repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
     repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
 

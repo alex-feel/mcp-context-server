@@ -29,6 +29,7 @@ from app.backends import create_backend
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.fts_repository import FtsRepository
+from tests.helpers import store_single_chunk_embedding
 
 requires_sqlite_vec = pytest.mark.skipif(
     importlib.util.find_spec('sqlite_vec') is None,
@@ -142,10 +143,10 @@ class TestSemanticTiedDistanceOrdering:
 
         embedding_repo = EmbeddingRepository(backend)
         for entry_id in _INSERT_ORDER:
-            await embedding_repo.store(
+            await store_single_chunk_embedding(
+                embedding_repo,
                 context_id=entry_id,
                 embedding=[0.25] * embedding_dim,
-                model='test-model',
             )
         return embedding_repo
 

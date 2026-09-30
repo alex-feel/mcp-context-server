@@ -56,7 +56,6 @@ def mock_repos():
     repos.statistics = AsyncMock()
 
     repos.embeddings = AsyncMock()
-    repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.store_chunked = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 
