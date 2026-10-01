@@ -128,7 +128,7 @@ def run_reembed(source_url: str, *, dry_run: bool) -> int:
 async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
     """Async body: validate, then delete + regenerate per entry atomically.
 
-    Defers imports of ``app.tools._shared`` and ``app.repositories`` until
+    Defers imports of ``app.tools._generation`` and ``app.repositories`` until
     runtime so the module can be imported by the CLI dispatcher without
     pulling in the embedding/compression dependency chain unconditionally.
 
@@ -145,8 +145,8 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
     await backend.initialize()
     try:
         from app.repositories import RepositoryContainer
-        from app.tools._shared import generate_compression_with_timeout
-        from app.tools._shared import generate_embeddings_with_timeout
+        from app.tools._generation import generate_compression_with_timeout
+        from app.tools._generation import generate_embeddings_with_timeout
 
         repos = RepositoryContainer(backend)
 

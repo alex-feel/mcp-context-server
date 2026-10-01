@@ -870,7 +870,7 @@ class MCPServerIntegrationTest:
         PostgreSQL ``::NUMERIC`` context is encoded as its FULL Decimal expansion (0.3 ->
         0.2999999999999999888...), so ``'0.3'::NUMERIC = $1`` was False (and ``> 0.3`` on a
         stored 0.3 wrongly True) while SQLite -- comparing the bit-identical IEEE double on
-        both sides -- matched. The fix (``_pg_numeric_body`` in ``app/query_builder.py``)
+        both sides -- matched. The fix (``pg_numeric_body`` in ``app/metadata_sql.py``)
         branches on the STORED value's integrality: an integral stored value compares exact
         ``NUMERIC`` against the param, a fractional stored value compares double-vs-double via
         ``(stored)::float8 <op> (<ph>)::float8``. It deliberately does NOT fold the param via
@@ -1015,7 +1015,7 @@ class MCPServerIntegrationTest:
         the double is ...968). asyncpg binds a float param as its EXACT double expansion, so the
         old integral-only exact-NUMERIC branch compared 36028797018963970 = 36028797018963968 and
         failed ``eq`` against the very value the user stored, while SQLite (double vs double)
-        matched. The fix (``_pg_numeric_body``) keeps the exact compare only for provably
+        matched. The fix (``pg_numeric_body``) keeps the exact compare only for provably
         int-origin stored values -- those NOT equal to ``(stored::float8)::NUMERIC`` -- and
         compares canonical-double-form values double-vs-double. A stored INT equal to the double's
         exact value (2**55 itself, non-canonical) stays on the exact branch and still matches the
@@ -1381,10 +1381,10 @@ class MCPServerIntegrationTest:
     async def test_semantic_hybrid_metadata_is_dict(self) -> bool:
         """semantic_search_context and hybrid_search_context return metadata as a dict.
 
-        Regression guard for the R1 fix that parses metadata in _semantic_search_raw:
-        without it the repository's JSON-string metadata (SQLite TEXT; PostgreSQL
-        JSONB-as-str via asyncpg) would surface as a string. Asserts the type AND a
-        nested read, so reverting the fix fails on BOTH backends.
+        Guards the metadata parse in semantic_search_raw (app/tools/search/legs.py):
+        the repository returns metadata as a JSON string (SQLite TEXT; PostgreSQL
+        JSONB-as-str via asyncpg), and the leg must surface it as a dict. Asserts the
+        type AND a nested read, so a missing parse fails on BOTH backends.
 
         Returns:
             bool: True if all tests pass.

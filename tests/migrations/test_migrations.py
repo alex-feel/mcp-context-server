@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 # Conditional skip marker for tests requiring the sqlite-vec package.
-# Defined locally (mirroring tests/repositories/test_embedding_repository.py) so
+# Defined locally (mirroring tests/repositories/embedding_repository/test_embedding_repository.py) so
 # the regression test that actually creates the vec0 virtual table self-skips on
 # platforms where the extension is not loadable.
 requires_sqlite_vec = pytest.mark.skipif(
@@ -1382,31 +1382,6 @@ class TestMigrationDdlTimeout:
         ):
             await repo.migrate_language('german')
 
-        self._assert_count_probe_carries_timeout(executed, migration_timeout=300.0)
-
-    @pytest.mark.asyncio
-    async def test_fts_rebuild_index_ddl_uses_migration_timeout(self) -> None:
-        """FtsRepository.rebuild_index runs its REINDEX and COUNT(*) under the migration budget.
-
-        Reindexing the GIN index on a large table can far exceed the pool's command_timeout,
-        so rebuild_index must raise the budget via begin_migration and route both the COUNT(*)
-        probe and the REINDEX through the migration deadline (same invariant as migrate_language).
-        """
-        executed: list[tuple[str, float | None]] = []
-        mock_backend = self._recording_pg_backend(executed)
-
-        mock_settings = MagicMock()
-        mock_settings.storage.postgresql_migration_timeout_s = 300.0
-        mock_settings.storage.postgresql_command_timeout_s = 60.0
-
-        from app.repositories.fts_repository import FtsRepository
-
-        repo = FtsRepository(mock_backend)
-        with patch('app.settings.get_settings', return_value=mock_settings):
-            await repo.rebuild_index()
-
-        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
-        self._assert_set_local_no_finally_restore(executed)
         self._assert_count_probe_carries_timeout(executed, migration_timeout=300.0)
 
     @pytest.mark.asyncio

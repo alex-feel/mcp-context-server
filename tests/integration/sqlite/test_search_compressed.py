@@ -3,7 +3,7 @@
 Validates that the compressed semantic-search read path returns the
 planted top-K with at least 0.85 overlap against the fp32 ground truth
 on a small synthetic corpus. This complements the unit-scale tests in
-``tests/repositories/test_search_compressed.py`` (which use 3 docs and
+``tests/repositories/embedding_repository/test_search_compressed.py`` (which use 3 docs and
 focus on routing/filters) by exercising the full pipeline end-to-end
 with statistically meaningful recall measurements.
 """
@@ -24,9 +24,9 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
-from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.embedding_repository import EmbeddingRepository
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
 
 DIM = 1024

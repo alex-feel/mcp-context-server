@@ -132,23 +132,22 @@ async def test_semaphore_limits_concurrency() -> None:
     max_concurrent_setting = 2
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.compute_embedding_total_timeout', return_value=999.0),
-        patch('app.tools._shared._generate_embeddings_for_text', side_effect=mock_generate),
-        patch('app.tools._shared.settings') as mock_settings,
+        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.compute_embedding_total_timeout', return_value=999.0),
+        patch('app.tools._generation._generate_embeddings_for_text', side_effect=mock_generate),
+        patch('app.tools._generation.settings') as mock_settings,
     ):
         mock_settings.embedding.max_concurrent = max_concurrent_setting
 
         # Rebind the module-level semaphore against the patched setting so
         # the next acquisition uses the test's max_concurrent value.
-        import app.tools._shared as shared_module
+        import app.tools._generation as generation_module
 
-        original_semaphore = shared_module._embedding_semaphore
-        shared_module._reset_embedding_semaphore()
+        original_semaphore = generation_module._embedding_semaphore
+        generation_module._reset_embedding_semaphore()
 
         try:
-            sem = shared_module._embedding_semaphore
+            sem = generation_module._embedding_semaphore
 
             # Launch 4 concurrent tasks through the semaphore
             async def run_with_semaphore():
@@ -160,7 +159,7 @@ async def test_semaphore_limits_concurrency() -> None:
 
             assert max_concurrent_seen <= max_concurrent_setting
         finally:
-            shared_module._embedding_semaphore = original_semaphore
+            generation_module._embedding_semaphore = original_semaphore
 
 
 @pytest.mark.asyncio
@@ -176,24 +175,24 @@ async def test_total_timeout_raises_tool_error() -> None:
     mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.compute_embedding_total_timeout', return_value=0.05),
-        patch('app.tools._shared._generate_embeddings_for_text', side_effect=slow_embedding),
-        patch('app.tools._shared.settings') as mock_settings,
-        patch('app.tools.context.ensure_repositories', new_callable=AsyncMock, return_value=mock_repos),
+        patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.compute_embedding_total_timeout', return_value=0.05),
+        patch('app.tools._generation._generate_embeddings_for_text', side_effect=slow_embedding),
+        patch('app.tools._generation.settings') as mock_settings,
+        patch('app.tools.context.store.ensure_repositories', new_callable=AsyncMock, return_value=mock_repos),
     ):
         mock_settings.embedding.max_concurrent = 3
 
-        import app.tools._shared as shared_module
+        import app.tools._generation as generation_module
 
-        original_semaphore = shared_module._embedding_semaphore
-        shared_module._reset_embedding_semaphore()
+        original_semaphore = generation_module._embedding_semaphore
+        generation_module._reset_embedding_semaphore()
 
         try:
-            from app.tools.context import store_context
+            from app.tools.context.store import store_context
 
             with pytest.raises(ToolError, match='total timeout'):
                 await store_context(
@@ -202,7 +201,7 @@ async def test_total_timeout_raises_tool_error() -> None:
                     text='Test text for embedding timeout',
                 )
         finally:
-            shared_module._embedding_semaphore = original_semaphore
+            generation_module._embedding_semaphore = original_semaphore
 
 
 @pytest.mark.asyncio
@@ -213,10 +212,10 @@ async def test_embedding_disabled_skips_semaphore() -> None:
     mock_sem.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=None),
-        patch('app.tools._shared.get_embedding_provider', return_value=None),
-        patch('app.tools._shared._embedding_semaphore', new=mock_sem),
-        patch('app.tools.context.ensure_repositories', new_callable=AsyncMock) as mock_repos,
+        patch('app.tools.context.store.get_embedding_provider', return_value=None),
+        patch('app.tools._generation.get_embedding_provider', return_value=None),
+        patch('app.tools._generation._embedding_semaphore', new=mock_sem),
+        patch('app.tools.context.store.ensure_repositories', new_callable=AsyncMock) as mock_repos,
     ):
         mock_backend = MagicMock()
         mock_txn = MagicMock()
@@ -229,7 +228,7 @@ async def test_embedding_disabled_skips_semaphore() -> None:
         mock_repos.return_value.images.store_images = AsyncMock()
         mock_repos.return_value.embeddings.store_chunked = AsyncMock()
 
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         result = await store_context(
             thread_id='test-thread',
@@ -251,13 +250,14 @@ async def test_embedding_disabled_skips_semaphore() -> None:
 async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) -> None:
     """Verify warning logged when FTS fails but semantic succeeds."""
     with (
-        patch('app.tools.search.settings') as mock_settings,
-        patch('app.tools.search.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock) as mock_repos,
-        patch('app.tools.search._fts_search_raw', new_callable=AsyncMock) as mock_fts,
-        patch('app.tools.search._semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
-        patch('app.tools.search._apply_reranking', new_callable=AsyncMock) as mock_rerank,
+        patch('app.tools.search.hybrid.settings') as mock_settings,
+        patch('app.tools.search.ranking.settings', mock_settings),
+        patch('app.tools.search.hybrid.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+        patch('app.tools.search.hybrid.ensure_repositories', new_callable=AsyncMock) as mock_repos,
+        patch('app.tools.search.hybrid.fts_search_raw', new_callable=AsyncMock) as mock_fts,
+        patch('app.tools.search.hybrid.semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
+        patch('app.tools.search.hybrid.apply_reranking', new_callable=AsyncMock) as mock_rerank,
     ):
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
@@ -283,7 +283,7 @@ async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) 
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])
 
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         with caplog.at_level(logging.WARNING, logger='app.tools.search'):
             await hybrid_search_context(query='test query')
@@ -295,13 +295,14 @@ async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) 
 async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixture) -> None:
     """Verify warning logged when semantic fails but FTS succeeds."""
     with (
-        patch('app.tools.search.settings') as mock_settings,
-        patch('app.tools.search.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock) as mock_repos,
-        patch('app.tools.search._fts_search_raw', new_callable=AsyncMock) as mock_fts,
-        patch('app.tools.search._semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
-        patch('app.tools.search._apply_reranking', new_callable=AsyncMock) as mock_rerank,
+        patch('app.tools.search.hybrid.settings') as mock_settings,
+        patch('app.tools.search.ranking.settings', mock_settings),
+        patch('app.tools.search.hybrid.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+        patch('app.tools.search.hybrid.ensure_repositories', new_callable=AsyncMock) as mock_repos,
+        patch('app.tools.search.hybrid.fts_search_raw', new_callable=AsyncMock) as mock_fts,
+        patch('app.tools.search.hybrid.semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
+        patch('app.tools.search.hybrid.apply_reranking', new_callable=AsyncMock) as mock_rerank,
     ):
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
@@ -328,7 +329,7 @@ async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixt
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])
 
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         with caplog.at_level(logging.WARNING, logger='app.tools.search'):
             await hybrid_search_context(query='test query')
@@ -340,13 +341,14 @@ async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixt
 async def test_hybrid_search_no_warning_on_success(caplog: pytest.LogCaptureFixture) -> None:
     """Verify no warning logged when both sub-searches succeed."""
     with (
-        patch('app.tools.search.settings') as mock_settings,
-        patch('app.tools.search.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock) as mock_repos,
-        patch('app.tools.search._fts_search_raw', new_callable=AsyncMock) as mock_fts,
-        patch('app.tools.search._semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
-        patch('app.tools.search._apply_reranking', new_callable=AsyncMock) as mock_rerank,
+        patch('app.tools.search.hybrid.settings') as mock_settings,
+        patch('app.tools.search.ranking.settings', mock_settings),
+        patch('app.tools.search.hybrid.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+        patch('app.tools.search.hybrid.ensure_repositories', new_callable=AsyncMock) as mock_repos,
+        patch('app.tools.search.hybrid.fts_search_raw', new_callable=AsyncMock) as mock_fts,
+        patch('app.tools.search.hybrid.semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
+        patch('app.tools.search.hybrid.apply_reranking', new_callable=AsyncMock) as mock_rerank,
     ):
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
@@ -374,7 +376,7 @@ async def test_hybrid_search_no_warning_on_success(caplog: pytest.LogCaptureFixt
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])
 
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         with caplog.at_level(logging.WARNING, logger='app.tools.search'):
             await hybrid_search_context(query='test query')
@@ -421,10 +423,9 @@ def test_embedding_max_concurrent_setting_bounds() -> None:
 async def testgenerate_embeddings_with_timeout_returns_none_when_no_provider() -> None:
     """Verify helper returns None when embedding provider is not configured."""
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=None),
-        patch('app.tools._shared.get_embedding_provider', return_value=None),
+        patch('app.tools._generation.get_embedding_provider', return_value=None),
     ):
-        from app.tools._shared import generate_embeddings_with_timeout
+        from app.tools._generation import generate_embeddings_with_timeout
 
         result = await generate_embeddings_with_timeout('test text')
         assert result is None
@@ -436,26 +437,25 @@ async def testgenerate_embeddings_with_timeout_success() -> None:
     mock_embeddings = [MagicMock()]
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.compute_embedding_total_timeout', return_value=999.0),
-        patch('app.tools._shared._generate_embeddings_for_text', new_callable=AsyncMock, return_value=mock_embeddings),
-        patch('app.tools._shared.settings') as mock_settings,
+        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.compute_embedding_total_timeout', return_value=999.0),
+        patch('app.tools._generation._generate_embeddings_for_text', new_callable=AsyncMock, return_value=mock_embeddings),
+        patch('app.tools._generation.settings') as mock_settings,
     ):
         mock_settings.embedding.max_concurrent = 3
 
-        import app.tools._shared as shared_module
+        import app.tools._generation as generation_module
 
-        original_semaphore = shared_module._embedding_semaphore
-        shared_module._reset_embedding_semaphore()
+        original_semaphore = generation_module._embedding_semaphore
+        generation_module._reset_embedding_semaphore()
 
         try:
-            from app.tools._shared import generate_embeddings_with_timeout
+            from app.tools._generation import generate_embeddings_with_timeout
 
             result = await generate_embeddings_with_timeout('test text')
             assert result == mock_embeddings
         finally:
-            shared_module._embedding_semaphore = original_semaphore
+            generation_module._embedding_semaphore = original_semaphore
 
 
 @pytest.mark.asyncio
@@ -468,23 +468,22 @@ async def testgenerate_embeddings_with_timeout_raises_on_timeout() -> None:
         return [MagicMock()]
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._shared.compute_embedding_total_timeout', return_value=0.05),
-        patch('app.tools._shared._generate_embeddings_for_text', side_effect=slow_embedding),
-        patch('app.tools._shared.settings') as mock_settings,
+        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.compute_embedding_total_timeout', return_value=0.05),
+        patch('app.tools._generation._generate_embeddings_for_text', side_effect=slow_embedding),
+        patch('app.tools._generation.settings') as mock_settings,
     ):
         mock_settings.embedding.max_concurrent = 3
 
-        import app.tools._shared as shared_module
+        import app.tools._generation as generation_module
 
-        original_semaphore = shared_module._embedding_semaphore
-        shared_module._reset_embedding_semaphore()
+        original_semaphore = generation_module._embedding_semaphore
+        generation_module._reset_embedding_semaphore()
 
         try:
-            from app.tools._shared import generate_embeddings_with_timeout
+            from app.tools._generation import generate_embeddings_with_timeout
 
             with pytest.raises(ToolError, match='total timeout'):
                 await generate_embeddings_with_timeout('test text')
         finally:
-            shared_module._embedding_semaphore = original_semaphore
+            generation_module._embedding_semaphore = original_semaphore

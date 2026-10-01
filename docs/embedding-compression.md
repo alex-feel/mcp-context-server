@@ -278,7 +278,7 @@ The Helm chart ships an active compression block in both `values-sqlite.yaml` an
 
 ## PostgreSQL `search_path` and `POSTGRESQL_SCHEMA` Contract
 
-The compression migration, like the other PostgreSQL migrations (`add_semantic_search_postgresql.sql`, `add_chunking_postgresql.sql`, `add_fts_postgresql.sql`), uses BARE table names in TABLE and INDEX DDL. TABLE/INDEX resolution relies on PostgreSQL's `search_path` rather than explicit schema qualification. This matches the convention established by `app/schemas/postgresql_schema.sql` (the main schema) and `app/repositories/embedding_repository.py` (the read path), so the migration loader, the migration CLI (`mcp-context-server-migrate`), and the runtime application all create, write, and read tables in the same schema.
+The compression migration, like the other PostgreSQL migrations (`add_semantic_search_postgresql.sql`, `add_chunking_postgresql.sql`, `add_fts_postgresql.sql`), uses BARE table names in TABLE and INDEX DDL. TABLE/INDEX resolution relies on PostgreSQL's `search_path` rather than explicit schema qualification. This matches the convention established by `app/schemas/postgresql_schema.sql` (the main schema) and `app/repositories/embedding_repository/` (the read path), so the migration loader, the migration CLI (`mcp-context-server-migrate`), and the runtime application all create, write, and read tables in the same schema.
 
 **Operator contract:** When `POSTGRESQL_SCHEMA` is set to any value other than the default `public`, you MUST ensure that `search_path` includes `$POSTGRESQL_SCHEMA` as the first element on every connection used by:
 

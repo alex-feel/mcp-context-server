@@ -15,7 +15,7 @@ import pytest
 import app.tools
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.types import MetadataDict
 
 # Get the actual async functions from app.tools
@@ -60,7 +60,6 @@ class TestUTF8Encoding:
 
         # Mock embeddings repository for generation-first transactional writes
         self.mock_repos.embeddings = AsyncMock()
-        self.mock_repos.embeddings.store = AsyncMock(return_value=None)
         self.mock_repos.embeddings.store_chunked = AsyncMock(return_value=None)
         self.mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 
@@ -77,7 +76,7 @@ class TestUTF8Encoding:
         # Mock repository responses
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='user',
@@ -97,7 +96,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='agent',
@@ -118,7 +117,7 @@ class TestUTF8Encoding:
         # Test Arabic
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='user',
@@ -132,7 +131,7 @@ class TestUTF8Encoding:
         # Test Hebrew
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='user',
@@ -150,7 +149,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='agent',
@@ -177,7 +176,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='user',
@@ -196,7 +195,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='agent',
@@ -227,7 +226,7 @@ class TestUTF8Encoding:
             self.mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
             self.mock_repos.context.get_content_type = AsyncMock(return_value='text')
 
-            with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+            with patch('app.tools.context.update.ensure_repositories', return_value=self.mock_repos):
                 result = await update_context(
                     context_id=generate_id(),
                     text=text,
@@ -259,7 +258,7 @@ class TestUTF8Encoding:
         self.mock_repos.context.search_contexts = AsyncMock(return_value=(mock_entries, {}))
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=['тест', 'юникод'])
 
-        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=self.mock_repos):
             result = await search_context(
                 thread_id='test-thread',
                 metadata={'language': 'русский'},
@@ -283,7 +282,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='user',
@@ -304,7 +303,7 @@ class TestUTF8Encoding:
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
         self.mock_repos.tags.store_tags = AsyncMock()
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='agent',
@@ -330,7 +329,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='user',
@@ -350,7 +349,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='agent',
@@ -370,7 +369,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='user',
@@ -390,7 +389,7 @@ class TestUTF8Encoding:
 
         self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
-        with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.context.store.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='agent',

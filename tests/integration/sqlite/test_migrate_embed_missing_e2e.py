@@ -23,7 +23,7 @@ from app.cli.migrate_compression import run_compress
 from app.cli.migrate_embeddings import run_embed_missing
 from app.embeddings.base import EmbeddingProvider
 from app.repositories import RepositoryContainer
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 
 DIM = 1024
@@ -267,8 +267,8 @@ def test_embed_missing_compressed_standalone(
     # ``force_compression_off`` fixture set to compression=off so
     # generate_compression_with_timeout sees compression=true at runtime.
     import app.migrations.compression as _compression_migration_module
-    import app.tools._shared as _shared_module
-    monkeypatch.setattr(_shared_module, 'settings', get_settings())
+    import app.tools._generation as _generation_module
+    monkeypatch.setattr(_generation_module, 'settings', get_settings())
     monkeypatch.setattr(
         _compression_migration_module, 'settings', get_settings(),
     )
@@ -506,8 +506,8 @@ def test_compress_then_embed_missing_composed(
     _reset_compression_cache()
     # Refresh the module-level ``settings`` binding so
     # generate_compression_with_timeout observes compression=true.
-    import app.tools._shared as _shared_module
-    monkeypatch.setattr(_shared_module, 'settings', get_settings())
+    import app.tools._generation as _generation_module
+    monkeypatch.setattr(_generation_module, 'settings', get_settings())
 
     provider = cast(EmbeddingProvider, _FakeEmbeddingProvider())
     with patch('app.cli._embedding_runtime.create_embedding_provider', return_value=provider):

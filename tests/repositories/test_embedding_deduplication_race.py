@@ -66,12 +66,12 @@ class TestStoreContextEmbeddingDeduplication:
         mock_chunking = _make_mock_chunking_service()
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.store.ensure_repositories', return_value=repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
-            from app.tools.context import store_context
+            from app.tools.context.store import store_context
 
             # First store - should succeed and create embeddings
             result1 = await store_context(
@@ -132,12 +132,12 @@ class TestStoreContextEmbeddingDeduplication:
         mock_chunking = _make_mock_chunking_service()
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.store.ensure_repositories', return_value=repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
-            from app.tools.context import store_context
+            from app.tools.context.store import store_context
 
             # Store identical content - should deduplicate AND create embeddings
             result = await store_context(
@@ -169,12 +169,12 @@ class TestStoreContextEmbeddingDeduplication:
         mock_chunking = _make_mock_chunking_service()
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.store.ensure_repositories', return_value=repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
-            from app.tools.context import store_context
+            from app.tools.context.store import store_context
 
             result = await store_context(
                 thread_id='test-new-entry',
@@ -213,15 +213,14 @@ class TestBatchStoreEmbeddingDeduplication:
         mock_chunking = _make_mock_chunking_service()
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
-            from app.tools.batch import store_context_batch
+            from app.tools.batch.store import store_context_batch
 
             entries = [
                 {'thread_id': 'batch-atomic-dedup', 'source': 'agent', 'text': 'Atomic entry A'},
@@ -267,7 +266,7 @@ class TestBatchStoreEmbeddingDeduplication:
         with the same content to trigger deduplication and test the fix.
         """
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -292,15 +291,14 @@ class TestBatchStoreEmbeddingDeduplication:
         mock_chunking = _make_mock_chunking_service()
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
-            from app.tools.batch import store_context_batch
+            from app.tools.batch.store import store_context_batch
 
             # Batch store with same content - should trigger deduplication
             # Without the fix this would raise a constraint violation
@@ -326,7 +324,7 @@ class TestEmbeddingRepositoryUpsert:
         Verifies the default behavior is unchanged.
         """
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -359,7 +357,7 @@ class TestEmbeddingRepositoryUpsert:
         Defense-in-depth test - verifies UPSERT works via delete-then-insert.
         """
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -392,7 +390,7 @@ class TestEmbeddingRepositoryUpsert:
     ) -> None:
         """upsert=True correctly updates metadata (model, dimensions)."""
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -445,7 +443,7 @@ class TestEmbeddingRepositoryUpsert:
     ) -> None:
         """upsert=True correctly handles changing chunk count."""
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)
@@ -548,7 +546,7 @@ class TestEmbeddingExistsMethod:
     ) -> None:
         """exists() returns True for context with embeddings."""
         from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import ChunkEmbedding
+        from app.repositories.embedding_repository.records import ChunkEmbedding
 
         backend = async_db_with_embeddings
         repos = RepositoryContainer(backend)

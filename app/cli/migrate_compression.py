@@ -1238,7 +1238,7 @@ async def _execute_compress_postgresql(
 
         # Bare table names rely on PostgreSQL's search_path resolution;
         # this matches the project-wide pattern in
-        # ``embedding_repository.py`` and ``postgresql_schema.sql``.
+        # ``app/repositories/embedding_repository/`` and ``postgresql_schema.sql``.
         # Operators using a non-default schema configure ``search_path``
         # accordingly. Create the compressed tables inline (the
         # migration loader would drop the source vec table at this
@@ -1743,7 +1743,7 @@ async def _execute_decompress_postgresql(
 
         # Bare table names rely on PostgreSQL's search_path resolution;
         # this matches the project-wide pattern in
-        # ``embedding_repository.py`` and ``postgresql_schema.sql``.
+        # ``app/repositories/embedding_repository/`` and ``postgresql_schema.sql``.
         # Operators using a non-default schema configure ``search_path``
         # accordingly. The existence probe below uses ``to_regclass`` so
         # it resolves through the SAME search_path as the bare-name DML

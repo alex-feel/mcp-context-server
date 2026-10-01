@@ -1020,7 +1020,7 @@ class TestSearchOffsetUpperBound:
     @pytest.mark.parametrize('tool', _SEARCH_TOOLS)
     def test_offset_declares_le_max_search_offset(self, tool: Callable[..., object]) -> None:
         """Every search tool's offset Field declares le=MAX_SEARCH_OFFSET."""
-        from app.tools.search import MAX_SEARCH_OFFSET
+        from app.tools.search.limits import MAX_SEARCH_OFFSET
 
         tool_name = getattr(tool, '__name__', tool)
         field_info = self._offset_field_info(tool)
@@ -1049,7 +1049,7 @@ class TestSearchOffsetUpperBound:
         from fastmcp.tools import Tool
         from pydantic import ValidationError
 
-        from app.tools.search import MAX_SEARCH_OFFSET
+        from app.tools.search.limits import MAX_SEARCH_OFFSET
 
         validated = Tool.from_function(app.server.search_context)
         with pytest.raises(ValidationError) as exc_info:
@@ -1070,7 +1070,7 @@ class TestSearchOffsetUpperBound:
         """
         from fastmcp.tools import Tool
 
-        from app.tools.search import MAX_SEARCH_OFFSET
+        from app.tools.search.limits import MAX_SEARCH_OFFSET
 
         validated = Tool.from_function(app.server.search_context)
         result = await validated.run({'thread_id': 'offset_bound_thread', 'offset': MAX_SEARCH_OFFSET})
@@ -1090,16 +1090,16 @@ class TestClampOverfetch:
 
     def test_clamps_value_above_ceiling(self) -> None:
         """A window above MAX_OVERFETCH_ROWS is clamped down to the ceiling."""
-        from app.tools.search import MAX_OVERFETCH_ROWS
-        from app.tools.search import _clamp_overfetch
+        from app.tools.search.hybrid import MAX_OVERFETCH_ROWS
+        from app.tools.search.hybrid import _clamp_overfetch
 
         assert _clamp_overfetch(MAX_OVERFETCH_ROWS + 1) == MAX_OVERFETCH_ROWS
         assert _clamp_overfetch(MAX_OVERFETCH_ROWS * 1000) == MAX_OVERFETCH_ROWS
 
     def test_passes_value_below_ceiling_unchanged(self) -> None:
         """A window at or below the ceiling passes through untouched."""
-        from app.tools.search import MAX_OVERFETCH_ROWS
-        from app.tools.search import _clamp_overfetch
+        from app.tools.search.hybrid import MAX_OVERFETCH_ROWS
+        from app.tools.search.hybrid import _clamp_overfetch
 
         assert _clamp_overfetch(0) == 0
         assert _clamp_overfetch(42) == 42
@@ -1138,7 +1138,7 @@ class TestTagsFilterUpperBound:
     @pytest.mark.parametrize('tool', _TAGS_FILTER_TOOLS)
     def test_tags_declares_max_length_cap(self, tool: Callable[..., object]) -> None:
         """Every tags-accepting tool's Field declares max_length=MAX_FILTER_TAGS."""
-        from app.tools.search import MAX_FILTER_TAGS
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         tool_name = getattr(tool, '__name__', tool)
         field_info = self._tags_field_info(tool)
@@ -1154,7 +1154,7 @@ class TestTagsFilterUpperBound:
         from fastmcp.tools import Tool
         from pydantic import ValidationError
 
-        from app.tools.search import MAX_FILTER_TAGS
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         validated = Tool.from_function(app.server.search_context)
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
@@ -1166,11 +1166,11 @@ class TestTagsFilterUpperBound:
     async def test_search_context_oversized_tags_structured_error_before_sql(self) -> None:
         """A direct call with oversized tags returns a structured validation error
         without touching the repository layer (nothing reaches SQL)."""
-        from app.tools.search import MAX_FILTER_TAGS
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         ensure_repos = AsyncMock()
-        with patch('app.tools.search.ensure_repositories', ensure_repos):
+        with patch('app.tools.search.browse.ensure_repositories', ensure_repos):
             result = await app.server.search_context(tags=oversized)
 
         assert result['results'] == []
@@ -1182,12 +1182,12 @@ class TestTagsFilterUpperBound:
     @pytest.mark.asyncio
     async def test_search_context_tags_at_cap_accepted(self) -> None:
         """A tags list of exactly MAX_FILTER_TAGS members passes the cap (inclusive)."""
-        from app.tools.search import MAX_FILTER_TAGS
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         at_cap = [f'tag-{i}' for i in range(MAX_FILTER_TAGS)]
         repos = MagicMock()
         repos.context.search_contexts = AsyncMock(return_value=([], {}))
-        with patch('app.tools.search.ensure_repositories', AsyncMock(return_value=repos)):
+        with patch('app.tools.search.browse.ensure_repositories', AsyncMock(return_value=repos)):
             result = await app.server.search_context(tags=at_cap)
 
         assert result['results'] == []
@@ -1198,7 +1198,7 @@ class TestTagsFilterUpperBound:
     async def test_grep_context_oversized_tags_structured_error_before_sql(self) -> None:
         """grep_context rejects oversized tags as a structured validation error
         before the scan query runs (the repository scan is never invoked)."""
-        from app.tools.search import MAX_FILTER_TAGS
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         repos = MagicMock()
@@ -1272,7 +1272,7 @@ class TestWritePathTagCaps:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Tag 0 is too long'),
         ):
             await app.server.store_context(
@@ -1290,7 +1290,7 @@ class TestWritePathTagCaps:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Too many tags'),
         ):
             await app.server.store_context(
@@ -1308,7 +1308,7 @@ class TestWritePathTagCaps:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Tag 0 is too long'),
         ):
             await app.server.update_context(
@@ -1326,7 +1326,7 @@ class TestWritePathTagCaps:
         through the wire schema that bounds the single-entry tools.
         """
         from app.models import MAX_TAG_LENGTH
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{
@@ -1349,7 +1349,7 @@ class TestWritePathTagCaps:
     async def test_update_batch_rejects_too_many_tags_per_entry(self) -> None:
         """The batch update path enforces the count cap as a per-entry error."""
         from app.models import MAX_TAGS_PER_ENTRY
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
 
         result = await update_context_batch(
             updates=[{
@@ -1407,7 +1407,7 @@ class TestMetadataFilterCapsUpperBound:
     @pytest.mark.parametrize('tool', _TAGS_FILTER_TOOLS)
     def test_metadata_filters_declares_max_length_cap(self, tool: Callable[..., object]) -> None:
         """Every filter tool's metadata_filters Field declares max_length=MAX_METADATA_FILTERS."""
-        from app.tools.search import MAX_METADATA_FILTERS
+        from app.tools.search.limits import MAX_METADATA_FILTERS
 
         tool_name = getattr(tool, '__name__', tool)
         field_info = self._field_info(tool, 'metadata_filters')
@@ -1419,7 +1419,7 @@ class TestMetadataFilterCapsUpperBound:
     @pytest.mark.parametrize('tool', _SEARCH_TOOLS)
     def test_metadata_dict_declares_max_length_cap(self, tool: Callable[..., object]) -> None:
         """Every search tool's simple metadata Field declares max_length=MAX_METADATA_KEYS."""
-        from app.tools.search import MAX_METADATA_KEYS
+        from app.tools.search.limits import MAX_METADATA_KEYS
 
         tool_name = getattr(tool, '__name__', tool)
         field_info = self._field_info(tool, 'metadata')
@@ -1435,7 +1435,7 @@ class TestMetadataFilterCapsUpperBound:
         from fastmcp.tools import Tool
         from pydantic import ValidationError
 
-        from app.tools.search import MAX_METADATA_FILTERS
+        from app.tools.search.limits import MAX_METADATA_FILTERS
 
         validated = Tool.from_function(app.server.search_context)
         oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
@@ -1450,7 +1450,7 @@ class TestMetadataFilterCapsUpperBound:
         from fastmcp.tools import Tool
         from pydantic import ValidationError
 
-        from app.tools.search import MAX_METADATA_KEYS
+        from app.tools.search.limits import MAX_METADATA_KEYS
 
         validated = Tool.from_function(app.server.search_context)
         oversized = {f'key{i}': i for i in range(MAX_METADATA_KEYS + 1)}
@@ -1462,11 +1462,11 @@ class TestMetadataFilterCapsUpperBound:
     async def test_search_context_oversized_metadata_filters_structured_error_before_sql(self) -> None:
         """A direct call with an oversized metadata_filters list returns a structured
         validation error without touching the repository layer (nothing reaches SQL)."""
-        from app.tools.search import MAX_METADATA_FILTERS
+        from app.tools.search.limits import MAX_METADATA_FILTERS
 
         oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
         ensure_repos = AsyncMock()
-        with patch('app.tools.search.ensure_repositories', ensure_repos):
+        with patch('app.tools.search.browse.ensure_repositories', ensure_repos):
             result = await app.server.search_context(metadata_filters=oversized)
 
         assert result['results'] == []
@@ -1479,11 +1479,11 @@ class TestMetadataFilterCapsUpperBound:
     async def test_search_context_oversized_metadata_dict_structured_error_before_sql(self) -> None:
         """A direct call with an oversized simple metadata dict returns a structured
         validation error without touching the repository layer."""
-        from app.tools.search import MAX_METADATA_KEYS
+        from app.tools.search.limits import MAX_METADATA_KEYS
 
         oversized: dict[str, str | int | float | bool] = {f'key{i}': i for i in range(MAX_METADATA_KEYS + 1)}
         ensure_repos = AsyncMock()
-        with patch('app.tools.search.ensure_repositories', ensure_repos):
+        with patch('app.tools.search.browse.ensure_repositories', ensure_repos):
             result = await app.server.search_context(metadata=oversized)
 
         assert result['results'] == []
@@ -1495,12 +1495,12 @@ class TestMetadataFilterCapsUpperBound:
     @pytest.mark.asyncio
     async def test_search_context_metadata_filters_at_cap_accepted(self) -> None:
         """A metadata_filters list of exactly MAX_METADATA_FILTERS members passes the cap."""
-        from app.tools.search import MAX_METADATA_FILTERS
+        from app.tools.search.limits import MAX_METADATA_FILTERS
 
         at_cap = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * MAX_METADATA_FILTERS
         repos = MagicMock()
         repos.context.search_contexts = AsyncMock(return_value=([], {}))
-        with patch('app.tools.search.ensure_repositories', AsyncMock(return_value=repos)):
+        with patch('app.tools.search.browse.ensure_repositories', AsyncMock(return_value=repos)):
             result = await app.server.search_context(metadata_filters=at_cap)
 
         assert result['results'] == []
@@ -1511,7 +1511,7 @@ class TestMetadataFilterCapsUpperBound:
     async def test_grep_context_oversized_metadata_filters_structured_error_before_sql(self) -> None:
         """grep_context rejects an oversized metadata_filters list as a structured
         validation error before the scan query runs."""
-        from app.tools.search import MAX_METADATA_FILTERS
+        from app.tools.search.limits import MAX_METADATA_FILTERS
 
         oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
         repos = MagicMock()
@@ -1531,11 +1531,11 @@ class TestMetadataFilterCapsUpperBound:
     async def test_search_context_caps_error_attaches_stats_under_explain_query(self) -> None:
         """The caps validation-error response carries the zeroed stats dict when
         explain_query=True, matching the fts/semantic siblings' error-path shape."""
-        import app.tools.search as search_mod
-        from app.tools.search import MAX_FILTER_TAGS
+        import app.tools.search.limits as search_limits
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
-        with patch('app.tools.search.ensure_repositories', AsyncMock()):
+        with patch('app.tools.search.browse.ensure_repositories', AsyncMock()):
             result = await app.server.search_context(tags=oversized, explain_query=True)
 
         assert 'exceeds the maximum' in result['error']
@@ -1546,17 +1546,17 @@ class TestMetadataFilterCapsUpperBound:
             'execution_time_ms': 0.0,
             'filters_applied': 0,
             'rows_returned': 0,
-            'backend': search_mod.settings.storage.backend_type,
+            'backend': search_limits.settings.storage.backend_type,
             'query_plan': None,
         }
 
     @pytest.mark.asyncio
     async def test_search_context_caps_error_omits_stats_without_explain_query(self) -> None:
         """Without explain_query the caps validation-error response carries no stats."""
-        from app.tools.search import MAX_FILTER_TAGS
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
-        with patch('app.tools.search.ensure_repositories', AsyncMock()):
+        with patch('app.tools.search.browse.ensure_repositories', AsyncMock()):
             result = await app.server.search_context(tags=oversized, explain_query=False)
 
         assert 'exceeds the maximum' in result['error']
@@ -1706,7 +1706,7 @@ class TestIndexedWriteValueUpperBound:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='thread_id is too long'),
         ):
             await app.server.store_context(
@@ -1733,7 +1733,7 @@ class TestIndexedWriteValueUpperBound:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'status' is indexed"),
         ):
             await app.server.store_context(
@@ -1765,7 +1765,7 @@ class TestIndexedWriteValueUpperBound:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'project' is indexed"),
         ):
             await app.server.update_context(
@@ -1779,7 +1779,7 @@ class TestIndexedWriteValueUpperBound:
     async def test_store_batch_rejects_over_long_thread_id_per_entry(self) -> None:
         """The untyped batch path enforces the same bounds, as a per-entry error."""
         from app.models import MAX_THREAD_ID_LENGTH
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{
@@ -1800,7 +1800,7 @@ class TestIndexedWriteValueUpperBound:
     async def test_store_batch_rejects_over_long_indexed_metadata_per_entry(self) -> None:
         """The batch store path bounds indexed metadata values per entry."""
         from app.models import MAX_INDEXED_METADATA_VALUE_LENGTH
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{
@@ -1822,7 +1822,7 @@ class TestIndexedWriteValueUpperBound:
     async def test_update_batch_rejects_over_long_indexed_metadata_per_entry(self) -> None:
         """The batch update path bounds indexed metadata values per entry."""
         from app.models import MAX_INDEXED_METADATA_VALUE_LENGTH
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
 
         result = await update_context_batch(
             updates=[{
@@ -1859,12 +1859,12 @@ class TestTypedIndexedMetadataCastCompatibility:
         Yields:
             Control to the test body, then drops the patched settings singleton.
         """
-        import app.tools._shared as shared_module
+        import app.tools._validation as validation_module
         from app.settings import get_settings
 
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'status,priority:integer')
         get_settings.cache_clear()
-        monkeypatch.setattr(shared_module, 'settings', get_settings())
+        monkeypatch.setattr(validation_module, 'settings', get_settings())
         yield
         get_settings.cache_clear()
 
@@ -1873,7 +1873,7 @@ class TestTypedIndexedMetadataCastCompatibility:
         """The rejection happens in the validation phase, before any DB or model work."""
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'priority'"),
         ):
             await app.server.store_context(
@@ -1889,7 +1889,7 @@ class TestTypedIndexedMetadataCastCompatibility:
         """A number too large for a 32-bit INTEGER is refused with a range message."""
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='out of range'),
         ):
             await app.server.store_context(
@@ -1917,7 +1917,7 @@ class TestTypedIndexedMetadataCastCompatibility:
         """The merge-patch form reaches the same expression index, so it is checked too."""
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'priority'"),
         ):
             await app.server.update_context(
@@ -1930,7 +1930,7 @@ class TestTypedIndexedMetadataCastCompatibility:
     @pytest.mark.usefixtures('initialized_server')
     async def test_store_batch_rejects_uncastable_indexed_value_per_entry(self) -> None:
         """The untyped batch path records it as that entry's error, not a batch abort."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{
@@ -1951,7 +1951,7 @@ class TestTypedIndexedMetadataCastCompatibility:
     @pytest.mark.usefixtures('initialized_server')
     async def test_update_batch_rejects_uncastable_indexed_value_per_entry(self) -> None:
         """Same per-entry boundary error on the batch update path."""
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
 
         result = await update_context_batch(
             updates=[{

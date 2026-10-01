@@ -780,7 +780,7 @@ class TestChunkingMigrationSQLFiles:
         use ``current_schema()`` so the check inspects the same schema
         the migration writes to. This matches the BARE-table convention
         established by ``app/schemas/postgresql_schema.sql`` and the
-        read path in ``app/repositories/embedding_repository.py``.
+        read path in ``app/repositories/embedding_repository/``.
         """
         migration_path = (
             Path(__file__).parent.parent.parent

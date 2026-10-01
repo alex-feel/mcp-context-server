@@ -351,9 +351,9 @@ class TestSearchContextValidationErrorStats:
         # The backend key must be present and match the backend the tool actually
         # resolves (the module-level settings binding the production code reads),
         # so the error-path stats shape matches every other stats path.
-        import app.tools.search as search_mod
+        import app.tools.search.limits as search_limits
 
-        assert stats['backend'] == search_mod.settings.storage.backend_type
+        assert stats['backend'] == search_limits.settings.storage.backend_type
         assert stats['execution_time_ms'] == 0.0
         assert stats['filters_applied'] == 0
         assert stats['rows_returned'] == 0

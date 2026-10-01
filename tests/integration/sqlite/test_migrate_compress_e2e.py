@@ -23,7 +23,7 @@ from app.backends import create_backend
 from app.cli.migrate_compression import run_compress
 from app.cli.migrate_compression import run_decompress
 from app.repositories import RepositoryContainer
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 
 DIM = 1024

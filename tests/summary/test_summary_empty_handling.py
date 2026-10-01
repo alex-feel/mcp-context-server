@@ -1,11 +1,10 @@
-"""Tests for empty summary normalization chain (Issue 6).
+"""Tests for empty summary normalization chain.
 
 Tests that empty/whitespace-only summaries are properly normalized to None
 at multiple defense-in-depth layers:
 - generate_summary_with_timeout: provider -> None normalization
 - store_context: summary_generated flag uses bool() not is not None
 - store_with_deduplication: empty summary -> None before COALESCE
-- get_summary: empty string -> None normalization on read
 - search_context: empty summary -> None in response
 """
 
@@ -59,25 +58,6 @@ def _make_sqlite_write_backend(db_path: str) -> MagicMock:
     return mock_backend
 
 
-def _make_sqlite_read_backend(db_path: str) -> MagicMock:
-    """Create a mock SQLite backend with a working execute_read."""
-    mock_backend = MagicMock()
-    mock_backend.backend_type = 'sqlite'
-
-    async def mock_execute_read(
-        func: Callable[[sqlite3.Connection], str | None],
-    ) -> str | None:
-        test_conn = sqlite3.connect(db_path)
-        test_conn.row_factory = sqlite3.Row
-        try:
-            return func(test_conn)
-        finally:
-            test_conn.close()
-
-    mock_backend.execute_read = mock_execute_read
-    return mock_backend
-
-
 class TestGenerateSummaryWithTimeout:
     """Tests for generate_summary_with_timeout empty normalization."""
 
@@ -88,11 +68,10 @@ class TestGenerateSummaryWithTimeout:
         mock_provider.summarize = AsyncMock(return_value='')
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
+            patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools._shared import generate_summary_with_timeout
+            from app.tools._generation import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -105,11 +84,10 @@ class TestGenerateSummaryWithTimeout:
         mock_provider.summarize = AsyncMock(return_value='   \n\t  ')
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
+            patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools._shared import generate_summary_with_timeout
+            from app.tools._generation import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -123,11 +101,10 @@ class TestGenerateSummaryWithTimeout:
         mock_provider.summarize = AsyncMock(return_value=expected)
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
+            patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools._shared import generate_summary_with_timeout
+            from app.tools._generation import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -137,10 +114,9 @@ class TestGenerateSummaryWithTimeout:
     async def test_no_provider_returns_none(self) -> None:
         """No summary provider configured -> returns None without error."""
         with (
-            patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
-            from app.tools._shared import generate_summary_with_timeout
+            from app.tools._generation import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -197,54 +173,3 @@ class TestStoreWithDeduplicationEmptySummary:
         verify_conn.close()
 
         assert row['summary'] == 'Valid existing summary'
-
-
-class TestGetSummaryEmptyNormalization:
-    """Tests for get_summary empty string normalization."""
-
-    @pytest.mark.asyncio
-    async def test_empty_string_returns_none(self, tmp_path: Path) -> None:
-        """get_summary should normalize empty string to None."""
-        db_path = str(tmp_path / 'test.db')
-
-        # Create database with an entry that has empty summary
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        entry_id = generate_id()
-        conn.execute(_CREATE_TABLE_SQL)
-        conn.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
-            'VALUES (?, ?, ?, ?, ?, ?)',
-            (entry_id, 'test-thread', 'agent', 'text', 'Some text', ''),
-        )
-        conn.commit()
-        conn.close()
-
-        mock_backend = _make_sqlite_read_backend(db_path)
-        repo = ContextRepository(mock_backend)
-        result = await repo.get_summary(entry_id)
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_valid_summary_passes_through(self, tmp_path: Path) -> None:
-        """get_summary should return valid summary unchanged."""
-        db_path = str(tmp_path / 'test.db')
-
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        entry_id = generate_id()
-        conn.execute(_CREATE_TABLE_SQL)
-        conn.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
-            'VALUES (?, ?, ?, ?, ?, ?)',
-            (entry_id, 'test-thread', 'agent', 'text', 'Some text', 'A valid summary'),
-        )
-        conn.commit()
-        conn.close()
-
-        mock_backend = _make_sqlite_read_backend(db_path)
-        repo = ContextRepository(mock_backend)
-        result = await repo.get_summary(entry_id)
-
-        assert result == 'A valid summary'

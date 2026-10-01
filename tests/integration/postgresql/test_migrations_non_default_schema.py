@@ -41,7 +41,7 @@ from app.migrations.compression import apply_compression_migration
 from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 from app.startup import init_database
 from tests.integration.postgresql.conftest import NON_DEFAULT_SCHEMA

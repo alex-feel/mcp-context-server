@@ -627,7 +627,7 @@ class MetadataFilter(BaseModel):
         # fullmatch (not match) so a trailing newline is rejected: `$` also
         # matches immediately before a single trailing '\n', which would let a
         # key like 'a.status\n' through and diverge across backends (twin of the
-        # MetadataQueryBuilder._is_safe_key guard on the simple-filter path).
+        # app.metadata_sql.is_safe_key guard on the simple-filter path).
         import re
 
         if not re.fullmatch(r'[a-zA-Z0-9_.-]+', v):

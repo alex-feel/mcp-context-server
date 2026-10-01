@@ -18,7 +18,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import app.server
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 
 # Access the underlying functions directly - no longer wrapped by @mcp.tool() at import time
 store_context = app.server.store_context
@@ -56,7 +56,6 @@ def mock_repos():
     repos.statistics = AsyncMock()
 
     repos.embeddings = AsyncMock()
-    repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.store_chunked = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 
@@ -73,8 +72,14 @@ def mock_server_dependencies(mock_repos):
         MagicMock: The mock repository container.
     """
     with (
-        patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-        patch('app.tools.search.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.context.retrieve.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.context.update.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.context.delete.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.semantic.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.fts.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.hybrid.ensure_repositories', return_value=mock_repos),
         patch('app.tools.discovery.ensure_repositories', return_value=mock_repos),
     ):
         yield mock_repos

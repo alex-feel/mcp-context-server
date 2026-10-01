@@ -31,9 +31,9 @@ from unittest.mock import AsyncMock
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.tools._shared as shared_module
-import app.tools.batch as batch_module
-import app.tools.context as context_module
+import app.tools._delete_cleanup as delete_cleanup_module
+import app.tools.batch.delete as batch_delete_module
+import app.tools.context.delete as context_delete_module
 from app.settings import get_settings
 
 
@@ -60,7 +60,7 @@ def fp32_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
 
 VALID_ID = '0190abcdef1234567890abcdef123456'
@@ -136,8 +136,8 @@ def make_fake_repos(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _FakeRepos
         async def _ensure_repositories() -> _FakeRepos:
             return fake
 
-        monkeypatch.setattr(context_module, 'ensure_repositories', _ensure_repositories)
-        monkeypatch.setattr(batch_module, 'ensure_repositories', _ensure_repositories)
+        monkeypatch.setattr(context_delete_module, 'ensure_repositories', _ensure_repositories)
+        monkeypatch.setattr(batch_delete_module, 'ensure_repositories', _ensure_repositories)
         return fake
 
     return _factory
@@ -150,7 +150,7 @@ async def test_delete_context_cleanup_runs_when_embedding_tables_exist(
     """When the embedding tables are provisioned, the explicit cleanup MUST run."""
     fake = make_fake_repos(tables_exist=True)
 
-    await context_module.delete_context(context_ids=[VALID_ID])
+    await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
     assert fake.embeddings.delete_all_chunks_bulk.await_args is not None
@@ -164,7 +164,7 @@ async def test_delete_context_batch_cleanup_runs_when_embedding_tables_exist(
     """Same as above but for delete_context_batch (SQLite-only cleanup branch)."""
     fake = make_fake_repos(tables_exist=True)
 
-    await batch_module.delete_context_batch(context_ids=[VALID_ID])
+    await batch_delete_module.delete_context_batch(context_ids=[VALID_ID])
 
     fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
     assert fake.embeddings.delete_all_chunks_bulk.await_args is not None
@@ -181,7 +181,7 @@ async def test_delete_context_cleanup_skipped_when_embedding_tables_absent(
     """
     fake = make_fake_repos(tables_exist=False)
 
-    await context_module.delete_context(context_ids=[VALID_ID])
+    await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
 
@@ -202,14 +202,12 @@ async def test_delete_context_cleanup_runs_after_generation_disabled(
     monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
     get_settings.cache_clear()
-    monkeypatch.setattr(context_module, 'settings', get_settings())
-    monkeypatch.setattr(batch_module, 'settings', get_settings())
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
     # Tables exist (prior session provisioned + wrote embeddings).
     fake = make_fake_repos(tables_exist=True)
 
-    await context_module.delete_context(context_ids=[VALID_ID])
+    await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
 
@@ -229,7 +227,7 @@ async def test_delete_context_batch_cleanup_respects_combined_criteria(
     # Only VALID_ID matches the combined criteria; other_id is excluded by source.
     fake.context.get_ids_matching_batch_criteria = AsyncMock(return_value=[VALID_ID])
 
-    await batch_module.delete_context_batch(context_ids=[VALID_ID, other_id], source='user')
+    await batch_delete_module.delete_context_batch(context_ids=[VALID_ID, other_id], source='user')
 
     # Embeddings deleted ONLY for the matching id, never the excluded one.
     fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
@@ -257,7 +255,7 @@ async def test_delete_context_cleanup_and_row_delete_share_one_transaction(
     """
     fake = make_fake_repos(tables_exist=True)
 
-    await context_module.delete_context(context_ids=[VALID_ID])
+    await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     assert len(fake.context.backend.transactions) == 1
     txn = fake.context.backend.transactions[0]
@@ -274,7 +272,7 @@ async def test_delete_context_batch_cleanup_and_row_delete_share_one_transaction
     """Same single-transaction guarantee for the batch criteria delete."""
     fake = make_fake_repos(tables_exist=True)
 
-    await batch_module.delete_context_batch(thread_ids=['thread-abc'])
+    await batch_delete_module.delete_context_batch(thread_ids=['thread-abc'])
 
     assert len(fake.context.backend.transactions) == 1
     txn = fake.context.backend.transactions[0]
@@ -300,11 +298,11 @@ async def test_delete_context_skips_per_entry_cleanup_under_compression(
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
     monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'true')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
     fake = make_fake_repos(tables_exist=True)
 
-    await context_module.delete_context(context_ids=[VALID_ID])
+    await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
     fake.context.delete_by_ids.assert_awaited_once()
@@ -318,13 +316,13 @@ async def test_delete_batch_skips_per_entry_cleanup_under_compression(
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
     monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'true')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
     fake = make_fake_repos(tables_exist=True)
 
     # older_than_days alone is refused (it would reach the whole database), so the
     # age criterion is combined with a source filter here.
-    await batch_module.delete_context_batch(older_than_days=30, source='agent')
+    await batch_delete_module.delete_context_batch(older_than_days=30, source='agent')
 
     fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
     fake.context.delete_by_ids.assert_awaited_once()
@@ -342,11 +340,11 @@ async def test_delete_context_keeps_cleanup_when_foreign_keys_disabled(
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
     monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'false')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
     fake = make_fake_repos(tables_exist=True)
 
-    await context_module.delete_context(context_ids=[VALID_ID])
+    await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     fake.embeddings.delete_all_chunks_bulk.assert_awaited_once()
 
@@ -363,7 +361,7 @@ async def test_delete_context_by_ids_skips_cleanup_on_postgresql(
     """
     fake = make_fake_repos(tables_exist=True, backend_type='postgresql')
 
-    await context_module.delete_context(context_ids=[VALID_ID])
+    await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
     fake.context.delete_by_ids.assert_awaited_once()
@@ -383,7 +381,7 @@ async def test_delete_context_rejects_context_ids_and_thread_id_together(
     fake = make_fake_repos(tables_exist=True)
 
     with pytest.raises(ToolError, match='mutually exclusive'):
-        await context_module.delete_context(context_ids=[VALID_ID], thread_id='thread-abc')
+        await context_delete_module.delete_context(context_ids=[VALID_ID], thread_id='thread-abc')
 
     fake.context.delete_by_ids.assert_not_awaited()
     fake.context.delete_by_thread.assert_not_awaited()
@@ -407,7 +405,7 @@ async def test_cleanup_lock_contention_rolls_back_and_retries(
         side_effect=[sqlite3.OperationalError('database is locked'), 0],
     )
 
-    result = await context_module.delete_context(context_ids=[VALID_ID])
+    result = await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     assert result['success'] is True
     assert result['deleted_count'] == 1
@@ -433,7 +431,7 @@ async def test_cleanup_unreadable_embeddings_still_fails_open(
         side_effect=sqlite3.OperationalError('no such module: vec0'),
     )
 
-    result = await context_module.delete_context(context_ids=[VALID_ID])
+    result = await context_delete_module.delete_context(context_ids=[VALID_ID])
 
     assert result['success'] is True
     fake.context.delete_by_ids.assert_awaited_once()
@@ -450,7 +448,7 @@ async def test_batch_delete_cleanup_lock_contention_rolls_back_and_retries(
         side_effect=[sqlite3.OperationalError('database is locked'), 0],
     )
 
-    result = await batch_module.delete_context_batch(thread_ids=['thread-abc'])
+    result = await batch_delete_module.delete_context_batch(thread_ids=['thread-abc'])
 
     assert result['deleted_count'] == 1
     assert fake.embeddings.delete_all_chunks_bulk.await_count == 2

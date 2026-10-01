@@ -29,9 +29,9 @@ from app.migrations.chunking import apply_chunking_migration
 from app.migrations.compression import apply_compression_migration
 from app.migrations.semantic import apply_semantic_search_migration
 from app.repositories import RepositoryContainer
-from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.embedding_repository import EmbeddingRepository
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
+from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
 from app.startup import init_database
 

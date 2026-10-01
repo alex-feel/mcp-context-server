@@ -24,7 +24,7 @@ import pytest
 from pydantic import ValidationError
 
 import app.server
-from app.repositories.context_repository import EntryProbe
+from app.repositories.context_repository.records import EntryProbe
 from app.settings import SummarySettings
 from app.startup import ensure_repositories
 
@@ -105,7 +105,6 @@ def _make_mock_repos() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
-    repos.context.get_summary = AsyncMock(return_value=None)
     repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -124,7 +123,6 @@ def _make_mock_repos() -> MagicMock:
     repos.embeddings = MagicMock()
     repos.embeddings.store_chunked = AsyncMock()
     repos.embeddings.exists = AsyncMock(return_value=False)
-    repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
     repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
 
@@ -160,11 +158,11 @@ class TestStoreContextMinContentLength:
         short_text = 'a' * 499  # Just below default threshold of 500
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=mock_summary_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_summary_provider),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_summary_provider),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_summary_provider),
         ):
             result = await store_context(
                 thread_id='test-thread',
@@ -191,13 +189,13 @@ class TestStoreContextMinContentLength:
         long_text = 'a' * 500  # Exactly at default threshold of 500
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
-            patch('app.tools._shared.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=Mock()),
+            patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools._shared.generate_summary_with_timeout',
+                'app.tools._generation.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='generated summary',
             ),
@@ -225,13 +223,13 @@ class TestStoreContextMinContentLength:
         boundary_text = 'x' * 500
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
-            patch('app.tools._shared.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=Mock()),
+            patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools._shared.generate_summary_with_timeout',
+                'app.tools._generation.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='boundary summary',
             ) as mock_gen_summary,
@@ -260,11 +258,11 @@ class TestStoreContextMinContentLength:
         below_text = 'b' * 499
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=mock_summary_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_summary_provider),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_summary_provider),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_summary_provider),
         ):
             result = await store_context(
                 thread_id='test-thread',
@@ -286,13 +284,13 @@ class TestStoreContextMinContentLength:
         above_text = 'c' * 501
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
-            patch('app.tools._shared.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=Mock()),
+            patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools._shared.generate_summary_with_timeout',
+                'app.tools._generation.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='above-boundary summary',
             ) as mock_gen_summary,
@@ -312,7 +310,7 @@ class TestStoreContextMinContentLength:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """With min_content_length=0, even short text gets summary."""
-        import app.tools.context as context_module
+        import app.tools.context.store as context_store_module
 
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
@@ -326,16 +324,16 @@ class TestStoreContextMinContentLength:
         mock_settings.chunking.enabled = False
 
         # Replace module-level settings (frozen Pydantic model cannot be patched in-place)
-        monkeypatch.setattr(context_module, 'settings', mock_settings)
+        monkeypatch.setattr(context_store_module, 'settings', mock_settings)
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
-            patch('app.tools._shared.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=Mock()),
+            patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools._shared.generate_summary_with_timeout',
+                'app.tools._generation.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='short summary',
             ) as mock_gen_summary,
@@ -364,10 +362,10 @@ class TestUpdateContextMinContentLength:
         short_text = 'a' * 100  # Well below default threshold of 500
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
-            patch('app.tools._shared.get_summary_provider', return_value=Mock()),
-            patch('app.tools._shared.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.update.get_summary_provider', return_value=Mock()),
+            patch('app.tools._generation.get_summary_provider', return_value=Mock()),
+            patch('app.tools._generation.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000001',
@@ -395,15 +393,15 @@ class TestUpdateContextMinContentLength:
         long_text = 'a' * 500  # Well above default threshold of 300
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
-            patch('app.tools._shared.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.update.get_summary_provider', return_value=Mock()),
+            patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools._shared.generate_summary_with_timeout',
+                'app.tools._generation.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='updated summary',
             ),
-            patch('app.tools._shared.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools._generation.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000001',
@@ -441,7 +439,7 @@ class TestClearSummaryRepository:
         )
 
         # Verify the summary was stored
-        stored_summary = await repos.context.get_summary(entry_id)
+        stored_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert stored_summary == 'Old summary that should be cleared'
 
         # Update with clear_summary=True
@@ -454,7 +452,7 @@ class TestClearSummaryRepository:
         assert 'summary' in fields
 
         # Verify the summary is now NULL
-        cleared_summary = await repos.context.get_summary(entry_id)
+        cleared_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert cleared_summary is None
 
     @pytest.mark.asyncio
@@ -482,7 +480,7 @@ class TestClearSummaryRepository:
         assert success is True
         assert 'summary' in fields
 
-        result_summary = await repos.context.get_summary(entry_id)
+        result_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert result_summary is None
 
     @pytest.mark.asyncio
@@ -511,7 +509,7 @@ class TestClearSummaryRepository:
         assert success is True
 
         # Summary should be preserved
-        result_summary = await repos.context.get_summary(entry_id)
+        result_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert result_summary == 'Summary that should be preserved'
 
 
@@ -542,7 +540,7 @@ class TestDedupPreservesExistingSummary:
         )
 
         # Verify summary exists
-        initial_summary = await repos.context.get_summary(entry_id)
+        initial_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert initial_summary == 'Pre-existing summary from before threshold'
 
         # Now store the same text again as a duplicate, with summary=None
@@ -563,5 +561,5 @@ class TestDedupPreservesExistingSummary:
         assert updated_id == entry_id
 
         # Summary should be PRESERVED via COALESCE(NULL, existing_summary)
-        preserved_summary = await repos.context.get_summary(entry_id)
+        preserved_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
         assert preserved_summary == 'Pre-existing summary from before threshold'

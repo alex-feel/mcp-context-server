@@ -755,7 +755,7 @@ class HybridSemanticStatsDict(TypedDict, total=False):
     is always present alongside the timing and filter counters.
     ``embedding_generation_ms`` is the measured wall-clock duration (rounded,
     milliseconds) of the query ``embed_query`` call, injected by
-    ``_semantic_search_raw`` so both the standalone tool and the semantic leg
+    ``semantic_search_raw`` (app/tools/search/legs.py) so both the standalone tool and the semantic leg
     of hybrid search surface it (zeroed on the validation-error path).
     """
 

@@ -24,10 +24,10 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.ids import generate_id_with_timestamp
 from app.repositories import RepositoryContainer
-from app.tools.batch import delete_context_batch
-from app.tools.context import delete_context
-from app.tools.context import get_context_by_ids
-from app.tools.context import update_context
+from app.tools.batch.delete import delete_context_batch
+from app.tools.context.delete import delete_context
+from app.tools.context.retrieve import get_context_by_ids
+from app.tools.context.update import update_context
 
 
 @pytest_asyncio.fixture

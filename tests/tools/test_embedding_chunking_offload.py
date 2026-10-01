@@ -22,9 +22,9 @@ from unittest.mock import patch
 
 import pytest
 
-import app.tools._shared as shared_module
+import app.tools._generation as generation_module
 from app.services.chunking_service import TextChunk
-from app.tools._shared import _generate_embeddings_for_text
+from app.tools._generation import _generate_embeddings_for_text
 
 
 class _FakeEmbeddingProvider:
@@ -57,8 +57,8 @@ async def test_splitting_entry_chunking_offloaded() -> None:
     spy = _SpyChunkingService()
     big = 'a' * (spy.chunk_size + 10)  # long enough that the recursive split runs
     with (
-        patch.object(shared_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
-        patch.object(shared_module, 'get_chunking_service', lambda: spy),
+        patch.object(generation_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
+        patch.object(generation_module, 'get_chunking_service', lambda: spy),
     ):
         result = await _generate_embeddings_for_text(big)
     assert spy.on_main is False  # chunking ran on a worker thread, not the event loop
@@ -78,8 +78,8 @@ async def test_plain_text_below_the_old_size_threshold_is_still_offloaded() -> N
     text = 'a' * 999_000
     assert len(text) < 1_000_000
     with (
-        patch.object(shared_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
-        patch.object(shared_module, 'get_chunking_service', lambda: spy),
+        patch.object(generation_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
+        patch.object(generation_module, 'get_chunking_service', lambda: spy),
     ):
         await _generate_embeddings_for_text(text)
     assert spy.on_main is False
@@ -89,8 +89,8 @@ async def test_plain_text_below_the_old_size_threshold_is_still_offloaded() -> N
 async def test_small_entry_chunking_inline() -> None:
     spy = _SpyChunkingService()
     with (
-        patch.object(shared_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
-        patch.object(shared_module, 'get_chunking_service', lambda: spy),
+        patch.object(generation_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
+        patch.object(generation_module, 'get_chunking_service', lambda: spy),
     ):
         await _generate_embeddings_for_text('short text body')
     assert spy.on_main is True  # split_text short-circuits below chunk_size; no thread hop

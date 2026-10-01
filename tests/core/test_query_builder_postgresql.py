@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+from app.metadata_sql import _pg_path_literal
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.query_builder import MetadataQueryBuilder
@@ -1055,7 +1056,7 @@ class TestMetadataQueryBuilderPostgresqlPathSegmentQuoting:
     )
     def test_path_literal_quotes_every_segment(self, key: str, expected: str) -> None:
         # The validators restrict segments to [A-Za-z0-9_-], so quoting needs no escaping.
-        assert MetadataQueryBuilder._pg_path_literal(key) == expected
+        assert _pg_path_literal(key) == expected
 
     def test_flat_key_named_null_needs_no_array_literal(self) -> None:
         # A flat key uses ->>'null', a plain key name rather than an array literal, so it was

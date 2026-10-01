@@ -1711,7 +1711,7 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
 
         id_mapping = build_id_mapping(source_rows)
 
-        from app.repositories.fts_repository import desired_sqlite_fts_tokenizer
+        from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
         from app.settings import get_settings
 
         target = _open_sqlite_target(target_address, options.dry_run)
@@ -3245,7 +3245,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
         # the index is rebuilt locally from the copied rows below).
         source_has_tags = await _pg_table_exists(source_conn, 'tags')
         source_has_images = await _pg_table_exists(source_conn, 'image_attachments')
-        from app.repositories.fts_repository import desired_sqlite_fts_tokenizer
+        from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
         from app.settings import get_settings
 
         target = _open_sqlite_target(target_address, options.dry_run)

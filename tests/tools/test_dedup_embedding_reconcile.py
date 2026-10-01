@@ -24,8 +24,8 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-from app.repositories.context_repository import DuplicateCandidate
-from app.tools._shared import EmbeddingsReconcileRequiredError
+from app.repositories.context_repository.records import DuplicateCandidate
+from app.tools._transactions import EmbeddingsReconcileRequiredError
 
 
 def _make_mock_txn() -> tuple[MagicMock, object]:
@@ -53,22 +53,22 @@ class TestStoreContextReconcile:
     @pytest.mark.asyncio
     async def test_reconcile_regenerates_and_retries(self) -> None:
         """A reconcile signal triggers one regeneration and a successful retry."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         _, mock_begin_transaction = _make_mock_txn()
 
         with (
-            patch('app.tools.context.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.context.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=None),
+            patch('app.tools.context.store.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools._shared.generate_embeddings_with_timeout',
+                'app.tools._generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=_fake_chunk_embeddings(),
             ) as mock_gen_emb,
             patch(
-                'app.tools._shared.generate_compression_with_timeout',
+                'app.tools._generation.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
@@ -118,17 +118,17 @@ class TestStoreContextReconcile:
         regenerate the summary for THIS entry's text instead of persisting the
         candidate's since-stale reuse.
         """
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         _, mock_begin_transaction = _make_mock_txn()
 
         with (
-            patch('app.tools.context.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
-            patch('app.tools.context.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.context.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools.context.store.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='fresh summary for this text',
             ) as mock_gen_summary,
@@ -175,22 +175,22 @@ class TestStoreContextReconcile:
     @pytest.mark.asyncio
     async def test_reconcile_does_not_loop_forever(self) -> None:
         """A repeated reconcile signal surfaces a ToolError rather than looping."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         _, mock_begin_transaction = _make_mock_txn()
 
         with (
-            patch('app.tools.context.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.context.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=None),
+            patch('app.tools.context.store.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools._shared.generate_embeddings_with_timeout',
+                'app.tools._generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=_fake_chunk_embeddings(),
             ),
             patch(
-                'app.tools._shared.generate_compression_with_timeout',
+                'app.tools._generation.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
@@ -227,22 +227,22 @@ class TestStoreBatchReconcile:
     @pytest.mark.parametrize('atomic', [True, False])
     async def test_batch_reconcile_regenerates_and_retries(self, atomic: bool) -> None:
         """Atomic and non-atomic batch store both reconcile a diverged INSERT."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         _, mock_begin_transaction = _make_mock_txn()
 
         with (
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools.batch.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.store.get_summary_provider', return_value=None),
+            patch('app.tools.batch.store.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools.batch.generate_embeddings_with_timeout',
+                'app.tools.batch.store.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=_fake_chunk_embeddings(),
             ) as mock_gen_emb,
             patch(
-                'app.tools.batch.generate_compression_with_timeout',
+                'app.tools.batch.store.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
@@ -291,7 +291,7 @@ class TestStoreBatchReconcile:
         only by source for a fixed text, so one call per distinct source
         must be broadcast to all matching entries.
         """
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         _, mock_begin_transaction = _make_mock_txn()
         # Long enough to clear SUMMARY_MIN_CONTENT_LENGTH so the pre-check
@@ -299,22 +299,22 @@ class TestStoreBatchReconcile:
         shared_text = 'y' * 600
 
         with (
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
-            patch('app.tools.batch.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.store.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.batch.store.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools.batch.generate_embeddings_with_timeout',
+                'app.tools.batch.store.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=_fake_chunk_embeddings(),
             ),
             patch(
-                'app.tools.batch.generate_compression_with_timeout',
+                'app.tools.batch.store.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
             patch(
-                'app.tools.batch.generate_summary_with_timeout',
+                'app.tools.batch.store.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='fresh shared summary',
             ) as mock_gen_summary,
@@ -370,22 +370,22 @@ class TestStoreBatchReconcile:
         regeneration must be recorded as THAT entry's failure while a sibling
         entry that already succeeded is preserved -- never re-raised batch-wide.
         """
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         _, mock_begin_transaction = _make_mock_txn()
 
         with (
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools.batch.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.store.get_summary_provider', return_value=None),
+            patch('app.tools.batch.store.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools.batch.generate_embeddings_with_timeout',
+                'app.tools.batch.store.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=ToolError('embedding provider unavailable'),
             ) as mock_gen_emb,
             patch(
-                'app.tools.batch.generate_compression_with_timeout',
+                'app.tools.batch.store.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
@@ -449,7 +449,7 @@ class TestStoreBatchReconcile:
         under test.
         """
         from app.summary.retry import SummaryRetryExhaustedError
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         _, mock_begin_transaction = _make_mock_txn()
         good_text = 'a' * 600
@@ -460,17 +460,17 @@ class TestStoreBatchReconcile:
         )
 
         with (
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=failing_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=failing_provider),
+            patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.get_summary_provider', return_value=failing_provider),
+            patch('app.tools._generation.get_summary_provider', return_value=failing_provider),
             patch(
-                'app.tools.batch.generate_index_nodes_with_timeout',
+                'app.tools.batch.store.generate_index_nodes_with_timeout',
                 new_callable=AsyncMock,
                 return_value=None,
             ),
-            patch('app.tools.batch.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.batch.store.execute_store_in_transaction') as mock_exec,
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
@@ -520,9 +520,12 @@ class TestSemanticDistanceContractWording:
 
     def test_search_tool_drops_fixed_threshold_heuristic(self) -> None:
         """The misleading fixed-band heuristic is gone; variant wording is present."""
-        content = Path('app/tools/search.py').read_text(encoding='utf-8')
-        assert '<0.5 very similar' not in content
-        assert 'negated inner product' in content
+        paths = sorted(Path('app/tools/search').glob('*.py'))
+        assert paths
+        for path in paths:
+            assert '<0.5 very similar' not in path.read_text(encoding='utf-8'), path
+        for name in ('semantic.py', 'hybrid.py'):
+            assert 'negated inner product' in Path('app/tools/search', name).read_text(encoding='utf-8'), name
 
     def test_types_describe_variant_aware_distance(self) -> None:
         """TypedDicts no longer assert an unconditional L2 Euclidean distance."""

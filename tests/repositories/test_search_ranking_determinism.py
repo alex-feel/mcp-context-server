@@ -29,6 +29,7 @@ from app.backends import create_backend
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.fts_repository import FtsRepository
+from tests.helpers import store_single_chunk_embedding
 
 requires_sqlite_vec = pytest.mark.skipif(
     importlib.util.find_spec('sqlite_vec') is None,
@@ -142,10 +143,10 @@ class TestSemanticTiedDistanceOrdering:
 
         embedding_repo = EmbeddingRepository(backend)
         for entry_id in _INSERT_ORDER:
-            await embedding_repo.store(
+            await store_single_chunk_embedding(
+                embedding_repo,
                 context_id=entry_id,
                 embedding=[0.25] * embedding_dim,
-                model='test-model',
             )
         return embedding_repo
 
@@ -215,7 +216,7 @@ class TestRankedStatementsCarryTheTiebreak:
 
     def test_both_semantic_branches_order_by_distance_then_context_id(self) -> None:
         """SQLite and PostgreSQL ranked output both resolve tied distances on the id."""
-        src = inspect.getsource(EmbeddingRepository.search)
+        src = inspect.getsource(EmbeddingRepository.search_fp32)
 
         assert src.count('ORDER BY bc.best_distance ASC, bc.context_id ASC') == 2
 
@@ -226,7 +227,7 @@ class TestRankedStatementsCarryTheTiebreak:
         rerank passage extraction, so leaving it to scan order makes the response text for an
         unchanged entry vary between identical queries.
         """
-        src = inspect.getsource(EmbeddingRepository.search)
+        src = inspect.getsource(EmbeddingRepository.search_fp32)
 
         # SQLite picks the best chunk with a ROW_NUMBER window; PostgreSQL with DISTINCT ON.
         assert 'ORDER BY cd.distance, cd.start_index' in src

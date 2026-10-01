@@ -293,18 +293,26 @@ def force_compression_off(monkeypatch: pytest.MonkeyPatch) -> Generator[None, No
     # Refresh module-level ``settings = get_settings()`` bindings that were
     # cached at import time. Without this, modules that read
     # ``settings.compression.enabled`` from their own module-level binding
-    # (e.g., ``app.tools._shared``, ``app.migrations.compression``) keep the
-    # import-time singleton and ignore the per-test env override. The
-    # CLAUDE.md "Per-test environment overrides for module-level ``settings``
-    # bindings" section documents this pattern.
+    # (e.g., ``app.tools._generation``, ``app.tools._delete_cleanup``,
+    # ``app.migrations.compression``) keep the import-time singleton and ignore
+    # the per-test env override. The CLAUDE.md "Per-test environment overrides
+    # for module-level ``settings`` bindings" section documents this pattern.
     fresh = get_settings()
     import app.migrations.compression as _compression_migration_module
     import app.server as _server_module
-    import app.tools._shared as _shared_module
-    import app.tools.context as _context_module
+    import app.tools._delete_cleanup as _delete_cleanup_module
+    import app.tools._generation as _generation_module
+    import app.tools._validation as _validation_module
+    import app.tools.context.retrieve as _context_retrieve_module
+    import app.tools.context.store as _context_store_module
+    import app.tools.context.update as _context_update_module
     import app.tools.discovery as _discovery_module
-    monkeypatch.setattr(_context_module, 'settings', fresh)
-    monkeypatch.setattr(_shared_module, 'settings', fresh)
+    monkeypatch.setattr(_context_store_module, 'settings', fresh)
+    monkeypatch.setattr(_context_retrieve_module, 'settings', fresh)
+    monkeypatch.setattr(_context_update_module, 'settings', fresh)
+    monkeypatch.setattr(_validation_module, 'settings', fresh)
+    monkeypatch.setattr(_generation_module, 'settings', fresh)
+    monkeypatch.setattr(_delete_cleanup_module, 'settings', fresh)
     monkeypatch.setattr(_compression_migration_module, 'settings', fresh)
     monkeypatch.setattr(_server_module, 'settings', fresh)
     monkeypatch.setattr(_discovery_module, 'settings', fresh)
@@ -600,9 +608,9 @@ def mock_server_dependencies(test_settings: AppSettings, temp_db_path: Path) -> 
             patch('app.server.DB_PATH', temp_db_path),
             # CRITICAL: Patch startup.DB_PATH - ensure_backend() uses this for lazy initialization
             patch('app.startup.DB_PATH', temp_db_path),
-            # Patch MAX_IMAGE_SIZE_MB and MAX_TOTAL_SIZE_MB where they are used (in app.tools._shared)
-            patch('app.tools._shared.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
-            patch('app.tools._shared.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),
+            # Patch MAX_IMAGE_SIZE_MB and MAX_TOTAL_SIZE_MB where they are used (in app.tools._validation)
+            patch('app.tools._validation.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
+            patch('app.tools._validation.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),
         ):
             yield
     finally:

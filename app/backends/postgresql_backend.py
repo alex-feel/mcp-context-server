@@ -125,7 +125,7 @@ def session_guc_set_statements(app_settings: AppSettings | None = None) -> list[
       default ``POSTGRESQL_SCHEMA=public`` this is the benign no-op
       ``"public", public``.
     - ``extra_float_digits``, pinned to a shortest-round-trip setting so the
-      numeric metadata-filter discriminator (``query_builder._pg_numeric_compare``)
+      numeric metadata-filter discriminator (``metadata_sql.pg_numeric_compare``)
       sees the Ryu shortest-repr float8 text it relies on: a cluster or role
       default of 0 or negative reverts float8out to ``%.15g`` and would
       misclassify every high-magnitude float-origin stored value, silently

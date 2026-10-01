@@ -18,7 +18,7 @@ that unification through the real ``run_generation`` orchestrator:
    "cancelled").
 
 Settings/semaphore reset pattern (per CLAUDE.md): ``monkeypatch.setenv(...)`` ->
-``get_settings.cache_clear()`` -> rebind ``shared_tools.settings`` ->
+``get_settings.cache_clear()`` -> rebind ``app.tools._generation.settings`` ->
 ``_reset_summary_model_semaphore()`` / ``_reset_node_summary_semaphore()``, then
 restore on teardown via an autouse fixture so module-level state does not leak.
 """
@@ -28,7 +28,7 @@ from collections.abc import Generator
 
 import pytest
 
-import app.tools._shared as shared_tools
+import app.tools._generation as generation_module
 from app.settings import get_settings
 
 # Three headings, each section >= 500 chars (INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH),
@@ -106,12 +106,12 @@ def restore_summary_settings() -> Generator[None, None, None]:
     """Snapshot and restore the module-level settings + semaphores so the
     per-test ``SUMMARY_MAX_CONCURRENT`` override never leaks across tests.
     """
-    original_settings = shared_tools.settings
+    original_settings = generation_module.settings
     yield
-    shared_tools.settings = original_settings
+    generation_module.settings = original_settings
     get_settings.cache_clear()
-    shared_tools._reset_summary_model_semaphore()
-    shared_tools._reset_node_summary_semaphore()
+    generation_module._reset_summary_model_semaphore()
+    generation_module._reset_node_summary_semaphore()
 
 
 def _apply_low_summary_budget(monkeypatch: pytest.MonkeyPatch, value: int) -> None:
@@ -125,9 +125,9 @@ def _apply_low_summary_budget(monkeypatch: pytest.MonkeyPatch, value: int) -> No
     monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '100')
     monkeypatch.setenv('SUMMARY_MIN_CONTENT_LENGTH', '0')
     get_settings.cache_clear()
-    shared_tools.settings = get_settings()
-    shared_tools._reset_summary_model_semaphore()
-    shared_tools._reset_node_summary_semaphore()
+    generation_module.settings = get_settings()
+    generation_module._reset_summary_model_semaphore()
+    generation_module._reset_node_summary_semaphore()
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -147,11 +147,11 @@ class TestSharedSummarySemaphore:
 
         # No embedding leg (provider None) so the only summary-model load is the
         # flat summary + the node summaries, all on the shared budget.
-        monkeypatch.setattr(shared_tools, 'get_embedding_provider', lambda: None)
-        monkeypatch.setattr(shared_tools, 'get_summary_provider', lambda: provider)
-        monkeypatch.setattr(shared_tools, 'compute_summary_total_timeout', lambda: 5.0)
+        monkeypatch.setattr(generation_module, 'get_embedding_provider', lambda: None)
+        monkeypatch.setattr(generation_module, 'get_summary_provider', lambda: provider)
+        monkeypatch.setattr(generation_module, 'compute_summary_total_timeout', lambda: 5.0)
 
-        _emb, summary_text, index_nodes = await shared_tools.run_generation(
+        _emb, summary_text, index_nodes = await generation_module.run_generation(
             MULTI_HEADING_TEXT, 'agent',
             run_embedding=False,
             run_summary=True,
@@ -178,11 +178,11 @@ class TestSharedSummarySemaphore:
         _apply_low_summary_budget(monkeypatch, 3)
         provider = _ConcurrencyTrackingProvider()
 
-        monkeypatch.setattr(shared_tools, 'get_embedding_provider', lambda: None)
-        monkeypatch.setattr(shared_tools, 'get_summary_provider', lambda: provider)
-        monkeypatch.setattr(shared_tools, 'compute_summary_total_timeout', lambda: 5.0)
+        monkeypatch.setattr(generation_module, 'get_embedding_provider', lambda: None)
+        monkeypatch.setattr(generation_module, 'get_summary_provider', lambda: provider)
+        monkeypatch.setattr(generation_module, 'compute_summary_total_timeout', lambda: 5.0)
 
-        await shared_tools.run_generation(
+        await generation_module.run_generation(
             MULTI_HEADING_TEXT, 'agent',
             run_embedding=False,
             run_summary=True,
@@ -204,18 +204,18 @@ class TestSharedSummarySemaphore:
         _apply_low_summary_budget(monkeypatch, 2)
         provider = _ConcurrencyTrackingProvider()
 
-        monkeypatch.setattr(shared_tools, 'get_embedding_provider', lambda: None)
-        monkeypatch.setattr(shared_tools, 'get_summary_provider', lambda: provider)
-        monkeypatch.setattr(shared_tools, 'compute_summary_total_timeout', lambda: 5.0)
+        monkeypatch.setattr(generation_module, 'get_embedding_provider', lambda: None)
+        monkeypatch.setattr(generation_module, 'get_summary_provider', lambda: provider)
+        monkeypatch.setattr(generation_module, 'compute_summary_total_timeout', lambda: 5.0)
 
-        await shared_tools.run_generation(
+        await generation_module.run_generation(
             MULTI_HEADING_TEXT, 'agent',
             run_embedding=False,
             run_summary=True,
             run_nodes=True,
         )
 
-        assert shared_tools._summary_model_semaphore._value == 2
+        assert generation_module._summary_model_semaphore._value == 2
 
     @pytest.mark.asyncio
     async def test_abort_releases_permits_and_cancels_node_summaries(
@@ -253,13 +253,13 @@ class TestSharedSummarySemaphore:
                 await asyncio.sleep(0.005)
             raise RuntimeError('embedding provider exploded')
 
-        monkeypatch.setattr(shared_tools, 'get_summary_provider', lambda: provider)
-        monkeypatch.setattr(shared_tools, 'compute_summary_total_timeout', lambda: 5.0)
+        monkeypatch.setattr(generation_module, 'get_summary_provider', lambda: provider)
+        monkeypatch.setattr(generation_module, 'compute_summary_total_timeout', lambda: 5.0)
         # Replace the whole embed->compress leg with a failing coroutine.
-        monkeypatch.setattr(shared_tools, 'embed_then_compress', failing_embed)
+        monkeypatch.setattr(generation_module, 'embed_then_compress', failing_embed)
 
         with pytest.raises(ToolError, match='Generation failed after exhausting configured retries'):
-            await shared_tools.run_generation(
+            await generation_module.run_generation(
                 MULTI_HEADING_TEXT, 'agent',
                 run_embedding=True,
                 run_summary=True,
@@ -268,7 +268,7 @@ class TestSharedSummarySemaphore:
 
         # The shared budget is fully restored: every acquired permit (the flat
         # summary + the in-flight node summary) was released on cancellation.
-        assert shared_tools._summary_model_semaphore._value == 2
+        assert generation_module._summary_model_semaphore._value == 2
 
         # No node-summary provider call is left running after the abort: the
         # in-flight node call was cancelled, and nothing remains active.
@@ -309,12 +309,12 @@ class TestSharedSummarySemaphore:
             await asyncio.sleep(5)
             return None
 
-        monkeypatch.setattr(shared_tools, 'get_summary_provider', lambda: provider)
-        monkeypatch.setattr(shared_tools, 'compute_summary_total_timeout', lambda: 5.0)
-        monkeypatch.setattr(shared_tools, 'embed_then_compress', slow_embed)
+        monkeypatch.setattr(generation_module, 'get_summary_provider', lambda: provider)
+        monkeypatch.setattr(generation_module, 'compute_summary_total_timeout', lambda: 5.0)
+        monkeypatch.setattr(generation_module, 'embed_then_compress', slow_embed)
 
         task = asyncio.create_task(
-            shared_tools.run_generation(
+            generation_module.run_generation(
                 MULTI_HEADING_TEXT, 'agent',
                 run_embedding=True,
                 run_summary=False,
@@ -328,7 +328,7 @@ class TestSharedSummarySemaphore:
                 break
             await asyncio.sleep(0.005)
         assert provider.current >= 1, 'node summary never reached its in-flight hold'
-        assert shared_tools._summary_model_semaphore._value < 2  # a permit is held
+        assert generation_module._summary_model_semaphore._value < 2  # a permit is held
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -337,7 +337,7 @@ class TestSharedSummarySemaphore:
         # The finally cancelled and awaited the node leg: shared budget fully
         # restored, no node-summary call left running, the in-flight call genuinely
         # cancelled (its hold was never released), and no node task leaked.
-        assert shared_tools._summary_model_semaphore._value == 2
+        assert generation_module._summary_model_semaphore._value == 2
         assert provider.current == 0
         assert provider.cancelled >= 1
         assert not hold.is_set()
@@ -418,11 +418,11 @@ class TestFlatSummaryPrecedence:
 
         # No embedding leg (provider None) so the only model load is the flat
         # summary + the node summaries, all on the shared budget.
-        monkeypatch.setattr(shared_tools, 'get_embedding_provider', lambda: None)
-        monkeypatch.setattr(shared_tools, 'get_summary_provider', lambda: provider)
-        monkeypatch.setattr(shared_tools, 'compute_summary_total_timeout', lambda: 5.0)
+        monkeypatch.setattr(generation_module, 'get_embedding_provider', lambda: None)
+        monkeypatch.setattr(generation_module, 'get_summary_provider', lambda: provider)
+        monkeypatch.setattr(generation_module, 'compute_summary_total_timeout', lambda: 5.0)
 
-        _emb, summary_text, index_nodes = await shared_tools.run_generation(
+        _emb, summary_text, index_nodes = await generation_module.run_generation(
             MULTI_HEADING_TEXT, 'agent',
             run_embedding=False,
             run_summary=True,

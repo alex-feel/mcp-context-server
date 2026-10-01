@@ -1,8 +1,15 @@
 """Shared test helper functions.
 
-Provides utility functions used across multiple test infrastructure files
-(conftest.py, run_server.py) to avoid code duplication.
+Provides utility functions used across test infrastructure files
+(conftest.py, run_server.py) and test modules to avoid code duplication.
+Application modules are imported inside the helpers, so importing this
+module never loads the application or reads settings.
 """
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.repositories.embedding_repository import EmbeddingRepository
 
 
 def is_ollama_model_available(
@@ -66,3 +73,26 @@ def is_ollama_model_available(
 
     except Exception:
         return False
+
+
+async def store_single_chunk_embedding(
+    repo: 'EmbeddingRepository',
+    context_id: str,
+    embedding: list[float],
+    model: str = 'test-model',
+) -> None:
+    """Store one embedding for a context entry as a single chunk.
+
+    Seeds the embedding tables through ``EmbeddingRepository.store_chunked``
+    with one chunk whose start and end offsets are both zero.
+
+    Args:
+        repo: Embedding repository to write through.
+        context_id: ID of the context entry the embedding belongs to.
+        embedding: Embedding vector.
+        model: Model identifier recorded in ``embedding_metadata``.
+    """
+    from app.repositories.embedding_repository.records import ChunkEmbedding
+
+    chunk = ChunkEmbedding(embedding=embedding, start_index=0, end_index=0)
+    await repo.store_chunked(context_id, [chunk], model)

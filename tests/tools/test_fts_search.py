@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
@@ -374,7 +375,7 @@ class TestFtsWithFilters:
     def test_fts_with_tag_filter(self, fts_enabled_db: Path) -> None:
         """Test FTS search with tag filtering.
 
-        Covers lines 208-221 in fts_repository.py for tag filtering logic.
+        Covers the tag filtering logic of the FTS search mixin.
         """
         with sqlite3.connect(str(fts_enabled_db)) as conn:
             conn.row_factory = sqlite3.Row
@@ -420,7 +421,7 @@ class TestFtsWithFilters:
     def test_fts_with_content_type_filter(self, fts_enabled_db: Path) -> None:
         """Test FTS search with content_type filter.
 
-        Covers lines 196-198 in fts_repository.py for content_type filtering.
+        Covers the content_type filtering of the FTS search mixin.
         """
         with sqlite3.connect(str(fts_enabled_db)) as conn:
             conn.row_factory = sqlite3.Row
@@ -454,7 +455,7 @@ class TestFtsWithFilters:
     def test_fts_with_metadata_filter(self, fts_enabled_db: Path) -> None:
         """Test FTS search with metadata filtering.
 
-        Covers metadata filtering logic in fts_repository.py.
+        Covers the metadata filtering logic of the FTS search mixin.
         """
         with sqlite3.connect(str(fts_enabled_db)) as conn:
             conn.row_factory = sqlite3.Row
@@ -1275,7 +1276,7 @@ class TestInternalColumnsNotExposed:
         This test ensures the column constant is maintained correctly and includes
         all columns defined in the ContextEntryDict TypedDict.
         """
-        from app.repositories.context_repository import CONTEXT_ENTRY_COLUMNS
+        from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
 
         # Parse the column string into a set
         columns = {col.strip() for col in CONTEXT_ENTRY_COLUMNS.split(',')}
@@ -1483,13 +1484,14 @@ class TestFtsValidationErrorStats:
     @pytest.mark.asyncio
     async def test_validation_error_stats_include_backend(self) -> None:
         """The error-path stats dict includes backend (the active storage backend type)."""
-        from app.repositories.fts_repository import FtsValidationError
-        from app.tools.search import fts_search_context
+        from app.repositories.fts_repository.faults import FtsValidationError
+        from app.tools.search.fts import fts_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.ensure_repositories', new=AsyncMock(return_value=MagicMock())),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.fts.fts_search_raw',
                 AsyncMock(side_effect=FtsValidationError('Invalid filters', ['bad operator: nope'])),
             ),
         ):
@@ -1508,10 +1510,10 @@ class TestFtsValidationErrorStats:
         # The backend key must be present and match the backend the tool actually
         # resolves (the module-level settings binding the production code reads),
         # so the error-path stats shape matches every other stats path.
-        import app.tools.search as search_mod
+        import app.tools.search.limits as search_limits
 
         assert 'backend' in stats
-        assert stats['backend'] == search_mod.settings.storage.backend_type
+        assert stats['backend'] == search_limits.settings.storage.backend_type
         # The other documented error-path stat keys accompany it.
         assert stats['execution_time_ms'] == 0.0
         assert stats['filters_applied'] == 0
@@ -1525,13 +1527,14 @@ class TestFtsValidationErrorStats:
     @pytest.mark.asyncio
     async def test_validation_error_omits_stats_without_explain_query(self) -> None:
         """Without explain_query the validation-error response carries no stats block."""
-        from app.repositories.fts_repository import FtsValidationError
-        from app.tools.search import fts_search_context
+        from app.repositories.fts_repository.faults import FtsValidationError
+        from app.tools.search.fts import fts_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.ensure_repositories', new=AsyncMock(return_value=MagicMock())),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.fts.fts_search_raw',
                 AsyncMock(side_effect=FtsValidationError('Invalid filters', ['bad operator: nope'])),
             ),
         ):

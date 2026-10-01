@@ -212,7 +212,7 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
     reproducing a database whose data was compressed while generation was
     on; the generation-off server maintains and seed-validates that schema
     instead of idling. The compressed write path is exercised by the unit
-    suite at ``tests/repositories/test_embedding_repository_compressed.py``.
+    suite at ``tests/repositories/embedding_repository/test_embedding_repository_compressed.py``.
 
     Args:
         tmp_path: Pytest fixture providing temporary directory.

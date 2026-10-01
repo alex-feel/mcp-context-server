@@ -419,7 +419,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend) -> None:
 
     This migration creates the jsonb_merge_patch() PL/pgSQL function that implements
     TRUE RFC 7396 recursive deep merge semantics. The function is required by the
-    context_repository.patch_metadata() method for PostgreSQL backends.
+    ContextRepository.patch_metadata() method for PostgreSQL backends.
 
     Args:
         backend: Storage backend instance.

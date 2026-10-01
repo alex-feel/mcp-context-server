@@ -6,7 +6,7 @@ including storage and retrieval of base64-encoded images.
 
 Write-path base64 decodes are STRICT (base64.b64decode with validate=True):
 image payloads reach these methods already normalized to canonical
-standard-alphabet base64 by validate_and_normalize_images (app.tools._shared),
+standard-alphabet base64 by validate_and_normalize_images (app.tools._validation),
 so a strict decode guarantees the stored bytes are exactly the validated bytes.
 A decode failure here means a payload bypassed the validation chokepoint and is
 raised as ValueError (aborting the enclosing transaction) rather than silently

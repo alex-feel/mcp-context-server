@@ -27,8 +27,8 @@ from app.ids import generate_id_with_timestamp
 from app.migrations.fts import apply_fts_migration
 from app.repositories import RepositoryContainer
 from app.repositories.base import BaseRepository
-from app.repositories.embedding_repository import MetadataFilterValidationError
-from app.repositories.fts_repository import FtsValidationError
+from app.repositories.embedding_repository.records import MetadataFilterValidationError
+from app.repositories.fts_repository.faults import FtsValidationError
 from tests.conftest import requires_sqlite_vec
 
 

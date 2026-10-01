@@ -2,13 +2,23 @@
 MCP tool implementations for mcp-context-server.
 
 This package contains all MCP tool functions, organized by domain:
-- context.py: store_context, get_context_by_ids, update_context, delete_context
-- search.py: search_context, semantic_search_context, fts_search_context, hybrid_search_context
+- context/: store_context (store.py), get_context_by_ids (retrieve.py), update_context
+  (update.py), delete_context (delete.py)
+- search/: search_context (browse.py), semantic_search_context (semantic.py), fts_search_context
+  (fts.py), hybrid_search_context (hybrid.py), the raw semantic and FTS legs they share (legs.py),
+  reranking and result display formatting (ranking.py), and argument bounds and filter caps (limits.py)
 - discovery.py: list_threads, get_statistics
-- batch.py: store_context_batch, update_context_batch, delete_context_batch
+- batch/: store_context_batch (store.py), update_context_batch (update.py), delete_context_batch
+  (delete.py), and the per-entry validation they share (entry_validation.py)
 - descriptions.py: Backend-specific dynamic tool descriptions (generate_fts_description)
-- _shared.py: Internal shared infrastructure for per-entry processing, image validation,
-  generation with timeout, transaction execution, and response message builders (not re-exported)
+- _validation.py: Input validation shared by the tools (unstorable text, tag and indexed-value
+  limits, image validation and normalization) (not re-exported)
+- _generation.py: Embedding, compression, summary, and index_tree node generation with timeout,
+  run outside the transaction (not re-exported)
+- _transactions.py: Store and update transaction execution, transaction heartbeat, and
+  connection error classification (not re-exported)
+- _delete_cleanup.py: Entry deletion with the explicit embedding cleanup (not re-exported)
+- _responses.py: Store and update response message builders (not re-exported)
 
 The tool registration helpers and TOOL_ANNOTATIONS are defined here for use by server.py.
 """
@@ -20,24 +30,24 @@ from typing import Any
 
 from app.settings import get_settings
 
-# Re-export all tool functions for backward compatibility
-from app.tools.batch import delete_context_batch
-from app.tools.batch import store_context_batch
-from app.tools.batch import update_context_batch
-from app.tools.context import delete_context
-from app.tools.context import get_context_by_ids
-from app.tools.context import store_context
-from app.tools.context import update_context
+# Tool functions exposed here for registration in app/server.py
+from app.tools.batch.delete import delete_context_batch
+from app.tools.batch.store import store_context_batch
+from app.tools.batch.update import update_context_batch
+from app.tools.context.delete import delete_context
+from app.tools.context.retrieve import get_context_by_ids
+from app.tools.context.store import store_context
+from app.tools.context.update import update_context
 from app.tools.descriptions import generate_fts_description
 from app.tools.discovery import get_statistics
 from app.tools.discovery import list_threads
 from app.tools.navigation import grep_context
 from app.tools.navigation import navigate_context
 from app.tools.navigation import read_context_range
-from app.tools.search import fts_search_context
-from app.tools.search import hybrid_search_context
-from app.tools.search import search_context
-from app.tools.search import semantic_search_context
+from app.tools.search.browse import search_context
+from app.tools.search.fts import fts_search_context
+from app.tools.search.hybrid import hybrid_search_context
+from app.tools.search.semantic import semantic_search_context
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP

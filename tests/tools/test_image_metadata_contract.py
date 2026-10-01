@@ -19,9 +19,9 @@ import base64
 import pytest
 from pydantic import TypeAdapter
 
-from app.tools.batch import store_context_batch
-from app.tools.context import get_context_by_ids
-from app.tools.context import store_context
+from app.tools.batch.store import store_context_batch
+from app.tools.context.retrieve import get_context_by_ids
+from app.tools.context.store import store_context
 from app.types import ContextEntryDict
 
 # Minimal valid 1x1 PNG.

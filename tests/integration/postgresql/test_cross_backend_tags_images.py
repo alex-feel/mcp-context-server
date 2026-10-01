@@ -27,7 +27,7 @@ import pytest_asyncio
 from app.cli.migrate import MigrationOptions
 from app.cli.migrate import run_migration_mixed_postgresql_to_sqlite
 from app.cli.migrate import run_migration_mixed_sqlite_to_postgresql
-from app.repositories.embedding_repository import _reset_compression_cache
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]

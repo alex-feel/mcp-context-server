@@ -3,7 +3,7 @@
 The ``mcp-context-server-migrate`` CLI runs as a standalone process and does
 NOT execute the server lifespan (``app/server.py``), so the global embedding
 provider and chunking service -- read by
-``app.tools._shared.generate_embeddings_with_timeout`` via
+``app.tools._generation.generate_embeddings_with_timeout`` via
 ``app.startup.get_embedding_provider`` / ``get_chunking_service`` -- are unset
 by default. Any CLI flow that generates embeddings (``--embed-missing``,
 ``--re-embed``) MUST initialize them exactly as the server lifespan does
@@ -45,7 +45,7 @@ async def initialize_cli_embedding_pipeline() -> EmbeddingProvider:
     ``ENABLE_CHUNKING`` is true the chunking service is registered as well so
     re-embedded documents are split into the same chunks the live server would
     produce. After this call,
-    :func:`app.tools._shared.generate_embeddings_with_timeout` returns
+    :func:`app.tools._generation.generate_embeddings_with_timeout` returns
     embeddings instead of ``None``.
 
     Returns:

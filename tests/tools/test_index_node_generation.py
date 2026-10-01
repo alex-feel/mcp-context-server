@@ -15,9 +15,10 @@ from unittest.mock import patch
 import pytest
 
 import app.startup
-import app.tools._shared as shared_module
+import app.tools._generation as generation_module
+from app.services.text_lines import _OFFLOAD_MIN_CHARS
 from app.settings import get_settings
-from app.tools._shared import generate_index_nodes_with_timeout
+from app.tools._generation import generate_index_nodes_with_timeout
 
 
 class _FakeProvider:
@@ -68,9 +69,9 @@ def _set_provider(provider: _FakeProvider | _SlowProvider | None) -> None:
     app.startup.set_summary_provider(cast(Any, provider))
 
 
-def _refresh_shared_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+def _refresh_generation_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(generation_module, 'settings', get_settings())
 
 
 _TEXT = '# Section One\n' + ('alpha ' * 30) + '\n# Section Two\n' + ('beta ' * 30) + '\n'
@@ -80,7 +81,7 @@ class TestGenerateIndexNodes:
     @pytest.mark.asyncio
     async def test_disabled_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'false')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(_FakeProvider())
         try:
             assert await generate_index_nodes_with_timeout(_TEXT) is None
@@ -92,7 +93,7 @@ class TestGenerateIndexNodes:
     async def test_no_provider_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(None)
         try:
             # No summary provider -> feature inert -> leave the node table untouched.
@@ -104,7 +105,7 @@ class TestGenerateIndexNodes:
     async def test_generates_rows_for_sections(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(_FakeProvider(value='gist'))
         try:
             rows = await generate_index_nodes_with_timeout(_TEXT)
@@ -119,7 +120,7 @@ class TestGenerateIndexNodes:
     async def test_provider_failure_never_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(_FakeProvider(fail=True))
         try:
             # Must NOT raise. TOTAL degradation (every attempted node failed)
@@ -135,7 +136,7 @@ class TestGenerateIndexNodes:
     async def test_short_sections_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '100000')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         provider = _FakeProvider()
         _set_provider(provider)
         try:
@@ -160,29 +161,29 @@ class TestNodeLayerActive:
 
     def test_active_when_enabled_with_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(_FakeProvider())
         try:
-            assert shared_module.node_layer_active() is True
+            assert generation_module.node_layer_active() is True
         finally:
             _set_provider(None)
             get_settings.cache_clear()
 
     def test_inert_without_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(None)
         try:
-            assert shared_module.node_layer_active() is False
+            assert generation_module.node_layer_active() is False
         finally:
             get_settings.cache_clear()
 
     def test_inert_when_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'false')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(_FakeProvider())
         try:
-            assert shared_module.node_layer_active() is False
+            assert generation_module.node_layer_active() is False
         finally:
             _set_provider(None)
             get_settings.cache_clear()
@@ -207,9 +208,9 @@ class TestLargeEntryWritePathOffloadNonBlocking:
         from app.services.outline_service import parse_outline as real_parse
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(_FakeProvider())
-        big = 'a' * (shared_module._OFFLOAD_MIN_CHARS + 10)  # exceeds the offload threshold
+        big = 'a' * (_OFFLOAD_MIN_CHARS + 10)  # exceeds the offload threshold
         seen: dict[str, bool] = {}
 
         def spy(text: str) -> OutlineNode:
@@ -217,7 +218,7 @@ class TestLargeEntryWritePathOffloadNonBlocking:
             return real_parse(text)
 
         try:
-            with patch('app.tools._shared.parse_outline', spy):
+            with patch('app.tools._generation.parse_outline', spy):
                 await generate_index_nodes_with_timeout(big)
             assert seen['on_main'] is False  # parsed on a worker thread, not the event loop
         finally:
@@ -230,7 +231,7 @@ class TestLargeEntryWritePathOffloadNonBlocking:
         from app.services.outline_service import parse_outline as real_parse
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(_FakeProvider())
         seen: dict[str, bool] = {}
 
@@ -239,7 +240,7 @@ class TestLargeEntryWritePathOffloadNonBlocking:
             return real_parse(text)
 
         try:
-            with patch('app.tools._shared.parse_outline', spy):
+            with patch('app.tools._generation.parse_outline', spy):
                 await generate_index_nodes_with_timeout('# Intro\nbody\n')
             assert seen['on_main'] is True  # small entry stays inline (no thread hop)
         finally:
@@ -263,7 +264,7 @@ class TestTotalWorkBounds:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '3')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         provider = _FakeProvider(value='gist')
         _set_provider(provider)
         text = ''.join(f'# Section {i}\nbody {i}\n' for i in range(20))
@@ -282,7 +283,7 @@ class TestTotalWorkBounds:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '1')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         _set_provider(_FakeProvider(value='gist'))
         # One level-1 section containing a level-2 subsection: the parent is both
         # shallower and longer, so it is the one that keeps its summary.
@@ -308,7 +309,7 @@ class TestTotalWorkBounds:
         """
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '10000')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         provider = _FakeProvider(value='gist')
         _set_provider(provider)
         text = ''.join(f'# Section {i}\nbody\n' for i in range(50))
@@ -333,7 +334,7 @@ class TestTotalWorkBounds:
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT', '4')
-        _refresh_shared_settings(monkeypatch)
+        _refresh_generation_settings(monkeypatch)
         provider = _FakeProvider(value='gist')
         _set_provider(provider)
         text = ''.join(f'# Section {i}\nbody {i}\n' for i in range(80))
@@ -349,7 +350,7 @@ class TestTotalWorkBounds:
                 return 10_000.0
 
         try:
-            with patch('app.tools._shared.time.monotonic', fake_monotonic):
+            with patch('app.tools._generation.time.monotonic', fake_monotonic):
                 rows = await generate_index_nodes_with_timeout(text)
             assert rows is not None
             assert len(rows) == 16
@@ -378,9 +379,9 @@ class TestTotalWorkBounds:
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TIMEOUT_S', '30')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '0.4')
         monkeypatch.setenv('SUMMARY_MAX_CONCURRENT', '1')
-        _refresh_shared_settings(monkeypatch)
-        shared_module._reset_summary_model_semaphore()
-        shared_module._reset_node_summary_semaphore()
+        _refresh_generation_settings(monkeypatch)
+        generation_module._reset_summary_model_semaphore()
+        generation_module._reset_node_summary_semaphore()
         provider = _SlowProvider(delay=0.25)
         _set_provider(provider)
         # Six sections is a SINGLE chunk (chunk size is at least 16), so the whole
@@ -403,8 +404,8 @@ class TestTotalWorkBounds:
         finally:
             _set_provider(None)
             get_settings.cache_clear()
-            shared_module._reset_summary_model_semaphore()
-            shared_module._reset_node_summary_semaphore()
+            generation_module._reset_summary_model_semaphore()
+            generation_module._reset_node_summary_semaphore()
 
     @pytest.mark.asyncio
     async def test_rows_produced_before_the_deadline_are_kept(
@@ -422,9 +423,9 @@ class TestTotalWorkBounds:
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TIMEOUT_S', '30')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '0.5')
         monkeypatch.setenv('SUMMARY_MAX_CONCURRENT', '1')
-        _refresh_shared_settings(monkeypatch)
-        shared_module._reset_summary_model_semaphore()
-        shared_module._reset_node_summary_semaphore()
+        _refresh_generation_settings(monkeypatch)
+        generation_module._reset_summary_model_semaphore()
+        generation_module._reset_node_summary_semaphore()
         provider = _SlowProvider(delay=0.1)
         _set_provider(provider)
         text = ''.join(f'# Section {i}\nbody {i}\n' for i in range(12))
@@ -436,5 +437,5 @@ class TestTotalWorkBounds:
         finally:
             _set_provider(None)
             get_settings.cache_clear()
-            shared_module._reset_summary_model_semaphore()
-            shared_module._reset_node_summary_semaphore()
+            generation_module._reset_summary_model_semaphore()
+            generation_module._reset_node_summary_semaphore()
