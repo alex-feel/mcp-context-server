@@ -251,13 +251,14 @@ async def test_embedding_disabled_skips_semaphore() -> None:
 async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) -> None:
     """Verify warning logged when FTS fails but semantic succeeds."""
     with (
-        patch('app.tools.search.settings') as mock_settings,
-        patch('app.tools.search.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock) as mock_repos,
-        patch('app.tools.search._fts_search_raw', new_callable=AsyncMock) as mock_fts,
-        patch('app.tools.search._semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
-        patch('app.tools.search._apply_reranking', new_callable=AsyncMock) as mock_rerank,
+        patch('app.tools.search.hybrid.settings') as mock_settings,
+        patch('app.tools.search.ranking.settings', mock_settings),
+        patch('app.tools.search.hybrid.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+        patch('app.tools.search.hybrid.ensure_repositories', new_callable=AsyncMock) as mock_repos,
+        patch('app.tools.search.hybrid.fts_search_raw', new_callable=AsyncMock) as mock_fts,
+        patch('app.tools.search.hybrid.semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
+        patch('app.tools.search.hybrid.apply_reranking', new_callable=AsyncMock) as mock_rerank,
     ):
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
@@ -283,7 +284,7 @@ async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) 
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])
 
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         with caplog.at_level(logging.WARNING, logger='app.tools.search'):
             await hybrid_search_context(query='test query')
@@ -295,13 +296,14 @@ async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) 
 async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixture) -> None:
     """Verify warning logged when semantic fails but FTS succeeds."""
     with (
-        patch('app.tools.search.settings') as mock_settings,
-        patch('app.tools.search.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock) as mock_repos,
-        patch('app.tools.search._fts_search_raw', new_callable=AsyncMock) as mock_fts,
-        patch('app.tools.search._semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
-        patch('app.tools.search._apply_reranking', new_callable=AsyncMock) as mock_rerank,
+        patch('app.tools.search.hybrid.settings') as mock_settings,
+        patch('app.tools.search.ranking.settings', mock_settings),
+        patch('app.tools.search.hybrid.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+        patch('app.tools.search.hybrid.ensure_repositories', new_callable=AsyncMock) as mock_repos,
+        patch('app.tools.search.hybrid.fts_search_raw', new_callable=AsyncMock) as mock_fts,
+        patch('app.tools.search.hybrid.semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
+        patch('app.tools.search.hybrid.apply_reranking', new_callable=AsyncMock) as mock_rerank,
     ):
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
@@ -328,7 +330,7 @@ async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixt
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])
 
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         with caplog.at_level(logging.WARNING, logger='app.tools.search'):
             await hybrid_search_context(query='test query')
@@ -340,13 +342,14 @@ async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixt
 async def test_hybrid_search_no_warning_on_success(caplog: pytest.LogCaptureFixture) -> None:
     """Verify no warning logged when both sub-searches succeed."""
     with (
-        patch('app.tools.search.settings') as mock_settings,
-        patch('app.tools.search.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock) as mock_repos,
-        patch('app.tools.search._fts_search_raw', new_callable=AsyncMock) as mock_fts,
-        patch('app.tools.search._semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
-        patch('app.tools.search._apply_reranking', new_callable=AsyncMock) as mock_rerank,
+        patch('app.tools.search.hybrid.settings') as mock_settings,
+        patch('app.tools.search.ranking.settings', mock_settings),
+        patch('app.tools.search.hybrid.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+        patch('app.tools.search.hybrid.ensure_repositories', new_callable=AsyncMock) as mock_repos,
+        patch('app.tools.search.hybrid.fts_search_raw', new_callable=AsyncMock) as mock_fts,
+        patch('app.tools.search.hybrid.semantic_search_raw', new_callable=AsyncMock) as mock_semantic,
+        patch('app.tools.search.hybrid.apply_reranking', new_callable=AsyncMock) as mock_rerank,
     ):
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
@@ -374,7 +377,7 @@ async def test_hybrid_search_no_warning_on_success(caplog: pytest.LogCaptureFixt
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])
 
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         with caplog.at_level(logging.WARNING, logger='app.tools.search'):
             await hybrid_search_context(query='test query')

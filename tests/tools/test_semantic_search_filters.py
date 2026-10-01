@@ -1833,7 +1833,7 @@ class TestSemanticSearchTagsFilter:
 class TestSemanticEmbeddingGenerationStat:
     """The measured query-embedding duration is surfaced in the semantic stats.
 
-    ``_semantic_search_raw`` times the ``embed_query`` call and injects
+    ``semantic_search_raw`` times the ``embed_query`` call and injects
     ``embedding_generation_ms`` (rounded, milliseconds) into the returned stats
     dict; the standalone ``semantic_search_context`` tool passes that dict through
     as its ``stats`` payload, and hybrid search inherits it via ``semantic_stats``.
@@ -1844,9 +1844,9 @@ class TestSemanticEmbeddingGenerationStat:
         monkeypatch: pytest.MonkeyPatch,
         rows: list[dict[str, Any]],
         stats: dict[str, Any],
-    ) -> None:
-        """Stub the embedding provider and repository so no real embedding runs."""
-        import app.tools.search as search_mod
+    ) -> tuple[Any, Any]:
+        """Stub the embedding provider and repository so no real embedding runs, returning both."""
+        import app.tools.search.semantic as search_semantic
 
         class _FakeEmbeddingProvider:
             async def embed_query(self, _query: str) -> list[float]:
@@ -1865,22 +1865,28 @@ class TestSemanticEmbeddingGenerationStat:
             embeddings = _FakeEmbeddingsRepo()
             tags = _FakeTagsRepo()
 
-        async def _fake_ensure_repositories() -> _FakeRepos:
-            return _FakeRepos()
+        provider = _FakeEmbeddingProvider()
+        repos = _FakeRepos()
 
-        monkeypatch.setattr(search_mod, 'get_embedding_provider', lambda: _FakeEmbeddingProvider())
-        monkeypatch.setattr(search_mod, 'ensure_repositories', _fake_ensure_repositories)
+        async def _fake_ensure_repositories() -> _FakeRepos:
+            return repos
+
+        monkeypatch.setattr(search_semantic, 'get_embedding_provider', lambda: provider)
+        monkeypatch.setattr(search_semantic, 'ensure_repositories', _fake_ensure_repositories)
         # No reranking provider so the tool takes the plain (non-overfetch-rerank) path.
-        monkeypatch.setattr(search_mod, 'get_reranking_provider', lambda: None)
+        monkeypatch.setattr(search_semantic, 'get_reranking_provider', lambda: None)
+        return provider, repos
 
     @pytest.mark.asyncio
     async def test_raw_search_injects_embedding_generation_ms(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """_semantic_search_raw adds a non-negative embedding_generation_ms to stats."""
-        from app.tools.search import _semantic_search_raw
+        """semantic_search_raw adds a non-negative embedding_generation_ms to stats."""
+        from app.tools.search.legs import semantic_search_raw
 
-        self._patch_provider_and_repo(monkeypatch, rows=[], stats={'rows_returned': 0})
+        provider, repos = self._patch_provider_and_repo(monkeypatch, rows=[], stats={'rows_returned': 0})
 
-        _results, stats = await _semantic_search_raw(query='hi', limit=5, explain_query=True)
+        _results, stats = await semantic_search_raw(
+            query='hi', limit=5, explain_query=True, repos=repos, embedding_provider=provider,
+        )
 
         assert 'embedding_generation_ms' in stats
         elapsed = stats['embedding_generation_ms']
@@ -1893,7 +1899,7 @@ class TestSemanticEmbeddingGenerationStat:
     async def test_tool_stats_carry_embedding_generation_ms(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """semantic_search_context surfaces embedding_generation_ms under stats when
         explain_query=True (the documented HybridSemanticStatsDict field)."""
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         rows = [
             {
@@ -1915,7 +1921,7 @@ class TestSemanticEmbeddingGenerationStat:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Without explain_query the tool emits no stats block at all."""
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         self._patch_provider_and_repo(monkeypatch, rows=[], stats={'rows_returned': 0})
 
@@ -1938,15 +1944,17 @@ class TestSemanticValidationErrorStats:
     async def test_validation_error_stats_include_backend(self) -> None:
         """The error-path stats dict includes backend (the active storage backend type)."""
         from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
         from unittest.mock import patch
 
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.semantic.get_reranking_provider', return_value=None),
+            patch('app.tools.search.semantic.ensure_repositories', new=AsyncMock(return_value=MagicMock())),
             patch(
-                'app.tools.search._semantic_search_raw',
+                'app.tools.search.semantic.semantic_search_raw',
                 AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', ['bad operator: nope'])),
             ),
         ):
@@ -1964,10 +1972,10 @@ class TestSemanticValidationErrorStats:
         # The backend key must be present and match the backend the tool actually
         # resolves (the module-level settings binding the production code reads),
         # so the error-path stats shape matches every other stats path.
-        import app.tools.search as search_mod
+        import app.tools.search.limits as search_limits
 
         assert 'backend' in stats
-        assert stats['backend'] == search_mod.settings.storage.backend_type
+        assert stats['backend'] == search_limits.settings.storage.backend_type
         # The other documented error-path stat keys accompany it, including the
         # semantic shape's embedding timing counter (zeroed: no query executed).
         assert stats['execution_time_ms'] == 0.0
@@ -1979,15 +1987,17 @@ class TestSemanticValidationErrorStats:
     async def test_validation_error_omits_stats_without_explain_query(self) -> None:
         """Without explain_query the validation-error response carries no stats block."""
         from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
         from unittest.mock import patch
 
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.semantic.get_reranking_provider', return_value=None),
+            patch('app.tools.search.semantic.ensure_repositories', new=AsyncMock(return_value=MagicMock())),
             patch(
-                'app.tools.search._semantic_search_raw',
+                'app.tools.search.semantic.semantic_search_raw',
                 AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', ['bad operator: nope'])),
             ),
         ):

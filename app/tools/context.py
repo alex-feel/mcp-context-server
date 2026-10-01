@@ -512,7 +512,7 @@ async def get_context_by_ids(
                 entry['updated_at'] = cast(str, canonical_timestamp(updated_at_val))
 
             if include_summary:
-                # Mirror search-tool normalization (app/tools/search.py:140-145):
+                # Mirror search-tool normalization (apply_search_display_format in app/tools/search/ranking.py):
                 # surface an empty string for the "feature ON but no data yet" state.
                 # Tri-state contract:
                 #   include_summary=False (default)              -> key omitted (consumers see entry.get('summary') == None)

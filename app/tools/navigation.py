@@ -51,9 +51,9 @@ from app.services.text_lines import split_lines_with_offsets
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.tools._validation import reject_unstorable_input
-from app.tools.search import MAX_FILTER_TAGS
-from app.tools.search import MAX_METADATA_FILTERS
-from app.tools.search import filter_caps_error
+from app.tools.search.limits import MAX_FILTER_TAGS
+from app.tools.search.limits import MAX_METADATA_FILTERS
+from app.tools.search.limits import filter_caps_error
 from app.types import GrepContentMatchDict
 from app.types import GrepContextResultDict
 from app.types import GrepCountDict

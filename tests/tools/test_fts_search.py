@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
@@ -1484,12 +1485,13 @@ class TestFtsValidationErrorStats:
     async def test_validation_error_stats_include_backend(self) -> None:
         """The error-path stats dict includes backend (the active storage backend type)."""
         from app.repositories.fts_repository.faults import FtsValidationError
-        from app.tools.search import fts_search_context
+        from app.tools.search.fts import fts_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.ensure_repositories', new=AsyncMock(return_value=MagicMock())),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.fts.fts_search_raw',
                 AsyncMock(side_effect=FtsValidationError('Invalid filters', ['bad operator: nope'])),
             ),
         ):
@@ -1508,10 +1510,10 @@ class TestFtsValidationErrorStats:
         # The backend key must be present and match the backend the tool actually
         # resolves (the module-level settings binding the production code reads),
         # so the error-path stats shape matches every other stats path.
-        import app.tools.search as search_mod
+        import app.tools.search.limits as search_limits
 
         assert 'backend' in stats
-        assert stats['backend'] == search_mod.settings.storage.backend_type
+        assert stats['backend'] == search_limits.settings.storage.backend_type
         # The other documented error-path stat keys accompany it.
         assert stats['execution_time_ms'] == 0.0
         assert stats['filters_applied'] == 0
@@ -1526,12 +1528,13 @@ class TestFtsValidationErrorStats:
     async def test_validation_error_omits_stats_without_explain_query(self) -> None:
         """Without explain_query the validation-error response carries no stats block."""
         from app.repositories.fts_repository.faults import FtsValidationError
-        from app.tools.search import fts_search_context
+        from app.tools.search.fts import fts_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.ensure_repositories', new=AsyncMock(return_value=MagicMock())),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.fts.fts_search_raw',
                 AsyncMock(side_effect=FtsValidationError('Invalid filters', ['bad operator: nope'])),
             ),
         ):

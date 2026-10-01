@@ -565,7 +565,7 @@ class TestAdaptiveFtsMode:
 
     def test_short_query_uses_match_mode(self) -> None:
         """Queries below threshold use match mode (AND logic)."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='python async',
@@ -577,7 +577,7 @@ class TestAdaptiveFtsMode:
 
     def test_exact_threshold_uses_boolean_mode(self) -> None:
         """Queries at exactly the threshold switch to boolean mode."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='python async await patterns',
@@ -593,7 +593,7 @@ class TestAdaptiveFtsMode:
         websearch_to_tsquery tolerated the same input -- a recall-parity divergence)."""
         import sqlite3
 
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         db = sqlite3.connect(':memory:')
         db.execute('CREATE VIRTUAL TABLE docs USING fts5(body)')
@@ -623,7 +623,7 @@ class TestAdaptiveFtsMode:
         import sqlite3
 
         from app.repositories.fts_repository.query import transform_query_sqlite
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         db = sqlite3.connect(':memory:')
         db.execute("CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='porter unicode61')")
@@ -646,7 +646,7 @@ class TestAdaptiveFtsMode:
         import sqlite3
 
         from app.repositories.fts_repository.query import transform_query_sqlite
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         db = sqlite3.connect(':memory:')
         db.execute("CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='porter unicode61')")
@@ -667,7 +667,7 @@ class TestAdaptiveFtsMode:
         quoted) so they are not literal searchable terms -- matching PostgreSQL's
         websearch_to_tsquery, which removes them as stopwords (cross-backend recall parity).
         'near' is KEPT (websearch_to_tsquery keeps it)."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         transformed, mode = _prepare_hybrid_fts_query(
             'alpha AND beta OR gamma NOT delta near epsilon',
@@ -683,7 +683,7 @@ class TestAdaptiveFtsMode:
 
     def test_long_query_uses_boolean_mode(self) -> None:
         """Long queries above threshold use boolean mode (OR logic)."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='DRY extraction embedding helper timeout semaphore pattern',
@@ -695,7 +695,7 @@ class TestAdaptiveFtsMode:
 
     def test_postgresql_uses_lowercase_or(self) -> None:
         """PostgreSQL backend uses lowercase 'or' keyword."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='alpha beta gamma delta',
@@ -708,7 +708,7 @@ class TestAdaptiveFtsMode:
 
     def test_sqlite_uses_uppercase_or(self) -> None:
         """SQLite backend uses uppercase 'OR' keyword."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='alpha beta gamma delta',
@@ -720,7 +720,7 @@ class TestAdaptiveFtsMode:
 
     def test_single_char_words_excluded_from_count(self) -> None:
         """Single-character words are not counted as significant."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         # "a b c python async" has only 2 significant words (python, async)
         query, mode = _prepare_hybrid_fts_query(
@@ -732,7 +732,7 @@ class TestAdaptiveFtsMode:
 
     def test_hyphen_sanitization(self) -> None:
         """Hyphens are replaced with spaces to prevent NOT interpretation."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='context-server async-await error-handling patterns',
@@ -751,7 +751,7 @@ class TestAdaptiveFtsMode:
         a <-> b instead of ANDing the parts unordered -- otherwise the two
         backends return different recall for the identical hybrid query.
         """
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         pg_query, pg_mode = _prepare_hybrid_fts_query(
             query='a-b c-d e-f g-h',
@@ -779,7 +779,7 @@ class TestAdaptiveFtsMode:
         following ' or ' term into an adjacency phrase, collapsing recall to near zero.
         Splitting on it yields the same fragments the SQLite sanitizer produces.
         """
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='al"pha-beta gamma delta epsilon',
@@ -793,7 +793,7 @@ class TestAdaptiveFtsMode:
 
     def test_unbalanced_quote_does_not_swallow_following_or_terms(self) -> None:
         """A stray quote in one term must not phrase-capture the rest of the OR join."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         pg_query, pg_mode = _prepare_hybrid_fts_query(
             query='quo"kkazz wombatzz alpha beta',
@@ -815,7 +815,7 @@ class TestAdaptiveFtsMode:
 
     def test_threshold_boundary_below(self) -> None:
         """Query with exactly threshold-1 significant words stays in match mode."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='alpha beta gamma',
@@ -827,7 +827,7 @@ class TestAdaptiveFtsMode:
 
     def test_empty_after_sanitization_fallback(self) -> None:
         """If all words sanitize to empty, falls back to match mode."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         # Single-char words with hyphens that would sanitize to empty
         query, mode = _prepare_hybrid_fts_query(
@@ -839,7 +839,7 @@ class TestAdaptiveFtsMode:
 
     def test_custom_threshold(self) -> None:
         """Custom threshold value is respected."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         # With threshold=2, even 2-word queries switch to OR
         query, mode = _prepare_hybrid_fts_query(
@@ -852,7 +852,7 @@ class TestAdaptiveFtsMode:
 
     def test_whitespace_handling(self) -> None:
         """Extra whitespace in query is handled gracefully."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='  alpha   beta   gamma   delta  ',
@@ -864,7 +864,7 @@ class TestAdaptiveFtsMode:
 
     def test_quoted_phrase_preserved_in_boolean_mode(self) -> None:
         """Quoted phrases are preserved as single tokens in OR mode."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='"error handling" timeout async patterns',
@@ -876,7 +876,7 @@ class TestAdaptiveFtsMode:
 
     def test_multiple_quoted_phrases_preserved(self) -> None:
         """Multiple quoted phrases are each preserved intact."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='"error handling" "async await" timeout patterns',
@@ -889,7 +889,7 @@ class TestAdaptiveFtsMode:
 
     def test_quoted_phrase_not_hyphen_sanitized(self) -> None:
         """Quoted phrases containing hyphens are NOT sanitized."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query(
             query='"error-handling" timeout async patterns',
@@ -902,7 +902,7 @@ class TestAdaptiveFtsMode:
     def test_sqlite_short_match_returns_raw_query_for_single_transform(self) -> None:
         """A short SQLite query is returned RAW (not pre-sanitized) so transform_query_sqlite
         sanitizes it exactly once -- identically to standalone fts_search_context."""
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         query, mode = _prepare_hybrid_fts_query('python async', or_threshold=4, backend_type='sqlite')
         assert mode == 'match'
@@ -919,7 +919,7 @@ class TestAdaptiveFtsMode:
         independently AND-ed literals, mirroring PostgreSQL's independently AND-ed lexemes.
         """
         from app.repositories.fts_repository.query import transform_query_sqlite
-        from app.tools.search import _prepare_hybrid_fts_query
+        from app.tools.search.hybrid import _prepare_hybrid_fts_query
 
         raw = 'ab"cd ef'
         # Hybrid short path returns the raw query; the single downstream transform escapes it.
@@ -948,22 +948,22 @@ class TestHybridAllModesFailedValidationResponse:
     async def test_error_response_keys_and_deduplicated_messages(self) -> None:
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.repositories.fts_repository.faults import FtsValidationError
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         shared_messages = [
             "Invalid metadata filter {'key': 'a', 'operator': 'nope'}: unsupported operator",
         ]
 
         with (
-            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=MagicMock())),
-            patch('app.tools.search.get_embedding_provider', return_value=object()),
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.hybrid.ensure_repositories', AsyncMock(return_value=MagicMock())),
+            patch('app.tools.search.hybrid.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.hybrid.fts_search_raw',
                 AsyncMock(side_effect=FtsValidationError('Invalid filters', list(shared_messages))),
             ),
             patch(
-                'app.tools.search._semantic_search_raw',
+                'app.tools.search.hybrid.semantic_search_raw',
                 AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(shared_messages))),
             ),
         ):
@@ -993,20 +993,20 @@ class TestHybridAllModesFailedValidationResponse:
         them never hits a KeyError on the error branch."""
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.repositories.fts_repository.faults import FtsValidationError
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         messages = ['bad operator: nope']
 
         with (
-            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=MagicMock())),
-            patch('app.tools.search.get_embedding_provider', return_value=object()),
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.hybrid.ensure_repositories', AsyncMock(return_value=MagicMock())),
+            patch('app.tools.search.hybrid.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.hybrid.fts_search_raw',
                 AsyncMock(side_effect=FtsValidationError('Invalid filters', list(messages))),
             ),
             patch(
-                'app.tools.search._semantic_search_raw',
+                'app.tools.search.hybrid.semantic_search_raw',
                 AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(messages))),
             ),
         ):
@@ -1030,20 +1030,20 @@ class TestHybridAllModesFailedValidationResponse:
         a KeyError on the error branch."""
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
         from app.repositories.fts_repository.faults import FtsValidationError
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         messages = ['bad operator: nope']
 
         with (
-            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=MagicMock())),
-            patch('app.tools.search.get_embedding_provider', return_value=object()),
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.hybrid.ensure_repositories', AsyncMock(return_value=MagicMock())),
+            patch('app.tools.search.hybrid.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.hybrid.fts_search_raw',
                 AsyncMock(side_effect=FtsValidationError('Invalid filters', list(messages))),
             ),
             patch(
-                'app.tools.search._semantic_search_raw',
+                'app.tools.search.hybrid.semantic_search_raw',
                 AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(messages))),
             ),
         ):
@@ -1085,8 +1085,8 @@ class TestHybridFilterCapsValidationStats:
 
     @pytest.mark.asyncio
     async def test_tags_cap_error_attaches_stats_under_explain_query(self) -> None:
-        from app.tools.search import MAX_FILTER_TAGS
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         result = await hybrid_search_context(query='anything', tags=oversized, rrf_k=42, explain_query=True)
@@ -1113,8 +1113,8 @@ class TestHybridFilterCapsValidationStats:
 
     @pytest.mark.asyncio
     async def test_tags_cap_error_omits_stats_without_explain_query(self) -> None:
-        from app.tools.search import MAX_FILTER_TAGS
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
+        from app.tools.search.limits import MAX_FILTER_TAGS
 
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         result = await hybrid_search_context(query='anything', tags=oversized)
@@ -1124,8 +1124,8 @@ class TestHybridFilterCapsValidationStats:
 
     @pytest.mark.asyncio
     async def test_metadata_filters_cap_error_attaches_stats_under_explain_query(self) -> None:
-        from app.tools.search import MAX_METADATA_FILTERS
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
+        from app.tools.search.limits import MAX_METADATA_FILTERS
 
         oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
         result = await hybrid_search_context(query='anything', metadata_filters=oversized, explain_query=True)
@@ -1158,7 +1158,7 @@ class TestHybridPartialDegradationResponse:
     async def test_semantic_failure_surfaces_warning_and_validation_errors(self) -> None:
         """Semantic fails validation, FTS succeeds: results returned, warning + details present."""
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         semantic_messages = [
             "Invalid metadata filter {'key': 'a', 'operator': 'nope'}: unsupported operator",
@@ -1172,12 +1172,12 @@ class TestHybridPartialDegradationResponse:
         ]
 
         with (
-            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=self._repos_with_tags())),
-            patch('app.tools.search.get_embedding_provider', return_value=object()),
-            patch('app.tools.search.get_reranking_provider', return_value=None),
-            patch('app.tools.search._fts_search_raw', AsyncMock(return_value=(fts_rows, {}))),
+            patch('app.tools.search.hybrid.ensure_repositories', AsyncMock(return_value=self._repos_with_tags())),
+            patch('app.tools.search.hybrid.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+            patch('app.tools.search.hybrid.fts_search_raw', AsyncMock(return_value=(fts_rows, {}))),
             patch(
-                'app.tools.search._semantic_search_raw',
+                'app.tools.search.hybrid.semantic_search_raw',
                 AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(semantic_messages))),
             ),
         ):
@@ -1208,7 +1208,7 @@ class TestHybridPartialDegradationResponse:
     async def test_fts_failure_surfaces_warning_and_validation_errors(self) -> None:
         """FTS fails validation, semantic succeeds: mirror case with FTS-prefixed warning."""
         from app.repositories.fts_repository.faults import FtsValidationError
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         fts_messages = ['invalid boolean expression near ")"']
         semantic_rows: list[dict[str, Any]] = [
@@ -1220,14 +1220,14 @@ class TestHybridPartialDegradationResponse:
         ]
 
         with (
-            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=self._repos_with_tags())),
-            patch('app.tools.search.get_embedding_provider', return_value=object()),
-            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search.hybrid.ensure_repositories', AsyncMock(return_value=self._repos_with_tags())),
+            patch('app.tools.search.hybrid.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.hybrid.fts_search_raw',
                 AsyncMock(side_effect=FtsValidationError('Invalid filters', list(fts_messages))),
             ),
-            patch('app.tools.search._semantic_search_raw', AsyncMock(return_value=(semantic_rows, {}))),
+            patch('app.tools.search.hybrid.semantic_search_raw', AsyncMock(return_value=(semantic_rows, {}))),
         ):
             result = await hybrid_search_context(
                 query='python async',

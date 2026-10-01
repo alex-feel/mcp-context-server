@@ -29,11 +29,11 @@ def clear_settings_cache() -> Generator[None, None, None]:
 
 
 def _refresh_search_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Rebuild the settings singleton and refresh the module-level binding in app.tools.search."""
-    import app.tools.search as search_module
+    """Rebuild the settings singleton and refresh the binding of the module that reads the query instruction."""
+    import app.tools.search.legs as search_legs
 
     get_settings.cache_clear()
-    monkeypatch.setattr(search_module, 'settings', get_settings())
+    monkeypatch.setattr(search_legs, 'settings', get_settings())
 
 
 def _mock_embedding_provider(dim: int = 1024) -> MagicMock:
@@ -60,11 +60,11 @@ async def test_semantic_search_unset_instruction_sends_bare_query(monkeypatch: p
     provider = _mock_embedding_provider()
 
     with (
-        patch('app.tools.search.get_embedding_provider', return_value=provider),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock, return_value=_mock_repos()),
+        patch('app.tools.search.semantic.get_embedding_provider', return_value=provider),
+        patch('app.tools.search.semantic.get_reranking_provider', return_value=None),
+        patch('app.tools.search.semantic.ensure_repositories', new_callable=AsyncMock, return_value=_mock_repos()),
     ):
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         result = await semantic_search_context(query='find the quarterly report')
 
@@ -80,11 +80,11 @@ async def test_semantic_search_empty_instruction_sends_bare_query(monkeypatch: p
     provider = _mock_embedding_provider()
 
     with (
-        patch('app.tools.search.get_embedding_provider', return_value=provider),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock, return_value=_mock_repos()),
+        patch('app.tools.search.semantic.get_embedding_provider', return_value=provider),
+        patch('app.tools.search.semantic.get_reranking_provider', return_value=None),
+        patch('app.tools.search.semantic.ensure_repositories', new_callable=AsyncMock, return_value=_mock_repos()),
     ):
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         await semantic_search_context(query='find the quarterly report')
 
@@ -99,11 +99,11 @@ async def test_semantic_search_set_instruction_prefixes_embedded_text_only(monke
     provider = _mock_embedding_provider()
 
     with (
-        patch('app.tools.search.get_embedding_provider', return_value=provider),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock, return_value=_mock_repos()),
+        patch('app.tools.search.semantic.get_embedding_provider', return_value=provider),
+        patch('app.tools.search.semantic.get_reranking_provider', return_value=None),
+        patch('app.tools.search.semantic.ensure_repositories', new_callable=AsyncMock, return_value=_mock_repos()),
     ):
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         result = await semantic_search_context(query='find the quarterly report')
 
@@ -121,12 +121,12 @@ async def test_hybrid_semantic_leg_prefixes_embedded_text_and_fts_leg_stays_bare
     provider = _mock_embedding_provider()
 
     with (
-        patch('app.tools.search.get_embedding_provider', return_value=provider),
-        patch('app.tools.search.get_reranking_provider', return_value=None),
-        patch('app.tools.search.ensure_repositories', new_callable=AsyncMock, return_value=_mock_repos()),
-        patch('app.tools.search._fts_search_raw', new_callable=AsyncMock, return_value=([], None)) as mock_fts,
+        patch('app.tools.search.hybrid.get_embedding_provider', return_value=provider),
+        patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+        patch('app.tools.search.hybrid.ensure_repositories', new_callable=AsyncMock, return_value=_mock_repos()),
+        patch('app.tools.search.hybrid.fts_search_raw', new_callable=AsyncMock, return_value=([], None)) as mock_fts,
     ):
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         result = await hybrid_search_context(query='alpha beta')
 

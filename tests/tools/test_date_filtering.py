@@ -306,7 +306,7 @@ class TestSearchContextDateFiltering:
 
         future_date = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
 
-        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=self.mock_repos):
             result = await search_context(
                 thread_id='date-test-1',
                 start_date=future_date,
@@ -330,7 +330,7 @@ class TestSearchContextDateFiltering:
         # Expected expanded value includes end-of-day time with microsecond precision
         expected_end_date = f'{past_date}T23:59:59.999999'
 
-        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=self.mock_repos):
             result = await search_context(
                 thread_id='date-test-2',
                 end_date=past_date,
@@ -366,7 +366,7 @@ class TestSearchContextDateFiltering:
         # Expected expanded end_date includes end-of-day time with microsecond precision
         expected_end_date = f'{tomorrow}T23:59:59.999999'
 
-        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=self.mock_repos):
             result = await search_context(
                 thread_id='date-test-3',
                 start_date=today,
@@ -412,7 +412,7 @@ class TestSearchContextDateFiltering:
         start = (now - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S')
         end = (now + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S')
 
-        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=self.mock_repos):
             await search_context(
                 thread_id='date-test-6',
                 start_date=start,
@@ -429,7 +429,7 @@ class TestSearchContextDateFiltering:
         """Test that no date filter passes None to repository."""
         self.mock_repos.context.search_contexts = AsyncMock(return_value=([], {}))
 
-        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=self.mock_repos):
             await search_context(
                 thread_id='date-test-7',
             limit=50,
@@ -619,9 +619,10 @@ class TestSemanticSearchDateFiltering:
         today = datetime.now(UTC).strftime('%Y-%m-%d')
 
         with (
-            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.tools.search.semantic.ensure_repositories', return_value=self.mock_repos),
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
+            patch('app.tools.search.semantic.settings') as mock_settings,
+            patch('app.tools.search.ranking.settings', mock_settings),
         ):
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
@@ -660,9 +661,10 @@ class TestSemanticSearchDateFiltering:
         expected_end_date = f'{today}T23:59:59.999999'
 
         with (
-            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.tools.search.semantic.ensure_repositories', return_value=self.mock_repos),
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
+            patch('app.tools.search.semantic.settings') as mock_settings,
+            patch('app.tools.search.ranking.settings', mock_settings),
         ):
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
@@ -696,9 +698,10 @@ class TestSemanticSearchDateFiltering:
         expected_end_date = f'{tomorrow}T23:59:59.999999'
 
         with (
-            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.tools.search.semantic.ensure_repositories', return_value=self.mock_repos),
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
+            patch('app.tools.search.semantic.settings') as mock_settings,
+            patch('app.tools.search.ranking.settings', mock_settings),
         ):
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
@@ -725,7 +728,7 @@ class TestSemanticSearchDateFiltering:
 
         with (
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
+            patch('app.tools.search.semantic.settings') as mock_settings,
         ):
             mock_settings.semantic_search.enabled = True
 
@@ -747,7 +750,7 @@ class TestSemanticSearchDateFiltering:
 
         with (
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
+            patch('app.tools.search.semantic.settings') as mock_settings,
         ):
             mock_settings.semantic_search.enabled = True
 
@@ -778,9 +781,10 @@ class TestSemanticSearchDateFiltering:
         end = '2025-11-29T18:00:00'
 
         with (
-            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.tools.search.semantic.ensure_repositories', return_value=self.mock_repos),
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
+            patch('app.tools.search.semantic.settings') as mock_settings,
+            patch('app.tools.search.ranking.settings', mock_settings),
         ):
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
@@ -812,9 +816,10 @@ class TestSemanticSearchDateFiltering:
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
 
         with (
-            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.tools.search.semantic.ensure_repositories', return_value=self.mock_repos),
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
+            patch('app.tools.search.semantic.settings') as mock_settings,
+            patch('app.tools.search.ranking.settings', mock_settings),
         ):
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'

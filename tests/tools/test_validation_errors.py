@@ -286,7 +286,7 @@ class TestSearchContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
-        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid source works fine
             result = await search_context(limit=50, source='user')
@@ -295,7 +295,7 @@ class TestSearchContextValidation:
     @pytest.mark.asyncio
     async def test_invalid_content_type(self, mock_repos):
         """Test that invalid content_type in search returns proper error."""
-        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos):
             # Should work with valid content types
             result = await search_context(limit=50, content_type='text')
             assert 'results' in result
@@ -309,7 +309,7 @@ class TestSearchContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
-        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid limits work fine
             result = await search_context(limit=1)
@@ -323,7 +323,7 @@ class TestSearchContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
-        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid offsets work fine
             result = await search_context(limit=50, offset=0)
@@ -337,7 +337,7 @@ class TestSearchContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies max limit works.
         """
-        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid max limit works fine
             result = await search_context(limit=100)
@@ -500,7 +500,7 @@ class TestEdgeCasesAndCombinations:
     @pytest.mark.asyncio
     async def test_search_with_all_filters(self, mock_repos):
         """Test search with all possible filters."""
-        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos):
             # Should succeed with all valid filters
             result = await search_context(
                 thread_id='test-thread',
@@ -547,7 +547,7 @@ class TestExceptionHandling:
     @pytest.mark.asyncio
     async def test_repository_exception_search(self, mock_repos):
         """Test repository exception in search_context raises ToolError."""
-        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.side_effect = Exception('Search failed')
 
             with pytest.raises(ToolError) as exc_info:

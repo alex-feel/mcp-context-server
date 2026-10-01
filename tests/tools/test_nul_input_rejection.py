@@ -85,7 +85,7 @@ class TestReadPathNulRejection:
     @pytest.mark.asyncio
     async def test_search_context_thread_id_rejected(self) -> None:
         """search_context rejects a NUL thread_id before it reaches the filter bind."""
-        from app.tools.search import search_context
+        from app.tools.search.browse import search_context
 
         with pytest.raises(ToolError):
             await search_context(thread_id=f'thread{NUL}')
@@ -93,7 +93,7 @@ class TestReadPathNulRejection:
     @pytest.mark.asyncio
     async def test_search_context_tag_rejected(self) -> None:
         """search_context rejects a NUL tag filter before it reaches the filter bind."""
-        from app.tools.search import search_context
+        from app.tools.search.browse import search_context
 
         with pytest.raises(ToolError):
             await search_context(tags=[f'ta{NUL}g'])

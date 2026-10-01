@@ -16,7 +16,6 @@ from fastmcp.exceptions import ToolError
 import app.server
 import app.startup
 import app.tools._generation as generation_module
-import app.tools.search as search_tools
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.startup import ensure_repositories
@@ -26,6 +25,9 @@ from app.startup import set_embedding_provider
 from app.startup import set_repositories
 from app.startup import set_reranking_provider
 from app.startup import set_summary_provider
+from app.tools.search.fts import fts_search_context
+from app.tools.search.hybrid import hybrid_search_context
+from app.tools.search.semantic import semantic_search_context
 
 store_context = app.server.store_context
 update_context = app.server.update_context
@@ -490,15 +492,16 @@ class TestSummarySearchDisplay:
         mock_repos.images.get_images_for_context = AsyncMock(return_value=[])
 
         with (
-            patch('app.tools.search.ensure_repositories', new=AsyncMock(return_value=mock_repos)),
+            patch('app.tools.search.semantic.ensure_repositories', new=AsyncMock(return_value=mock_repos)),
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
+            patch('app.tools.search.semantic.settings') as mock_settings,
+            patch('app.tools.search.ranking.settings', mock_settings),
         ):
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
             mock_settings.search.truncation_length = 150
 
-            result = await search_tools.semantic_search_context(
+            result = await semantic_search_context(
                 query='test query',
                 limit=10,
             )
@@ -538,16 +541,19 @@ class TestSummarySearchDisplay:
         mock_fts_status.in_progress = False
 
         with (
-            patch('app.tools.search.ensure_repositories', new=AsyncMock(return_value=mock_repos)),
-            patch('app.tools.search.settings') as mock_settings,
-            patch('app.tools.search.get_fts_migration_status', return_value=mock_fts_status),
+            patch('app.tools.search.fts.ensure_repositories', new=AsyncMock(return_value=mock_repos)),
+            patch('app.tools.search.fts.settings') as mock_settings,
+            patch('app.tools.search.legs.settings', mock_settings),
+            patch('app.tools.search.ranking.settings', mock_settings),
+            patch('app.tools.search.fts.get_fts_migration_status', return_value=mock_fts_status),
+            patch('app.tools.search.legs.get_fts_migration_status', return_value=mock_fts_status),
         ):
             mock_settings.fts.enabled = True
             mock_settings.fts.language = 'english'
             mock_settings.reranking.enabled = False
             mock_settings.search.truncation_length = 150
 
-            result = await search_tools.fts_search_context(
+            result = await fts_search_context(
                 query='test query',
                 limit=10,
             )
@@ -608,10 +614,13 @@ class TestSummarySearchDisplay:
         mock_fts_status.in_progress = False
 
         with (
-            patch('app.tools.search.ensure_repositories', new=AsyncMock(return_value=mock_repos)),
+            patch('app.tools.search.hybrid.ensure_repositories', new=AsyncMock(return_value=mock_repos)),
             patch('app.startup._embedding_provider', mock_embedding_provider),
-            patch('app.tools.search.settings') as mock_settings,
-            patch('app.tools.search.get_fts_migration_status', return_value=mock_fts_status),
+            patch('app.tools.search.hybrid.settings') as mock_settings,
+            patch('app.tools.search.legs.settings', mock_settings),
+            patch('app.tools.search.ranking.settings', mock_settings),
+            patch('app.tools.search.limits.settings', mock_settings),
+            patch('app.tools.search.legs.get_fts_migration_status', return_value=mock_fts_status),
         ):
             mock_settings.hybrid_search.enabled = True
             mock_settings.hybrid_search.rrf_k = 60
@@ -626,7 +635,7 @@ class TestSummarySearchDisplay:
             mock_settings.storage.backend_type = 'sqlite'
             mock_settings.search.truncation_length = 150
 
-            result = await search_tools.hybrid_search_context(
+            result = await hybrid_search_context(
                 query='test query',
                 limit=10,
             )

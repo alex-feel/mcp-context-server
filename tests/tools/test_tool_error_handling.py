@@ -73,7 +73,10 @@ def mock_server_dependencies(mock_repos):
     """
     with (
         patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-        patch('app.tools.search.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.semantic.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.fts.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.hybrid.ensure_repositories', return_value=mock_repos),
         patch('app.tools.discovery.ensure_repositories', return_value=mock_repos),
     ):
         yield mock_repos

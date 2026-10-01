@@ -25,7 +25,7 @@ from app.types import MetadataDict
 MAX_IMAGES_PER_ENTRY = 10
 
 # Single source of truth for the per-entry tag WRITE-path limits (the read/filter
-# side has its own MAX_FILTER_TAGS cap in app/tools/search.py). Enforced in three
+# side has its own MAX_FILTER_TAGS cap in app/tools/search/limits.py). Enforced in three
 # aligned places, exactly like MAX_IMAGES_PER_ENTRY: the Pydantic models below,
 # the shared validation chokepoint (tag_limits_error in app/tools/_validation.py,
 # covering store_context, update_context, and both batch tools), and the

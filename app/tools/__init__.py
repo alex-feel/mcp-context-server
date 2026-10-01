@@ -3,7 +3,9 @@ MCP tool implementations for mcp-context-server.
 
 This package contains all MCP tool functions, organized by domain:
 - context.py: store_context, get_context_by_ids, update_context, delete_context
-- search.py: search_context, semantic_search_context, fts_search_context, hybrid_search_context
+- search/: search_context (browse.py), semantic_search_context (semantic.py), fts_search_context
+  (fts.py), hybrid_search_context (hybrid.py), the raw semantic and FTS legs they share (legs.py),
+  reranking and result display formatting (ranking.py), and argument bounds and filter caps (limits.py)
 - discovery.py: list_threads, get_statistics
 - batch/: store_context_batch (store.py), update_context_batch (update.py), delete_context_batch
   (delete.py), and the per-entry validation they share (entry_validation.py)
@@ -41,10 +43,10 @@ from app.tools.discovery import list_threads
 from app.tools.navigation import grep_context
 from app.tools.navigation import navigate_context
 from app.tools.navigation import read_context_range
-from app.tools.search import fts_search_context
-from app.tools.search import hybrid_search_context
-from app.tools.search import search_context
-from app.tools.search import semantic_search_context
+from app.tools.search.browse import search_context
+from app.tools.search.fts import fts_search_context
+from app.tools.search.hybrid import hybrid_search_context
+from app.tools.search.semantic import semantic_search_context
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP

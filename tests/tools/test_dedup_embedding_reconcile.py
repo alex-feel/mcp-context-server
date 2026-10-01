@@ -520,9 +520,12 @@ class TestSemanticDistanceContractWording:
 
     def test_search_tool_drops_fixed_threshold_heuristic(self) -> None:
         """The misleading fixed-band heuristic is gone; variant wording is present."""
-        content = Path('app/tools/search.py').read_text(encoding='utf-8')
-        assert '<0.5 very similar' not in content
-        assert 'negated inner product' in content
+        paths = sorted(Path('app/tools/search').glob('*.py'))
+        assert paths
+        for path in paths:
+            assert '<0.5 very similar' not in path.read_text(encoding='utf-8'), path
+        for name in ('semantic.py', 'hybrid.py'):
+            assert 'negated inner product' in Path('app/tools/search', name).read_text(encoding='utf-8'), name
 
     def test_types_describe_variant_aware_distance(self) -> None:
         """TypedDicts no longer assert an unconditional L2 Euclidean distance."""

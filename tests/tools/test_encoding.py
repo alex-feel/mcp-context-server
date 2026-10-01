@@ -258,7 +258,7 @@ class TestUTF8Encoding:
         self.mock_repos.context.search_contexts = AsyncMock(return_value=(mock_entries, {}))
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=['тест', 'юникод'])
 
-        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.browse.ensure_repositories', return_value=self.mock_repos):
             result = await search_context(
                 thread_id='test-thread',
                 metadata={'language': 'русский'},

@@ -9,13 +9,23 @@ never returned at all. These tests page through a fixed corpus and assert the
 concatenated pages reproduce the unpaginated prefix exactly.
 """
 
+from types import ModuleType
 from typing import Any
 
 import pytest
 
-import app.tools.search as search_mod
+import app.tools.search.fts as search_fts
+import app.tools.search.hybrid as search_hybrid
+import app.tools.search.limits as search_limits
+import app.tools.search.semantic as search_semantic
 
 CORPUS_SIZE = 25
+
+TOOL_MODULES: dict[str, ModuleType] = {
+    'semantic_search_context': search_semantic,
+    'fts_search_context': search_fts,
+    'hybrid_search_context': search_hybrid,
+}
 
 
 def _corpus() -> list[dict[str, Any]]:
@@ -114,11 +124,14 @@ def raw_search_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     async def fake_ensure_repositories() -> _FakeRepos:
         return _FakeRepos()
 
-    monkeypatch.setattr(search_mod, '_semantic_search_raw', fake_raw)
-    monkeypatch.setattr(search_mod, '_fts_search_raw', fake_raw)
-    monkeypatch.setattr(search_mod, 'ensure_repositories', fake_ensure_repositories)
-    monkeypatch.setattr(search_mod, 'get_reranking_provider', lambda: _ReverseReranker())
-    monkeypatch.setattr(search_mod, 'get_embedding_provider', lambda: object())
+    for module in (search_semantic, search_hybrid):
+        monkeypatch.setattr(module, 'semantic_search_raw', fake_raw)
+        monkeypatch.setattr(module, 'get_embedding_provider', lambda: object())
+    for module in (search_fts, search_hybrid):
+        monkeypatch.setattr(module, 'fts_search_raw', fake_raw)
+    for module in TOOL_MODULES.values():
+        monkeypatch.setattr(module, 'ensure_repositories', fake_ensure_repositories)
+        monkeypatch.setattr(module, 'get_reranking_provider', lambda: _ReverseReranker())
     return calls
 
 
@@ -142,7 +155,7 @@ async def _ids(response: dict[str, Any]) -> list[str]:
 @pytest.mark.usefixtures('raw_search_calls')
 async def test_pages_reproduce_the_unpaginated_prefix(tool_name: str) -> None:
     """Four pages of two rows return exactly the first eight ranked rows."""
-    tool = getattr(search_mod, tool_name)
+    tool = getattr(TOOL_MODULES[tool_name], tool_name)
 
     whole = await _ids(await tool(query='anything', limit=8, offset=0))
 
@@ -165,7 +178,7 @@ async def test_candidate_depth_is_independent_of_the_requested_offset(
     raw_search_calls: list[dict[str, Any]],
 ) -> None:
     """The retrieval depth is the same for every page of the same query."""
-    tool = getattr(search_mod, tool_name)
+    tool = getattr(TOOL_MODULES[tool_name], tool_name)
 
     for offset in (0, 2, 40):
         await tool(query='anything', limit=2, offset=offset)
@@ -184,26 +197,26 @@ async def test_candidate_depth_is_independent_of_the_requested_offset(
 @pytest.mark.usefixtures('raw_search_calls')
 async def test_window_past_the_ranked_depth_is_reported(tool_name: str) -> None:
     """A page reaching past the ranked depth carries the rank_depth_limit hint."""
-    tool = getattr(search_mod, tool_name)
+    tool = getattr(TOOL_MODULES[tool_name], tool_name)
 
     inside = await tool(query='anything', limit=5, offset=0)
     assert 'rank_depth_limit' not in inside
 
-    at_edge = await tool(query='anything', limit=search_mod.RANKED_SEARCH_DEPTH, offset=0)
+    at_edge = await tool(query='anything', limit=search_limits.RANKED_SEARCH_DEPTH, offset=0)
     assert 'rank_depth_limit' not in at_edge
 
-    beyond = await tool(query='anything', limit=5, offset=search_mod.RANKED_SEARCH_DEPTH - 1)
+    beyond = await tool(query='anything', limit=5, offset=search_limits.RANKED_SEARCH_DEPTH - 1)
     assert beyond['rank_depth_limit'] == {
-        'requested_offset': search_mod.RANKED_SEARCH_DEPTH - 1,
+        'requested_offset': search_limits.RANKED_SEARCH_DEPTH - 1,
         'requested_limit': 5,
-        'rank_depth': search_mod.RANKED_SEARCH_DEPTH,
+        'rank_depth': search_limits.RANKED_SEARCH_DEPTH,
     }
     assert beyond['results'] == []
 
 
 def test_ranked_depth_covers_the_largest_servable_page() -> None:
     """The ranked ordering is deep enough for any single request to be served whole."""
-    assert search_mod.RANKED_SEARCH_DEPTH >= search_mod.MAX_SEARCH_LIMIT
+    assert search_limits.RANKED_SEARCH_DEPTH >= search_limits.MAX_SEARCH_LIMIT
 
 
 @pytest.mark.asyncio
@@ -226,17 +239,17 @@ async def test_page_past_the_depth_runs_no_search_at_all(
         tool_name: The ranked search tool under test.
         raw_search_calls: Recorder for the raw searches, which must stay empty.
     """
-    tool = getattr(search_mod, tool_name)
+    tool = getattr(TOOL_MODULES[tool_name], tool_name)
 
-    response = await tool(query='anything', limit=10, offset=search_mod.RANKED_SEARCH_DEPTH)
+    response = await tool(query='anything', limit=10, offset=search_limits.RANKED_SEARCH_DEPTH)
 
     assert raw_search_calls == []
     assert response['results'] == []
     assert response['count'] == 0
     assert response['rank_depth_limit'] == {
-        'requested_offset': search_mod.RANKED_SEARCH_DEPTH,
+        'requested_offset': search_limits.RANKED_SEARCH_DEPTH,
         'requested_limit': 10,
-        'rank_depth': search_mod.RANKED_SEARCH_DEPTH,
+        'rank_depth': search_limits.RANKED_SEARCH_DEPTH,
     }
 
 
@@ -260,12 +273,12 @@ async def test_an_invalid_filter_yields_the_normal_path_past_the_depth(
         tool_name: The ranked search tool under test.
         raw_search_calls: Recorder proving the ordinary path ran.
     """
-    tool = getattr(search_mod, tool_name)
+    tool = getattr(TOOL_MODULES[tool_name], tool_name)
 
     await tool(
         query='anything',
         limit=10,
-        offset=search_mod.RANKED_SEARCH_DEPTH,
+        offset=search_limits.RANKED_SEARCH_DEPTH,
         metadata_filters=[{'key': 'priority', 'operator': 'bogus_op', 'value': 5}],
     )
 

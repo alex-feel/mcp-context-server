@@ -124,7 +124,7 @@ def reciprocal_rank_fusion(
             'semantic_rank': doc['semantic_rank'],
             'fts_score': doc['fts_score'],
             'semantic_distance': doc['semantic_distance'],
-            'rerank_score': None,  # Will be populated by _apply_reranking
+            'rerank_score': None,  # Will be populated by apply_reranking (app/tools/search/ranking.py)
         }
 
         # Build result entry

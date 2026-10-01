@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 # ============================================================
-# 3.1: Limit Clamping Tests
+# Limit Clamping Tests
 # ============================================================
 
 
@@ -19,7 +19,7 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_search_context_clamping_over_max(self) -> None:
         """search_context clamps limit > 100 to 100 with clamped_limit hint."""
-        from app.tools.search import search_context
+        from app.tools.search.browse import search_context
 
         result = await search_context(limit=200)
         assert 'clamped_limit' in result
@@ -30,7 +30,7 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_search_context_no_clamping_at_max(self) -> None:
         """search_context does NOT clamp when limit == 100."""
-        from app.tools.search import search_context
+        from app.tools.search.browse import search_context
 
         result = await search_context(limit=100)
         assert 'clamped_limit' not in result
@@ -39,7 +39,7 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_search_context_no_clamping_below_max(self) -> None:
         """search_context does NOT clamp when limit < 100."""
-        from app.tools.search import search_context
+        from app.tools.search.browse import search_context
 
         result = await search_context(limit=50)
         assert 'clamped_limit' not in result
@@ -48,7 +48,7 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_search_context_clamping_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """search_context logs warning when clamping occurs."""
-        from app.tools.search import search_context
+        from app.tools.search.browse import search_context
 
         with caplog.at_level(logging.WARNING, logger='app.tools.search'):
             await search_context(limit=150)
@@ -62,7 +62,7 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_search_context_clamping_still_returns_results(self) -> None:
         """search_context with clamped limit still returns valid search results."""
-        from app.tools.search import search_context
+        from app.tools.search.browse import search_context
 
         result = await search_context(limit=500)
         assert 'results' in result
@@ -79,13 +79,13 @@ class TestLimitClamping:
         dropping any of them would have kept the suite green while a client asking
         for 10000 results got them.
         """
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
-            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch('app.tools.search.semantic.get_reranking_provider', return_value=None),
+            patch('app.tools.search.semantic.ensure_repositories', AsyncMock()),
             patch(
-                'app.tools.search._semantic_search_raw',
+                'app.tools.search.semantic.semantic_search_raw',
                 AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
             ),
         ):
@@ -97,13 +97,13 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_semantic_search_context_no_clamping_at_max(self) -> None:
         """semantic_search_context does NOT clamp when limit == 100."""
-        from app.tools.search import semantic_search_context
+        from app.tools.search.semantic import semantic_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
-            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch('app.tools.search.semantic.get_reranking_provider', return_value=None),
+            patch('app.tools.search.semantic.ensure_repositories', AsyncMock()),
             patch(
-                'app.tools.search._semantic_search_raw',
+                'app.tools.search.semantic.semantic_search_raw',
                 AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
             ),
         ):
@@ -115,13 +115,13 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_fts_search_context_clamping_over_max(self) -> None:
         """fts_search_context clamps limit > 100 and reports the hint."""
-        from app.tools.search import fts_search_context
+        from app.tools.search.fts import fts_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
-            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch('app.tools.search.fts.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.ensure_repositories', AsyncMock()),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.fts.fts_search_raw',
                 AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
             ),
         ):
@@ -133,13 +133,13 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_fts_search_context_no_clamping_at_max(self) -> None:
         """fts_search_context does NOT clamp when limit == 100."""
-        from app.tools.search import fts_search_context
+        from app.tools.search.fts import fts_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
-            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch('app.tools.search.fts.get_reranking_provider', return_value=None),
+            patch('app.tools.search.fts.ensure_repositories', AsyncMock()),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.fts.fts_search_raw',
                 AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
             ),
         ):
@@ -151,13 +151,13 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_hybrid_search_context_clamping_over_max(self) -> None:
         """hybrid_search_context clamps limit > 100 and reports the hint."""
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
-            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+            patch('app.tools.search.hybrid.ensure_repositories', AsyncMock()),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.hybrid.fts_search_raw',
                 AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
             ),
         ):
@@ -169,13 +169,13 @@ class TestLimitClamping:
     @pytest.mark.usefixtures('initialized_server')
     async def test_hybrid_search_context_no_clamping_at_max(self) -> None:
         """hybrid_search_context does NOT clamp when limit == 100."""
-        from app.tools.search import hybrid_search_context
+        from app.tools.search.hybrid import hybrid_search_context
 
         with (
-            patch('app.tools.search.get_reranking_provider', return_value=None),
-            patch('app.tools.search.ensure_repositories', AsyncMock()),
+            patch('app.tools.search.hybrid.get_reranking_provider', return_value=None),
+            patch('app.tools.search.hybrid.ensure_repositories', AsyncMock()),
             patch(
-                'app.tools.search._fts_search_raw',
+                'app.tools.search.hybrid.fts_search_raw',
                 AsyncMock(return_value=([], {'execution_time_ms': 0.0})),
             ),
         ):
@@ -185,7 +185,7 @@ class TestLimitClamping:
 
 
 # ============================================================
-# 3.2: Passage Boundary Tests
+# Passage Boundary Tests
 # ============================================================
 
 
@@ -218,7 +218,7 @@ class TestPassageBoundary:
 
 
 # ============================================================
-# 3.3: Warnings Field Tests
+# Warnings Field Tests
 # ============================================================
 
 
@@ -251,30 +251,27 @@ class TestMaxSearchLimit:
 
     def test_max_search_limit_exists(self) -> None:
         """MAX_SEARCH_LIMIT constant is defined in search module."""
-        from app.tools.search import MAX_SEARCH_LIMIT
+        from app.tools.search.limits import MAX_SEARCH_LIMIT
 
         assert MAX_SEARCH_LIMIT == 100
 
 
 # ============================================================
-# 3.5: _apply_reranking Edge Cases
+# apply_reranking Edge Cases
 # ============================================================
 
 
 class TestApplyReranking:
-    """Tests for _apply_reranking function edge cases and exception fallback."""
+    """Tests for apply_reranking function edge cases and exception fallback."""
 
     @pytest.mark.asyncio
     async def test_apply_reranking_provider_unavailable_returns_original(self) -> None:
         """When reranking provider is None, original results returned."""
-        from unittest.mock import patch
-
-        from app.tools.search import _apply_reranking
+        from app.tools.search.ranking import apply_reranking
 
         results = [{'id': 1, 'text_content': 'test', 'scores': {}}]
 
-        with patch('app.tools.search.get_reranking_provider', return_value=None):
-            output = await _apply_reranking('query', results)
+        output = await apply_reranking('query', results, reranking_provider=None)
 
         assert output == results
 
@@ -284,17 +281,14 @@ class TestApplyReranking:
         from unittest.mock import Mock
         from unittest.mock import patch
 
-        from app.tools.search import _apply_reranking
+        from app.tools.search.ranking import apply_reranking
 
         mock_provider = Mock()
         results = [{'id': 1, 'text_content': 'test', 'scores': {}}]
 
-        with (
-            patch('app.tools.search.get_reranking_provider', return_value=mock_provider),
-            patch('app.tools.search.settings') as mock_settings,
-        ):
+        with patch('app.tools.search.ranking.settings') as mock_settings:
             mock_settings.reranking.enabled = False
-            output = await _apply_reranking('query', results)
+            output = await apply_reranking('query', results, reranking_provider=mock_provider)
 
         assert output == results
 
@@ -304,7 +298,7 @@ class TestApplyReranking:
         from unittest.mock import AsyncMock
         from unittest.mock import patch
 
-        from app.tools.search import _apply_reranking
+        from app.tools.search.ranking import apply_reranking
 
         mock_provider = AsyncMock()
         mock_provider.rerank.side_effect = RuntimeError('Provider crashed')
@@ -314,12 +308,9 @@ class TestApplyReranking:
             {'id': 2, 'text_content': 'result two', 'scores': {'fts_score': 0.5}},
         ]
 
-        with (
-            patch('app.tools.search.get_reranking_provider', return_value=mock_provider),
-            patch('app.tools.search.settings') as mock_settings,
-        ):
+        with patch('app.tools.search.ranking.settings') as mock_settings:
             mock_settings.reranking.enabled = True
-            output = await _apply_reranking('test query', results)
+            output = await apply_reranking('test query', results, reranking_provider=mock_provider)
 
         # Should return original results unchanged (fallback behavior)
         assert len(output) == 2
@@ -332,40 +323,34 @@ class TestApplyReranking:
         from unittest.mock import Mock
         from unittest.mock import patch
 
-        from app.tools.search import _apply_reranking
+        from app.tools.search.ranking import apply_reranking
 
         mock_provider = Mock()
 
-        with (
-            patch('app.tools.search.get_reranking_provider', return_value=mock_provider),
-            patch('app.tools.search.settings') as mock_settings,
-        ):
+        with patch('app.tools.search.ranking.settings') as mock_settings:
             mock_settings.reranking.enabled = True
-            output = await _apply_reranking('query', [])
+            output = await apply_reranking('query', [], reranking_provider=mock_provider)
 
         assert output == []
 
     @pytest.mark.asyncio
     async def test_apply_reranking_with_limit_no_provider(self) -> None:
         """When provider is None, limit is applied to original results."""
-        from unittest.mock import patch
-
-        from app.tools.search import _apply_reranking
+        from app.tools.search.ranking import apply_reranking
 
         results = [
             {'id': i, 'text_content': f'result {i}', 'scores': {}}
             for i in range(5)
         ]
 
-        with patch('app.tools.search.get_reranking_provider', return_value=None):
-            output = await _apply_reranking('query', results, limit=3)
+        output = await apply_reranking('query', results, limit=3, reranking_provider=None)
 
         assert len(output) == 3
 
 
 class TestSemanticInternalFieldHygiene:
     """matched_chunk_start / matched_chunk_end are internal chunk boundaries that
-    exist only to feed chunk-aware reranking. _semantic_search_raw must strip them
+    exist only to feed chunk-aware reranking. semantic_search_raw must strip them
     from every result whether or not reranking ran: with reranking disabled or
     unavailable they previously leaked into the client response, which the result
     contract does not declare and FastMCP does not filter (the tool returns
@@ -373,11 +358,16 @@ class TestSemanticInternalFieldHygiene:
     """
 
     @staticmethod
-    def _patch_raw_search(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]]) -> None:
-        """Stub the embedding provider and repository so _semantic_search_raw runs
-        without real embeddings, returning ``rows`` from the repository search.
+    def _raw_search_deps(rows: list[dict[str, Any]]) -> tuple[Any, Any]:
+        """Build the embedding provider and repositories semantic_search_raw runs
+        against without real embeddings.
+
+        Args:
+            rows: The rows the repository search returns.
+
+        Returns:
+            The embedding provider and the repository container.
         """
-        import app.tools.search as search_mod
 
         class _FakeEmbeddingProvider:
             async def embed_query(self, _query: str) -> list[float]:
@@ -390,18 +380,14 @@ class TestSemanticInternalFieldHygiene:
         class _FakeRepos:
             embeddings = _FakeEmbeddingsRepo()
 
-        async def _fake_ensure_repositories() -> _FakeRepos:
-            return _FakeRepos()
-
-        monkeypatch.setattr(search_mod, 'get_embedding_provider', lambda: _FakeEmbeddingProvider())
-        monkeypatch.setattr(search_mod, 'ensure_repositories', _fake_ensure_repositories)
+        return _FakeEmbeddingProvider(), _FakeRepos()
 
     @pytest.mark.asyncio
-    async def test_boundary_fields_stripped_when_reranking_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With _extract_rerank_text=False (reranking disabled/unavailable) the
+    async def test_boundary_fields_stripped_when_reranking_off(self) -> None:
+        """With extract_rerank_text=False (reranking disabled/unavailable) the
         internal chunk-boundary fields are still removed from every result.
         """
-        from app.tools.search import _semantic_search_raw
+        from app.tools.search.legs import semantic_search_raw
 
         rows = [
             {
@@ -409,9 +395,11 @@ class TestSemanticInternalFieldHygiene:
                 'matched_chunk_start': 0, 'matched_chunk_end': 5, 'metadata': None,
             },
         ]
-        self._patch_raw_search(monkeypatch, rows)
+        provider, repos = self._raw_search_deps(rows)
 
-        results, _stats = await _semantic_search_raw(query='hi', limit=5, _extract_rerank_text=False)
+        results, _stats = await semantic_search_raw(
+            query='hi', limit=5, extract_rerank_text=False, repos=repos, embedding_provider=provider,
+        )
 
         assert results, 'expected at least one result'
         for result in results:
@@ -421,11 +409,11 @@ class TestSemanticInternalFieldHygiene:
             assert 'rerank_text' not in result
 
     @pytest.mark.asyncio
-    async def test_boundary_fields_stripped_when_reranking_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With _extract_rerank_text=True the boundaries are consumed to build
+    async def test_boundary_fields_stripped_when_reranking_on(self) -> None:
+        """With extract_rerank_text=True the boundaries are consumed to build
         rerank_text and then stripped, so they never reach the caller either.
         """
-        from app.tools.search import _semantic_search_raw
+        from app.tools.search.legs import semantic_search_raw
 
         rows = [
             {
@@ -433,9 +421,11 @@ class TestSemanticInternalFieldHygiene:
                 'matched_chunk_start': 0, 'matched_chunk_end': 5, 'metadata': None,
             },
         ]
-        self._patch_raw_search(monkeypatch, rows)
+        provider, repos = self._raw_search_deps(rows)
 
-        results, _stats = await _semantic_search_raw(query='hi', limit=5, _extract_rerank_text=True)
+        results, _stats = await semantic_search_raw(
+            query='hi', limit=5, extract_rerank_text=True, repos=repos, embedding_provider=provider,
+        )
 
         assert results, 'expected at least one result'
         for result in results:

@@ -8,11 +8,16 @@ rejection stats have been built claiming zero embedding time for it.
 """
 
 from typing import Any
+from typing import cast
 
 import pytest
 
-import app.tools.search as search_mod
+import app.tools.search.hybrid as search_hybrid
+import app.tools.search.semantic as search_semantic
+from app.embeddings.base import EmbeddingProvider
+from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.records import MetadataFilterValidationError
+from app.tools.search.legs import semantic_search_raw
 
 BAD_FILTER: list[dict[str, Any]] = [{'key': 'priority', 'operator': 'bogus_op', 'value': 5}]
 BLANK_TAGS = ['   ', '']
@@ -61,24 +66,35 @@ class _FakeRepos:
 
 
 @pytest.fixture
-def embedding_provider(monkeypatch: pytest.MonkeyPatch) -> _CountingEmbeddingProvider:
-    """Patch the semantic stack with a counting embedding provider.
+def fake_repos() -> _FakeRepos:
+    """Provide the repository container the semantic stack searches.
+
+    Returns:
+        A container whose embeddings repository returns no rows.
+    """
+    return _FakeRepos()
+
+
+@pytest.fixture
+def embedding_provider(monkeypatch: pytest.MonkeyPatch, fake_repos: _FakeRepos) -> _CountingEmbeddingProvider:
+    """Patch the semantic and hybrid tools with a counting embedding provider.
 
     Args:
         monkeypatch: pytest monkeypatch fixture.
+        fake_repos: The repository container the tools resolve.
 
     Returns:
         The provider whose calls the tests assert on.
     """
     provider = _CountingEmbeddingProvider()
-    repos = _FakeRepos()
 
     async def fake_ensure_repositories() -> _FakeRepos:
-        return repos
+        return fake_repos
 
-    monkeypatch.setattr(search_mod, 'get_embedding_provider', lambda: provider)
-    monkeypatch.setattr(search_mod, 'ensure_repositories', fake_ensure_repositories)
-    monkeypatch.setattr(search_mod, 'get_reranking_provider', lambda: None)
+    for module in (search_semantic, search_hybrid):
+        monkeypatch.setattr(module, 'get_embedding_provider', lambda: provider)
+        monkeypatch.setattr(module, 'ensure_repositories', fake_ensure_repositories)
+        monkeypatch.setattr(module, 'get_reranking_provider', lambda: None)
     return provider
 
 
@@ -97,11 +113,18 @@ class TestRawSemanticSearch:
     async def test_invalid_filter_rejected_without_embedding(
         self,
         embedding_provider: _CountingEmbeddingProvider,
+        fake_repos: _FakeRepos,
         kwargs: dict[str, Any],
         fragment: str,
     ) -> None:
         with pytest.raises(MetadataFilterValidationError) as excinfo:
-            await search_mod._semantic_search_raw(query='anything', limit=5, **kwargs)
+            await semantic_search_raw(
+                query='anything',
+                limit=5,
+                **kwargs,
+                repos=cast(RepositoryContainer, fake_repos),
+                embedding_provider=cast(EmbeddingProvider, embedding_provider),
+            )
 
         assert excinfo.value.message == 'Metadata filter validation failed'
         assert any(fragment in message for message in excinfo.value.validation_errors)
@@ -111,14 +134,17 @@ class TestRawSemanticSearch:
     async def test_valid_filters_still_reach_the_repository(
         self,
         embedding_provider: _CountingEmbeddingProvider,
+        fake_repos: _FakeRepos,
     ) -> None:
         """A legal filter must not be rejected by the boundary check."""
-        results, _stats = await search_mod._semantic_search_raw(
+        results, _stats = await semantic_search_raw(
             query='anything',
             limit=5,
             tags=['Real'],
             metadata={'status': 'done'},
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 5}],
+            repos=cast(RepositoryContainer, fake_repos),
+            embedding_provider=cast(EmbeddingProvider, embedding_provider),
         )
 
         assert results == []
@@ -133,7 +159,7 @@ class TestSemanticSearchTool:
         self,
         embedding_provider: _CountingEmbeddingProvider,
     ) -> None:
-        response = await search_mod.semantic_search_context(
+        response = await search_semantic.semantic_search_context(
             query='anything',
             metadata_filters=BAD_FILTER,
             explain_query=True,
@@ -163,9 +189,9 @@ class TestHybridSearchTool:
             del kwargs
             raise FtsValidationError('Invalid filters', ['Invalid metadata filter'])
 
-        monkeypatch.setattr(search_mod, '_fts_search_raw', failing_fts)
+        monkeypatch.setattr(search_hybrid, 'fts_search_raw', failing_fts)
 
-        response = await search_mod.hybrid_search_context(
+        response = await search_hybrid.hybrid_search_context(
             query='anything',
             metadata_filters=BAD_FILTER,
         )
