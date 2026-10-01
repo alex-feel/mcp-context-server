@@ -31,8 +31,8 @@ from app.repositories import RepositoryContainer
 from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummaries
 from app.services.grep_service import GrepEntryResult
+from app.services.text_lines import _OFFLOAD_MIN_CHARS
 from app.startup import ensure_repositories
-from app.tools._shared import _OFFLOAD_MIN_CHARS
 from app.tools.navigation import grep_context
 from app.tools.navigation import navigate_context
 from app.tools.navigation import read_context_range
@@ -703,7 +703,7 @@ class TestOutlineOffloadKeysOnLineDensity:
 
     def test_dense_sub_threshold_text_is_offloaded(self) -> None:
         """A heading-dense entry far below the size threshold still offloads."""
-        from app.tools._shared import should_offload_line_scan
+        from app.services.text_lines import should_offload_line_scan
 
         dense = '# h\n' * 5_000  # 20k characters, 5k lines
         assert len(dense) < _OFFLOAD_MIN_CHARS
@@ -711,13 +711,13 @@ class TestOutlineOffloadKeysOnLineDensity:
 
     def test_single_long_line_stays_inline(self) -> None:
         """A huge single line is cheap to parse and must not pay a thread hop."""
-        from app.tools._shared import should_offload_line_scan
+        from app.services.text_lines import should_offload_line_scan
 
         assert should_offload_line_scan('x' * (_OFFLOAD_MIN_CHARS - 1)) is False
 
     def test_oversized_text_is_offloaded_regardless_of_density(self) -> None:
         """The original size signal still applies on its own."""
-        from app.tools._shared import should_offload_line_scan
+        from app.services.text_lines import should_offload_line_scan
 
         assert should_offload_line_scan('x' * (_OFFLOAD_MIN_CHARS + 1)) is True
 

@@ -69,10 +69,10 @@ class TestGenerateSummaryWithTimeout:
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
+            patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools._shared import generate_summary_with_timeout
+            from app.tools._generation import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -86,10 +86,10 @@ class TestGenerateSummaryWithTimeout:
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
+            patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools._shared import generate_summary_with_timeout
+            from app.tools._generation import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -104,10 +104,10 @@ class TestGenerateSummaryWithTimeout:
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
+            patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools._shared import generate_summary_with_timeout
+            from app.tools._generation import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -118,9 +118,9 @@ class TestGenerateSummaryWithTimeout:
         """No summary provider configured -> returns None without error."""
         with (
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
-            from app.tools._shared import generate_summary_with_timeout
+            from app.tools._generation import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 

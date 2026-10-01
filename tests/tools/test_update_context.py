@@ -277,8 +277,8 @@ class TestUpdateContext:
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools._shared.MAX_IMAGE_SIZE_MB', 10),
-            patch('app.tools._shared.MAX_TOTAL_SIZE_MB', 100),
+            patch('app.tools._validation.MAX_IMAGE_SIZE_MB', 10),
+            patch('app.tools._validation.MAX_TOTAL_SIZE_MB', 100),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000006f',
@@ -445,7 +445,7 @@ class TestUpdateContext:
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools._shared.MAX_IMAGE_SIZE_MB', 10),
+            patch('app.tools._validation.MAX_IMAGE_SIZE_MB', 10),
         ):  # 10MB limit
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
@@ -476,8 +476,8 @@ class TestUpdateContext:
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools._shared.MAX_IMAGE_SIZE_MB', 50),
-            patch('app.tools._shared.MAX_TOTAL_SIZE_MB', 100),  # Each image OK, Total exceeds
+            patch('app.tools._validation.MAX_IMAGE_SIZE_MB', 50),
+            patch('app.tools._validation.MAX_TOTAL_SIZE_MB', 100),  # Each image OK, Total exceeds
             pytest.raises(ToolError, match='[Tt]otal.*size.*exceeds'),
         ):
             await update_context(
@@ -679,9 +679,9 @@ class TestUpdateContext:
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
@@ -711,9 +711,9 @@ class TestUpdateContext:
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
@@ -736,10 +736,10 @@ class TestUpdateContext:
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
-            patch('app.tools._shared.generate_embeddings_with_timeout') as mock_embed,
+            patch('app.tools._generation.get_summary_provider', return_value=None),
+            patch('app.tools._generation.generate_embeddings_with_timeout') as mock_embed,
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
@@ -764,11 +764,11 @@ class TestUpdateContext:
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch(
-                'app.tools._shared.generate_embeddings_with_timeout',
+                'app.tools._generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=mock_embeddings_result,
             ),
@@ -793,11 +793,11 @@ class TestUpdateContext:
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
-            patch('app.tools._shared.generate_embeddings_with_timeout') as mock_embed,
-            patch('app.tools._shared.generate_summary_with_timeout') as mock_summary,
+            patch('app.tools._generation.get_summary_provider', return_value=None),
+            patch('app.tools._generation.generate_embeddings_with_timeout') as mock_embed,
+            patch('app.tools._generation.generate_summary_with_timeout') as mock_summary,
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',

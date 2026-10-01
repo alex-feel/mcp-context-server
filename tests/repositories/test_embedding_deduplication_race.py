@@ -68,8 +68,8 @@ class TestStoreContextEmbeddingDeduplication:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
             from app.tools.context import store_context
 
@@ -134,8 +134,8 @@ class TestStoreContextEmbeddingDeduplication:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
             from app.tools.context import store_context
 
@@ -171,8 +171,8 @@ class TestStoreContextEmbeddingDeduplication:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
             from app.tools.context import store_context
 
@@ -215,11 +215,11 @@ class TestBatchStoreEmbeddingDeduplication:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
             from app.tools.batch import store_context_batch
 
@@ -294,11 +294,11 @@ class TestBatchStoreEmbeddingDeduplication:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
             from app.tools.batch import store_context_batch
 

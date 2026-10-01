@@ -7,8 +7,14 @@ This package contains all MCP tool functions, organized by domain:
 - discovery.py: list_threads, get_statistics
 - batch.py: store_context_batch, update_context_batch, delete_context_batch
 - descriptions.py: Backend-specific dynamic tool descriptions (generate_fts_description)
-- _shared.py: Internal shared infrastructure for per-entry processing, image validation,
-  generation with timeout, transaction execution, and response message builders (not re-exported)
+- _validation.py: Input validation shared by the tools (unstorable text, tag and indexed-value
+  limits, image validation and normalization) (not re-exported)
+- _generation.py: Embedding, compression, summary, and index_tree node generation with timeout,
+  run outside the transaction (not re-exported)
+- _transactions.py: Store and update transaction execution, transaction heartbeat, and
+  connection error classification (not re-exported)
+- _delete_cleanup.py: Entry deletion with the explicit embedding cleanup (not re-exported)
+- _responses.py: Store and update response message builders (not re-exported)
 
 The tool registration helpers and TOOL_ANNOTATIONS are defined here for use by server.py.
 """

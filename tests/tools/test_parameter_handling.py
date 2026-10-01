@@ -1859,12 +1859,12 @@ class TestTypedIndexedMetadataCastCompatibility:
         Yields:
             Control to the test body, then drops the patched settings singleton.
         """
-        import app.tools._shared as shared_module
+        import app.tools._validation as validation_module
         from app.settings import get_settings
 
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'status,priority:integer')
         get_settings.cache_clear()
-        monkeypatch.setattr(shared_module, 'settings', get_settings())
+        monkeypatch.setattr(validation_module, 'settings', get_settings())
         yield
         get_settings.cache_clear()
 

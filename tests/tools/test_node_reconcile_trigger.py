@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.tools._shared import EmbeddingsReconcileRequiredError
-from app.tools._shared import execute_store_in_transaction
+from app.tools._transactions import EmbeddingsReconcileRequiredError
+from app.tools._transactions import execute_store_in_transaction
 
 
 def _mock_repos(*, was_updated: bool) -> MagicMock:
@@ -56,7 +56,7 @@ async def test_node_pending_divergence_insert_triggers_reconcile() -> None:
 async def test_node_pending_dedup_update_does_not_reconcile() -> None:
     """A genuine dedup UPDATE does not reconcile even with nodes pending."""
     repos = _mock_repos(was_updated=True)
-    with patch('app.tools._shared.transaction_heartbeat', new_callable=AsyncMock):
+    with patch('app.tools._transactions.transaction_heartbeat', new_callable=AsyncMock):
         context_id, was_updated, embedding_stored = await _run(repos, nodes_pending=True)
     assert context_id == 'ctx-new'
     assert was_updated is True
@@ -67,7 +67,7 @@ async def test_node_pending_dedup_update_does_not_reconcile() -> None:
 async def test_no_nodes_pending_insert_does_not_reconcile() -> None:
     """Embeddings off + nodes NOT pending + INSERT keeps prior (no-reconcile) behavior."""
     repos = _mock_repos(was_updated=False)
-    with patch('app.tools._shared.transaction_heartbeat', new_callable=AsyncMock):
+    with patch('app.tools._transactions.transaction_heartbeat', new_callable=AsyncMock):
         context_id, was_updated, embedding_stored = await _run(repos, nodes_pending=False)
     assert context_id == 'ctx-new'
     assert was_updated is False
@@ -83,7 +83,7 @@ async def test_empty_node_list_clears_reconcile_gate() -> None:
     asserts [] clears the gate, preserving the never-raise node-layer contract.
     """
     repos = _mock_repos(was_updated=False)
-    with patch('app.tools._shared.transaction_heartbeat', new_callable=AsyncMock):
+    with patch('app.tools._transactions.transaction_heartbeat', new_callable=AsyncMock):
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             repos, _txn(),
             owner_id='local',
@@ -110,7 +110,7 @@ async def test_empty_node_list_does_not_wipe_on_dedup_update() -> None:
     concurrently-created entry's good node rows.
     """
     repos = _mock_repos(was_updated=True)
-    with patch('app.tools._shared.transaction_heartbeat', new_callable=AsyncMock):
+    with patch('app.tools._transactions.transaction_heartbeat', new_callable=AsyncMock):
         await execute_store_in_transaction(
             repos, _txn(),
             owner_id='local',

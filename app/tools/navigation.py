@@ -46,11 +46,11 @@ from app.services.outline_service import count_nodes
 from app.services.outline_service import parse_outline
 from app.services.outline_service import resolve_node_span
 from app.services.text_lines import line_index_for_offset
+from app.services.text_lines import should_offload_line_scan
 from app.services.text_lines import split_lines_with_offsets
 from app.settings import get_settings
 from app.startup import ensure_repositories
-from app.tools._shared import reject_unstorable_input
-from app.tools._shared import should_offload_line_scan
+from app.tools._validation import reject_unstorable_input
 from app.tools.search import MAX_FILTER_TAGS
 from app.tools.search import MAX_METADATA_FILTERS
 from app.tools.search import filter_caps_error
@@ -67,7 +67,7 @@ settings = get_settings()
 
 # Both CPU-bound passes this module runs over unbounded stored entry text -- the
 # outline parse and the offset-preserving line split -- are LINE-oriented, so both
-# gate on should_offload_line_scan (app.tools._shared) rather than on a size-only
+# gate on should_offload_line_scan (app.services.text_lines) rather than on a size-only
 # threshold. The grep matcher keeps its own size-based gate
 # (grep_service._OFFLOAD_MIN_CHARS) because its literal path is a single C-level
 # whole-text scan and its regex path offloads unconditionally, so there size really

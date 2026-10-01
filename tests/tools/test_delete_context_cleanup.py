@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.tools._shared as shared_module
+import app.tools._delete_cleanup as delete_cleanup_module
 import app.tools.batch as batch_module
 import app.tools.context as context_module
 from app.settings import get_settings
@@ -60,7 +60,7 @@ def fp32_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
 
 VALID_ID = '0190abcdef1234567890abcdef123456'
@@ -204,7 +204,7 @@ async def test_delete_context_cleanup_runs_after_generation_disabled(
     get_settings.cache_clear()
     monkeypatch.setattr(context_module, 'settings', get_settings())
     monkeypatch.setattr(batch_module, 'settings', get_settings())
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
     # Tables exist (prior session provisioned + wrote embeddings).
     fake = make_fake_repos(tables_exist=True)
@@ -300,7 +300,7 @@ async def test_delete_context_skips_per_entry_cleanup_under_compression(
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
     monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'true')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
     fake = make_fake_repos(tables_exist=True)
 
@@ -318,7 +318,7 @@ async def test_delete_batch_skips_per_entry_cleanup_under_compression(
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
     monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'true')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
     fake = make_fake_repos(tables_exist=True)
 
@@ -342,7 +342,7 @@ async def test_delete_context_keeps_cleanup_when_foreign_keys_disabled(
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
     monkeypatch.setenv('SQLITE_FOREIGN_KEYS', 'false')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
     fake = make_fake_repos(tables_exist=True)
 

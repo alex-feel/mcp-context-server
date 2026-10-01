@@ -17,7 +17,7 @@ from app.types import MetadataDict
 # Single source of truth for the per-entry image attachment count limit.
 # Enforced in three aligned places: the Pydantic models below (max_length),
 # the shared validation chokepoint (validate_and_normalize_images in
-# app/tools/_shared.py, covering store_context, update_context, and both
+# app/tools/_validation.py, covering store_context, update_context, and both
 # batch tools), and the tool-boundary Field declarations in
 # app/tools/context.py (so the MCP wire schema advertises the bound as
 # maxItems). It lives here because app.models imports nothing from app.tools,
@@ -27,7 +27,7 @@ MAX_IMAGES_PER_ENTRY = 10
 # Single source of truth for the per-entry tag WRITE-path limits (the read/filter
 # side has its own MAX_FILTER_TAGS cap in app/tools/search.py). Enforced in three
 # aligned places, exactly like MAX_IMAGES_PER_ENTRY: the Pydantic models below,
-# the shared validation chokepoint (tag_limits_error in app/tools/_shared.py,
+# the shared validation chokepoint (tag_limits_error in app/tools/_validation.py,
 # covering store_context, update_context, and both batch tools), and the
 # tool-boundary Field declarations in app/tools/context.py (so the MCP wire
 # schema advertises the bounds as maxItems / maxLength).
@@ -178,7 +178,7 @@ class ImageAttachment(BaseModel):
         """Normalize to canonical base64 and reject non-base64 data.
 
         Mirrors the tool-boundary chokepoint (validate_and_normalize_images in
-        app/tools/_shared.py): normalize first, then decode STRICTLY, so a
+        app/tools/_validation.py): normalize first, then decode STRICTLY, so a
         data-URI prefix, URL-safe alphabet, or stripped padding is repaired
         instead of silently decoding to corrupted bytes, and genuinely
         non-base64 input fails loudly.

@@ -124,11 +124,11 @@ class TestUpdateContextVersionGuard:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
-            patch('app.tools._shared.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools._generation.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools._shared.generate_summary_with_timeout',
+                'app.tools._generation.generate_summary_with_timeout',
                 new=AsyncMock(side_effect=skewed_summary),
             ),
         ):
@@ -200,9 +200,9 @@ class TestUpdateContextVersionGuard:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(
                 repos.context, 'check_entry_exists', side_effect=check_then_bump,
             ),
@@ -267,9 +267,9 @@ class TestUpdateContextVersionGuard:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(
                 repos.context, 'check_entry_exists', side_effect=check_then_bump,
             ),
@@ -325,9 +325,9 @@ class TestUpdateContextVersionGuard:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch(
                 'app.tools.context.execute_update_in_transaction',
                 new=AsyncMock(side_effect=always_conflict),
@@ -369,9 +369,9 @@ class TestUpdateContextVersionGuard:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=vanish_on_reread),
             patch(
                 'app.tools.context.execute_update_in_transaction',
@@ -422,9 +422,9 @@ class TestUpdateContextVersionGuard:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=flaky_reread),
             patch(
                 'app.tools.context.execute_update_in_transaction',

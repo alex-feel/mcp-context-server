@@ -145,17 +145,17 @@ async def test_store_path_document_embedding_never_prefixed(monkeypatch: pytest.
     leaks into document embeddings through that shared provider method.
     """
     monkeypatch.setenv('EMBEDDING_QUERY_INSTRUCTION', QUERY_INSTRUCTION)
-    import app.tools._shared as shared_module
+    import app.tools._generation as generation_module
 
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(generation_module, 'settings', get_settings())
     provider = _mock_embedding_provider()
 
     with (
-        patch('app.tools._shared.get_embedding_provider', return_value=provider),
-        patch('app.tools._shared.get_chunking_service', return_value=None),
+        patch('app.tools._generation.get_embedding_provider', return_value=provider),
+        patch('app.tools._generation.get_chunking_service', return_value=None),
     ):
-        from app.tools._shared import generate_embeddings_with_timeout
+        from app.tools._generation import generate_embeddings_with_timeout
 
         chunk_embeddings = await generate_embeddings_with_timeout('stored document text')
 

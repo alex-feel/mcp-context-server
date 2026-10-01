@@ -25,7 +25,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from app.repositories.context_repository.records import DuplicateCandidate
-from app.tools._shared import EmbeddingsReconcileRequiredError
+from app.tools._transactions import EmbeddingsReconcileRequiredError
 
 
 def _make_mock_txn() -> tuple[MagicMock, object]:
@@ -63,12 +63,12 @@ class TestStoreContextReconcile:
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools.context.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools._shared.generate_embeddings_with_timeout',
+                'app.tools._generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=_fake_chunk_embeddings(),
             ) as mock_gen_emb,
             patch(
-                'app.tools._shared.generate_compression_with_timeout',
+                'app.tools._generation.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
@@ -185,12 +185,12 @@ class TestStoreContextReconcile:
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools.context.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools._shared.generate_embeddings_with_timeout',
+                'app.tools._generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=_fake_chunk_embeddings(),
             ),
             patch(
-                'app.tools._shared.generate_compression_with_timeout',
+                'app.tools._generation.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
@@ -462,9 +462,9 @@ class TestStoreBatchReconcile:
         with (
             patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=failing_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=failing_provider),
+            patch('app.tools._generation.get_summary_provider', return_value=failing_provider),
             patch(
                 'app.tools.batch.generate_index_nodes_with_timeout',
                 new_callable=AsyncMock,

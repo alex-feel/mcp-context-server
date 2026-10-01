@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip('numpy')
 
-import app.tools._shared as shared_module
+import app.tools._generation as generation_module
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
 
@@ -36,8 +36,8 @@ def reset_compression_state() -> Generator[None, None, None]:
     yield
     from app.compression import reset_cached_compression_provider
     get_settings.cache_clear()
-    shared_module.settings = get_settings()
-    shared_module._reset_compression_semaphore()
+    generation_module.settings = get_settings()
+    generation_module._reset_compression_semaphore()
     reset_cached_compression_provider()
 
 
@@ -54,10 +54,10 @@ async def test_semaphore_serializes_per_encode(
     monkeypatch.setenv('COMPRESSION_VARIANT', 'ip')
     monkeypatch.setenv('EMBEDDING_DIM', '16')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(generation_module, 'settings', get_settings())
 
     # Rebind the module-level semaphore so the new max_concurrent takes effect.
-    shared_module._reset_compression_semaphore()
+    generation_module._reset_compression_semaphore()
 
     concurrent_now = 0
     max_observed = 0
@@ -92,7 +92,7 @@ async def test_semaphore_serializes_per_encode(
         for _ in range(4)
     ]
 
-    result = await shared_module.generate_compression_with_timeout(chunks)
+    result = await generation_module.generate_compression_with_timeout(chunks)
 
     assert result is not None
     assert all(c.payload == b'encoded-payload' for c in result)

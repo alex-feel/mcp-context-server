@@ -69,7 +69,7 @@ def _reset_compression_cache() -> None:
 
     1. Delegates the cached-provider reset to
        :func:`app.compression.factory.reset_cached_compression_provider`
-       so both the encode (write) path in :mod:`app.tools._shared` and
+       so both the encode (write) path in :mod:`app.tools._generation` and
        the search (read) path in
        :mod:`app.repositories.embedding_repository.compressed_search`
        observe a fresh provider on the next call.

@@ -66,7 +66,7 @@ class ChunkWriteMixin(BaseRepository):
             raise ValueError('chunk_embeddings list cannot be empty')
 
         # Branch on compression toggle. The compressed path expects the
-        # caller (via generate_compression_with_timeout in app.tools._shared)
+        # caller (via generate_compression_with_timeout in app.tools._generation)
         # to have populated ChunkEmbedding.payload with provider-encoded
         # bytes.
         from app.settings import get_settings
@@ -173,7 +173,7 @@ class ChunkWriteMixin(BaseRepository):
 
         Requires every ``ChunkEmbedding`` to carry a non-None ``payload``;
         the caller (``generate_compression_with_timeout`` in
-        ``app.tools._shared``) populates it before invoking the transaction.
+        ``app.tools._generation``) populates it before invoking the transaction.
 
         Args:
             context_id: ID of the context entry.

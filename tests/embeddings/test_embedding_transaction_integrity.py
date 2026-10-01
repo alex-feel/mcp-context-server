@@ -122,8 +122,8 @@ class TestConcurrentEmbeddingOperations:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
             # Mock embedding repository to avoid vec_context_embeddings table issues
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):
@@ -214,11 +214,11 @@ class TestConcurrentEmbeddingOperations:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):
             # Run all batches concurrently
@@ -299,8 +299,8 @@ class TestConcurrentEmbeddingOperations:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):
@@ -379,8 +379,8 @@ class TestTransactionRollbackComprehensive:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
             patch.object(repos.tags, 'store_tags', new=AsyncMock(side_effect=failing_store_tags)),
         ):
@@ -456,11 +456,11 @@ class TestTransactionRollbackComprehensive:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):

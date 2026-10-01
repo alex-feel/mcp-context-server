@@ -10,7 +10,7 @@ This module contains the core context management tools:
 Generation-First Transactional Integrity:
 This module implements atomic generation + data storage. When embedding or summary
 generation is enabled, all generation runs OUTSIDE any database transaction via
-run_generation() (app.tools._shared), which drives three concurrent legs:
+run_generation() (app.tools._generation), which drives three concurrent legs:
 1. embed_then_compress -- embedding followed by TurboQuant compression (abort-mandatory)
 2. the flat document summary (abort-mandatory)
 3. the index_tree per-node summaries (never-raise), started after the flat summary
@@ -22,9 +22,10 @@ cancelled and awaited before the transaction opens. A node-summary failure or ti
 never aborts the store. Only when both abort-mandatory legs succeed do ALL database
 operations occur in a SINGLE atomic transaction.
 
-Infrastructure functions (embedding/summary generation, transaction heartbeat,
-connection error classification, image validation, response message builders) are
-in app.tools._shared -- the single source of truth for logic shared with batch.py.
+Infrastructure shared with batch.py lives in single-purpose modules: embedding/summary generation in
+app.tools._generation, transaction execution, heartbeat, and connection error classification in
+app.tools._transactions, input and image validation in app.tools._validation, delete-path embedding
+cleanup in app.tools._delete_cleanup, and response message builders in app.tools._responses.
 """
 
 import asyncio
@@ -56,24 +57,24 @@ from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
-from app.tools._shared import EmbeddingsReconcileRequiredError
-from app.tools._shared import EntryNotFoundError
-from app.tools._shared import build_store_response_message
-from app.tools._shared import build_update_response_message
-from app.tools._shared import delete_entries_with_cleanup
-from app.tools._shared import embed_then_compress
-from app.tools._shared import execute_store_in_transaction
-from app.tools._shared import execute_update_in_transaction
-from app.tools._shared import generate_index_nodes_with_timeout
-from app.tools._shared import generate_summary_with_timeout
-from app.tools._shared import is_connection_error
-from app.tools._shared import node_layer_active
-from app.tools._shared import reject_invalid_indexed_values
-from app.tools._shared import reject_oversized_tags
-from app.tools._shared import reject_unstorable_input
-from app.tools._shared import reread_entry_version
-from app.tools._shared import run_generation
-from app.tools._shared import validate_and_normalize_images
+from app.tools._delete_cleanup import delete_entries_with_cleanup
+from app.tools._generation import embed_then_compress
+from app.tools._generation import generate_index_nodes_with_timeout
+from app.tools._generation import generate_summary_with_timeout
+from app.tools._generation import node_layer_active
+from app.tools._generation import run_generation
+from app.tools._responses import build_store_response_message
+from app.tools._responses import build_update_response_message
+from app.tools._transactions import EmbeddingsReconcileRequiredError
+from app.tools._transactions import EntryNotFoundError
+from app.tools._transactions import execute_store_in_transaction
+from app.tools._transactions import execute_update_in_transaction
+from app.tools._transactions import is_connection_error
+from app.tools._transactions import reread_entry_version
+from app.tools._validation import reject_invalid_indexed_values
+from app.tools._validation import reject_oversized_tags
+from app.tools._validation import reject_unstorable_input
+from app.tools._validation import validate_and_normalize_images
 from app.types import ContextEntryDict
 from app.types import MetadataDict
 from app.types import StoreContextSuccessDict

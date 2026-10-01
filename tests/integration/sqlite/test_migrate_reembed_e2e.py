@@ -342,11 +342,11 @@ def test_reembed_compressed_model_change(
         _reset_compression_cache()
         # Rebind the module-level ``settings`` captured at import time in both
         # the compression-migration module (so apply_compression_migration sees
-        # compression=on) and app.tools._shared (so
+        # compression=on) and app.tools._generation (so
         # generate_compression_with_timeout populates payloads).
         import app.migrations.compression as _compression_migration_module
-        import app.tools._shared as _shared_module
-        monkeypatch.setattr(_shared_module, 'settings', get_settings())
+        import app.tools._generation as _generation_module
+        monkeypatch.setattr(_generation_module, 'settings', get_settings())
         monkeypatch.setattr(
             _compression_migration_module, 'settings', get_settings(),
         )

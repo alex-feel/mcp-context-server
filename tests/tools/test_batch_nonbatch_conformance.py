@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.tools._shared as shared_module
+import app.tools._delete_cleanup as delete_cleanup_module
 from app.settings import AppSettings
 from app.startup import ensure_repositories
 from app.tools.batch import delete_context_batch
@@ -654,7 +654,7 @@ class TestDeleteConformance:
         # with a cascading one, so force the fp32 layout to exercise the loop, and
         # force the table signal True, then assert BOTH paths clean up.
         with (
-            patch.object(shared_module, 'settings', _fp32_settings()),
+            patch.object(delete_cleanup_module, 'settings', _fp32_settings()),
             patch.object(repos.embeddings, 'delete_all_chunks_bulk', mock_delete),
             patch.object(
                 repos.embeddings, 'embedding_tables_exist', AsyncMock(return_value=True),
@@ -765,12 +765,12 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools._shared.generate_embeddings_with_timeout', mock_gen_embed),
+            patch('app.tools._generation.generate_embeddings_with_timeout', mock_gen_embed),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.batch.get_summary_provider', return_value=None),
             patch('app.tools.batch.generate_embeddings_with_timeout', mock_gen_embed),
-            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch('app.startup.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_summary_provider', return_value=None),
             patch.object(repos.embeddings, 'store_chunked', AsyncMock()),
@@ -813,12 +813,12 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools._generation.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=mock_provider),
             patch('app.tools.batch.generate_summary_with_timeout', mock_gen_summary),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.startup.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_provider),
         ):
@@ -857,12 +857,12 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools._shared.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools._generation.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=mock_provider),
             patch('app.tools.batch.generate_summary_with_timeout', mock_gen_summary),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.startup.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_provider),
         ):

@@ -9,15 +9,16 @@ This module contains tools for bulk context management:
 Generation-First Transactional Integrity:
 This module implements atomic generation + data storage for batch operations.
 Each entry's embedding + summary are generated in PARALLEL via asyncio.gather(return_exceptions=True),
-reusing generate_embeddings_with_timeout and generate_summary_with_timeout from app.tools._shared.
+reusing generate_embeddings_with_timeout and generate_summary_with_timeout from app.tools._generation.
 Entries within a batch are processed SEQUENTIALLY. When generation is enabled:
 1. Per-entry: embeddings and summaries run in parallel OUTSIDE any database transaction
 2. If ANY generation fails in atomic mode, NO data is saved
 3. If all generation succeeds, ALL database operations occur in a SINGLE atomic transaction
 
-Infrastructure functions (embedding/summary generation, transaction heartbeat,
-connection error classification, image validation, response message builders) are
-in app.tools._shared -- the single source of truth for logic shared with context.py.
+Infrastructure shared with context.py lives in single-purpose modules: embedding/summary generation in
+app.tools._generation, transaction execution, heartbeat, and connection error classification in
+app.tools._transactions, input and image validation in app.tools._validation, delete-path embedding
+cleanup in app.tools._delete_cleanup, and response message builders in app.tools._responses.
 """
 
 import asyncio
@@ -52,25 +53,25 @@ from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
-from app.tools._shared import EmbeddingsReconcileRequiredError
-from app.tools._shared import EntryNotFoundError
-from app.tools._shared import build_batch_store_response_message
-from app.tools._shared import build_batch_update_response_message
-from app.tools._shared import delete_entries_with_cleanup
-from app.tools._shared import entry_boundary_error
-from app.tools._shared import execute_store_in_transaction
-from app.tools._shared import execute_update_in_transaction
-from app.tools._shared import generate_compression_with_timeout
-from app.tools._shared import generate_embeddings_with_timeout
-from app.tools._shared import generate_index_nodes_with_timeout
-from app.tools._shared import generate_summary_with_timeout
-from app.tools._shared import is_connection_error
-from app.tools._shared import node_layer_active
-from app.tools._shared import reject_unstorable_input
-from app.tools._shared import reread_entry_version
-from app.tools._shared import tag_limits_error
-from app.tools._shared import transaction_heartbeat
-from app.tools._shared import validate_and_normalize_images
+from app.tools._delete_cleanup import delete_entries_with_cleanup
+from app.tools._generation import generate_compression_with_timeout
+from app.tools._generation import generate_embeddings_with_timeout
+from app.tools._generation import generate_index_nodes_with_timeout
+from app.tools._generation import generate_summary_with_timeout
+from app.tools._generation import node_layer_active
+from app.tools._responses import build_batch_store_response_message
+from app.tools._responses import build_batch_update_response_message
+from app.tools._transactions import EmbeddingsReconcileRequiredError
+from app.tools._transactions import EntryNotFoundError
+from app.tools._transactions import execute_store_in_transaction
+from app.tools._transactions import execute_update_in_transaction
+from app.tools._transactions import is_connection_error
+from app.tools._transactions import reread_entry_version
+from app.tools._transactions import transaction_heartbeat
+from app.tools._validation import entry_boundary_error
+from app.tools._validation import reject_unstorable_input
+from app.tools._validation import tag_limits_error
+from app.tools._validation import validate_and_normalize_images
 from app.types import BulkDeleteResponseDict
 from app.types import BulkStoreResponseDict
 from app.types import BulkStoreResultItemDict

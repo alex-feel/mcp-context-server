@@ -109,8 +109,8 @@ class TestBatchVersionGuard:
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
             result = await update_context_batch(
                 updates=[
@@ -168,8 +168,8 @@ class TestBatchVersionGuard:
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=counting_check),
         ):
             result = await update_context_batch(
@@ -232,8 +232,8 @@ class TestBatchVersionGuard:
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=check_then_bump),
             pytest.raises(ToolError, match='[Cc]oncurrent modification'),
         ):
@@ -282,8 +282,8 @@ class TestBatchVersionGuard:
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=check_then_bump),
         ):
             result = await update_context_batch(
@@ -366,8 +366,8 @@ class TestBatchVersionGuard:
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch(
                 'app.tools.batch.execute_update_in_transaction',
                 new=AsyncMock(side_effect=always_conflict),
@@ -417,8 +417,8 @@ class TestBatchVersionGuard:
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=vanish_on_reread),
             patch(
                 'app.tools.batch.execute_update_in_transaction',
@@ -475,8 +475,8 @@ class TestBatchVersionGuard:
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=flaky_reread),
             patch(
                 'app.tools.batch.execute_update_in_transaction',
@@ -527,8 +527,8 @@ class TestBatchVersionGuard:
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
             patch(
                 'app.tools.batch.execute_update_in_transaction',
                 new=AsyncMock(side_effect=delete_then_conflict),

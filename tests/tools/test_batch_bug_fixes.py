@@ -513,7 +513,7 @@ class TestBatchStoreResponseParity:
             patch('app.tools.batch.settings', mock_settings),
             patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
         ):
             mock_repos = AsyncMock()
@@ -563,10 +563,10 @@ class TestBatchStoreResponseParity:
             patch('app.tools.batch.settings', mock_settings),
             patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
             patch('app.tools.batch.get_embedding_provider') as mock_emb_provider_fn,
-            patch('app.tools._shared.get_embedding_provider') as mock_shared_emb_provider_fn,
+            patch('app.tools._generation.get_embedding_provider') as mock_shared_emb_provider_fn,
             patch('app.tools.batch.get_summary_provider', return_value=None),
             patch(
-                'app.tools._shared._generate_embeddings_for_text',
+                'app.tools._generation._generate_embeddings_for_text',
                 new_callable=AsyncMock,
                 return_value=mock_chunk_embeddings,
             ),
@@ -661,7 +661,7 @@ class TestBatchUpdateResponseParity:
             patch('app.tools.batch.settings', mock_settings),
             patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
         ):
             mock_repos = AsyncMock()
@@ -723,11 +723,11 @@ def fp32_cleanup_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     with the context row, so the explicit loop is correctly skipped; a test that
     asserts the loop RUNS therefore needs the fp32 layout.
     """
-    import app.tools._shared as shared_module
+    import app.tools._delete_cleanup as delete_cleanup_module
 
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
     get_settings.cache_clear()
-    monkeypatch.setattr(shared_module, 'settings', get_settings())
+    monkeypatch.setattr(delete_cleanup_module, 'settings', get_settings())
 
 
 # Embedding cleanup for non-ID batch deletes on SQLite

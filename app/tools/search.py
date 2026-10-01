@@ -37,7 +37,7 @@ from app.startup import get_reranking_provider
 from app.startup.validation import truncate_text
 from app.startup.validation import validate_date_param
 from app.startup.validation import validate_date_range
-from app.tools._shared import reject_unstorable_input
+from app.tools._validation import reject_unstorable_input
 from app.types import ContextEntryDict
 
 logger = logging.getLogger(__name__)

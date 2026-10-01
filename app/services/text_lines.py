@@ -1,9 +1,11 @@
 """Shared newline-splitting utilities with code-point offsets.
 
 Single source of truth for line splitting, used by the grep matcher
-(:mod:`app.services.grep_service`) and the Markdown outline parser (added in a
-later phase), so the line numbers and character offsets computed in one place can
-never drift from the other.
+(:mod:`app.services.grep_service`) and the Markdown outline parser
+(:mod:`app.services.outline_service`), so the line numbers and character offsets
+computed in one place can never drift from the other. ``should_offload_line_scan``
+decides when a line-oriented scan over stored text (the line split or the outline
+parse) costs enough to run in a worker thread instead of on the event loop.
 
 Lines are split ONLY on LF (``\\n``) and CRLF (``\\r\\n``). Python's
 ``str.splitlines()`` additionally breaks on vertical tab, form feed, file
@@ -69,3 +71,43 @@ def line_index_for_offset(line_starts: list[int], offset: int) -> int:
         return 0
     # Largest index i with line_starts[i] <= offset.
     return max(0, bisect.bisect_right(line_starts, offset) - 1)
+
+
+# Size half of the line-scan offload predicate below: a text this large is offloaded
+# regardless of how few lines it has, because even the cheapest per-character pass
+# over it is no longer negligible. The line-count half carries the rest of the
+# decision. Small entries stay inline to avoid a per-call thread hop. Unicode code
+# points, not bytes. Mirrors grep_service._OFFLOAD_MIN_CHARS, where size genuinely
+# IS the whole cost driver.
+_OFFLOAD_MIN_CHARS = 1_000_000
+
+# Line-oriented scans over stored text -- outline parsing (parse_outline /
+# resolve_node_span, several regexes per line) and line splitting
+# (split_lines_with_offsets, one slice and one list append per line) -- cost time
+# proportional to LINE COUNT, not character count. A million characters on ONE line
+# parses in about two milliseconds; the same million characters split into short
+# heading lines takes about two seconds to parse and about a tenth of a second to
+# split. A size-only threshold is blind to that three-order-of-magnitude spread,
+# which is how a dense sub-threshold entry ends up processed inline and pins the
+# event loop on every navigate/read call. Counting newlines is a single C-level scan
+# (microseconds even for megabytes), so the extra signal is effectively free. At
+# roughly five microseconds per heading line for the costlier of the two workloads,
+# this bound keeps an inline pass in the single-digit-millisecond range.
+_OFFLOAD_MIN_LINES = 1_000
+
+
+def should_offload_line_scan(text: str) -> bool:
+    """Whether a line-oriented scan over ``text`` must run in a worker thread.
+
+    Covers every CPU-bound pass whose cost tracks line count: the outline parse
+    (``parse_outline`` / ``resolve_node_span``) and the offset-preserving line
+    split (``split_lines_with_offsets``).
+
+    Args:
+        text: The entry text about to be scanned.
+
+    Returns:
+        True when the text is large enough OR line-dense enough that scanning it
+        inline would block the event loop noticeably.
+    """
+    return len(text) > _OFFLOAD_MIN_CHARS or text.count('\n') >= _OFFLOAD_MIN_LINES
