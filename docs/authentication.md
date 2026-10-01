@@ -169,7 +169,7 @@ With `MCP_AUTH_PROVIDER=jwt`, the server validates each bearer token as a JWT: s
 
 Two key modes are supported, and exactly one must be configured:
 
-- **JWKS mode** (`MCP_AUTH_JWT_JWKS_URI`): the server fetches signing keys from the IdP's JWKS endpoint and caches them, so IdP-side key rotation needs no server change. This is the recommended mode for real IdPs.
+- **JWKS mode** (`MCP_AUTH_JWT_JWKS_URI`): the server fetches signing keys from the IdP's JWKS endpoint and caches them, so IdP-side key rotation needs no server change. This is the recommended mode for real IdPs. The HTTPS connection to the JWKS endpoint is verified against the operating system's certificate store; for an IdP behind a private CA, add the CA to that store or point `SSL_CERT_FILE`/`SSL_CERT_DIR` at it.
 - **Static key mode** (`MCP_AUTH_JWT_PUBLIC_KEY`): a fixed PEM-encoded public key (asymmetric algorithms) or shared secret (HS* algorithms). Suited to testing and closed environments without a reachable JWKS endpoint.
 
 ### Configuration

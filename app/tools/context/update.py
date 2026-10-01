@@ -5,7 +5,6 @@ import logging
 from typing import Annotated
 from typing import Literal
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -83,7 +82,6 @@ async def update_context(
             'visibility, and publishing as public may require a configured role.',
         ),
     ] = None,
-    ctx: Context | None = None,
 ) -> UpdateContextSuccessDict:
     """Update an existing context entry.
 
@@ -162,9 +160,6 @@ async def update_context(
             context_id = await resolve_or_normalize_id(context_id, repos.context)
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
-
-        if ctx:
-            await ctx.info(f'Updating context entry {context_id}')
 
         # Check if entry exists; capture source and the optimistic-concurrency
         # version BEFORE generation so a concurrent writer that commits during

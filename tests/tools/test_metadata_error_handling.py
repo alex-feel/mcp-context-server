@@ -1,7 +1,6 @@
 """Test metadata filtering error handling."""
 
 import pytest
-from fastmcp import Context as MockFastMCPContext
 
 from app.server import search_context
 
@@ -11,7 +10,7 @@ class TestMetadataErrorHandling:
     """Test error handling for metadata filtering."""
 
     @pytest.mark.usefixtures('initialized_server')
-    async def test_invalid_operator_returns_error(self, mock_context: MockFastMCPContext) -> None:
+    async def test_invalid_operator_returns_error(self) -> None:
         """Test that invalid operators return proper error responses."""
         # Try to use an invalid operator
         result = await search_context(
@@ -20,7 +19,6 @@ class TestMetadataErrorHandling:
             metadata_filters=[
                 {'key': 'status', 'operator': 'invalid_operator', 'value': 'active'},
             ],
-            ctx=mock_context,
         )
 
         # Should return an error response
@@ -34,7 +32,7 @@ class TestMetadataErrorHandling:
         assert 'invalid_operator' in result['validation_errors'][0]
 
     @pytest.mark.usefixtures('initialized_server')
-    async def test_empty_in_list_returns_error(self, mock_context: MockFastMCPContext) -> None:
+    async def test_empty_in_list_returns_error(self) -> None:
         """Test that empty IN operator lists return proper error responses."""
         # Try to use an empty list with IN operator
         result = await search_context(
@@ -43,7 +41,6 @@ class TestMetadataErrorHandling:
             metadata_filters=[
                 {'key': 'status', 'operator': 'in', 'value': []},
             ],
-            ctx=mock_context,
         )
 
         # Should return an error response
@@ -57,7 +54,7 @@ class TestMetadataErrorHandling:
         assert 'non-empty list' in result['validation_errors'][0]
 
     @pytest.mark.usefixtures('initialized_server')
-    async def test_multiple_invalid_filters_collect_all_errors(self, mock_context: MockFastMCPContext) -> None:
+    async def test_multiple_invalid_filters_collect_all_errors(self) -> None:
         """Test that multiple invalid filters collect all errors."""
         # Try multiple invalid filters
         result = await search_context(
@@ -68,7 +65,6 @@ class TestMetadataErrorHandling:
                 {'key': 'priority', 'operator': 'in', 'value': []},
                 {'key': 'type', 'operator': 'another_invalid', 'value': 5},
             ],
-            ctx=mock_context,
         )
 
         # Should return an error response with all validation errors
@@ -80,7 +76,7 @@ class TestMetadataErrorHandling:
         assert len(result['validation_errors']) == 3  # All three errors collected
 
     @pytest.mark.usefixtures('initialized_server')
-    async def test_valid_filters_work_correctly(self, mock_context: MockFastMCPContext) -> None:
+    async def test_valid_filters_work_correctly(self) -> None:
         """Test that valid filters still work correctly after error handling changes."""
         # Use valid filters
         result = await search_context(
@@ -91,7 +87,6 @@ class TestMetadataErrorHandling:
                 {'key': 'priority', 'operator': 'gt', 'value': 5},
                 {'key': 'tags', 'operator': 'in', 'value': ['urgent', 'important']},
             ],
-            ctx=mock_context,
         )
 
         # Should NOT return an error
@@ -101,7 +96,7 @@ class TestMetadataErrorHandling:
         assert 'validation_errors' not in result
 
     @pytest.mark.usefixtures('initialized_server')
-    async def test_case_sensitivity_flag_works(self, mock_context: MockFastMCPContext) -> None:
+    async def test_case_sensitivity_flag_works(self) -> None:
         """Test that case_sensitive flag is properly handled."""
         # Store test data first
         from app.server import store_context
@@ -111,7 +106,6 @@ class TestMetadataErrorHandling:
             source='user',
             text='Test entry',
             metadata={'name': 'TestCase'},
-            ctx=mock_context,
         )
 
         # Search with case-insensitive (default)
@@ -121,7 +115,6 @@ class TestMetadataErrorHandling:
             metadata_filters=[
                 {'key': 'name', 'operator': 'eq', 'value': 'testcase', 'case_sensitive': False},
             ],
-            ctx=mock_context,
         )
         assert 'results' in result1
         assert len(result1['results']) == 1  # Should find the entry
@@ -133,7 +126,6 @@ class TestMetadataErrorHandling:
             metadata_filters=[
                 {'key': 'name', 'operator': 'eq', 'value': 'testcase', 'case_sensitive': True},
             ],
-            ctx=mock_context,
         )
         assert 'results' in result2
         assert len(result2['results']) == 0  # Should NOT find the entry (case mismatch)
@@ -145,7 +137,6 @@ class TestMetadataErrorHandling:
             metadata_filters=[
                 {'key': 'name', 'operator': 'eq', 'value': 'TestCase', 'case_sensitive': True},
             ],
-            ctx=mock_context,
         )
         assert 'results' in result3
         assert len(result3['results']) == 1  # Should find the entry (exact match)
@@ -300,14 +291,13 @@ class TestMetadataFilterUnknownKeyRejection:
     """
 
     @pytest.mark.usefixtures('initialized_server')
-    async def test_typo_operator_key_returns_structured_error(self, mock_context: MockFastMCPContext) -> None:
+    async def test_typo_operator_key_returns_structured_error(self) -> None:
         result = await search_context(
             limit=50,
             thread_id='test',
             metadata_filters=[
                 {'key': 'priority', 'op': 'gt', 'value': 5},
             ],
-            ctx=mock_context,
         )
 
         assert isinstance(result, dict)
@@ -330,7 +320,7 @@ class TestSearchContextValidationErrorStats:
     """
 
     @pytest.mark.usefixtures('initialized_server')
-    async def test_validation_error_stats_include_backend(self, mock_context: MockFastMCPContext) -> None:
+    async def test_validation_error_stats_include_backend(self) -> None:
         """The error-path stats dict includes backend (the active storage backend type)."""
         result = await search_context(
             limit=50,
@@ -339,7 +329,6 @@ class TestSearchContextValidationErrorStats:
                 {'key': 'status', 'operator': 'invalid_operator', 'value': 'active'},
             ],
             explain_query=True,
-            ctx=mock_context,
         )
 
         assert result['results'] == []
@@ -359,7 +348,7 @@ class TestSearchContextValidationErrorStats:
         assert stats['rows_returned'] == 0
 
     @pytest.mark.usefixtures('initialized_server')
-    async def test_validation_error_omits_stats_without_explain_query(self, mock_context: MockFastMCPContext) -> None:
+    async def test_validation_error_omits_stats_without_explain_query(self) -> None:
         """Without explain_query the validation-error response carries no stats block."""
         result = await search_context(
             limit=50,
@@ -368,7 +357,6 @@ class TestSearchContextValidationErrorStats:
                 {'key': 'status', 'operator': 'invalid_operator', 'value': 'active'},
             ],
             explain_query=False,
-            ctx=mock_context,
         )
 
         assert result['count'] == 0

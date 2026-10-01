@@ -14,7 +14,6 @@ from typing import Any
 from typing import Literal
 from typing import cast
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -252,7 +251,6 @@ async def hybrid_search_context(
     ] = None,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
-    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
 
@@ -395,9 +393,6 @@ async def hybrid_search_context(
         import time as time_module
 
         total_start_time = time_module.time()
-
-        if ctx:
-            await ctx.info(f'Performing hybrid search: "{query[:50]}..." (modes={available_modes})')
 
         # Import fusion module
         from app.fusion import count_unique_results

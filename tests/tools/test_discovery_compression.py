@@ -184,7 +184,7 @@ async def test_get_statistics_includes_compression_block_when_enabled(
     """
     del backend_with_compression_enabled  # Implicit: set via set_backend
 
-    stats = await discovery_module.get_statistics(ctx=None)
+    stats = await discovery_module.get_statistics()
 
     assert 'compression' in stats, (
         'get_statistics response is missing the compression sub-block. '
@@ -213,7 +213,7 @@ async def test_get_statistics_compression_block_when_disabled(
     """When compression is disabled, the block reduces to enabled/available=False."""
     del backend_with_compression_disabled  # Implicit: set via set_backend
 
-    stats = await discovery_module.get_statistics(ctx=None)
+    stats = await discovery_module.get_statistics()
 
     assert 'compression' in stats
     block = cast(dict[str, Any], stats['compression'])

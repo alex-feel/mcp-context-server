@@ -10,7 +10,6 @@ from typing import Any
 from typing import NoReturn
 from typing import cast
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -99,7 +98,6 @@ async def update_context_batch(
             'If false, partial success allowed.',
         ),
     ] = True,
-    ctx: Context | None = None,
 ) -> BulkUpdateResponseDict:
     """Update multiple context entries in a batch.
 
@@ -134,9 +132,6 @@ async def update_context_batch(
         ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
     """
     try:
-        if ctx:
-            await ctx.info(f'Batch updating {len(updates)} context entries (atomic={atomic})')
-
         repos = await ensure_repositories()
 
         # === PHASE 1: Validate all updates before processing ===

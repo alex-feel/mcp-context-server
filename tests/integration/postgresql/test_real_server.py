@@ -34,6 +34,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from tests.integration._harness import CLIENT_MODES
+from tests.integration._harness import ClientMode
 from tests.integration._harness import MCPServerIntegrationTest
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
@@ -95,17 +97,20 @@ async def pg_parity_db(pg_test_url: str) -> AsyncIterator[str]:
 
 
 @pytest.mark.asyncio
-async def test_real_server_postgresql(pg_parity_db: str) -> None:
+@pytest.mark.parametrize('client_mode', CLIENT_MODES)
+async def test_real_server_postgresql(pg_parity_db: str, client_mode: ClientMode) -> None:
     """Run the full real-server harness against PostgreSQL (parity with SQLite).
 
     Constructs the shared harness in PostgreSQL mode and runs every assertion
     method through a real MCP server subprocess connected to the isolated
-    pgvector database. Mirrors ``tests/integration/sqlite/test_real_server.py``
-    ::``test_real_server`` so the two backends share one source of truth.
+    pgvector database, once per protocol era. Mirrors
+    ``tests/integration/sqlite/test_real_server.py``::``test_real_server`` so the
+    two backends share one source of truth.
 
     Args:
         pg_parity_db: Isolated pgvector DSN provided by :func:`pg_parity_db`.
+        client_mode: Protocol era the harness client negotiates.
     """
-    test = MCPServerIntegrationTest(backend='postgresql', pg_url=pg_parity_db)
+    test = MCPServerIntegrationTest(backend='postgresql', pg_url=pg_parity_db, client_mode=client_mode)
     success = await test.run_all_tests()
-    assert success, 'PostgreSQL integration tests failed'
+    assert success, f'PostgreSQL integration tests failed ({client_mode} client mode)'

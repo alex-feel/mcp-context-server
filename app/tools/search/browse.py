@@ -7,7 +7,6 @@ from typing import Any
 from typing import Literal
 from typing import cast
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -69,7 +68,6 @@ async def search_context(
     offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
-    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Search context entries with filtering. Returns TRUNCATED text_content.
 
@@ -125,9 +123,6 @@ async def search_context(
             if explain_query:
                 caps_response['stats'] = empty_stats_for_unexecuted_query()
             return caps_response
-
-        if ctx:
-            await ctx.info(f'Searching context with filters: thread_id={thread_id}, source={source}')
 
         # Get repositories
         repos = await ensure_repositories()

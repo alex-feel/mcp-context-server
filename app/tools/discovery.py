@@ -10,7 +10,6 @@ import logging
 from typing import Annotated
 from typing import cast
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -33,7 +32,6 @@ async def list_threads(
         Field(ge=1, le=100, description='Maximum threads to return (1-100); omit for all threads (default)'),
     ] = None,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
-    ctx: Context | None = None,
 ) -> ThreadListDict:
     """List threads with entry statistics. Use for thread discovery and overview.
 
@@ -47,7 +45,6 @@ async def list_threads(
             threads are returned (no limit).
         offset: Number of leading threads to skip for pagination (default 0).
             Ignored when `limit` is omitted.
-        ctx: FastMCP context (injected; hidden from clients).
 
     Fields explained:
     - entry_count: Total context entries in thread
@@ -66,9 +63,6 @@ async def list_threads(
         ToolError: If listing threads fails.
     """
     try:
-        if ctx:
-            await ctx.info('Listing threads')
-
         # Get repositories
         repos = await ensure_repositories()
 
@@ -86,7 +80,7 @@ async def list_threads(
         raise ToolError(f'Failed to list threads: {format_exception_message(e)}') from e
 
 
-async def get_statistics(ctx: Context | None = None) -> StatisticsResponseDict:
+async def get_statistics() -> StatisticsResponseDict:
     """Get server statistics for monitoring and debugging.
 
     Use for: capacity planning, debugging performance issues, verifying search status.
@@ -110,9 +104,6 @@ async def get_statistics(ctx: Context | None = None) -> StatisticsResponseDict:
         ToolError: If retrieving statistics fails.
     """
     try:
-        if ctx:
-            await ctx.info('Getting database statistics')
-
         # Get repositories
         repos = await ensure_repositories()
 

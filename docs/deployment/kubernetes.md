@@ -116,7 +116,7 @@ Horizontal scaling requires ALL of the following:
 
 **Why stateless HTTP mode matters:**
 
-Stateless HTTP mode is enabled by default in MCP Context Server because it uses no stateful MCP features. Each request creates a fresh transport context, eliminating the need for session affinity (sticky sessions). If needed, you can disable it by setting `FASTMCP_STATELESS_HTTP=false`.
+Stateless HTTP mode is enabled by default in MCP Context Server because it uses no stateful MCP features. Each request creates a fresh transport context, eliminating the need for session affinity (sticky sessions). If needed, you can disable it by setting `FASTMCP_STATELESS_HTTP=false`. The setting applies to clients on handshake-era protocol versions; clients that negotiate the sessionless `2026-07-28` protocol never create server sessions.
 
 ### Helm Configuration
 

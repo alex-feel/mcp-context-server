@@ -78,7 +78,7 @@ def _create_jwt_verifier(auth_settings: AuthSettings) -> 'JWTVerifier':
             JWTVerifier rejects the configuration (unsupported algorithm,
             symmetric algorithm with a JWKS URI or a PEM public key).
     """
-    # Deferred import: the JWT provider pulls in authlib/cryptography, which
+    # Deferred import: the JWT provider pulls in joserfc/cryptography, which
     # non-jwt startups (including every stdio startup) should not pay for.
     from fastmcp.server.auth.providers.jwt import JWTVerifier
 

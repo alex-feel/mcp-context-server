@@ -6,9 +6,9 @@ tool calls and deserializes string-typed arguments that the tool's JSON Schema
 expects as array or object types.
 
 Upstream issues:
-- Claude Code #22394 (closed NOT_PLANNED, 2026-02-01)
-- FastMCP #932
-- Claude Code #5504, #4192, #3084, #26094
+- Claude Code #18260 and #25865 (open)
+- Claude Code #22394, #26094, #5504, #4192, #3084 (closed)
+- FastMCP #932 (closed; FastMCP does not coerce stringified arguments)
 
 This middleware can be removed when upstream clients fix their serialization.
 """

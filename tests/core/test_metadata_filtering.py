@@ -932,7 +932,7 @@ class TestMetadataFilteringIntegration:
         ]
 
         for data in test_data:
-            await store_context(**data, ctx=None)
+            await store_context(**data)
 
     @pytest.mark.asyncio
     async def test_simple_metadata_filter(self) -> None:
@@ -943,7 +943,6 @@ class TestMetadataFilteringIntegration:
             limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'active'},
-            ctx=None,
         )
 
         assert 'results' in result
@@ -960,7 +959,6 @@ class TestMetadataFilteringIntegration:
             limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'active', 'priority': 5},
-            ctx=None,
         )
 
         assert 'results' in result
@@ -976,7 +974,6 @@ class TestMetadataFilteringIntegration:
             limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 5}],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -999,7 +996,6 @@ class TestMetadataFilteringIntegration:
                     'value': ['active', 'pending'],
                 },
             ],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1028,7 +1024,6 @@ class TestMetadataFilteringIntegration:
                     'value': [5, 10],  # Integer array
                 },
             ],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1056,7 +1051,6 @@ class TestMetadataFilteringIntegration:
                     'value': [1, 3, 5],  # Integer array
                 },
             ],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1074,7 +1068,6 @@ class TestMetadataFilteringIntegration:
             limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[{'key': 'agent_name', 'operator': 'exists'}],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1097,7 +1090,6 @@ class TestMetadataFilteringIntegration:
                     'value': 'plan',
                 },
             ],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1115,7 +1107,6 @@ class TestMetadataFilteringIntegration:
             source='agent',
             metadata={'status': 'active'},
             metadata_filters=[{'key': 'priority', 'operator': 'gte', 'value': 5}],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1135,7 +1126,6 @@ class TestMetadataFilteringIntegration:
             thread_id=self.test_thread_id,
             metadata={'status': 'active'},
             explain_query=True,
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1157,7 +1147,6 @@ class TestMetadataFilteringIntegration:
             limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'nonexistent'},
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1172,7 +1161,6 @@ class TestMetadataFilteringIntegration:
             limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[{'key': 'status', 'operator': 'not_exists'}],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1192,7 +1180,6 @@ class TestMetadataFilteringIntegration:
             limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'active'},
-            ctx=None,
         )
         simple_time = (time.time() - start_time) * 1000
 
@@ -1209,7 +1196,6 @@ class TestMetadataFilteringIntegration:
                 {'key': 'priority', 'operator': 'gt', 'value': 3},
                 {'key': 'agent_name', 'operator': 'exists'},
             ],
-            ctx=None,
         )
         complex_time = (time.time() - start_time) * 1000
 
@@ -1228,7 +1214,6 @@ class TestMetadataFilteringIntegration:
             limit=50,
             thread_id='in_member_cap_thread',
             metadata_filters=[{'key': 'status', 'operator': 'in', 'value': oversized}],
-            ctx=None,
         )
 
         assert result['results'] == []
@@ -1275,7 +1260,6 @@ async def test_all_operators(
             source='agent',
             text=f'Task {i + 1}',
             metadata=metadata,
-            ctx=None,
         )
 
     # Determine which field to filter on
@@ -1291,7 +1275,6 @@ async def test_all_operators(
         limit=50,
         thread_id='test_operators',
         metadata_filters=[{'key': key, 'operator': operator.value, 'value': value}],
-        ctx=None,
     )
 
     assert 'results' in result
@@ -1309,7 +1292,6 @@ class TestMetadataFilterErrorHandling:
         result = await search_context(
             limit=50,
             metadata_filters=[{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}],
-            ctx=None,
         )
 
         assert 'error' in result
@@ -1328,7 +1310,6 @@ class TestMetadataFilterErrorHandling:
                 {'key': 'status', 'operator': 'invalid_op1', 'value': 'test'},
                 {'key': 'priority', 'operator': 'invalid_op2', 'value': 123},
             ],
-            ctx=None,
         )
 
         assert 'error' in result
@@ -1342,7 +1323,6 @@ class TestMetadataFilterErrorHandling:
         result = await search_context(
             limit=50,
             metadata_filters=[{'key': 'DROP TABLE;--', 'operator': 'eq', 'value': 'test'}],
-            ctx=None,
         )
 
         assert 'error' in result
@@ -1378,14 +1358,13 @@ class TestNestedJSONMetadata:
             source='agent',
             text='Test nested metadata storage',
             metadata=complex_metadata,
-            ctx=None,
         )
 
         assert result['success'] is True
         assert 'context_id' in result
 
         # Retrieve and verify the metadata is preserved
-        search_result = await search_context(limit=50, thread_id='test_nested_json', ctx=None)
+        search_result = await search_context(limit=50, thread_id='test_nested_json')
         assert len(search_result['results']) == 1
 
         stored_metadata = search_result['results'][0]['metadata']
@@ -1413,13 +1392,12 @@ class TestNestedJSONMetadata:
             source='agent',
             text='Test array metadata',
             metadata=metadata_with_arrays,
-            ctx=None,
         )
 
         assert result['success'] is True
 
         # Retrieve and verify arrays are preserved
-        search_result = await search_context(limit=50, thread_id='test_arrays', ctx=None)
+        search_result = await search_context(limit=50, thread_id='test_arrays')
         stored_metadata = search_result['results'][0]['metadata']
 
         assert stored_metadata['tags'] == ['urgent', 'backend', 'production']
@@ -1436,7 +1414,6 @@ class TestNestedJSONMetadata:
             source='agent',
             text='Entry 1',
             metadata={'user': {'preferences': {'theme': 'dark', 'notifications': {'email': True}}}},
-            ctx=None,
         )
 
         await store_context(
@@ -1444,7 +1421,6 @@ class TestNestedJSONMetadata:
             source='agent',
             text='Entry 2',
             metadata={'user': {'preferences': {'theme': 'light', 'notifications': {'email': False}}}},
-            ctx=None,
         )
 
         # Query using nested path
@@ -1452,7 +1428,6 @@ class TestNestedJSONMetadata:
             limit=50,
             thread_id='test_nested_paths',
             metadata={'user.preferences.theme': 'dark'},
-            ctx=None,
         )
 
         assert len(result['results']) == 1
@@ -1492,13 +1467,12 @@ class TestNestedJSONMetadata:
             source='agent',
             text='Complex nested structure test',
             metadata=complex_structure,
-            ctx=None,
         )
 
         assert result['success'] is True
 
         # Verify structure is preserved
-        search_result = await search_context(limit=50, thread_id='test_complex', ctx=None)
+        search_result = await search_context(limit=50, thread_id='test_complex')
         stored_metadata = search_result['results'][0]['metadata']
 
         # Verify deep nesting
@@ -1533,14 +1507,13 @@ class TestNestedJSONMetadata:
             source='agent',
             text='Mixed flat and nested',
             metadata=mixed_metadata,
-            ctx=None,
         )
 
         assert result['success'] is True
 
         # Query using both flat and nested paths
         search_result = await search_context(
-            limit=50, thread_id='test_mixed', metadata={'simple_string': 'value'}, ctx=None,
+            limit=50, thread_id='test_mixed', metadata={'simple_string': 'value'},
         )
         assert len(search_result['results']) == 1
 
@@ -1573,7 +1546,6 @@ class TestArrayContainsOperator:
                 'technologies': ['python', 'fastapi', 'postgresql'],
                 'tags': ['backend', 'api', 'production'],
             },
-            ctx=None,
         )
 
         # Entry with different technologies
@@ -1585,7 +1557,6 @@ class TestArrayContainsOperator:
                 'technologies': ['javascript', 'react', 'typescript'],
                 'tags': ['frontend', 'ui'],
             },
-            ctx=None,
         )
 
         # Entry with numeric array
@@ -1597,7 +1568,6 @@ class TestArrayContainsOperator:
                 'priority_levels': [1, 3, 5, 7, 9],
                 'scores': [85.5, 90.0, 78.3],
             },
-            ctx=None,
         )
 
         # Entry with nested array
@@ -1611,7 +1581,6 @@ class TestArrayContainsOperator:
                     'youtrack': ['AI-100', 'AI-200'],
                 },
             },
-            ctx=None,
         )
 
     @pytest.mark.asyncio
@@ -1624,7 +1593,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'technologies', 'operator': 'array_contains', 'value': 'python'},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 1
@@ -1640,7 +1608,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'technologies', 'operator': 'array_contains', 'value': 'PYTHON', 'case_sensitive': False},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 1
@@ -1656,7 +1623,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'technologies', 'operator': 'array_contains', 'value': 'PYTHON', 'case_sensitive': True},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 0
@@ -1671,7 +1637,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'priority_levels', 'operator': 'array_contains', 'value': 5},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 1
@@ -1687,7 +1652,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'scores', 'operator': 'array_contains', 'value': 90.0},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 1
@@ -1703,7 +1667,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'references.context_ids', 'operator': 'array_contains', 'value': 200},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 1
@@ -1719,7 +1682,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'references.youtrack', 'operator': 'array_contains', 'value': 'AI-100'},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 1
@@ -1735,7 +1697,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'technologies', 'operator': 'array_contains', 'value': 'rust'},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 0
@@ -1751,7 +1712,6 @@ class TestArrayContainsOperator:
                 {'key': 'technologies', 'operator': 'array_contains', 'value': 'python'},
                 {'key': 'tags', 'operator': 'array_contains', 'value': 'production'},
             ],
-            ctx=None,
         )
 
         assert len(result['results']) == 1
@@ -1767,7 +1727,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'nonexistent', 'operator': 'array_contains', 'value': 'test'},
             ],
-            ctx=None,
         )
 
         # Should return empty, not error
@@ -1791,7 +1750,6 @@ class TestArrayContainsOperator:
                 'category': 'backend',  # Scalar string, NOT an array
                 'technologies': ['python', 'fastapi'],  # This IS an array
             },
-            ctx=None,
         )
 
         # This should return empty results, NOT throw an error
@@ -1800,7 +1758,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'category', 'operator': 'array_contains', 'value': 'backend'},
             ],
-            ctx=None,
         )
 
         # Should return empty results, not error
@@ -1813,7 +1770,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'technologies', 'operator': 'array_contains', 'value': 'python'},
             ],
-            ctx=None,
         )
         assert len(result2['results']) == 1
 
@@ -1828,7 +1784,6 @@ class TestArrayContainsOperator:
             metadata={
                 'config': {'timeout': 30, 'retries': 3},  # Object, NOT an array
             },
-            ctx=None,
         )
 
         result = await search_context(
@@ -1836,7 +1791,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'config', 'operator': 'array_contains', 'value': 30},
             ],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1853,7 +1807,6 @@ class TestArrayContainsOperator:
             metadata={
                 'priority': 5,  # Number scalar, NOT an array
             },
-            ctx=None,
         )
 
         result = await search_context(
@@ -1861,7 +1814,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'priority', 'operator': 'array_contains', 'value': 5},
             ],
-            ctx=None,
         )
 
         assert 'results' in result
@@ -1878,7 +1830,6 @@ class TestArrayContainsOperator:
             metadata={
                 'tags': None,  # Explicit null, NOT an array
             },
-            ctx=None,
         )
 
         result = await search_context(
@@ -1886,7 +1837,6 @@ class TestArrayContainsOperator:
             metadata_filters=[
                 {'key': 'tags', 'operator': 'array_contains', 'value': 'test'},
             ],
-            ctx=None,
         )
 
         assert 'results' in result

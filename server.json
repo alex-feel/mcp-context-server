@@ -1096,7 +1096,7 @@
           "name": "MCP_AUTH_JWT_AUDIENCE"
         },
         {
-          "description": "JWT signing algorithm to accept (default RS256). Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512",
+          "description": "JWT signing algorithm to accept (default RS256). Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512, EdDSA, Ed25519, Ed448",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -2288,7 +2288,7 @@
           "name": "MCP_AUTH_JWT_AUDIENCE"
         },
         {
-          "description": "JWT signing algorithm to accept (default RS256). Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512",
+          "description": "JWT signing algorithm to accept (default RS256). Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512, EdDSA, Ed25519, Ed448",
           "isRequired": false,
           "format": "string",
           "isSecret": false,

@@ -5,7 +5,6 @@ from typing import Annotated
 from typing import Literal
 from typing import cast
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -37,7 +36,6 @@ async def delete_context_batch(
         int | None,
         Field(description='Delete entries older than N days (combine with other criteria)', gt=0),
     ] = None,
-    ctx: Context | None = None,
 ) -> BulkDeleteResponseDict:
     """Delete multiple context entries by various criteria. IRREVERSIBLE.
 
@@ -95,18 +93,6 @@ async def delete_context_batch(
         # reaches the criteria delete's bind, where asyncpg would raise a non-ControlFlowError
         # that charges the circuit breaker (SQLite binds it silently -- a divergence).
         reject_unstorable_input(thread_ids=cast('object', thread_ids))
-
-        if ctx:
-            criteria_summary: list[str] = []
-            if context_ids:
-                criteria_summary.append(f'{len(context_ids)} IDs')
-            if thread_ids:
-                criteria_summary.append(f'{len(thread_ids)} threads')
-            if source:
-                criteria_summary.append(f'source={source}')
-            if older_than_days:
-                criteria_summary.append(f'older_than={older_than_days}d')
-            await ctx.info(f'Batch delete with criteria: {", ".join(criteria_summary)}')
 
         repos = await ensure_repositories()
 

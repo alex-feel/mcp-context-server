@@ -2,6 +2,7 @@
 """Wrapper to run the MCP server with proper Python path and environment."""
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 from tests.helpers import is_ollama_model_available
+
+wrapper_temp_dir: str | None = None
 
 # Force test mode for all test runs
 # Check if we're being run from pytest or in a test context
@@ -18,10 +21,11 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     # so we create our own temp database and enable semantic search
     import tempfile
 
-    # Only create a temp DB if one wasn't provided by the parent process
+    # Only create a temp DB if one wasn't provided by the parent process; the
+    # directory is removed when the server exits
     if 'DB_PATH' not in os.environ:
-        temp_dir = tempfile.mkdtemp(prefix='mcp_server_wrapper_')
-        test_db = Path(temp_dir) / 'test_wrapper.db'
+        wrapper_temp_dir = tempfile.mkdtemp(prefix='mcp_server_wrapper_')
+        test_db = Path(wrapper_temp_dir) / 'test_wrapper.db'
         os.environ['DB_PATH'] = str(test_db)
     else:
         test_db = Path(os.environ['DB_PATH'])
@@ -171,4 +175,8 @@ if __name__ == '__main__':
 
     # Run the server's main function
     # The server will use DB_PATH from environment via settings.py
-    main()
+    try:
+        main()
+    finally:
+        if wrapper_temp_dir is not None:
+            shutil.rmtree(wrapper_temp_dir, ignore_errors=True)

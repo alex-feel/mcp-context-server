@@ -211,7 +211,7 @@ async def test_metadata_indexing_real_server_postgresql(
     client: Client[Any] = Client(transport)
     await client.__aenter__()
     try:
-        await client.ping()
+        await client.list_tools()
 
         # The server lifespan has now applied handle_metadata_indexes. Verify
         # the PG-specific index set directly against the database.

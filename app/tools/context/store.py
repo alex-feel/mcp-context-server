@@ -6,7 +6,6 @@ import logging
 from typing import Annotated
 from typing import Literal
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -89,7 +88,6 @@ async def store_context(
             'role. Ignored when deduplication updates an existing entry.',
         ),
     ] = None,
-    ctx: Context | None = None,
 ) -> StoreContextSuccessDict:
     """Store a context entry.
 
@@ -136,10 +134,6 @@ async def store_context(
             raise ToolError('thread_id cannot be empty or whitespace')
         if not text:
             raise ToolError('text cannot be empty or whitespace')
-
-        # Log info if context is available
-        if ctx:
-            await ctx.info(f'Storing context for thread: {thread_id}')
 
         # Resolve the effective principal (verified token, or the configured
         # default principal) and the visibility to stamp, then enforce the

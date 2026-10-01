@@ -8,7 +8,6 @@ from typing import Annotated
 from typing import Any
 from typing import Literal
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -99,7 +98,6 @@ async def fts_search_context(
     highlight: Annotated[bool, Field(description='Include highlighted snippets in results')] = False,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
-    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Full-text search with linguistic analysis (stemming, ranking, boolean queries).
 
@@ -199,9 +197,6 @@ async def fts_search_context(
                 'fts_search_context: requested limit=%d exceeds maximum %d, clamped to %d',
                 original_limit, MAX_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
             )
-
-        if ctx:
-            await ctx.info(f'Performing FTS search: "{query[:50]}..." (mode={mode})')
 
         # The candidate depth is fixed and page-independent (see
         # RANKED_SEARCH_DEPTH), so every page is cut from the SAME ordering.

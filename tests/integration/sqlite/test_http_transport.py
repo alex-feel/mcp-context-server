@@ -33,6 +33,10 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
 
+from tests.integration._harness import CLIENT_MODES
+from tests.integration._harness import ERA_PROTOCOL_VERSIONS
+from tests.integration._harness import ClientMode
+
 # The HTTP transport mode the project exposes. main() registers /health and
 # wires auth for every non-stdio transport; 'http' maps to FastMCP's
 # streamable-http MCP endpoint mounted at /mcp.
@@ -308,14 +312,17 @@ def test_http_request_with_wrong_token_is_rejected(http_auth_server: str) -> Non
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_http_request_with_correct_token_is_accepted(http_auth_server: str) -> None:
-    """The CORRECT bearer token authenticates and can list and call tools."""
+@pytest.mark.parametrize('client_mode', CLIENT_MODES)
+async def test_http_request_with_correct_token_is_accepted(http_auth_server: str, client_mode: ClientMode) -> None:
+    """The CORRECT bearer token authenticates and can list and call tools in either protocol era."""
     transport = StreamableHttpTransport(
         url=f'{http_auth_server}/mcp',
         headers={'Authorization': f'Bearer {TEST_TOKEN}'},
     )
-    async with Client(transport) as client:
-        await client.ping()
+    async with Client(transport, mode=client_mode) as client:
+        assert client.protocol_version in ERA_PROTOCOL_VERSIONS[client_mode], (
+            f'{client_mode} mode negotiated {client.protocol_version!r}'
+        )
 
         tools = await client.list_tools()
         tool_names = {tool.name for tool in tools}
@@ -395,8 +402,13 @@ def test_http_jwt_invalid_tokens_are_rejected(http_jwt_server: str, jwt_key_pair
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_http_jwt_valid_token_is_accepted(http_jwt_server: str, jwt_key_pair: RSAKeyPair) -> None:
-    """A valid minted JWT authenticates and can list and call tools."""
+@pytest.mark.parametrize('client_mode', CLIENT_MODES)
+async def test_http_jwt_valid_token_is_accepted(
+    http_jwt_server: str,
+    jwt_key_pair: RSAKeyPair,
+    client_mode: ClientMode,
+) -> None:
+    """A valid minted JWT authenticates and can list and call tools in either protocol era."""
     token = jwt_key_pair.create_token(
         subject='integration-user',
         issuer=JWT_ISSUER,
@@ -407,8 +419,10 @@ async def test_http_jwt_valid_token_is_accepted(http_jwt_server: str, jwt_key_pa
         url=f'{http_jwt_server}/mcp',
         headers={'Authorization': f'Bearer {token}'},
     )
-    async with Client(transport) as client:
-        await client.ping()
+    async with Client(transport, mode=client_mode) as client:
+        assert client.protocol_version in ERA_PROTOCOL_VERSIONS[client_mode], (
+            f'{client_mode} mode negotiated {client.protocol_version!r}'
+        )
 
         tools = await client.list_tools()
         tool_names = {tool.name for tool in tools}

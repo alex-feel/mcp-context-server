@@ -29,7 +29,6 @@ from typing import Literal
 from typing import cast
 
 import regex
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -223,7 +222,6 @@ async def grep_context(
         int,
         Field(ge=1, le=1000000, description='Maximum entries the scan visits (clamped to the server cap)'),
     ] = 1000,
-    ctx: Context | None = None,
 ) -> GrepContextResultDict:
     """Server-side grep over stored context: literal/regex, line-oriented, unranked.
 
@@ -325,9 +323,6 @@ async def grep_context(
             raise ToolError(f'Invalid regular expression: {exc}') from exc
 
         ascii_literal = extract_ascii_literal(pattern, is_regex=is_regex, case_sensitive=case_sensitive)
-
-        if ctx:
-            await ctx.info(f'grep_context ({"regex" if is_regex else "literal"}): {pattern[:50]!r}')
 
         rows, scan_stats = await repos.context.grep_scan_text_contents(
             ascii_literal=ascii_literal,
@@ -469,7 +464,6 @@ async def navigate_context(
         bool,
         Field(description='Attach stored per-node LLM summaries to descendant nodes (when that layer is enabled)'),
     ] = False,
-    ctx: Context | None = None,
 ) -> NavigateContextResultDict:
     """Build a navigable Markdown outline (index_tree) for one context entry.
 
@@ -570,9 +564,6 @@ async def navigate_context(
         else:
             root_dict, node_count = _build_outline()
 
-        if ctx:
-            await ctx.info(f'navigate_context {resolved_id}: {node_count} nodes')
-
         # The root mirrors the entry summary by reference; the stored node
         # summaries never contain the synthetic root id, and the span fallback
         # excludes the root explicitly.
@@ -616,7 +607,6 @@ async def read_context_range(
         str | None,
         Field(description="Outline node id from navigate_context (e.g. 'setup/install' or 'root')"),
     ] = None,
-    ctx: Context | None = None,
 ) -> ReadContextRangeDict:
     """Read part of one context entry by character range, line range, or outline node.
 
@@ -725,9 +715,6 @@ async def read_context_range(
             start_line_out = line_index_for_offset(line_starts, start) + 1
             end_anchor = end - 1 if end > start else start
             end_line_out = line_index_for_offset(line_starts, end_anchor) + 1
-
-        if ctx:
-            await ctx.info(f'read_context_range {resolved_id} [{start}:{end}]')
 
         return {
             'context_id': resolved_id,

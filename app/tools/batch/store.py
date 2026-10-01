@@ -8,7 +8,6 @@ from typing import Annotated
 from typing import Any
 from typing import cast
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -58,7 +57,6 @@ async def store_context_batch(
             'If false, partial success is allowed with per-item error reporting.',
         ),
     ] = True,
-    ctx: Context | None = None,
 ) -> BulkStoreResponseDict:
     """Store multiple context entries in a batch.
 
@@ -90,9 +88,6 @@ async def store_context_batch(
         ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
     """
     try:
-        if ctx:
-            await ctx.info(f'Batch storing {len(entries)} context entries (atomic={atomic})')
-
         repos = await ensure_repositories()
 
         # Resolve the effective principal ONCE for the whole batch (one request,
