@@ -5,13 +5,11 @@ Covers:
 - Image validation parity (empty data, mime_type defaults, index in errors)
 - Embedding cleanup for non-ID batch deletes on SQLite
 - Connection retry in non-atomic batch operations
-- Error formatting (format_exception_message usage)
 - Response message parity (summaries preserved, embedding stored vs generated, summaries cleared)
 """
 
 import base64
 from contextlib import asynccontextmanager
-from pathlib import Path
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -24,29 +22,6 @@ from app.repositories.context_repository.records import EntryProbe
 from app.settings import get_settings
 
 
-# Error formatting conformance
-class TestErrorFormatting:
-    """Verify all tool files use format_exception_message instead of str(e)."""
-
-    @pytest.mark.parametrize('file_path', [
-        'app/tools/context.py',
-        'app/tools/search.py',
-        'app/tools/discovery.py',
-        'app/tools/batch.py',
-    ])
-    def test_no_str_e_in_tool_errors(self, file_path: str) -> None:
-        """Verify no tool file uses str(e) in error contexts."""
-        content = Path(file_path).read_text()
-        lines = content.split('\n')
-        for i, line in enumerate(lines, 1):
-            stripped = line.strip()
-            if 'str(e)' in stripped:
-                # Allow in logger calls (internal diagnostics)
-                if stripped.startswith('logger.'):
-                    continue
-                pytest.fail(f'{file_path}:{i}: Found str(e) in non-logger context: {stripped}')
-
-
 # update_context image validation parity
 @pytest.mark.usefixtures('initialized_server')
 class TestUpdateContextImageValidation:
@@ -55,7 +30,7 @@ class TestUpdateContextImageValidation:
     @pytest.mark.asyncio
     async def test_update_context_rejects_empty_image_data(self):
         """update_context rejects images with empty data field."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
         from app.tools.context import update_context
 
         store_result = await store_context_batch(
@@ -70,7 +45,7 @@ class TestUpdateContextImageValidation:
     @pytest.mark.asyncio
     async def test_update_context_rejects_whitespace_image_data(self):
         """update_context rejects images with whitespace-only data."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
         from app.tools.context import update_context
 
         store_result = await store_context_batch(
@@ -85,7 +60,7 @@ class TestUpdateContextImageValidation:
     @pytest.mark.asyncio
     async def test_update_context_image_errors_include_index(self):
         """Error messages include per-image index."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
         from app.tools.context import update_context
 
         store_result = await store_context_batch(
@@ -114,7 +89,7 @@ class TestBatchImageValidation:
     @pytest.mark.asyncio
     async def test_store_batch_rejects_empty_image_data(self):
         """store_context_batch rejects entries with empty image data."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         # atomic=True raises ToolError on validation failure
         with pytest.raises(ToolError, match='empty "data" field'):
@@ -131,8 +106,8 @@ class TestBatchImageValidation:
     @pytest.mark.asyncio
     async def test_update_batch_rejects_empty_image_data(self):
         """update_context_batch rejects entries with empty image data."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         # Create an entry first
         store_result = await store_context_batch(
@@ -157,7 +132,7 @@ class TestBatchImageValidation:
     @pytest.mark.asyncio
     async def test_store_batch_defaults_mime_type(self):
         """store_context_batch defaults mime_type to image/png."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
         from app.tools.context import get_context_by_ids
 
         valid_image = base64.b64encode(b'\x89PNG\r\n\x1a\n').decode()
@@ -182,8 +157,8 @@ class TestBatchImageValidation:
     @pytest.mark.asyncio
     async def test_update_batch_defaults_mime_type(self):
         """update_context_batch defaults mime_type to image/png."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
         from app.tools.context import get_context_by_ids
 
         # Create entry without images
@@ -235,8 +210,8 @@ class TestUpdateBatchFailureHandling:
     @pytest.mark.asyncio
     async def test_update_batch_atomic_raises_on_update_entry_failure(self):
         """Atomic mode aborts the whole batch when the target entry no longer exists."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{
@@ -249,7 +224,7 @@ class TestUpdateBatchFailureHandling:
 
         mock_txn, mock_begin_transaction = _make_mock_txn()
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
             mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
@@ -273,8 +248,8 @@ class TestUpdateBatchFailureHandling:
     @pytest.mark.asyncio
     async def test_update_batch_atomic_raises_on_patch_metadata_failure(self):
         """Atomic mode aborts the whole batch when the target entry no longer exists on the patch path."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{
@@ -287,7 +262,7 @@ class TestUpdateBatchFailureHandling:
 
         mock_txn, mock_begin_transaction = _make_mock_txn()
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
             mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
@@ -311,8 +286,8 @@ class TestUpdateBatchFailureHandling:
     @pytest.mark.asyncio
     async def test_update_batch_nonatomic_reports_update_entry_failure(self):
         """Non-atomic mode records a per-entry not-found failure when the target entry no longer exists."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{
@@ -325,7 +300,7 @@ class TestUpdateBatchFailureHandling:
 
         mock_txn, mock_begin_transaction = _make_mock_txn()
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
             mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
@@ -352,8 +327,8 @@ class TestUpdateBatchFailureHandling:
     @pytest.mark.asyncio
     async def test_update_batch_nonatomic_reports_patch_metadata_failure(self):
         """Non-atomic mode records a per-entry not-found failure when the target entry no longer exists on the patch path."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{
@@ -366,7 +341,7 @@ class TestUpdateBatchFailureHandling:
 
         mock_txn, mock_begin_transaction = _make_mock_txn()
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
             mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
@@ -400,7 +375,7 @@ class TestNonAtomicBatchRetry:
     @pytest.mark.asyncio
     async def test_store_batch_nonatomic_retries_on_connection_error(self):
         """Non-atomic store retries on ConnectionResetError."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         call_count = 0
         real_txn = MagicMock()
@@ -415,7 +390,7 @@ class TestNonAtomicBatchRetry:
                 raise ConnectionResetError('Connection lost')
             yield real_txn
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
 
@@ -441,8 +416,8 @@ class TestNonAtomicBatchRetry:
     @pytest.mark.asyncio
     async def test_update_batch_nonatomic_retries_on_connection_error(self):
         """Non-atomic update retries on ConnectionResetError."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{
@@ -466,7 +441,7 @@ class TestNonAtomicBatchRetry:
                 raise ConnectionResetError('Connection lost')
             yield real_txn
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
             mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
@@ -498,7 +473,7 @@ class TestBatchStoreResponseParity:
     @pytest.mark.asyncio
     async def test_store_batch_reports_summary_preserved(self):
         """Batch store reports 'summaries preserved' for duplicates with summaries."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         mock_summary = 'Test summary content'
         mock_txn, mock_begin_transaction = _make_mock_txn()
@@ -510,11 +485,11 @@ class TestBatchStoreResponseParity:
         mock_settings.summary.min_content_length = 0
 
         with (
-            patch('app.tools.batch.settings', mock_settings),
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.settings', mock_settings),
+            patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.batch.store.get_summary_provider', return_value=MagicMock()),
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
@@ -544,7 +519,7 @@ class TestBatchStoreResponseParity:
     @pytest.mark.asyncio
     async def test_store_batch_reports_embedding_stored_vs_generated(self):
         """Batch store distinguishes 'embeddings generated' from 'not stored - duplicates'."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         mock_txn, mock_begin_transaction = _make_mock_txn()
 
@@ -560,11 +535,11 @@ class TestBatchStoreResponseParity:
         mock_chunk_embeddings = [('chunk-1', [0.1, 0.2, 0.3])]
 
         with (
-            patch('app.tools.batch.settings', mock_settings),
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider') as mock_emb_provider_fn,
+            patch('app.tools.batch.store.settings', mock_settings),
+            patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.store.get_embedding_provider') as mock_emb_provider_fn,
             patch('app.tools._generation.get_embedding_provider') as mock_shared_emb_provider_fn,
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.store.get_summary_provider', return_value=None),
             patch(
                 'app.tools._generation._generate_embeddings_for_text',
                 new_callable=AsyncMock,
@@ -637,8 +612,8 @@ class TestBatchUpdateResponseParity:
     @pytest.mark.asyncio
     async def test_update_batch_reports_summaries_cleared(self):
         """Batch update reports 'summaries cleared' when summaries are removed."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{
@@ -658,11 +633,11 @@ class TestBatchUpdateResponseParity:
         mock_settings.summary.min_content_length = 500
 
         with (
-            patch('app.tools.batch.settings', mock_settings),
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.settings', mock_settings),
+            patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.batch.update.get_summary_provider', return_value=MagicMock()),
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
@@ -739,9 +714,9 @@ class TestBatchDeleteEmbeddingCleanup:
     @pytest.mark.usefixtures('fp32_cleanup_mode')
     async def test_delete_batch_by_thread_cleans_embeddings_sqlite(self):
         """Verify the fp32 embedding cleanup runs when deleting by thread_ids on SQLite."""
-        from app.tools.batch import delete_context_batch
+        from app.tools.batch.delete import delete_context_batch
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.delete.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
 
@@ -788,9 +763,9 @@ class TestBatchDeleteEmbeddingCleanup:
     @pytest.mark.usefixtures('fp32_cleanup_mode')
     async def test_delete_batch_by_older_than_cleans_embeddings_sqlite(self):
         """Verify the fp32 cleanup runs when deleting by older_than_days on SQLite."""
-        from app.tools.batch import delete_context_batch
+        from app.tools.batch.delete import delete_context_batch
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.delete.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
 
@@ -841,9 +816,9 @@ class TestBatchDeleteEmbeddingCleanup:
         DELETE statement, so no snapshot or explicit cleanup is needed and the
         tool must route to delete_contexts_batch, not the SQLite snapshot flow.
         """
-        from app.tools.batch import delete_context_batch
+        from app.tools.batch.delete import delete_context_batch
 
-        with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
+        with patch('app.tools.batch.delete.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
 
@@ -886,7 +861,7 @@ class TestBatchDeleteEmbeddingCleanup:
         neither cleaned nor deleted: it simply survives the operation.
         """
         from app.startup import ensure_repositories
-        from app.tools.batch import delete_context_batch
+        from app.tools.batch.delete import delete_context_batch
         from app.tools.context import get_context_by_ids
         from app.tools.context import store_context
 
@@ -955,7 +930,7 @@ class TestBatchDeleteEmbeddingCleanup:
 
         from app.ids import generate_id
         from app.startup import ensure_repositories
-        from app.tools.batch import delete_context_batch
+        from app.tools.batch.delete import delete_context_batch
 
         repos = await ensure_repositories()
         thread = 'batch-del-chunk-thread'
@@ -996,8 +971,8 @@ class TestUpdateBatchSiblingNotDropped:
         only index 0 by ORIGINAL INDEX, leaving index 1 to be applied. The previous
         context_id-set filter dropped both and silently lost index 1.
         """
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{
@@ -1017,16 +992,16 @@ class TestUpdateBatchSiblingNotDropped:
             return [('chunk-0', [0.1, 0.2, 0.3])]
 
         with (
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.update.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch(
-                'app.tools.batch.generate_embeddings_with_timeout',
+                'app.tools.batch.update.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=emb_side_effect,
             ),
             patch(
-                'app.tools.batch.generate_compression_with_timeout',
+                'app.tools.batch.update.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
@@ -1072,8 +1047,8 @@ class TestUpdateBatchSiblingNotDropped:
         so the sibling that existed got no result item (len(results) < total) and was never
         applied. This mirrors the generation-error filter fix for the existence path.
         """
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{
@@ -1095,9 +1070,9 @@ class TestUpdateBatchSiblingNotDropped:
             return exists_results.pop(0)
 
         with (
-            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos

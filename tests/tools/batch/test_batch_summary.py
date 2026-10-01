@@ -127,10 +127,10 @@ class TestStoreContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -160,8 +160,8 @@ class TestStoreContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
@@ -188,10 +188,10 @@ class TestStoreContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -226,10 +226,10 @@ class TestStoreContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -260,10 +260,10 @@ class TestStoreContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -292,10 +292,10 @@ class TestStoreContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=0.01),
@@ -324,10 +324,10 @@ class TestUpdateContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -356,10 +356,10 @@ class TestUpdateContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -392,10 +392,10 @@ class TestUpdateContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
@@ -420,10 +420,10 @@ class TestUpdateContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -457,10 +457,10 @@ class TestUpdateContextBatchWithSummary:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -490,15 +490,15 @@ class TestUpdateContextBatchWithSummary:
         updates = [{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500}]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
-            patch('app.tools.batch.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
-            patch('app.tools.batch.settings', _settings_with_node_summaries(True)),
+            patch('app.tools.batch.update.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools._generation.settings', _settings_with_node_summaries(True)),
         ):
             result = await update_context_batch(updates=updates, atomic=True)
 
@@ -523,15 +523,15 @@ class TestUpdateContextBatchWithSummary:
         updates = [{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500}]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
-            patch('app.tools.batch.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
-            patch('app.tools.batch.settings', _settings_with_node_summaries(False)),
+            patch('app.tools.batch.update.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools._generation.settings', _settings_with_node_summaries(False)),
         ):
             result = await update_context_batch(updates=updates, atomic=True)
 
@@ -562,12 +562,12 @@ class TestBatchSummaryEdgeCases:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -599,12 +599,12 @@ class TestBatchSummaryEdgeCases:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -639,10 +639,10 @@ class TestBatchMessageAccuracy:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -686,11 +686,11 @@ class TestBatchMessageAccuracy:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -737,15 +737,15 @@ class TestBatchMessageAccuracy:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch(
-                'app.tools.batch.generate_embeddings_with_timeout',
+                'app.tools.batch.store.generate_embeddings_with_timeout',
                 new=AsyncMock(side_effect=ToolError('embedding: provider unavailable')),
             ),
         ):
@@ -780,18 +780,18 @@ class TestBatchMessageAccuracy:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
             patch('app.startup.get_chunking_service', return_value=None),
             patch('app.tools._generation.get_chunking_service', return_value=None),
             patch(
-                'app.tools.batch.execute_store_in_transaction',
+                'app.tools.batch.store.execute_store_in_transaction',
                 new=AsyncMock(side_effect=ToolError('Failed to store context')),
             ),
         ):
@@ -831,18 +831,18 @@ class TestBatchMessageAccuracy:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
             patch('app.startup.get_chunking_service', return_value=None),
             patch('app.tools._generation.get_chunking_service', return_value=None),
             patch(
-                'app.tools.batch.execute_store_in_transaction',
+                'app.tools.batch.store.execute_store_in_transaction',
                 new=AsyncMock(side_effect=ToolError('Failed to store context')),
             ),
         ):
@@ -875,18 +875,18 @@ class TestBatchMessageAccuracy:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
             patch('app.startup.get_chunking_service', return_value=None),
             patch('app.tools._generation.get_chunking_service', return_value=None),
             patch(
-                'app.tools.batch.execute_update_in_transaction',
+                'app.tools.batch.update.execute_update_in_transaction',
                 new=AsyncMock(side_effect=ToolError('Failed to update context')),
             ),
         ):
@@ -911,10 +911,10 @@ class TestBatchMessageAccuracy:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
@@ -945,12 +945,12 @@ class TestBatchMessageAccuracy:
         ]
 
         with (
-            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_embedding),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),

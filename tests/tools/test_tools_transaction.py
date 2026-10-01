@@ -343,8 +343,8 @@ class TestStoreContextBatchEmbeddingFirst:
         mock_chunking.is_enabled = False
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
@@ -353,7 +353,7 @@ class TestStoreContextBatchEmbeddingFirst:
         ):
             from fastmcp.exceptions import ToolError
 
-            from app.tools.batch import store_context_batch
+            from app.tools.batch.store import store_context_batch
 
             entries = [
                 {'thread_id': 'batch-test', 'source': 'agent', 'text': 'Entry 1'},
@@ -398,8 +398,8 @@ class TestStoreContextBatchEmbeddingFirst:
         mock_chunking.is_enabled = False
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
@@ -408,7 +408,7 @@ class TestStoreContextBatchEmbeddingFirst:
             # Mock embedding repository to avoid vec_context_embeddings table issues
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):
-            from app.tools.batch import store_context_batch
+            from app.tools.batch.store import store_context_batch
 
             entries = [
                 {'thread_id': 'partial-test', 'source': 'agent', 'text': 'Entry 1 - success'},
@@ -440,11 +440,11 @@ class TestStoreContextBatchEmbeddingFirst:
         backend, repos = setup_backend_and_repos
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
         ):
-            from app.tools.batch import store_context_batch
+            from app.tools.batch.store import store_context_batch
 
             entries = [
                 {'thread_id': 'no-embed-batch', 'source': 'agent', 'text': 'Entry 1 without embedding'},
@@ -551,8 +551,8 @@ class TestUpdateContextBatchEmbeddingFirst:
         mock_chunking.is_enabled = False
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
@@ -561,7 +561,7 @@ class TestUpdateContextBatchEmbeddingFirst:
         ):
             from fastmcp.exceptions import ToolError
 
-            from app.tools.batch import update_context_batch
+            from app.tools.batch.update import update_context_batch
 
             updates = [
                 {'context_id': entry_ids[0], 'text': 'Updated 1'},
@@ -608,8 +608,8 @@ class TestUpdateContextBatchEmbeddingFirst:
         mock_chunking.is_enabled = False
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
@@ -619,7 +619,7 @@ class TestUpdateContextBatchEmbeddingFirst:
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock(return_value=None)),
         ):
-            from app.tools.batch import update_context_batch
+            from app.tools.batch.update import update_context_batch
 
             updates = [
                 {'context_id': entry_ids[0], 'text': 'Updated 1'},
@@ -665,11 +665,11 @@ class TestUpdateContextBatchEmbeddingFirst:
         backend, repos, entry_ids = setup_with_existing_entries
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
         ):
-            from app.tools.batch import update_context_batch
+            from app.tools.batch.update import update_context_batch
 
             updates = [
                 {'context_id': entry_ids[0], 'text': 'Updated 1 without embedding'},

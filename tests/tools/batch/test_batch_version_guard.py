@@ -51,7 +51,7 @@ from app.repositories import RepositoryContainer
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
-from app.tools.batch import update_context_batch
+from app.tools.batch.update import update_context_batch
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -106,9 +106,9 @@ class TestBatchVersionGuard:
         backend, repos, entry_id = setup_with_entry
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
@@ -148,7 +148,7 @@ class TestBatchVersionGuard:
         SECOND update the post-bump expected_version, so its CAS matches on the first
         try and raises NO ``VersionConflictError``. The ONLY other call site for
         ``check_entry_exists`` is the conflict self-heal re-read
-        (``app/tools/batch.py`` non-atomic ``except VersionConflictError`` branch). So
+        (``app/tools/batch/update.py`` non-atomic ``except VersionConflictError`` branch). So
         if ``live_versions[context_id] += 1`` were dropped, the second update would
         present the STALE captured version, hit a spurious ``VersionConflictError``,
         and trigger one extra self-heal re-read -- pushing the count to 3. Asserting
@@ -165,9 +165,9 @@ class TestBatchVersionGuard:
             return await real_check(context_id)
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=counting_check),
@@ -229,9 +229,9 @@ class TestBatchVersionGuard:
             return result
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=check_then_bump),
@@ -279,9 +279,9 @@ class TestBatchVersionGuard:
             return result
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=check_then_bump),
@@ -363,13 +363,13 @@ class TestBatchVersionGuard:
 
         # No text -> no generation; isolates the in-transaction CAS retry loop.
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch(
-                'app.tools.batch.execute_update_in_transaction',
+                'app.tools.batch.update.execute_update_in_transaction',
                 new=AsyncMock(side_effect=always_conflict),
             ),
         ):
@@ -414,14 +414,14 @@ class TestBatchVersionGuard:
             return EntryProbe(False, None, None, None)
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=vanish_on_reread),
             patch(
-                'app.tools.batch.execute_update_in_transaction',
+                'app.tools.batch.update.execute_update_in_transaction',
                 new=AsyncMock(side_effect=VersionConflictError(entry_id)),
             ),
         ):
@@ -472,14 +472,14 @@ class TestBatchVersionGuard:
             return ['metadata'], False
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=flaky_reread),
             patch(
-                'app.tools.batch.execute_update_in_transaction',
+                'app.tools.batch.update.execute_update_in_transaction',
                 new=AsyncMock(side_effect=conflict_once),
             ),
         ):
@@ -524,13 +524,13 @@ class TestBatchVersionGuard:
             raise VersionConflictError(entry_id)
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch(
-                'app.tools.batch.execute_update_in_transaction',
+                'app.tools.batch.update.execute_update_in_transaction',
                 new=AsyncMock(side_effect=delete_then_conflict),
             ),
             pytest.raises(ToolError, match='not found') as exc_info,

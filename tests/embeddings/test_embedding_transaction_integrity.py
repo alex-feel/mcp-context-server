@@ -192,7 +192,7 @@ class TestConcurrentEmbeddingOperations:
 
         async def store_batch(batch_idx: int) -> None:
             """Store a batch of entries."""
-            from app.tools.batch import store_context_batch
+            from app.tools.batch.store import store_context_batch
 
             entries = [
                 {
@@ -212,8 +212,8 @@ class TestConcurrentEmbeddingOperations:
                     results.append((batch_idx, False, None))
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
@@ -454,8 +454,8 @@ class TestTransactionRollbackComprehensive:
         mock_chunking.is_enabled = False
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
@@ -464,7 +464,7 @@ class TestTransactionRollbackComprehensive:
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):
-            from app.tools.batch import update_context_batch
+            from app.tools.batch.update import update_context_batch
 
             updates = [
                 {'context_id': entry_ids[i], 'text': f'Updated {i}'}

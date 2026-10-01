@@ -213,15 +213,15 @@ class TestBatchStoreEmbeddingDeduplication:
         mock_chunking = _make_mock_chunking_service()
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
             patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
-            from app.tools.batch import store_context_batch
+            from app.tools.batch.store import store_context_batch
 
             entries = [
                 {'thread_id': 'batch-atomic-dedup', 'source': 'agent', 'text': 'Atomic entry A'},
@@ -292,15 +292,15 @@ class TestBatchStoreEmbeddingDeduplication:
         mock_chunking = _make_mock_chunking_service()
 
         with (
-            patch('app.tools.batch.ensure_repositories', return_value=repos),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
             patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
         ):
-            from app.tools.batch import store_context_batch
+            from app.tools.batch.store import store_context_batch
 
             # Batch store with same content - should trigger deduplication
             # Without the fix this would raise a constraint violation

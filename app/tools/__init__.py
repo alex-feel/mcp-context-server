@@ -5,7 +5,8 @@ This package contains all MCP tool functions, organized by domain:
 - context.py: store_context, get_context_by_ids, update_context, delete_context
 - search.py: search_context, semantic_search_context, fts_search_context, hybrid_search_context
 - discovery.py: list_threads, get_statistics
-- batch.py: store_context_batch, update_context_batch, delete_context_batch
+- batch/: store_context_batch (store.py), update_context_batch (update.py), delete_context_batch
+  (delete.py), and the per-entry validation they share (entry_validation.py)
 - descriptions.py: Backend-specific dynamic tool descriptions (generate_fts_description)
 - _validation.py: Input validation shared by the tools (unstorable text, tag and indexed-value
   limits, image validation and normalization) (not re-exported)
@@ -27,9 +28,9 @@ from typing import Any
 from app.settings import get_settings
 
 # Re-export all tool functions for backward compatibility
-from app.tools.batch import delete_context_batch
-from app.tools.batch import store_context_batch
-from app.tools.batch import update_context_batch
+from app.tools.batch.delete import delete_context_batch
+from app.tools.batch.store import store_context_batch
+from app.tools.batch.update import update_context_batch
 from app.tools.context import delete_context
 from app.tools.context import get_context_by_ids
 from app.tools.context import store_context

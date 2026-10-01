@@ -75,9 +75,9 @@ class TestOwnerStamping:
     @pytest.mark.asyncio
     async def test_batch_entry_owner_id_key_is_ignored(self) -> None:
         """A caller-supplied owner_id key in a batch entry never reaches the row."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
-        with patch('app.tools.batch.resolve_effective_principal', return_value=_principal('alice')):
+        with patch('app.tools.batch.store.resolve_effective_principal', return_value=_principal('alice')):
             result = await store_context_batch(entries=[{
                 'thread_id': 'access-tools',
                 'source': 'agent',
@@ -91,8 +91,8 @@ class TestOwnerStamping:
 
     def test_owner_id_is_never_a_tool_parameter(self) -> None:
         """No write tool exposes owner_id in its signature (wire schema source)."""
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
         from app.tools.context import store_context
         from app.tools.context import update_context
 
@@ -221,14 +221,14 @@ class TestOwnerOnlyVisibilityChange:
     @pytest.mark.asyncio
     async def test_batch_non_owner_visibility_change_records_per_entry_error(self) -> None:
         """Non-atomic batch: an unauthorized visibility change fails only that entry."""
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
         from app.tools.context import store_context
 
         with patch('app.tools.context.resolve_effective_principal', return_value=_principal('alice')):
             result = await store_context(
                 thread_id='access-tools', source='agent', text='batch visibility target',
             )
-        with patch('app.tools.batch.resolve_effective_principal', return_value=_principal('bob')):
+        with patch('app.tools.batch.update.resolve_effective_principal', return_value=_principal('bob')):
             batch_result = await update_context_batch(
                 updates=[{'context_id': result['context_id'], 'visibility': 'public'}],
                 atomic=False,
@@ -241,7 +241,7 @@ class TestOwnerOnlyVisibilityChange:
     @pytest.mark.asyncio
     async def test_atomic_batch_non_owner_visibility_change_aborts(self) -> None:
         """Atomic batch: an unauthorized visibility change aborts the whole batch."""
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
         from app.tools.context import store_context
 
         with patch('app.tools.context.resolve_effective_principal', return_value=_principal('alice')):
@@ -249,7 +249,7 @@ class TestOwnerOnlyVisibilityChange:
                 thread_id='access-tools', source='agent', text='atomic batch visibility target',
             )
         with (
-            patch('app.tools.batch.resolve_effective_principal', return_value=_principal('bob')),
+            patch('app.tools.batch.update.resolve_effective_principal', return_value=_principal('bob')),
             pytest.raises(ToolError, match='Only the owner'),
         ):
             await update_context_batch(
@@ -271,7 +271,7 @@ class TestBatchVisibilityVersionTracking:
         second update presents a stale token and the whole atomic batch aborts on
         a self-inflicted version conflict.
         """
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
         from app.tools.context import store_context
 
         stored = await store_context(
@@ -291,7 +291,7 @@ class TestBatchVisibilityVersionTracking:
     @pytest.mark.asyncio
     async def test_non_atomic_batch_visibility_then_text_on_same_entry(self) -> None:
         """The non-atomic loop tracks the visibility version bump identically."""
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
         from app.tools.context import store_context
 
         stored = await store_context(
@@ -316,7 +316,7 @@ class TestBatchVisibilityValidation:
     @pytest.mark.asyncio
     async def test_invalid_visibility_fails_only_that_entry(self) -> None:
         """Non-atomic: an invalid visibility value records a per-entry error."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[
@@ -336,7 +336,7 @@ class TestBatchVisibilityValidation:
     @pytest.mark.asyncio
     async def test_batch_per_entry_visibility_is_stamped(self) -> None:
         """A per-entry visibility value lands on that entry's row."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(entries=[{
             'thread_id': 'access-tools', 'source': 'agent',

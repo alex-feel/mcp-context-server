@@ -22,7 +22,7 @@ cancelled and awaited before the transaction opens. A node-summary failure or ti
 never aborts the store. Only when both abort-mandatory legs succeed do ALL database
 operations occur in a SINGLE atomic transaction.
 
-Infrastructure shared with batch.py lives in single-purpose modules: embedding/summary generation in
+Infrastructure shared with the batch tools in app/tools/batch/ lives in single-purpose modules: embedding/summary generation in
 app.tools._generation, transaction execution, heartbeat, and connection error classification in
 app.tools._transactions, input and image validation in app.tools._validation, delete-path embedding
 cleanup in app.tools._delete_cleanup, and response message builders in app.tools._responses.

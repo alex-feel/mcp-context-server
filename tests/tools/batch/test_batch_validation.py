@@ -30,7 +30,7 @@ from app.ids import generate_id
 class TestStoreBatchEntryTypeValidation:
     @pytest.mark.asyncio
     async def test_rejects_non_dict_metadata(self) -> None:
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hi', 'metadata': 'not-a-dict'}],
@@ -41,7 +41,7 @@ class TestStoreBatchEntryTypeValidation:
 
     @pytest.mark.asyncio
     async def test_rejects_string_tags(self) -> None:
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hi', 'tags': 'notalist'}],
@@ -52,7 +52,7 @@ class TestStoreBatchEntryTypeValidation:
 
     @pytest.mark.asyncio
     async def test_rejects_non_string_tag_element(self) -> None:
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hi', 'tags': ['ok', 123]}],
@@ -69,7 +69,7 @@ class TestStoreBatchEntryTypeValidation:
         becomes "{'a': 1}") -- text the Pydantic-typed single-entry
         store_context rejects at the tool boundary.
         """
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{'thread_id': 't', 'source': 'user', 'text': {'a': 1}}],
@@ -80,7 +80,7 @@ class TestStoreBatchEntryTypeValidation:
 
     @pytest.mark.asyncio
     async def test_rejects_non_string_thread_id(self) -> None:
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{'thread_id': 123, 'source': 'user', 'text': 'hi'}],
@@ -91,7 +91,7 @@ class TestStoreBatchEntryTypeValidation:
 
     @pytest.mark.asyncio
     async def test_update_batch_rejects_non_string_text(self) -> None:
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
 
         result = await update_context_batch(
             updates=[{
@@ -123,7 +123,7 @@ class TestStoreBatchImagesShapeValidation:
 
     @pytest.mark.asyncio
     async def test_nonatomic_dict_images_fails_only_that_entry_siblings_stored(self) -> None:
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[
@@ -155,7 +155,7 @@ class TestStoreBatchImagesShapeValidation:
 
     @pytest.mark.asyncio
     async def test_atomic_dict_images_reports_shape_error_not_attributeerror(self) -> None:
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         with pytest.raises(ToolError, match='images must be a list of objects') as exc_info:
             await store_context_batch(
@@ -177,8 +177,8 @@ class TestUpdateBatchImagesShapeValidation:
 
     @pytest.mark.asyncio
     async def test_nonatomic_dict_images_fails_only_that_entry_siblings_updated(self) -> None:
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[
@@ -217,8 +217,8 @@ class TestUpdateBatchImagesShapeValidation:
 
     @pytest.mark.asyncio
     async def test_atomic_dict_images_reports_shape_error_not_attributeerror(self) -> None:
-        from app.tools.batch import store_context_batch
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
 
         store_result = await store_context_batch(
             entries=[{'thread_id': 'images-shape-upd-atomic', 'source': 'user', 'text': 'original text'}],
@@ -269,7 +269,7 @@ class TestIdListBoundaryCaps:
         assert adapter.validate_python(ids[:100]) == ids[:100]
 
     def test_delete_context_batch_rejects_oversized_context_ids(self) -> None:
-        from app.tools.batch import delete_context_batch
+        from app.tools.batch.delete import delete_context_batch
 
         adapter = self._param_adapter(delete_context_batch, 'context_ids')
         ids = [generate_id() for _ in range(101)]
@@ -279,7 +279,7 @@ class TestIdListBoundaryCaps:
         assert adapter.validate_python(None) is None
 
     def test_delete_context_batch_rejects_oversized_thread_ids(self) -> None:
-        from app.tools.batch import delete_context_batch
+        from app.tools.batch.delete import delete_context_batch
 
         adapter = self._param_adapter(delete_context_batch, 'thread_ids')
         threads = [f'thread-{i}' for i in range(101)]

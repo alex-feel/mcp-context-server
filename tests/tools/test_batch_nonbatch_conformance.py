@@ -21,9 +21,9 @@ from fastmcp.exceptions import ToolError
 import app.tools._delete_cleanup as delete_cleanup_module
 from app.settings import AppSettings
 from app.startup import ensure_repositories
-from app.tools.batch import delete_context_batch
-from app.tools.batch import store_context_batch
-from app.tools.batch import update_context_batch
+from app.tools.batch.delete import delete_context_batch
+from app.tools.batch.store import store_context_batch
+from app.tools.batch.update import update_context_batch
 from app.tools.context import delete_context
 from app.tools.context import store_context
 from app.tools.context import update_context
@@ -766,9 +766,9 @@ class TestGenerationConformance:
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._generation.generate_embeddings_with_timeout', mock_gen_embed),
-            patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.batch.get_summary_provider', return_value=None),
-            patch('app.tools.batch.generate_embeddings_with_timeout', mock_gen_embed),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.get_summary_provider', return_value=None),
+            patch('app.tools.batch.store.generate_embeddings_with_timeout', mock_gen_embed),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch('app.startup.get_embedding_provider', return_value=mock_provider),
@@ -814,9 +814,9 @@ class TestGenerationConformance:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.generate_summary_with_timeout', mock_gen_summary),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.batch.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.startup.get_embedding_provider', return_value=None),
@@ -858,9 +858,9 @@ class TestGenerationConformance:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.generate_summary_with_timeout', mock_gen_summary),
-            patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.tools.batch.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.batch.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.get_summary_provider', return_value=mock_provider),
+            patch('app.tools.batch.store.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.startup.get_embedding_provider', return_value=None),

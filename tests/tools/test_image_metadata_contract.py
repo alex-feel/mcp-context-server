@@ -19,7 +19,7 @@ import base64
 import pytest
 from pydantic import TypeAdapter
 
-from app.tools.batch import store_context_batch
+from app.tools.batch.store import store_context_batch
 from app.tools.context import get_context_by_ids
 from app.tools.context import store_context
 from app.types import ContextEntryDict

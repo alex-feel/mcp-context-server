@@ -1326,7 +1326,7 @@ class TestWritePathTagCaps:
         through the wire schema that bounds the single-entry tools.
         """
         from app.models import MAX_TAG_LENGTH
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{
@@ -1349,7 +1349,7 @@ class TestWritePathTagCaps:
     async def test_update_batch_rejects_too_many_tags_per_entry(self) -> None:
         """The batch update path enforces the count cap as a per-entry error."""
         from app.models import MAX_TAGS_PER_ENTRY
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
 
         result = await update_context_batch(
             updates=[{
@@ -1779,7 +1779,7 @@ class TestIndexedWriteValueUpperBound:
     async def test_store_batch_rejects_over_long_thread_id_per_entry(self) -> None:
         """The untyped batch path enforces the same bounds, as a per-entry error."""
         from app.models import MAX_THREAD_ID_LENGTH
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{
@@ -1800,7 +1800,7 @@ class TestIndexedWriteValueUpperBound:
     async def test_store_batch_rejects_over_long_indexed_metadata_per_entry(self) -> None:
         """The batch store path bounds indexed metadata values per entry."""
         from app.models import MAX_INDEXED_METADATA_VALUE_LENGTH
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{
@@ -1822,7 +1822,7 @@ class TestIndexedWriteValueUpperBound:
     async def test_update_batch_rejects_over_long_indexed_metadata_per_entry(self) -> None:
         """The batch update path bounds indexed metadata values per entry."""
         from app.models import MAX_INDEXED_METADATA_VALUE_LENGTH
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
 
         result = await update_context_batch(
             updates=[{
@@ -1930,7 +1930,7 @@ class TestTypedIndexedMetadataCastCompatibility:
     @pytest.mark.usefixtures('initialized_server')
     async def test_store_batch_rejects_uncastable_indexed_value_per_entry(self) -> None:
         """The untyped batch path records it as that entry's error, not a batch abort."""
-        from app.tools.batch import store_context_batch
+        from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
             entries=[{
@@ -1951,7 +1951,7 @@ class TestTypedIndexedMetadataCastCompatibility:
     @pytest.mark.usefixtures('initialized_server')
     async def test_update_batch_rejects_uncastable_indexed_value_per_entry(self) -> None:
         """Same per-entry boundary error on the batch update path."""
-        from app.tools.batch import update_context_batch
+        from app.tools.batch.update import update_context_batch
 
         result = await update_context_batch(
             updates=[{
