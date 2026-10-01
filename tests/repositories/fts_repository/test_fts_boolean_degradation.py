@@ -32,8 +32,8 @@ from app.backends.sqlite_backend import SQLiteBackend
 from app.errors import ControlFlowError
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
-from app.repositories.fts_repository import FtsValidationError
-from app.repositories.fts_repository import _is_fts5_grammar_error
+from app.repositories.fts_repository.faults import FtsValidationError
+from app.repositories.fts_repository.faults import is_fts5_grammar_error
 
 # A single document containing both 'error' and 'handling' so a malformed boolean query whose
 # surviving terms still match degrades to a non-empty best-effort result set.
@@ -50,7 +50,7 @@ async def fts_repos(tmp_path: Path) -> AsyncGenerator[RepositoryContainer, None]
     from app.schemas import load_schema
 
     db_path = tmp_path / 'fts_boolean.db'
-    migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
+    migration_path = Path(__file__).parents[3] / 'app' / 'migrations' / 'add_fts_sqlite.sql'
     fts_sql = migration_path.read_text().replace('{TOKENIZER}', 'unicode61')
 
     conn = sqlite3.connect(str(db_path))
@@ -119,14 +119,14 @@ class TestFtsGrammarErrorClassification:
             'expected integer, got "x"',
             'fts5: parser stack overflow',
         ):
-            assert _is_fts5_grammar_error(
+            assert is_fts5_grammar_error(
                 sqlite3.OperationalError(message), relations_present=True,
             ) is True, message
 
     def test_operational_faults_are_not_grammar_errors(self) -> None:
         """A locked database or disk fault is NOT a grammar error and must propagate."""
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('database is locked'), relations_present=True) is False
-        assert _is_fts5_grammar_error(sqlite3.OperationalError('disk I/O error'), relations_present=True) is False
+        assert is_fts5_grammar_error(sqlite3.OperationalError('database is locked'), relations_present=True) is False
+        assert is_fts5_grammar_error(sqlite3.OperationalError('disk I/O error'), relations_present=True) is False
 
 
 class TestFtsBooleanMalformedDegradation:

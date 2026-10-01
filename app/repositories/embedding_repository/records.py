@@ -57,7 +57,7 @@ class MetadataFilterValidationError(ControlFlowError):
     and semantic_search_context tools.
 
     Subclasses ``ControlFlowError`` -- mirroring its sibling
-    :class:`~app.repositories.fts_repository.FtsValidationError` -- because an
+    :class:`~app.repositories.fts_repository.faults.FtsValidationError` -- because an
     invalid metadata filter is a client-input validation failure, normal control
     flow rather than a database fault. It is raised inside the read callables that
     run under ``get_connection`` (both backends, both compression modes), whose

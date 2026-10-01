@@ -157,7 +157,7 @@ class TestHybridSearchTool:
         embedding_provider: _CountingEmbeddingProvider,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository.faults import FtsValidationError
 
         async def failing_fts(**kwargs: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             del kwargs

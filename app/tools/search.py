@@ -28,7 +28,7 @@ from pydantic import Field
 from app.errors import format_exception_message
 from app.migrations import get_fts_migration_status
 from app.repositories.base import canonical_timestamp
-from app.repositories.fts_repository import sanitize_sqlite_fts_terms
+from app.repositories.fts_repository.query import sanitize_sqlite_fts_terms
 from app.services.passage_extraction_service import extract_rerank_passage
 from app.settings import get_settings
 from app.startup import ensure_repositories
@@ -800,7 +800,7 @@ async def _fts_search_raw(
         )
 
     # Import exception here to avoid circular imports
-    from app.repositories.fts_repository import FtsValidationError
+    from app.repositories.fts_repository.faults import FtsValidationError
 
     # Determine actual highlight setting
     # Generate highlights if client requested OR if we need for passage extraction
@@ -1464,8 +1464,8 @@ async def fts_search_context(
         need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
 
         # Import exception here to avoid circular imports
-        from app.repositories.fts_repository import FtsValidationError
-        from app.repositories.fts_repository import fts_query_validation_errors
+        from app.repositories.fts_repository.faults import FtsValidationError
+        from app.repositories.fts_repository.query import fts_query_validation_errors
 
         # A page starting at or past the ranked depth is deterministically empty, so it is
         # answered from the client's arguments alone rather than after a full-depth search
@@ -1633,13 +1633,13 @@ def _prepare_hybrid_fts_query(
 
     if backend_type == 'sqlite':
         # Short ('match') queries return the RAW query so the single canonical 'match'
-        # transform in _transform_query_sqlite sanitizes them EXACTLY ONCE -- identically to
+        # transform in transform_query_sqlite sanitizes them EXACTLY ONCE -- identically to
         # standalone fts_search_context. Long ('OR') queries are sanitized HERE because
-        # boolean mode is passed through _transform_query_sqlite unchanged; a bare FTS5
+        # boolean mode is passed through transform_query_sqlite unchanged; a bare FTS5
         # operator/special char left on that path raises 'fts5: syntax error' (the recurring
         # crash), so the surviving significant terms are OR-joined for partial-match recall.
         #
-        # The match case must NOT pre-sanitize: _transform_query_sqlite('match') re-runs
+        # The match case must NOT pre-sanitize: transform_query_sqlite('match') re-runs
         # sanitize_sqlite_fts_terms over whatever it is handed, so pre-sanitizing here would
         # send an ALREADY-QUOTED term list through a second wrapping pass. Returning the raw
         # query keeps exactly one transform between the user's text and MATCH, which is what
@@ -1943,7 +1943,7 @@ async def hybrid_search_context(
         semantic_stats: dict[str, Any] | None = None
 
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
-        from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository.faults import FtsValidationError
 
         # Determine adaptive FTS mode for hybrid search
         adaptive_query, adaptive_mode = _prepare_hybrid_fts_query(
@@ -1960,7 +1960,7 @@ async def hybrid_search_context(
         # query or a structurally invalid filter still takes precedence: the request falls
         # through to the normal path, whose per-leg degradation reports it. No leg executed,
         # so search_modes_used is empty and the counters are zero; rank_depth_limit says why.
-        from app.repositories.fts_repository import fts_query_validation_errors
+        from app.repositories.fts_repository.query import fts_query_validation_errors
 
         if (
             offset >= RANKED_SEARCH_DEPTH

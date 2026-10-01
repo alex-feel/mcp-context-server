@@ -23,7 +23,7 @@ from app.backends import StorageBackend
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.repositories.fts_repository import FtsRepository
-from app.repositories.fts_repository import desired_sqlite_fts_tokenizer
+from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
 from app.settings import get_settings
 
 if TYPE_CHECKING:

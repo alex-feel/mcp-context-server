@@ -621,22 +621,16 @@ class TestAdaptiveFtsMode:
         error). _search_sqlite short-circuits '' to an empty result set, so MATCH is never
         executed with the sentinel."""
         import sqlite3
-        from typing import cast
 
-        from app.backends.base import StorageBackend
-        from app.repositories.fts_repository import FtsRepository
+        from app.repositories.fts_repository.query import transform_query_sqlite
         from app.tools.search import _prepare_hybrid_fts_query
 
-        class _FB:
-            backend_type = 'sqlite'
-
-        repo = FtsRepository(cast(StorageBackend, _FB()))
         db = sqlite3.connect(':memory:')
         db.execute("CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='porter unicode61')")
         db.execute("INSERT INTO docs(body) VALUES('hello world')")
         for raw in ['AND OR NOT AND', 'NOT NOT NOT NOT', 'OR OR OR OR']:
             adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
-            fts = repo._transform_query_sqlite(adaptive, mode)
+            fts = transform_query_sqlite(adaptive, mode)
             # All tokens were operator barewords -> the empty match-nothing sentinel.
             assert fts == ''
             # _search_sqlite skips MATCH on the empty sentinel; mirror that guard here so
@@ -650,16 +644,10 @@ class TestAdaptiveFtsMode:
         path runs through the same term sanitizer as the OR path. A normal short query keeps
         AND-of-terms recall."""
         import sqlite3
-        from typing import cast
 
-        from app.backends.base import StorageBackend
-        from app.repositories.fts_repository import FtsRepository
+        from app.repositories.fts_repository.query import transform_query_sqlite
         from app.tools.search import _prepare_hybrid_fts_query
 
-        class _FB:
-            backend_type = 'sqlite'
-
-        repo = FtsRepository(cast(StorageBackend, _FB()))
         db = sqlite3.connect(':memory:')
         db.execute("CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='porter unicode61')")
         db.execute("INSERT INTO docs(body) VALUES('python async world')")
@@ -668,7 +656,7 @@ class TestAdaptiveFtsMode:
                                   ('OR NOT AND', False), ('python async', True)]:
             adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
             assert mode == 'match'
-            fts = repo._transform_query_sqlite(adaptive, mode)
+            fts = transform_query_sqlite(adaptive, mode)
             # An all-operator query transforms to the '' match-nothing sentinel, which
             # _search_sqlite short-circuits (FTS5 rejects MATCH ''); mirror that guard here.
             rows = [] if not fts else db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
@@ -912,7 +900,7 @@ class TestAdaptiveFtsMode:
         assert '"error-handling"' in query
 
     def test_sqlite_short_match_returns_raw_query_for_single_transform(self) -> None:
-        """A short SQLite query is returned RAW (not pre-sanitized) so _transform_query_sqlite
+        """A short SQLite query is returned RAW (not pre-sanitized) so transform_query_sqlite
         sanitizes it exactly once -- identically to standalone fts_search_context."""
         from app.tools.search import _prepare_hybrid_fts_query
 
@@ -930,23 +918,16 @@ class TestAdaptiveFtsMode:
         instead of matching it. The expected form splits the token on the embedded quote into
         independently AND-ed literals, mirroring PostgreSQL's independently AND-ed lexemes.
         """
-        from typing import cast
-
-        from app.backends.base import StorageBackend
-        from app.repositories.fts_repository import FtsRepository
+        from app.repositories.fts_repository.query import transform_query_sqlite
         from app.tools.search import _prepare_hybrid_fts_query
 
-        class _FB:
-            backend_type = 'sqlite'
-
-        repo = FtsRepository(cast(StorageBackend, _FB()))
         raw = 'ab"cd ef'
         # Hybrid short path returns the raw query; the single downstream transform escapes it.
         adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
         assert mode == 'match'
-        hybrid_fts = repo._transform_query_sqlite(adaptive, mode)
+        hybrid_fts = transform_query_sqlite(adaptive, mode)
         # Standalone fts_search_context passes the raw query straight to the same transform.
-        standalone_fts = repo._transform_query_sqlite(raw, 'match')
+        standalone_fts = transform_query_sqlite(raw, 'match')
         assert hybrid_fts == standalone_fts
         # Split on the embedded quote into separate AND-ed literals: doubling the quote
         # instead would leave it a word boundary inside one literal, which FTS5 reads as a
@@ -966,7 +947,7 @@ class TestHybridAllModesFailedValidationResponse:
     @pytest.mark.asyncio
     async def test_error_response_keys_and_deduplicated_messages(self) -> None:
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
-        from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository.faults import FtsValidationError
         from app.tools.search import hybrid_search_context
 
         shared_messages = [
@@ -1011,7 +992,7 @@ class TestHybridAllModesFailedValidationResponse:
         the docstring, and HybridSearchResponseDict declare, so a client reading
         them never hits a KeyError on the error branch."""
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
-        from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository.faults import FtsValidationError
         from app.tools.search import hybrid_search_context
 
         messages = ['bad operator: nope']
@@ -1048,7 +1029,7 @@ class TestHybridAllModesFailedValidationResponse:
         mode -- so a client reading response['stats'] under explain_query never hits
         a KeyError on the error branch."""
         from app.repositories.embedding_repository.records import MetadataFilterValidationError
-        from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository.faults import FtsValidationError
         from app.tools.search import hybrid_search_context
 
         messages = ['bad operator: nope']
@@ -1226,7 +1207,7 @@ class TestHybridPartialDegradationResponse:
     @pytest.mark.asyncio
     async def test_fts_failure_surfaces_warning_and_validation_errors(self) -> None:
         """FTS fails validation, semantic succeeds: mirror case with FTS-prefixed warning."""
-        from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository.faults import FtsValidationError
         from app.tools.search import hybrid_search_context
 
         fts_messages = ['invalid boolean expression near ")"']

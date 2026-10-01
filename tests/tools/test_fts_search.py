@@ -374,7 +374,7 @@ class TestFtsWithFilters:
     def test_fts_with_tag_filter(self, fts_enabled_db: Path) -> None:
         """Test FTS search with tag filtering.
 
-        Covers lines 208-221 in fts_repository.py for tag filtering logic.
+        Covers the tag filtering logic of the FTS search mixin.
         """
         with sqlite3.connect(str(fts_enabled_db)) as conn:
             conn.row_factory = sqlite3.Row
@@ -420,7 +420,7 @@ class TestFtsWithFilters:
     def test_fts_with_content_type_filter(self, fts_enabled_db: Path) -> None:
         """Test FTS search with content_type filter.
 
-        Covers lines 196-198 in fts_repository.py for content_type filtering.
+        Covers the content_type filtering of the FTS search mixin.
         """
         with sqlite3.connect(str(fts_enabled_db)) as conn:
             conn.row_factory = sqlite3.Row
@@ -454,7 +454,7 @@ class TestFtsWithFilters:
     def test_fts_with_metadata_filter(self, fts_enabled_db: Path) -> None:
         """Test FTS search with metadata filtering.
 
-        Covers metadata filtering logic in fts_repository.py.
+        Covers the metadata filtering logic of the FTS search mixin.
         """
         with sqlite3.connect(str(fts_enabled_db)) as conn:
             conn.row_factory = sqlite3.Row
@@ -1483,7 +1483,7 @@ class TestFtsValidationErrorStats:
     @pytest.mark.asyncio
     async def test_validation_error_stats_include_backend(self) -> None:
         """The error-path stats dict includes backend (the active storage backend type)."""
-        from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository.faults import FtsValidationError
         from app.tools.search import fts_search_context
 
         with (
@@ -1525,7 +1525,7 @@ class TestFtsValidationErrorStats:
     @pytest.mark.asyncio
     async def test_validation_error_omits_stats_without_explain_query(self) -> None:
         """Without explain_query the validation-error response carries no stats block."""
-        from app.repositories.fts_repository import FtsValidationError
+        from app.repositories.fts_repository.faults import FtsValidationError
         from app.tools.search import fts_search_context
 
         with (
