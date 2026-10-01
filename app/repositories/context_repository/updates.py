@@ -415,7 +415,7 @@ class ContextUpdateMixin(BaseRepository):
         # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function
         async def _patch_metadata_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, list[str]]:
             # Import settings here to avoid circular import and ensure schema is retrieved at call time
-            from app.backends.postgresql_backend import quote_pg_identifier
+            from app.backends.postgresql_backend.session import quote_pg_identifier
             from app.settings import get_settings
 
             # Verify entry exists before attempting update

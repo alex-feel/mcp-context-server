@@ -44,6 +44,7 @@ from app.migrations.semantic import apply_semantic_search_migration
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 from app.startup import init_database
+from tests.helpers import rebind_package_settings
 from tests.integration.postgresql.conftest import NON_DEFAULT_SCHEMA
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
@@ -135,14 +136,9 @@ def _install_search_path_patch(
         )
         return original_fn(*args, **kwargs)
 
-    # Patch both the asyncpg module itself and the dotted reference
-    # used inside PostgreSQLBackend.initialize so the backend's call
-    # site picks up the wrapper regardless of how it imported asyncpg.
+    # PostgreSQLBackend.initialize looks create_pool up on the asyncpg
+    # module at call time, so patching the module attribute reaches it.
     monkeypatch.setattr(asyncpg, 'create_pool', _patched_create_pool)
-    monkeypatch.setattr(
-        'app.backends.postgresql_backend.asyncpg.create_pool',
-        _patched_create_pool,
-    )
 
 
 def _refresh_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,12 +155,7 @@ def _refresh_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(chunking_module, 'settings', fresh)
     monkeypatch.setattr(compression_module, 'settings', fresh)
     monkeypatch.setattr(startup_module, 'settings', fresh)
-    # The backend reads POSTGRESQL_SCHEMA (via build_asyncpg_connect_kwargs) off
-    # its own module-level ``settings`` binding; without this rebind it would
-    # send the import-time default schema in server_settings, so the production
-    # pool's search_path test would resolve to ``public`` instead of the
-    # configured schema.
-    monkeypatch.setattr(postgresql_backend_module, 'settings', fresh)
+    rebind_package_settings(monkeypatch, postgresql_backend_module, fresh)
 
 
 def _configure_non_default_env(

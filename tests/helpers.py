@@ -6,13 +6,19 @@ Application modules are imported inside the helpers, so importing this
 module never loads the application or reads settings.
 """
 
+import importlib
 import os
+import pkgutil
 from collections.abc import Generator
 from contextlib import contextmanager
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import pytest
+
     from app.repositories.embedding_repository import EmbeddingRepository
+    from app.settings import AppSettings
 
 
 def is_ollama_model_available(
@@ -135,3 +141,22 @@ def env_vars(**kwargs: str | None) -> Generator[None, None, None]:
                 os.environ[key] = original
             elif key in os.environ:
                 del os.environ[key]
+
+
+def rebind_package_settings(monkeypatch: 'pytest.MonkeyPatch', package: ModuleType, settings: 'AppSettings') -> None:
+    """Rebind the module-level ``settings`` of every submodule of a package that binds one.
+
+    Modules bind ``settings = get_settings()`` at import time, so clearing the
+    ``get_settings`` cache leaves those bindings on the old object. In a package
+    whose submodules each hold their own binding (the storage backends),
+    rebinding only some of them leaves the rest silently on stale values.
+
+    Args:
+        monkeypatch: Fixture that restores every binding after the test.
+        package: The imported package whose submodules are rebound.
+        settings: The settings object installed on every binding.
+    """
+    for info in pkgutil.iter_modules(package.__path__, f'{package.__name__}.'):
+        module = importlib.import_module(info.name)
+        if 'settings' in vars(module):
+            monkeypatch.setattr(module, 'settings', settings)

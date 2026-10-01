@@ -164,7 +164,7 @@ def migration_statement_timeout_ms(migration_timeout_s: float) -> int:
     (the client-side deadline would always fire first, surfacing a
     non-retryable ``asyncio.TimeoutError`` instead of the retryable
     ``QueryCanceledError`` these helpers exist to produce). Mirrors
-    ``_statement_timeout_ms`` on the pool connection-setup path.
+    ``statement_timeout_ms`` on the pool connection-setup path.
 
     Args:
         migration_timeout_s: The migration budget in seconds.

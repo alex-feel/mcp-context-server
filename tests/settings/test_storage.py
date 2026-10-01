@@ -466,3 +466,41 @@ class TestMetadataIndexedFieldNames:
             fields = StorageSettings().metadata_indexed_fields
         assert 'status' in fields
         assert 'agent_name' in fields
+
+
+class TestPoolHardeningSettings:
+    """Test pool hardening settings."""
+
+    def test_pool_hardening_settings_defaults(self) -> None:
+        """Verify pool hardening settings have expected defaults."""
+        from app.settings.storage import StorageSettings
+
+        settings = StorageSettings()
+
+        # Verify default values match implementation guide specifications
+        assert settings.postgresql_max_inactive_lifetime_s == 300.0
+        assert settings.postgresql_max_queries == 10000
+
+
+class TestTcpKeepaliveSettings:
+    """Test TCP keepalive settings configuration."""
+
+    def test_tcp_keepalive_settings_defaults(self) -> None:
+        """Verify TCP keepalive settings have expected defaults."""
+        from app.settings.storage import StorageSettings
+
+        settings = StorageSettings()
+
+        assert settings.postgresql_tcp_keepalives_idle_s == 15
+        assert settings.postgresql_tcp_keepalives_interval_s == 5
+        assert settings.postgresql_tcp_keepalives_count == 3
+
+    def test_tcp_keepalive_settings_types_are_int(self) -> None:
+        """Verify TCP keepalive settings are integers (required by setsockopt)."""
+        from app.settings.storage import StorageSettings
+
+        settings = StorageSettings()
+
+        assert isinstance(settings.postgresql_tcp_keepalives_idle_s, int)
+        assert isinstance(settings.postgresql_tcp_keepalives_interval_s, int)
+        assert isinstance(settings.postgresql_tcp_keepalives_count, int)

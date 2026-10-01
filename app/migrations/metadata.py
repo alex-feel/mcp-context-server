@@ -67,7 +67,7 @@ def _generate_create_index_postgresql(field: str, type_hint: str) -> str:
     Returns:
         SQL CREATE INDEX statement using JSONB operators.
     """
-    from app.backends.postgresql_backend import quote_pg_identifier
+    from app.backends.postgresql_backend.session import quote_pg_identifier
 
     # Type cast mapping for typed comparisons
     type_cast_map = {
@@ -299,7 +299,7 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
             # and an unquoted index name would target the lowercased name rather than the
             # case-preserved one the quoted CREATE produced, either of which lets IF EXISTS
             # silently skip the real index the reconciliation diff asked to drop.
-            from app.backends.postgresql_backend import quote_pg_identifier
+            from app.backends.postgresql_backend.session import quote_pg_identifier
 
             schema = quote_pg_identifier(settings.storage.postgresql_schema)
             quoted_index_name = quote_pg_identifier(index_name)

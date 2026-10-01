@@ -360,7 +360,7 @@ class TestTargetPgHasDataSchemaQuoting:
         from typing import Any
         from typing import cast
 
-        from app.backends.postgresql_backend import quote_pg_identifier
+        from app.backends.postgresql_backend.session import quote_pg_identifier
         from app.cli.migrate import _target_pg_has_data
 
         captured: list[str] = []

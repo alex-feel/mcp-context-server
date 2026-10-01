@@ -17,7 +17,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
-from app.backends.postgresql_backend import quote_pg_identifier
+from app.backends.postgresql_backend.session import quote_pg_identifier
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl

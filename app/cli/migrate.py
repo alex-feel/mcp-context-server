@@ -1818,7 +1818,7 @@ async def _target_pg_has_data(
         # double-quote in POSTGRESQL_SCHEMA is doubled correctly and the two sites cannot
         # disagree on the same name (lazy import mirrors initialize_target_postgresql so
         # SQLite-only migration paths never import the PostgreSQL backend).
-        from app.backends.postgresql_backend import quote_pg_identifier
+        from app.backends.postgresql_backend.session import quote_pg_identifier
 
         count = await conn.fetchval(f'SELECT COUNT(*) FROM {quote_pg_identifier(schema)}.context_entries')
     return int(count or 0) > 0
@@ -1838,7 +1838,7 @@ def _pg_connect_kwargs() -> dict[str, Any]:
     by :func:`_pg_connect` right after the dial instead.
 
     ``timeout`` (``POSTGRESQL_CONNECT_TIMEOUT_S``) is added here rather than by
-    :func:`app.backends.postgresql_backend.build_asyncpg_connect_kwargs`, whose scope
+    :func:`app.backends.postgresql_backend.session.build_asyncpg_connect_kwargs`, whose scope
     is what the pool merges into ``create_pool``; the pool supplies the same
     establishment budget separately. Without it every migration connection would
     silently fall back to asyncpg's built-in 60-second default, so a DSN whose TLS and
@@ -1849,7 +1849,7 @@ def _pg_connect_kwargs() -> dict[str, Any]:
     Returns:
         Mapping suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``.
     """
-    from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+    from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
     from app.settings import get_settings
 
     settings = get_settings()
@@ -1877,7 +1877,7 @@ async def _pg_connect(dsn: str) -> 'asyncpg.Connection[asyncpg.Record]':
     """
     import asyncpg
 
-    from app.backends.postgresql_backend import apply_session_gucs
+    from app.backends.postgresql_backend.session import apply_session_gucs
 
     conn: asyncpg.Connection[asyncpg.Record] = await asyncpg.connect(dsn, **_pg_connect_kwargs())
     try:
@@ -2278,7 +2278,7 @@ async def initialize_target_postgresql(
     import asyncpg
 
     from app.backends import create_backend
-    from app.backends.postgresql_backend import quote_pg_identifier
+    from app.backends.postgresql_backend.session import quote_pg_identifier
     from app.migrations.chunking import apply_chunking_migration
     from app.migrations.fts import apply_fts_migration
     from app.migrations.index_tree import apply_index_tree_migration

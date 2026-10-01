@@ -20,8 +20,8 @@ import time
 
 import pytest
 
-from app.backends.postgresql_backend import CircuitBreaker as PgBreaker
-from app.backends.postgresql_backend import ConnectionState as PgState
+from app.backends.postgresql_backend.resilience import CircuitBreaker as PgBreaker
+from app.backends.postgresql_backend.resilience import ConnectionState as PgState
 from app.backends.sqlite_backend import CircuitBreaker as SqBreaker
 from app.backends.sqlite_backend import ConnectionState as SqState
 

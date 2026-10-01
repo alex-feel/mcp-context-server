@@ -206,7 +206,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
         # schema folds to lowercase at parse time and crashes boot with
         # 'schema "..." does not exist'.
         if backend_type == 'postgresql':
-            from app.backends.postgresql_backend import quote_pg_identifier
+            from app.backends.postgresql_backend.session import quote_pg_identifier
             schema_sql = schema_sql_template.replace(
                 '{SCHEMA}', quote_pg_identifier(settings.storage.postgresql_schema),
             )

@@ -50,8 +50,8 @@ from pydantic import ValidationError
 
 from app.backends import StorageBackend
 from app.backends import create_backend
-from app.backends.postgresql_backend import apply_session_gucs
-from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+from app.backends.postgresql_backend.session import apply_session_gucs
+from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
 from app.cli.migrate import mask_credentials
 from app.cli.migrate import parse_backend_url
 from app.compression.base import CompressionProvider

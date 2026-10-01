@@ -919,7 +919,7 @@ class TestListThreadsPostgresqlSqlText:
 
         # Must use the codec-preserving array_agg form per the project's
         # asyncpg uuid type codec contract (decoder=normalize_id at
-        # app/backends/postgresql_backend.py).
+        # app/backends/postgresql_backend/pool_callbacks.py).
         assert 'array_agg(id ORDER BY id DESC)' in pg_branch, (
             'PostgreSQL branch must aggregate latest id via '
             "'(array_agg(id ORDER BY id DESC))[1]' to preserve native uuid type "
