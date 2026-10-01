@@ -24,11 +24,32 @@ Before composing or updating ANY tracker entry, invoke `Skill(skill="context-met
 
 </schema_directive>
 
+<before_filing>
+
+## Before Filing: Find What Already Exists
+
+Every new issue starts with a search for entries that may already record the same need. A second entry for one need splits its evidence and its discussion in two, and whoever picks up one of them never sees what the other holds. Search the target project's entries at EVERY status, not only the open ones, because a closed entry on the same need is part of the answer:
+
+- `hybrid_search_context(query="<the need in a few plain words>", thread_id="issues", metadata={"kind": "issue", "project": "<target>"}, limit=15)`, run with at least two phrasings -- the symptom as observed, and the component or capability it concerns -- since an earlier filer may have described the same need in other words.
+- `search_context(thread_id="issues", metadata={"kind": "issue", "project": "<target>"}, limit=50)` to scan recent titles when the target project's queue is small enough to read whole.
+
+Previews decide which entries are worth reading; read every plausible hit in full with `get_context_by_ids` before deciding, because a title can match while the body records a different need. What the search finds decides the write:
+
+- **An open entry records the same need.** File nothing. Add what you know as a comment on it (`Re issue N: ...`) -- the new occurrence, evidence, or context -- and append the evidence to its `links.evidence` (read-modify-write). In your own project, also patch what the new information changes in its metadata, such as `priority`, and leave the body's observation as filed. In another project's entry the comment and the evidence link are the whole write: its priority, status, and body are that project's to change. Report that entry's number and your comment to whoever asked for the filing, in place of a new issue number.
+- **An open entry overlaps but records a different need** (a narrower case, a follow-on, a sibling symptom): file the new entry with `links.related` naming the existing one, and say in its body how the two differ, so neither reader mistakes one for the other.
+- **A `duplicate` entry matches.** Its wording is often what the search finds, while the need lives on in the entry its `links.duplicate_of` names, possibly in another project. Follow that link -- again if the entry it names is a duplicate too -- and apply these rules to the entry at the end of it.
+- **A closed entry (`done` or `canceled`) records the same need.** The closed record is history and stays as it is. When the need is back -- a regression after a fix, new evidence that answers a cancellation -- file a new entry with `links.related` naming it and a body saying what changed since it closed.
+- **Nothing records the need.** File it as the next section describes.
+
+**Two open entries for one need are merged, not left side by side** -- whether this search or a triage pass finds them, in your own project's queue. Keep as canonical the entry the work has advanced furthest (an assignee, progress, discussion), else the older one. Carry into it what only the other holds: its evidence and acceptance criteria as a comment on the canonical entry, its tags, and its `links` edges merged into the canonical entry's arrays (read-modify-write); re-point any sub-issue whose `parent`, and any issue whose `blocks`, names the duplicate. Then close the other with `{"status": "duplicate", "links": {"duplicate_of": [<canonical-id>]}}` and a comment naming the canonical entry, so the need survives in one place and nothing still points at the closed one. Duplicates sitting in another project's queue are that project's to merge: comment on the entry your need matches and leave the rest to its owner.
+
+</before_filing>
+
 <filing>
 
 ## Filing an Issue
 
-Store a new entry in the `issues` thread. The body is Markdown: H1 title first line, then Problem/Goal, Context/Evidence, and Acceptance criteria sections, substance front-loaded because search previews truncate from the start. Give every body concrete specifics early -- identical-text deduplication collapses template-only bodies filed twice.
+Store a new entry in the `issues` thread only once the search above found nothing that records the need. The body is Markdown: H1 title first line, then Problem/Goal, Context/Evidence, and Acceptance criteria sections, substance front-loaded because search previews truncate from the start. Give every body concrete specifics early -- identical-text deduplication collapses template-only bodies filed twice.
 
 ```text
 store_context(
@@ -91,7 +112,7 @@ store_context(
 )
 ```
 
-Comments attach to exactly one parent, never to another comment (discussions are flat in schema v1), and always open the body by naming the parent (`Re issue 27401:`) -- that keeps them readable standalone and prevents short identical bodies from dedup-collapsing across different parents. Reading a discussion: filter kind `comment` plus `array_contains` on `links.parent` with the issue ID.
+Comments attach to exactly one parent, never to another comment (discussions are flat in schema v1), and always open the body by naming the parent (`Re issue 27401:`) -- that keeps them readable standalone and prevents short identical bodies from dedup-collapsing across different parents. Reading a discussion: filter kind `comment` plus `array_contains` on `links.parent` with the issue ID. Read it before commenting, so a comment adds what the discussion does not already say.
 
 </commenting>
 
@@ -121,9 +142,9 @@ All queries run against `thread_id="issues"` unless noted; search results are tr
 
 **The trigger is a query, not a schedule.** Whenever you query your own project's open work and the result holds entries with status `triage`, those entries are the queue, and dispositioning them is part of that query -- do it before choosing what to work on. An entry sitting in `triage` is a request nobody has answered yet, and a queue you have not dispositioned cannot tell you what is worth doing next. A session that never consults the tracker owes nothing here; the obligation attaches to the moment you look.
 
-The queue you triage is your OWN project's, and so is the queue you work from. An entry for any other project -- at ANY status, whether you filed it there or passed it while querying -- belongs to that project's queue, its sessions meet the same trigger there, and reporting its existence from here changes nothing, so leave it alone and say nothing about it, except to report a filing this session itself made, which is a completed action rather than an offer. That covers offering it as work too: another project's issue is never a candidate to propose here unless the user asked for that project in this session.
+The queue you triage is your OWN project's, and so is the queue you work from. An entry for any other project -- at ANY status, whether you filed it there or passed it while querying -- belongs to that project's queue, its sessions meet the same trigger there, and reporting its existence from here changes nothing, so leave it alone and say nothing about it, except to report a filing this session itself made, or the comment it added in place of one, which is a completed action rather than an offer. That covers offering it as work too: another project's issue is never a candidate to propose here unless the user asked for that project in this session.
 
-**Which transitions are yours to make.** The line runs between a disposition you can justify with EVIDENCE and one that rests on your PREFERENCE. Accepting needs no justification, because the filer already made the case: move the entry to `todo` (work the project intends to reach) or `backlog` (accepted, not scheduled) on your own initiative. `duplicate` is a factual finding -- when an existing issue demonstrably covers the same need, patch `{"status": "duplicate", "links": {"duplicate_of": [<canonical-id>]}}` and comment naming the canonical entry, because the need survives there rather than being discarded. `canceled` splits in two: cancel on your own initiative ONLY when the reason is verifiable and you verified it (the failure no longer occurs in real use, the capability has since shipped, or the entry rests only on a synthetic reproduction or an imagined case and an evidence check of real requests, incidents, logs, records, and user reports finds no occurrence), stating that check and its result in the closing comment -- a synthetic-only entry, whatever its label, is canceled this way at any status, never kept in a backlog; when the reason is instead that the work looks not worth doing, the decision is the user's, because the session that filed it saw something you cannot see from here.
+**Which transitions are yours to make.** The line runs between a disposition you can justify with EVIDENCE and one that rests on your PREFERENCE. Accepting needs no justification, because the filer already made the case: move the entry to `todo` (work the project intends to reach) or `backlog` (accepted, not scheduled) on your own initiative. `duplicate` is a factual finding -- when an existing issue demonstrably covers the same need, the need survives there rather than being discarded. When that issue is open, merge the two as Before Filing describes. When it is closed and the entry in `triage` adds nothing new, close the entry with `{"status": "duplicate", "links": {"duplicate_of": [<closed-id>]}}` and a comment naming the closed issue and why it covers this one. When the entry shows the need is back -- a regression, new evidence the closure did not weigh -- it is not a duplicate: accept it and add `links.related` naming the closed issue. `canceled` splits in two: cancel on your own initiative ONLY when the reason is verifiable and you verified it (the failure no longer occurs in real use, the capability has since shipped, or the entry rests only on a synthetic reproduction or an imagined case and an evidence check of real requests, incidents, logs, records, and user reports finds no occurrence), stating that check and its result in the closing comment -- a synthetic-only entry, whatever its label, is canceled this way at any status, never kept in a backlog; when the reason is instead that the work looks not worth doing, the decision is the user's, because the session that filed it saw something you cannot see from here.
 
 **When the decision is not yours,** leave the entry in `triage` and put the proposal to the user through the structured question tool, naming each entry and what you would do with it, batched into one question rather than a stream of them. An entry still in `triage` because nobody has answered is in the right state -- unaccepted, visible to the next query, not lost -- so never cancel by default to empty a queue.
 
@@ -152,6 +173,7 @@ The queue you triage is your OWN project's, and so is the queue you work from. A
 ## Anti-Patterns (Forbidden)
 
 - Never store work reports, session context, or knowledge-base notes in the `issues` thread: it holds only kind `issue` entries and their kind `comment` discussion.
+- Never file an issue before searching for an entry that already records the need, and never leave two open entries for one need in your own project's queue.
 - Never create per-project tracker threads -- the project dimension is metadata.
 - Never duplicate labels into a metadata field -- tags are the single label mechanism.
 - Never store both directions of an edge, and never split connections across a second field -- one typed `links` object holds every connection, and the reverse direction is a query.
@@ -167,7 +189,7 @@ The queue you triage is your OWN project's, and so is the queue you work from. A
 
 ## Lifecycle Walkthrough
 
-1. File: `store_context` into `issues` with kind `issue`, status `triage` (foreign project), priority 3, `links.commissioned_by` pointing at the user message -- returns ID 27401.
+1. File: the target project's entries, searched at every status, hold nothing on the need, so `store_context` into `issues` with kind `issue`, status `triage` (foreign project), priority 3, `links.commissioned_by` pointing at the user message -- returns ID 27401.
 2. Accept: a session working in the owning project queries its own open work, finds 27401 sitting in `triage`, and patches `{"status": "todo"}`.
 3. Start: re-verify the live claims the work will rest on, then patch `{"status": "in_progress", "assignee": "main-agent"}`.
 4. Discuss: a kind `comment` entry with `links.parent: [27401]`, body opening `Re issue 27401:`.
