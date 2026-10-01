@@ -22,7 +22,7 @@ from typing import cast
 import pytest
 
 from app.backends.sqlite_backend import SQLiteBackend
-from app.backends.sqlite_backend import WriteRequest
+from app.backends.sqlite_backend.write_queue import WriteRequest
 
 
 async def _initialized_backend(db_path: Path) -> SQLiteBackend:

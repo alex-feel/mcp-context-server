@@ -17,7 +17,7 @@ from typing import cast
 import asyncpg
 from fastmcp.exceptions import ToolError
 
-from app.backends.sqlite_backend import is_sqlite_locked_error
+from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.errors import ControlFlowError
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow

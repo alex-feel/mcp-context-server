@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from app.backends.sqlite_backend import PoolConfig
 from app.backends.sqlite_backend import SQLiteBackend
+from app.backends.sqlite_backend.config import PoolConfig
 
 
 async def _backend(db_path: Path, idle_timeout: float) -> SQLiteBackend:

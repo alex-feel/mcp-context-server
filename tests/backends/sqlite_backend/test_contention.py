@@ -29,9 +29,9 @@ from pathlib import Path
 
 import pytest
 
-from app.backends.sqlite_backend import RetryConfig
 from app.backends.sqlite_backend import SQLiteBackend
-from app.backends.sqlite_backend import is_sqlite_locked_error
+from app.backends.sqlite_backend.contention import is_sqlite_locked_error
+from app.backends.sqlite_backend.resilience import RetryConfig
 from app.errors import ControlFlowError
 
 
@@ -350,7 +350,7 @@ class TestConnectionCreationFaultCharging:
     blocks that wrap connection USE, so a SQLITE_CANTOPEN 'unable to open database
     file' (the database volume detaches after the health check closes the dead
     writer) would otherwise escape with the breaker reporting healthy for the whole
-    outage. Both establishment awaits now charge a genuine creation fault, while an
+    outage. Both establishment awaits charge a genuine creation fault, while an
     establishment-phase locked/busy handshake stays uncharged for parity with the
     lock-retry exemption.
     """

@@ -1047,13 +1047,13 @@ class TestAdvisoryLockFix:
 
 
 class TestEmbeddingStorageDecoupledFromSearchTool:
-    """Regression: embedding storage is provisioned by GENERATION, not the search TOOL.
+    """Embedding storage is provisioned by GENERATION, not the search TOOL.
 
-    Previously the vec0 storage migrations were gated on the semantic-search tool
-    toggle. With the toggle OFF but embedding generation ON, the fp32 vector table
-    and chunk columns were silently never created, so embedding writes failed for a
-    missing-table reason. The gate now keys on ``settings.embedding.generation_enabled``,
-    so storage exists regardless of whether the search tool is exposed.
+    The vec0 storage migrations gate on ``settings.embedding.generation_enabled``,
+    so storage exists regardless of whether the search tool is exposed. With the
+    search tool OFF but embedding generation ON, the fp32 vector table and chunk
+    columns must still be created, or embedding writes fail for a missing-table
+    reason.
     """
 
     @requires_sqlite_vec
@@ -1061,7 +1061,7 @@ class TestEmbeddingStorageDecoupledFromSearchTool:
     async def test_fp32_storage_created_with_generation_on_and_search_off(self, tmp_path: Path) -> None:
         """vec_context_embeddings + chunk columns are created and writable.
 
-        Configuration under test (the previously-latent fp32 edge):
+        Configuration under test (the fp32 edge):
         - embedding generation ON (settings.embedding.generation_enabled = True)
         - semantic-search TOOL forced OFF (mode='false', so the .enabled property is False)
         - embedding compression OFF (fp32 vec0 layout, not the compressed table)
@@ -1081,18 +1081,17 @@ class TestEmbeddingStorageDecoupledFromSearchTool:
             'DB_PATH': str(db_path),
             'MCP_TEST_MODE': '1',
             'STORAGE_BACKEND': 'sqlite',
-            # Generation ON: provisions embedding storage and loads sqlite-vec.
+            # Generation ON: provisions embedding storage.
             'ENABLE_EMBEDDING_GENERATION': 'true',
-            # Search TOOL OFF: the previously-coupled gate. Storage MUST still be built.
+            # Search TOOL OFF: storage provisioning does not depend on it. Storage MUST still be built.
             'ENABLE_SEMANTIC_SEARCH': 'false',
             # Compression OFF: assert the fp32 vec0 layout, not the compressed table.
             'ENABLE_EMBEDDING_COMPRESSION': 'false',
             'EMBEDDING_DIM': '4',
         }
 
-        # Build a fresh settings singleton under the env above and route every
-        # module-level ``settings`` binding involved (backend + both migrations) to
-        # it, so the backend loads sqlite-vec (generation ON) and the migrations run
+        # Build a fresh settings singleton under the env above and route both
+        # migrations' module-level ``settings`` bindings to it, so the migrations run
         # (generation ON) even though the search tool is off. Restore the cache after.
         with patch.dict(os.environ, env, clear=False):
             get_settings.cache_clear()
@@ -1105,12 +1104,27 @@ class TestEmbeddingStorageDecoupledFromSearchTool:
             assert fresh_settings.compression.enabled is False
 
             try:
-                from app.backends import sqlite_backend as sqlite_backend_module
+                import app.backends.sqlite_backend.connections as sqlite_connections_module
+                import app.backends.sqlite_backend.core as sqlite_core_module
+                import app.backends.sqlite_backend.lifecycle as sqlite_lifecycle_module
+                import app.backends.sqlite_backend.write_queue as sqlite_write_queue_module
                 from app.migrations import chunking as chunking_module
                 from app.migrations import semantic as semantic_module
 
+                # The SQLite backend reads only ``settings.storage``, takes its database
+                # path from its constructor and reports a fixed backend type, so its
+                # import-time bindings already hold every value it reads under the env above.
+                unread_by_backend = {'db_path', 'backend_type'}
+                expected_storage = fresh_settings.storage.model_dump(exclude=unread_by_backend)
+                for backend_module in (
+                    sqlite_core_module,
+                    sqlite_connections_module,
+                    sqlite_write_queue_module,
+                    sqlite_lifecycle_module,
+                ):
+                    assert backend_module.settings.storage.model_dump(exclude=unread_by_backend) == expected_storage
+
                 with (
-                    patch.object(sqlite_backend_module, 'settings', fresh_settings),
                     patch.object(semantic_module, 'settings', fresh_settings),
                     patch.object(chunking_module, 'settings', fresh_settings),
                 ):

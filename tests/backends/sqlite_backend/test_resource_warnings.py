@@ -1,5 +1,5 @@
 """
-Test suite specifically for detecting and verifying ResourceWarning fixes.
+Tests that detect leaked SQLite connections through ResourceWarning.
 
 This module tests that all database connections are properly closed and
 that no resources are leaked during normal operations or error conditions.
@@ -260,7 +260,7 @@ class TestResourceWarningDetection:
             conn.executescript(schema_sql)
             conn.commit()
         finally:
-            # This is the fix - always close the connection
+            # Always close the connection, even when the schema load fails
             conn.close()
 
         # Force garbage collection to detect leaks
@@ -435,7 +435,7 @@ class TestResourceWarningDetection:
         processor error and skips the current-request bookkeeping reset. The
         processor must instead skip the resolution and keep servicing.
         """
-        from app.backends.sqlite_backend import WriteRequest
+        from app.backends.sqlite_backend.write_queue import WriteRequest
 
         manager = SQLiteBackend(temp_db)
         await manager.initialize()

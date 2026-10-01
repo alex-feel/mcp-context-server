@@ -490,10 +490,6 @@ def test_streaming_decompress_roundtrip_sqlite(
     monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
     get_settings.cache_clear()
     _reset_compression_cache()
-    import app.backends.sqlite_backend as sqlite_backend_module
-    monkeypatch.setattr(
-        sqlite_backend_module, 'settings', get_settings(),
-    )
 
     rc = run_decompress(f'sqlite:///{db}', dry_run=False)
     assert rc == 0
@@ -671,14 +667,14 @@ def test_streaming_decompress_recovers_server_compressed_sqlite(
 ) -> None:
     """--decompress recovers a server-compressed (Lineage B) database.
 
-    Regression for the silent total-data-loss bug: the old reverse loop looked
-    up a pre-existing ``embedding_chunks`` row by ``(context_id, chunk_index)``
-    and ``continue``d on a miss. A server-compressed-from-start database -- the
-    v3 default -- has NO ``embedding_chunks`` rows and ``chunk_index=0`` per
-    context, so EVERY row missed and was skipped, then the compressed source was
-    DROPped and provenance DELETEd: zero embeddings recovered with a success exit
-    code. The fix rebuilds both the fp32 table and the ``embedding_chunks`` bridge
-    directly from the compressed rows, so every embedding is recovered.
+    A server-compressed-from-start database -- the v3 default -- has NO
+    ``embedding_chunks`` rows and ``chunk_index=0`` per context. A reverse loop
+    that looked up a pre-existing ``embedding_chunks`` row by ``(context_id,
+    chunk_index)`` and ``continue``d on a miss would skip EVERY row, then DROP the
+    compressed source and DELETE provenance: zero embeddings recovered with a
+    success exit code. Decompress therefore rebuilds both the fp32 table and the
+    ``embedding_chunks`` bridge directly from the compressed rows, so every
+    embedding is recovered.
     """
     db = tmp_path / 'lineage_b.db'
     n_docs = 12
@@ -693,8 +689,6 @@ def test_streaming_decompress_recovers_server_compressed_sqlite(
     monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
     get_settings.cache_clear()
     _reset_compression_cache()
-    import app.backends.sqlite_backend as sqlite_backend_module
-    monkeypatch.setattr(sqlite_backend_module, 'settings', get_settings())
 
     rc = run_decompress(f'sqlite:///{db}', dry_run=False)
     assert rc == 0
@@ -702,9 +696,8 @@ def test_streaming_decompress_recovers_server_compressed_sqlite(
     assert not _table_exists(db, 'vec_context_embeddings_compressed')
     assert _count_provenance(db) == 0
 
-    # The core regression assertions: every embedding recovered into BOTH the
-    # fp32 vec table and the rebuilt embedding_chunks bridge (the old code
-    # recovered ZERO rows into either).
+    # The core assertions: every embedding recovered into BOTH the fp32 vec
+    # table and the rebuilt embedding_chunks bridge.
     assert _count_fp32_vec0(db) == n_docs
     import sqlite_vec
 

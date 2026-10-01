@@ -6,16 +6,16 @@ get_state()/is_open() paths apply once recovery_timeout elapses -- WITHOUT
 mutating state -- so the reported state matches live behavior and the two backends
 stay consistent (rather than reporting a stale 'healthy'/'failed').
 
-Each backend module defines its own CircuitBreaker and ConnectionState, so the
-two tests are concrete per backend.
+Each backend package defines its own CircuitBreaker and ConnectionState (in its
+``resilience`` module), so the two tests are concrete per backend.
 """
 
 import time
 
 from app.backends.postgresql_backend.resilience import CircuitBreaker as PgBreaker
 from app.backends.postgresql_backend.resilience import ConnectionState as PgState
-from app.backends.sqlite_backend import CircuitBreaker as SqBreaker
-from app.backends.sqlite_backend import ConnectionState as SqState
+from app.backends.sqlite_backend.resilience import CircuitBreaker as SqBreaker
+from app.backends.sqlite_backend.resilience import ConnectionState as SqState
 
 
 def test_pg_peek_state_recovery_aware() -> None:

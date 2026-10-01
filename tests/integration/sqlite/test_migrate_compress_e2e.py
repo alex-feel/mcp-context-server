@@ -325,20 +325,13 @@ def test_decompress_e2e_sqlite_execute(
     assert _table_exists_sqlite(db, 'vec_context_embeddings_compressed')
     assert not _table_exists_sqlite(db, 'vec_context_embeddings')
 
-    # Then decompress. The fp32 vec table is a sqlite-vec virtual table,
-    # so we need ENABLE_SEMANTIC_SEARCH=true to ensure the backend loads
-    # the extension when re-opening the database.
+    # Then decompress. Disable the compression toggle so the post-decompress
+    # validator does not reject the disabled state; the provider is
+    # reconstructed from the provenance row, not the env.
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
     monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
     get_settings.cache_clear()
     _reset_compression_cache()
-    # Refresh the cached settings binding the SQLite backend reads at
-    # connection time so semantic_search.enabled becomes true for the
-    # new connection.
-    import app.backends.sqlite_backend as sqlite_backend_module
-    monkeypatch.setattr(
-        sqlite_backend_module, 'settings', get_settings(),
-    )
 
     rc = run_decompress(f'sqlite:///{db}', dry_run=False)
     assert rc == 0

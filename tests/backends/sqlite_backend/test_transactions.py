@@ -12,7 +12,7 @@ import pytest
 
 from app.backends.base import TransactionContext
 from app.backends.sqlite_backend import SQLiteBackend
-from app.backends.sqlite_backend import SQLiteTransactionContext
+from app.backends.sqlite_backend.transactions import SQLiteTransactionContext
 from app.ids import generate_id
 from app.repositories.context_repository.records import VersionConflictError
 
@@ -315,7 +315,7 @@ class TestTransactionContextIntegration:
 class TestControlFlowSignalCircuitBreaker:
     """A ControlFlowError inside begin_transaction must NOT trip the circuit breaker.
 
-    Regression: VersionConflictError / EmbeddingsReconcileRequiredError are normal
+    VersionConflictError / EmbeddingsReconcileRequiredError are normal
     optimistic-concurrency / dedup control-flow signals raised inside the
     transaction body. They roll the transaction back WITHOUT recording a
     circuit-breaker failure, so sustained-but-normal write contention cannot open
