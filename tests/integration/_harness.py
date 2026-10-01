@@ -1381,10 +1381,10 @@ class MCPServerIntegrationTest:
     async def test_semantic_hybrid_metadata_is_dict(self) -> bool:
         """semantic_search_context and hybrid_search_context return metadata as a dict.
 
-        Regression guard for the R1 fix that parses metadata in _semantic_search_raw:
-        without it the repository's JSON-string metadata (SQLite TEXT; PostgreSQL
-        JSONB-as-str via asyncpg) would surface as a string. Asserts the type AND a
-        nested read, so reverting the fix fails on BOTH backends.
+        Guards the metadata parse in semantic_search_raw (app/tools/search/legs.py):
+        the repository returns metadata as a JSON string (SQLite TEXT; PostgreSQL
+        JSONB-as-str via asyncpg), and the leg must surface it as a dict. Asserts the
+        type AND a nested read, so a missing parse fails on BOTH backends.
 
         Returns:
             bool: True if all tests pass.
