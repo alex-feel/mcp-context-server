@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.metadata_sql import _FLOAT8_OVERFLOW
+from app.metadata_sql import _FLOAT8_TINY
+from app.metadata_sql import is_safe_key
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.query_builder import MetadataQueryBuilder
@@ -255,7 +258,7 @@ class TestMetadataQueryBuilder:
         # crossed with >= / <= -- NOT DBL_MAX's shortest-repr decimal, which is strictly
         # smaller and would misclassify the finite band (DBL_MAX, overflow) as Infinity.
         overflow = str(2**1024 - 2**970)
-        assert overflow == MetadataQueryBuilder._FLOAT8_OVERFLOW
+        assert overflow == _FLOAT8_OVERFLOW
         assert f'>= {overflow}' in clause
         assert f'<= -{overflow}' in clause
         assert '1.7976931348623157e308' not in clause
@@ -283,7 +286,7 @@ class TestMetadataQueryBuilder:
         b = MetadataQueryBuilder(backend_type='postgresql')
         b.add_advanced_filter(MetadataFilter(key='n', operator=MetadataOperator.LT, value=0.5))
         clause, _ = b.build_where_clause()
-        tiny = MetadataQueryBuilder._FLOAT8_TINY
+        tiny = _FLOAT8_TINY
         # The underflow clamp is present, keyed on the exact boundary and excluding a genuine 0.
         assert f'BETWEEN -{tiny} AND {tiny}' in clause
         assert '<> 0' in clause
@@ -300,7 +303,7 @@ class TestMetadataQueryBuilder:
 
         A bare ``@>`` containment matches only the float's canonical decimal form and
         diverges from SQLite's exact int-vs-double element comparison above 2**53. The
-        float-member path iterates numeric elements and reuses _pg_numeric_compare, so a
+        float-member path iterates numeric elements and reuses pg_numeric_compare, so a
         genuinely int-origin element now matches on both backends; ints/strings keep @>.
         """
         fb = MetadataQueryBuilder(backend_type='postgresql')
@@ -617,15 +620,14 @@ class TestMetadataQueryBuilder:
         """A numeric path segment AFTER the first (e.g. 'items.0', 'a.-1') is rejected on BOTH
         backends: it array-indexes on PostgreSQL but resolves to a literal object key on SQLite,
         a silent divergence. A single numeric key ('0') and non-numeric nested paths stay valid."""
-        builder = MetadataQueryBuilder()
         for bad in ('items.0', 'a.-1', 'a.0.b', 'items.01'):
-            assert builder._is_safe_key(bad) is False
+            assert is_safe_key(bad) is False
             with pytest.raises(ValueError, match='Numeric path segments'):
                 MetadataFilter(key=bad, operator=MetadataOperator.EQ, value='x')
         # Allowed: a single numeric key (consistent object-key on both backends) and
         # non-numeric nested paths (a numeric-suffixed segment like 'b0' is not all-digits).
         for good in ('0', 'a.b', 'items.foo', 'user.preferences.theme', 'a.b0'):
-            assert builder._is_safe_key(good) is True
+            assert is_safe_key(good) is True
             MetadataFilter(key=good, operator=MetadataOperator.EQ, value='x')  # must not raise
 
     def test_empty_path_segment_rejected(self) -> None:
@@ -637,14 +639,13 @@ class TestMetadataQueryBuilder:
         hyphenated, underscored) still pass unchanged -- no over-restriction. ('a.0' is
         intentionally absent: it is rejected by the separate numeric-path-segment guard,
         not the empty-segment guard under test here.)"""
-        builder = MetadataQueryBuilder()
         for bad in ('.x', 'x.', 'a..b', '.', '..'):
-            assert builder._is_safe_key(bad) is False
+            assert is_safe_key(bad) is False
             with pytest.raises(ValueError, match='Empty path segments'):
                 MetadataFilter(key=bad, operator=MetadataOperator.EQ, value=1)
         # Allowed: keys whose every dot-separated segment is non-empty stay valid.
         for good in ('a', 'a.b', '0', 'metadata_version', 'a-b', 'user.preferences.theme'):
-            assert builder._is_safe_key(good) is True
+            assert is_safe_key(good) is True
             MetadataFilter(key=good, operator=MetadataOperator.EQ, value=1)  # must not raise
 
     def test_trailing_newline_key_rejected(self) -> None:
@@ -653,13 +654,12 @@ class TestMetadataQueryBuilder:
         passed 'status\\n'; the un-stripped simple-filter path then diverged (SQLite
         json_extract('$.a.status\\n') misses while PostgreSQL's #>> array-literal parse trims
         the newline and matches). fullmatch closes the parity gap. Clean keys stay valid."""
-        builder = MetadataQueryBuilder()
         for bad in ('status\n', 'a.status\n', 'status\n\n', 'a\nb'):
-            assert builder._is_safe_key(bad) is False
+            assert is_safe_key(bad) is False
             with pytest.raises(ValueError, match='Invalid metadata key'):
                 MetadataFilter(key=bad, operator=MetadataOperator.EQ, value='x')
         for good in ('status', 'a.status', 'user.preferences.theme'):
-            assert builder._is_safe_key(good) is True
+            assert is_safe_key(good) is True
             MetadataFilter(key=good, operator=MetadataOperator.EQ, value='x')  # must not raise
 
     def test_string_operator_matches_string_typed_only(self) -> None:
@@ -2501,7 +2501,7 @@ class TestGeneratedClauseTextBudget:
             'postgresql',
             [MetadataFilter(key='k', operator=MetadataOperator.IN, value=[i + 0.5 for i in range(100)])],
         )
-        overflow = MetadataQueryBuilder._FLOAT8_OVERFLOW
+        overflow = _FLOAT8_OVERFLOW
         # safe_float8 inlines the overflow literal twice; that count must not scale with
         # the member count (it previously grew by two per member).
         assert one.count(overflow) == 2

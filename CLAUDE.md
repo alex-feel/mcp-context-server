@@ -64,7 +64,7 @@ FastMCP 3.2.x-based server providing persistent context storage for LLM agents:
 
 7. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain `RecursiveCharacterTextSplitter`); `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
 
-8. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`): `MetadataFilter` (16 operators); `QueryBuilder` builds backend-aware SQL with nested JSON paths — SQLite `json_extract` vs PostgreSQL `->>`/`->`.
+8. **Metadata Filtering** (`app/metadata_types.py`, `app/query_builder.py`, `app/metadata_sql.py`, `app/metadata_membership.py`): `MetadataFilter` (16 operators); `MetadataQueryBuilder` builds backend-aware SQL with nested JSON paths — SQLite `json_extract` vs PostgreSQL `->>`/`->`. It composes the stateless fragment functions in `metadata_sql.py` (key validation, JSON accessors, per-backend type guards, the exact PostgreSQL numeric comparison, LIKE/GLOB escapes) and inherits the IN/NOT_IN predicates from `MembershipConditionsMixin` (`metadata_membership.py`).
 
 9. **Other modules**: `app/fusion.py` (RRF), `app/errors.py` (error classification + exception formatting, see #5), `app/ids.py` (UUIDv7 generation + ID normalization, see #7), `app/cli/migrate.py` (migration CLI, see "Package and Release"), `app/instructions.py` (server instructions), `app/types.py` (40+ API-response TypedDicts), `app/logger_config.py` (logging), `app/schemas/` (SQL schema files).
 

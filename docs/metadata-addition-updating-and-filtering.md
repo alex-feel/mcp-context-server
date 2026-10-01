@@ -1691,6 +1691,8 @@ METADATA_INDEX_SYNC_MODE=auto
 
 - [`app/metadata_types.py`](../app/metadata_types.py) - MetadataFilter and MetadataOperator definitions
 - [`app/query_builder.py`](../app/query_builder.py) - SQL query construction with security validation
+- [`app/metadata_sql.py`](../app/metadata_sql.py) - Metadata key validation and the per-backend SQL fragments the query builder composes
+- [`app/metadata_membership.py`](../app/metadata_membership.py) - IN / NOT_IN membership predicates inherited by the query builder
 - [`app/repositories/context_repository/search.py`](../app/repositories/context_repository/search.py) - Database operations for metadata filtering
 
 ### Test Examples
