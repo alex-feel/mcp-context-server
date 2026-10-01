@@ -205,7 +205,7 @@ class AuthSettings(CommonSettings):
         default='RS256',
         alias='MCP_AUTH_JWT_ALGORITHM',
         description='JWT signing algorithm to accept. '
-                    'Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512',
+                    'Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512, EdDSA, Ed25519, Ed448',
     )
     groups_claim: str = Field(
         default='groups',

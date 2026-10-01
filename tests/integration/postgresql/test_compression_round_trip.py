@@ -158,7 +158,7 @@ async def test_compression_round_trip_postgresql(pg_test_url: str) -> None:
     )
     client: Client[Any] = Client(transport)
     async with client:
-        await client.ping()
+        await client.list_tools()
 
         thread_id = f'pg_compression_rt_{int(time.time())}'
         store_result = await client.call_tool(
@@ -262,7 +262,7 @@ async def test_compression_round_trip_postgresql_mse_variant(
     )
     client: Client[Any] = Client(transport)
     async with client:
-        await client.ping()
+        await client.list_tools()
 
         thread_id = f'pg_compression_mse_{int(time.time())}'
         store_result = await client.call_tool(
@@ -340,7 +340,7 @@ async def test_compression_reenable_after_decompress_recreates_payload_table(
     transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
     client: Client[Any] = Client(transport)
     async with client:
-        await client.ping()
+        await client.list_tools()
 
     # Simulate the state --decompress leaves behind: payload table dropped,
     # provenance row deleted, marker table still present (the fp32 table it
@@ -359,7 +359,7 @@ async def test_compression_reenable_after_decompress_recreates_payload_table(
     transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
     client = Client(transport)
     async with client:
-        await client.ping()
+        await client.list_tools()
 
     conn = await asyncpg.connect(reenable_url)
     try:

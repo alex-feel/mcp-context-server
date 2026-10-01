@@ -21,7 +21,11 @@ from typing import Any
 
 import pytest
 from fastmcp import Client
+from fastmcp.client.transports import PythonStdioTransport
+from mcp.client.stdio import get_default_environment
 
+from tests.integration._harness import CLIENT_MODES
+from tests.integration._harness import ClientMode
 from tests.integration._harness import MCPServerIntegrationTest
 
 # Conditional skip marker for tests requiring sqlite-vec package
@@ -35,11 +39,16 @@ requires_sqlite_vec = pytest.mark.skipif(
 @pytest.mark.integration
 @pytest.mark.asyncio
 @requires_sqlite_vec
-async def test_real_server(tmp_path: Path) -> None:
+@pytest.mark.parametrize('client_mode', CLIENT_MODES)
+async def test_real_server(tmp_path: Path, client_mode: ClientMode) -> None:
     """Run integration tests against real server with temporary database.
+
+    The full harness runs once per protocol era, so every tool is exercised by a
+    sessionless-era client and by a handshake-era client.
 
     Args:
         tmp_path: Pytest fixture providing temporary directory.
+        client_mode: Protocol era the harness client negotiates.
 
     Raises:
         RuntimeError: If MCP_TEST_MODE is not set or if attempting to use default database.
@@ -64,9 +73,9 @@ async def test_real_server(tmp_path: Path) -> None:
     print(f'[TEST] Running with temp database: {temp_db}')
     print(f"[TEST] MCP_TEST_MODE: {os.environ.get('MCP_TEST_MODE')}")
 
-    test = MCPServerIntegrationTest(temp_db_path=temp_db)
+    test = MCPServerIntegrationTest(temp_db_path=temp_db, client_mode=client_mode)
     success = await test.run_all_tests()
-    assert success, 'Integration tests failed'
+    assert success, f'Integration tests failed ({client_mode} client mode)'
 
 
 @pytest.mark.integration
@@ -95,96 +104,73 @@ async def test_store_context_max_size_image(tmp_path: Path) -> None:
     # Create a unique database path in the temp directory
     temp_db = tmp_path / 'test_max_image.db'
 
-    # Store original environment
-    original_env: dict[str, str | None] = {
-        'DB_PATH': os.environ.get('DB_PATH'),
-        'MCP_TEST_MODE': os.environ.get('MCP_TEST_MODE'),
-        'ENABLE_SEMANTIC_SEARCH': os.environ.get('ENABLE_SEMANTIC_SEARCH'),
-        'ENABLE_FTS': os.environ.get('ENABLE_FTS'),
-        'ENABLE_HYBRID_SEARCH': os.environ.get('ENABLE_HYBRID_SEARCH'),
-    }
-
-    # Set environment for this test
-    os.environ['DB_PATH'] = str(temp_db)
-    os.environ['MCP_TEST_MODE'] = '1'
-    os.environ['ENABLE_SEMANTIC_SEARCH'] = 'false'  # Disable for speed
-    os.environ['ENABLE_FTS'] = 'false'  # Disable for speed
-    os.environ['ENABLE_HYBRID_SEARCH'] = 'false'  # Disable for speed
-
     # Use the wrapper script that sets up Python path correctly
     wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
 
-    # Initialize the database schema before creating client
-    from app.schemas import load_schema
+    # Pass the environment explicitly so the server opens this test's database
+    # with search disabled for speed; the MCP SDK's default stdio environment
+    # keeps the developer's shell out of the run.
+    server_env = {
+        **get_default_environment(),
+        'STORAGE_BACKEND': 'sqlite',
+        'DB_PATH': str(temp_db),
+        'MCP_TEST_MODE': '1',
+        'ENABLE_SEMANTIC_SEARCH': 'false',
+        'ENABLE_FTS': 'false',
+        'ENABLE_HYBRID_SEARCH': 'false',
+    }
 
-    schema_sql = load_schema('sqlite')
-    with sqlite3.connect(str(temp_db)) as conn:
-        conn.executescript(schema_sql)
-        conn.execute('PRAGMA foreign_keys = ON')
-        conn.execute('PRAGMA journal_mode = WAL')
-        conn.commit()
+    client: Client[Any] = Client(PythonStdioTransport(script_path=str(wrapper_script), env=server_env))
 
-    try:
-        # Create FastMCP client with wrapper script path
-        client: Client[Any] = Client(str(wrapper_script))
+    async with client:
+        # Create a large image that is just under the 10MB limit
+        # MAX_IMAGE_SIZE_MB is 10 by default, so we create a ~9.9MB image
+        target_size_bytes = int(9.9 * 1024 * 1024)  # 9.9 MB
 
-        async with client:
-            # Create a large image that is just under the 10MB limit
-            # MAX_IMAGE_SIZE_MB is 10 by default, so we create a ~9.9MB image
-            target_size_bytes = int(9.9 * 1024 * 1024)  # 9.9 MB
+        # Create random binary data for image content
+        large_binary = os.urandom(target_size_bytes)
+        large_image_b64 = base64.b64encode(large_binary).decode('utf-8')
 
-            # Create random binary data for image content
-            large_binary = os.urandom(target_size_bytes)
-            large_image_b64 = base64.b64encode(large_binary).decode('utf-8')
+        test_thread_id = f'max_image_test_{int(time.time())}'
 
-            test_thread_id = f'max_image_test_{int(time.time())}'
+        result = await client.call_tool(
+            'store_context',
+            {
+                'thread_id': test_thread_id,
+                'source': 'agent',
+                'text': 'Context with maximum size image',
+                'images': [
+                    {
+                        'data': large_image_b64,
+                        'mime_type': 'application/octet-stream',
+                    },
+                ],
+            },
+        )
 
-            result = await client.call_tool(
-                'store_context',
-                {
-                    'thread_id': test_thread_id,
-                    'source': 'agent',
-                    'text': 'Context with maximum size image',
-                    'images': [
-                        {
-                            'data': large_image_b64,
-                            'mime_type': 'application/octet-stream',
-                        },
-                    ],
-                },
-            )
+        # Extract result content
+        if hasattr(result, 'content'):
+            content = result.content
+            if content and hasattr(content[0], 'text'):
+                import json
 
-            # Extract result content
-            if hasattr(result, 'content'):
-                content = result.content
-                if content and hasattr(content[0], 'text'):
-                    import json
-
-                    text_value = content[0].text
-                    assert isinstance(text_value, str | bytes | bytearray)
-                    data = json.loads(text_value)
-                else:
-                    data = {'error': 'No content in result'}
+                text_value = content[0].text
+                assert isinstance(text_value, str | bytes | bytearray)
+                data = json.loads(text_value)
             else:
-                data = result if isinstance(result, dict) else {'error': str(result)}
+                data = {'error': 'No content in result'}
+        else:
+            data = result if isinstance(result, dict) else {'error': str(result)}
 
-            # Verify the operation succeeded
-            assert data.get('success'), f'store_context should succeed with max-size image: {data}'
-            assert data.get('context_id'), f'store_context should return context_id: {data}'
+        # Verify the operation succeeded
+        assert data.get('success'), f'store_context should succeed with max-size image: {data}'
+        assert data.get('context_id'), f'store_context should return context_id: {data}'
 
-            # Cleanup - delete the test context
-            await client.call_tool(
-                'delete_context',
-                {'thread_id': test_thread_id},
-            )
-
-    finally:
-        # Restore original environment
-        for key, value in original_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        # Cleanup - delete the test context
+        await client.call_tool(
+            'delete_context',
+            {'thread_id': test_thread_id},
+        )
 
 
 @pytest.mark.integration
@@ -310,8 +296,8 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
 
     try:
         # Pass env explicitly via PythonStdioTransport so the spawned
-        # subprocess receives our compression configuration. FastMCP's
-        # Client(str) shortcut does not propagate the parent env.
+        # subprocess receives our compression configuration. A bare script
+        # path spawns the server with only the MCP SDK's default env whitelist.
         from fastmcp.client.transports import PythonStdioTransport
         transport = PythonStdioTransport(
             script_path=str(wrapper_script),
@@ -319,7 +305,7 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
         )
         client: Client[Any] = Client(transport)
         async with client:
-            await client.ping()
+            await client.list_tools()
 
             store_result = await client.call_tool(
                 'store_context',
@@ -401,8 +387,10 @@ if __name__ == '__main__':
             print(f'[INFO] DB_PATH set to: {temp_db_path}')
             print(f"[INFO] MCP_TEST_MODE: {os.environ.get('MCP_TEST_MODE')}")
 
-            test = MCPServerIntegrationTest(temp_db_path=temp_db_path)
-            success = await test.run_all_tests()
-            sys.exit(0 if success else 1)
+            results = [
+                await MCPServerIntegrationTest(temp_db_path=temp_db_path, client_mode=mode).run_all_tests()
+                for mode in CLIENT_MODES
+            ]
+            sys.exit(0 if all(results) else 1)
 
     asyncio.run(main())

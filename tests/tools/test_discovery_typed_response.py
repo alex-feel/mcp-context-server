@@ -136,7 +136,7 @@ async def test_get_statistics_returns_typed_dict_shape(
     assertions on disabled/enabled paths can both pass.
     """
     del fresh_backend  # Implicit via set_backend
-    stats = await discovery_module.get_statistics(ctx=None)
+    stats = await discovery_module.get_statistics()
 
     # The function's return TYPE must be StatisticsResponseDict. We can't
     # directly inspect the function's static type at runtime, but we can
@@ -185,7 +185,7 @@ async def test_semantic_search_embedding_count_field_name_preserved(
     misleading ``total_chunks`` rename.
     """
     del fresh_backend  # Implicit via set_backend
-    stats = await discovery_module.get_statistics(ctx=None)
+    stats = await discovery_module.get_statistics()
     semantic = stats.get('semantic_search', {})
     # When semantic search is disabled (default), the block is just
     # {enabled, available}; we still want to assert that if either appears
@@ -209,7 +209,7 @@ async def test_embeddings_size_reported_when_generation_or_compression_enabled(
     estimated flag, reported alongside ``database_size_mb``.
     """
     del fresh_backend  # Implicit via set_backend
-    stats = cast(dict[str, Any], await discovery_module.get_statistics(ctx=None))
+    stats = cast(dict[str, Any], await discovery_module.get_statistics())
 
     assert 'embeddings_size_mb' in stats
     assert isinstance(stats['embeddings_size_mb'], float)
@@ -242,7 +242,7 @@ async def test_connection_metrics_keys_are_all_declared(
     error) from exactly the monitoring clients that consume structured output.
     """
     del fresh_backend  # Implicit via set_backend
-    stats = cast(dict[str, Any], await discovery_module.get_statistics(ctx=None))
+    stats = cast(dict[str, Any], await discovery_module.get_statistics())
     emitted = set(cast(dict[str, Any], stats['connection_metrics']))
 
     assert emitted, 'connection_metrics must not be empty'

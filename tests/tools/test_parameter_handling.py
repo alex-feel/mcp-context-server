@@ -30,7 +30,10 @@ from annotated_types import Ge
 from annotated_types import Le
 from annotated_types import MaxLen
 from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import ValidationError as FastMCPValidationError
+from pydantic import ValidationError as PydanticValidationError
 from pydantic.fields import FieldInfo
+from pydantic_core import ErrorDetails
 
 import app.server
 from app.types import JsonValue
@@ -43,6 +46,23 @@ delete_context = app.server.delete_context
 
 # Type alias anchored to a usage site so ruff cannot strip the JsonValue import.
 _MetadataDict = dict[str, JsonValue]
+
+
+def _argument_errors(exc_info: pytest.ExceptionInfo[FastMCPValidationError]) -> list[ErrorDetails]:
+    """Return the pydantic error details behind a FastMCP argument-validation failure.
+
+    ``Tool.run`` reports a call whose arguments fail schema validation as
+    ``fastmcp.exceptions.ValidationError`` chained from the pydantic error.
+
+    Args:
+        exc_info: The captured FastMCP validation error.
+
+    Returns:
+        The error details of the pydantic ``ValidationError`` the FastMCP error was raised from.
+    """
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, PydanticValidationError), f'expected a pydantic ValidationError cause, got {cause!r}'
+    return cause.errors()
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -1044,17 +1064,17 @@ class TestSearchOffsetUpperBound:
 
         Calling the tool through the pydantic-validated wrapper rejects the
         out-of-range offset before any repository work runs; the le constraint
-        surfaces as a ValidationError naming the offset field and its ceiling.
+        surfaces as a FastMCP ValidationError, chained from the pydantic error,
+        naming the offset field and its ceiling.
         """
         from fastmcp.tools import Tool
-        from pydantic import ValidationError
 
         from app.tools.search.limits import MAX_SEARCH_OFFSET
 
         validated = Tool.from_function(app.server.search_context)
-        with pytest.raises(ValidationError) as exc_info:
+        with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'offset': MAX_SEARCH_OFFSET + 1})
-        errors = exc_info.value.errors()
+        errors = _argument_errors(exc_info)
         assert any(
             err['type'] == 'less_than_equal' and err['loc'] == ('offset',)
             for err in errors
@@ -1150,17 +1170,17 @@ class TestTagsFilterUpperBound:
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
     async def test_tags_over_cap_rejected_at_boundary(self) -> None:
-        """A tags list above the cap is rejected by the wire-schema validation."""
+        """A tags list above the cap is rejected by the wire-schema validation with a FastMCP ValidationError."""
         from fastmcp.tools import Tool
-        from pydantic import ValidationError
 
         from app.tools.search.limits import MAX_FILTER_TAGS
 
         validated = Tool.from_function(app.server.search_context)
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
-        with pytest.raises(ValidationError) as exc_info:
+        with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'tags': oversized})
-        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()
+        errors = _argument_errors(exc_info)
+        assert any(err['type'] == 'too_long' for err in errors), errors
 
     @pytest.mark.asyncio
     async def test_search_context_oversized_tags_structured_error_before_sql(self) -> None:
@@ -1431,32 +1451,32 @@ class TestMetadataFilterCapsUpperBound:
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
     async def test_metadata_filters_over_cap_rejected_at_boundary(self) -> None:
-        """A metadata_filters list above the cap is rejected by the wire-schema validation."""
+        """A metadata_filters list above the cap is rejected by the wire-schema validation with a FastMCP ValidationError."""
         from fastmcp.tools import Tool
-        from pydantic import ValidationError
 
         from app.tools.search.limits import MAX_METADATA_FILTERS
 
         validated = Tool.from_function(app.server.search_context)
         oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
-        with pytest.raises(ValidationError) as exc_info:
+        with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'metadata_filters': oversized})
-        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()
+        errors = _argument_errors(exc_info)
+        assert any(err['type'] == 'too_long' for err in errors), errors
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
     async def test_metadata_dict_over_cap_rejected_at_boundary(self) -> None:
-        """A simple metadata dict above the key cap is rejected by the wire-schema validation."""
+        """A metadata dict above the key cap is rejected by the wire-schema validation with a FastMCP ValidationError."""
         from fastmcp.tools import Tool
-        from pydantic import ValidationError
 
         from app.tools.search.limits import MAX_METADATA_KEYS
 
         validated = Tool.from_function(app.server.search_context)
         oversized = {f'key{i}': i for i in range(MAX_METADATA_KEYS + 1)}
-        with pytest.raises(ValidationError) as exc_info:
+        with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'metadata': oversized})
-        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()
+        errors = _argument_errors(exc_info)
+        assert any(err['type'] == 'too_long' for err in errors), errors
 
     @pytest.mark.asyncio
     async def test_search_context_oversized_metadata_filters_structured_error_before_sql(self) -> None:
@@ -1672,15 +1692,15 @@ class TestDeleteContextIdsCap:
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
     async def test_context_ids_over_cap_rejected_at_boundary(self) -> None:
-        """A context_ids list above the cap is rejected by the wire-schema validation."""
+        """A context_ids list above the cap is rejected by the wire-schema validation with a FastMCP ValidationError."""
         from fastmcp.tools import Tool
-        from pydantic import ValidationError
 
         validated = Tool.from_function(app.server.delete_context)
         oversized = [f'{i:032x}' for i in range(101)]
-        with pytest.raises(ValidationError) as exc_info:
+        with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'context_ids': oversized})
-        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()
+        errors = _argument_errors(exc_info)
+        assert any(err['type'] == 'too_long' for err in errors), errors
 
 
 class TestIndexedWriteValueUpperBound:

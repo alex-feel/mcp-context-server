@@ -5,7 +5,6 @@ import logging
 from typing import Annotated
 from typing import cast
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -26,7 +25,6 @@ async def get_context_by_ids(
         Field(min_length=1, max_length=100, description='List of context entry IDs to retrieve (max 100 per call)'),
     ],
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
-    ctx: Context | None = None,
 ) -> list[ContextEntryDict]:
     """Fetch specific context entries by their IDs with FULL (non-truncated) text content.
 
@@ -68,9 +66,6 @@ async def get_context_by_ids(
             context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
-
-        if ctx:
-            await ctx.info(f'Fetching context entries: {context_ids}')
 
         # Fetch context entries using repository
         rows = await repos.context.get_by_ids(context_ids)

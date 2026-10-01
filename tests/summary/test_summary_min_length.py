@@ -134,15 +134,6 @@ def _make_mock_repos() -> MagicMock:
     return repos
 
 
-def _make_mock_context() -> Mock:
-    """Create a mock FastMCP context."""
-    from fastmcp import Context
-
-    ctx = Mock(spec=Context)
-    ctx.info = AsyncMock()
-    return ctx
-
-
 class TestStoreContextMinContentLength:
     """Tests for min_content_length in store_context."""
 
@@ -150,7 +141,6 @@ class TestStoreContextMinContentLength:
     async def test_skips_summary_for_short_text(self) -> None:
         """Summary provider should NOT be called when text < min_content_length."""
         mock_repos = _make_mock_repos()
-        mock_ctx = _make_mock_context()
 
         mock_summary_provider = Mock()
         mock_summary_provider.summarize = AsyncMock(return_value='a summary')
@@ -168,7 +158,6 @@ class TestStoreContextMinContentLength:
                 thread_id='test-thread',
                 source='agent',
                 text=short_text,
-                ctx=mock_ctx,
             )
 
             assert result['success'] is True
@@ -184,7 +173,6 @@ class TestStoreContextMinContentLength:
     async def test_generates_summary_for_long_text(self) -> None:
         """Summary provider SHOULD be called when text >= min_content_length."""
         mock_repos = _make_mock_repos()
-        mock_ctx = _make_mock_context()
 
         long_text = 'a' * 500  # Exactly at default threshold of 500
 
@@ -204,7 +192,6 @@ class TestStoreContextMinContentLength:
                 thread_id='test-thread',
                 source='agent',
                 text=long_text,
-                ctx=mock_ctx,
             )
 
             assert result['success'] is True
@@ -217,7 +204,6 @@ class TestStoreContextMinContentLength:
     async def test_boundary_exactly_at_threshold(self) -> None:
         """Text at exactly min_content_length IS summarized (strict < comparison)."""
         mock_repos = _make_mock_repos()
-        mock_ctx = _make_mock_context()
 
         # Text at exactly 500 chars should be summarized
         boundary_text = 'x' * 500
@@ -238,7 +224,6 @@ class TestStoreContextMinContentLength:
                 thread_id='test-thread',
                 source='agent',
                 text=boundary_text,
-                ctx=mock_ctx,
             )
 
             assert result['success'] is True
@@ -249,7 +234,6 @@ class TestStoreContextMinContentLength:
     async def test_one_char_below_threshold_skips(self) -> None:
         """Text at (min_content_length - 1) chars is NOT summarized."""
         mock_repos = _make_mock_repos()
-        mock_ctx = _make_mock_context()
 
         mock_summary_provider = Mock()
         mock_summary_provider.summarize = AsyncMock(return_value='a summary')
@@ -268,7 +252,6 @@ class TestStoreContextMinContentLength:
                 thread_id='test-thread',
                 source='agent',
                 text=below_text,
-                ctx=mock_ctx,
             )
 
             assert result['success'] is True
@@ -278,7 +261,6 @@ class TestStoreContextMinContentLength:
     async def test_one_char_above_threshold_generates(self) -> None:
         """Text at (min_content_length + 1) chars IS summarized."""
         mock_repos = _make_mock_repos()
-        mock_ctx = _make_mock_context()
 
         # 501 chars = one above default threshold of 500
         above_text = 'c' * 501
@@ -299,7 +281,6 @@ class TestStoreContextMinContentLength:
                 thread_id='test-thread',
                 source='agent',
                 text=above_text,
-                ctx=mock_ctx,
             )
 
             assert result['success'] is True
@@ -313,7 +294,6 @@ class TestStoreContextMinContentLength:
         import app.tools.context.store as context_store_module
 
         mock_repos = _make_mock_repos()
-        mock_ctx = _make_mock_context()
 
         short_text = 'Hi'  # Very short text
 
@@ -342,7 +322,6 @@ class TestStoreContextMinContentLength:
                 thread_id='test-thread',
                 source='agent',
                 text=short_text,
-                ctx=mock_ctx,
             )
 
             assert result['success'] is True
@@ -357,7 +336,6 @@ class TestUpdateContextMinContentLength:
     async def test_clears_summary_for_short_text(self) -> None:
         """Update with short text should clear existing summary."""
         mock_repos = _make_mock_repos()
-        mock_ctx = _make_mock_context()
 
         short_text = 'a' * 100  # Well below default threshold of 500
 
@@ -370,7 +348,6 @@ class TestUpdateContextMinContentLength:
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000001',
                 text=short_text,
-                ctx=mock_ctx,
             )
 
             assert result['success'] is True
@@ -387,7 +364,6 @@ class TestUpdateContextMinContentLength:
     async def test_generates_summary_for_long_text(self) -> None:
         """Update with long text should regenerate summary."""
         mock_repos = _make_mock_repos()
-        mock_ctx = _make_mock_context()
 
         mock_repos.context.update_context_entry.return_value = (True, ['text_content', 'summary'])
         long_text = 'a' * 500  # Well above default threshold of 300
@@ -406,7 +382,6 @@ class TestUpdateContextMinContentLength:
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000001',
                 text=long_text,
-                ctx=mock_ctx,
             )
 
             assert result['success'] is True

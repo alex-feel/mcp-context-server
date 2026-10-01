@@ -5,13 +5,17 @@ including DISABLED_TOOLS environment variable handling and tool annotations.
 
 """
 
+import ast
 import importlib.util
 from pathlib import Path
 from typing import Any
+from typing import get_args
+from typing import get_type_hints
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from fastmcp import Context
 
 # Conditional skip marker for tests requiring fastmcp
 requires_fastmcp = pytest.mark.skipif(
@@ -503,3 +507,68 @@ class TestToolAnnotations:
             assert 'title' in tool_annots, f'Tool {tool} missing title'
             assert isinstance(tool_annots['title'], str), f'Tool {tool} title should be string'
             assert len(tool_annots['title']) > 0, f'Tool {tool} title should not be empty'
+
+
+def _declares_context(annotation: object) -> bool:
+    """Report whether an annotation is, or wraps, ``fastmcp.Context``.
+
+    Args:
+        annotation: A resolved parameter annotation (``Context``, ``Context | None``,
+            ``Annotated[Context, ...]``, and so on).
+
+    Returns:
+        True when ``Context`` appears anywhere inside the annotation.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, Context):
+        return True
+    return any(_declares_context(argument) for argument in get_args(annotation))
+
+
+class TestRegisteredToolSignatures:
+    """The tools the server registers take no ``fastmcp.Context`` parameter.
+
+    MCP client log notifications (what ``Context.info`` and its siblings send) are a
+    deprecated protocol capability: every send emits an ``MCPDeprecationWarning``.
+    No tool uses its ``Context`` for anything else, so none of them declares one.
+    """
+
+    @staticmethod
+    def _registered_tool_names() -> set[str]:
+        """Names of the functions ``app/server.py`` passes to ``register_tool``.
+
+        Returns:
+            The second positional argument of every ``register_tool(mcp, <tool>)`` call.
+        """
+        import app.server
+
+        tree = ast.parse(Path(app.server.__file__).read_text(encoding='utf-8'))
+        return {
+            node.args[1].id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == 'register_tool'
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Name)
+        }
+
+    def test_registration_calls_cover_every_annotated_tool(self) -> None:
+        """The registration scan finds exactly the tools TOOL_ANNOTATIONS describes."""
+        from app.tools import TOOL_ANNOTATIONS
+
+        assert self._registered_tool_names() == set(TOOL_ANNOTATIONS)
+
+    def test_no_registered_tool_declares_a_context_parameter(self) -> None:
+        """No registered tool function has a parameter annotated with ``fastmcp.Context``."""
+        import app.server
+
+        offenders: dict[str, list[str]] = {}
+        for name in sorted(self._registered_tool_names()):
+            hints = get_type_hints(getattr(app.server, name), include_extras=True)
+            context_parameters = [
+                parameter for parameter, annotation in hints.items() if _declares_context(annotation)
+            ]
+            if context_parameters:
+                offenders[name] = context_parameters
+
+        assert offenders == {}, f'Tools declaring a Context parameter: {offenders}'

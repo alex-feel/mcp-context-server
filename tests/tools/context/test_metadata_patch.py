@@ -23,7 +23,6 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 import pytest
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 import app.server
@@ -32,14 +31,6 @@ from app.types import MetadataDict
 
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time
 update_context = app.server.update_context
-
-
-@pytest.fixture
-def mock_context():
-    """Create a mock FastMCP context for testing."""
-    ctx = Mock(spec=Context)
-    ctx.info = AsyncMock()
-    return ctx
 
 
 @pytest.fixture
@@ -105,7 +96,7 @@ class TestMetadataPatchBasicOperations:
     """Test basic metadata patch operations: add, update, delete."""
 
     @pytest.mark.asyncio
-    async def test_patch_add_new_field(self, mock_context, mock_repositories):
+    async def test_patch_add_new_field(self, mock_repositories):
         """Test adding a new field to existing metadata using patch.
 
         RFC 7396: New keys in patch object are added to target.
@@ -118,7 +109,6 @@ class TestMetadataPatchBasicOperations:
                 metadata_patch={'new_field': 'new_value'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -134,7 +124,7 @@ class TestMetadataPatchBasicOperations:
             )
 
     @pytest.mark.asyncio
-    async def test_patch_update_existing_field(self, mock_context, mock_repositories):
+    async def test_patch_update_existing_field(self, mock_repositories):
         """Test updating an existing field value using patch.
 
         RFC 7396: Existing keys in target are replaced with patch values.
@@ -147,7 +137,6 @@ class TestMetadataPatchBasicOperations:
                 metadata_patch={'status': 'completed'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -161,7 +150,7 @@ class TestMetadataPatchBasicOperations:
             )
 
     @pytest.mark.asyncio
-    async def test_patch_delete_field_with_null(self, mock_context, mock_repositories):
+    async def test_patch_delete_field_with_null(self, mock_repositories):
         """Test deleting a field by setting it to null.
 
         RFC 7396: A null value in the patch removes the key from target.
@@ -175,7 +164,6 @@ class TestMetadataPatchBasicOperations:
                 metadata_patch={'field_to_delete': None},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -193,7 +181,7 @@ class TestMetadataPatchNestedOperations:
     """Test nested metadata patching operations."""
 
     @pytest.mark.asyncio
-    async def test_patch_nested_metadata(self, mock_context, mock_repositories):
+    async def test_patch_nested_metadata(self, mock_repositories):
         """Test patching nested object fields.
 
         RFC 7396: Nested objects are recursively merged.
@@ -214,7 +202,6 @@ class TestMetadataPatchNestedOperations:
                 metadata_patch=nested_patch,
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -228,7 +215,7 @@ class TestMetadataPatchNestedOperations:
             )
 
     @pytest.mark.asyncio
-    async def test_patch_deeply_nested_structure(self, mock_context, mock_repositories):
+    async def test_patch_deeply_nested_structure(self, mock_repositories):
         """Test patching deeply nested structures."""
         deep_patch: MetadataDict = {
             'level1': {
@@ -248,7 +235,6 @@ class TestMetadataPatchNestedOperations:
                 metadata_patch=deep_patch,
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -264,7 +250,7 @@ class TestMetadataPatchMultipleFields:
     """Test patching multiple fields in a single operation."""
 
     @pytest.mark.asyncio
-    async def test_patch_multiple_fields(self, mock_context, mock_repositories):
+    async def test_patch_multiple_fields(self, mock_repositories):
         """Test patching multiple fields at once."""
         multi_patch: MetadataDict = {
             'status': 'in_progress',
@@ -281,7 +267,6 @@ class TestMetadataPatchMultipleFields:
                 metadata_patch=multi_patch,
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -293,7 +278,7 @@ class TestMetadataPatchMultipleFields:
             )
 
     @pytest.mark.asyncio
-    async def test_patch_mixed_operations(self, mock_context, mock_repositories):
+    async def test_patch_mixed_operations(self, mock_repositories):
         """Test mixed operations: add, update, and delete in one patch.
 
         This tests the core RFC 7396 behavior where:
@@ -315,7 +300,6 @@ class TestMetadataPatchMultipleFields:
                 metadata_patch=mixed_patch,
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -331,7 +315,7 @@ class TestMetadataPatchEdgeCases:
     """Test edge cases and special scenarios."""
 
     @pytest.mark.asyncio
-    async def test_patch_empty_patch(self, mock_context, mock_repositories):
+    async def test_patch_empty_patch(self, mock_repositories):
         """Test empty patch {} behavior.
 
         RFC 7396: Empty patch is a no-op for the data but still updates timestamp.
@@ -344,7 +328,6 @@ class TestMetadataPatchEdgeCases:
                 metadata_patch={},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -356,7 +339,7 @@ class TestMetadataPatchEdgeCases:
             )
 
     @pytest.mark.asyncio
-    async def test_patch_on_empty_metadata(self, mock_context, mock_repositories):
+    async def test_patch_on_empty_metadata(self, mock_repositories):
         """Test patching when no existing metadata exists.
 
         The patch should create new metadata from scratch.
@@ -369,14 +352,13 @@ class TestMetadataPatchEdgeCases:
                 metadata_patch={'first_field': 'first_value'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
             mock_repositories.context.patch_metadata.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_patch_preserves_unchanged_fields(self, mock_context, mock_repositories):
+    async def test_patch_preserves_unchanged_fields(self, mock_repositories):
         """Verify that unchanged fields remain after patch operation.
 
         This is tested at the repository level, but we verify the tool correctly
@@ -390,7 +372,6 @@ class TestMetadataPatchEdgeCases:
                 metadata_patch={'only_this_changes': 'new_value'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -398,7 +379,7 @@ class TestMetadataPatchEdgeCases:
             mock_repositories.context.patch_metadata.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_patch_array_replacement(self, mock_context, mock_repositories):
+    async def test_patch_array_replacement(self, mock_repositories):
         """Test that arrays are replaced entirely, not merged.
 
         RFC 7396 Limitation: Arrays cannot be patched element-wise.
@@ -416,7 +397,6 @@ class TestMetadataPatchEdgeCases:
                 metadata_patch=array_patch,
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -432,7 +412,7 @@ class TestMetadataPatchValidation:
     """Test validation and error handling for metadata_patch."""
 
     @pytest.mark.asyncio
-    async def test_mutual_exclusivity_error(self, mock_context, mock_repositories):
+    async def test_mutual_exclusivity_error(self, mock_repositories):
         """Test error when both metadata and metadata_patch are provided.
 
         These parameters are mutually exclusive - use metadata for full replacement
@@ -447,7 +427,6 @@ class TestMetadataPatchValidation:
                     metadata_patch={'partial': 'update'},
                     tags=None,
                     images=None,
-                    ctx=mock_context,
                 )
 
             error_message = str(exc_info.value).lower()
@@ -455,7 +434,7 @@ class TestMetadataPatchValidation:
             assert 'metadata_patch' in error_message or 'both' in error_message or 'mutually exclusive' in error_message
 
     @pytest.mark.asyncio
-    async def test_context_not_found_error(self, mock_context, mock_repositories):
+    async def test_context_not_found_error(self, mock_repositories):
         """Test error when context entry doesn't exist."""
         mock_repositories.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
 
@@ -468,13 +447,12 @@ class TestMetadataPatchValidation:
                     metadata_patch={'field': 'value'},
                     tags=None,
                     images=None,
-                    ctx=mock_context,
                 )
 
             assert '12345' in str(exc_info.value) or 'not found' in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_patch_metadata_failure(self, mock_context, mock_repositories):
+    async def test_patch_metadata_failure(self, mock_repositories):
         """A patch against a missing row surfaces a clean not-found error.
 
         patch_metadata returns success=False only when no row matches its
@@ -493,7 +471,6 @@ class TestMetadataPatchValidation:
                     metadata_patch={'field': 'value'},
                     tags=None,
                     images=None,
-                    ctx=mock_context,
                 )
 
             error_message = str(exc_info.value)
@@ -505,7 +482,7 @@ class TestMetadataPatchWithOtherFields:
     """Test metadata_patch combined with other field updates."""
 
     @pytest.mark.asyncio
-    async def test_patch_with_text_update(self, mock_context, mock_repositories):
+    async def test_patch_with_text_update(self, mock_repositories):
         """Test metadata_patch combined with text content update."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -515,7 +492,6 @@ class TestMetadataPatchWithOtherFields:
                 metadata_patch={'status': 'updated'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -527,7 +503,7 @@ class TestMetadataPatchWithOtherFields:
             mock_repositories.context.patch_metadata.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_patch_with_tags_update(self, mock_context, mock_repositories):
+    async def test_patch_with_tags_update(self, mock_repositories):
         """Test metadata_patch combined with tags update."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -537,7 +513,6 @@ class TestMetadataPatchWithOtherFields:
                 metadata_patch={'status': 'tagged'},
                 tags=['new-tag'],
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -545,7 +520,7 @@ class TestMetadataPatchWithOtherFields:
             assert 'tags' in result['updated_fields']
 
     @pytest.mark.asyncio
-    async def test_patch_alone_is_valid_update(self, mock_context, mock_repositories):
+    async def test_patch_alone_is_valid_update(self, mock_repositories):
         """Test that metadata_patch alone constitutes a valid update.
 
         Unlike the error when no fields provided, metadata_patch alone should work.
@@ -558,7 +533,6 @@ class TestMetadataPatchWithOtherFields:
                 metadata_patch={'only_field': 'only_value'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -569,7 +543,7 @@ class TestMetadataPatchTimestamp:
     """Test that metadata_patch properly updates timestamp."""
 
     @pytest.mark.asyncio
-    async def test_patch_updates_timestamp(self, mock_context, mock_repositories):
+    async def test_patch_updates_timestamp(self, mock_repositories):
         """Verify updated_at timestamp updates when using metadata_patch.
 
         The repository method should update the timestamp atomically with the patch.
@@ -582,7 +556,6 @@ class TestMetadataPatchTimestamp:
                 metadata_patch={'timestamp_test': True},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -594,7 +567,7 @@ class TestMetadataPatchSpecialValues:
     """Test metadata_patch with special value types."""
 
     @pytest.mark.asyncio
-    async def test_patch_with_boolean_values(self, mock_context, mock_repositories):
+    async def test_patch_with_boolean_values(self, mock_repositories):
         """Test patching with boolean values."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -604,7 +577,6 @@ class TestMetadataPatchSpecialValues:
                 metadata_patch={'completed': True, 'active': False},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -616,7 +588,7 @@ class TestMetadataPatchSpecialValues:
             )
 
     @pytest.mark.asyncio
-    async def test_patch_with_numeric_values(self, mock_context, mock_repositories):
+    async def test_patch_with_numeric_values(self, mock_repositories):
         """Test patching with integer and float values."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -626,7 +598,6 @@ class TestMetadataPatchSpecialValues:
                 metadata_patch={'priority': 5, 'score': 98.6},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -638,7 +609,7 @@ class TestMetadataPatchSpecialValues:
             )
 
     @pytest.mark.asyncio
-    async def test_patch_with_string_values(self, mock_context, mock_repositories):
+    async def test_patch_with_string_values(self, mock_repositories):
         """Test patching with various string values including special characters."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -652,7 +623,6 @@ class TestMetadataPatchSpecialValues:
                 },
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -670,7 +640,7 @@ class TestRFC7396DeepMergeSemantics:
     """
 
     @pytest.mark.asyncio
-    async def test_rfc7396_nested_object_merge_case7(self, mock_context, mock_repositories):
+    async def test_rfc7396_nested_object_merge_case7(self, mock_repositories):
         """RFC 7396 Test Case #7: Nested object merge with deletion.
 
         Target: {"a": {"b": "c"}}
@@ -695,7 +665,6 @@ class TestRFC7396DeepMergeSemantics:
                 metadata_patch=nested_patch,
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -707,7 +676,7 @@ class TestRFC7396DeepMergeSemantics:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_existing_null_preserved_case13(self, mock_context, mock_repositories):
+    async def test_rfc7396_existing_null_preserved_case13(self, mock_repositories):
         """RFC 7396 Test Case #13: Existing null value preserved.
 
         Target: {"e": null}
@@ -725,7 +694,6 @@ class TestRFC7396DeepMergeSemantics:
                 metadata_patch={'a': 1},  # Does not affect existing null in target
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -737,7 +705,7 @@ class TestRFC7396DeepMergeSemantics:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_deeply_nested_null_deletion_case15(self, mock_context, mock_repositories):
+    async def test_rfc7396_deeply_nested_null_deletion_case15(self, mock_repositories):
         """RFC 7396 Test Case #15: Deeply nested null deletion.
 
         Target: {}
@@ -763,7 +731,6 @@ class TestRFC7396DeepMergeSemantics:
                 metadata_patch=deep_patch,
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -775,7 +742,7 @@ class TestRFC7396DeepMergeSemantics:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_deep_merge_preserves_sibling_keys(self, mock_context, mock_repositories):
+    async def test_rfc7396_deep_merge_preserves_sibling_keys(self, mock_repositories):
         """Test that deep merge preserves sibling keys in nested objects.
 
         Target: {"a": {"b": "c", "d": "e"}}
@@ -792,7 +759,6 @@ class TestRFC7396DeepMergeSemantics:
                 metadata_patch={'a': {'b': 'updated'}},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -804,7 +770,7 @@ class TestRFC7396DeepMergeSemantics:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_nested_key_deletion_preserves_siblings(self, mock_context, mock_repositories):
+    async def test_rfc7396_nested_key_deletion_preserves_siblings(self, mock_repositories):
         """Test that nested key deletion preserves sibling keys.
 
         Target: {"a": {"b": "c", "d": "e"}}
@@ -821,7 +787,6 @@ class TestRFC7396DeepMergeSemantics:
                 metadata_patch={'a': {'b': None}},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
 
             assert result['success'] is True
@@ -843,7 +808,7 @@ class TestMetadataPatchRFC7396AppendixA:
     """
 
     @pytest.mark.asyncio
-    async def test_rfc7396_case1_simple_value_replacement(self, mock_context, mock_repositories):
+    async def test_rfc7396_case1_simple_value_replacement(self, mock_repositories):
         """RFC 7396 Case #1: Simple value replacement {"a":"b"} + {"a":"c"} = {"a":"c"}."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -853,7 +818,6 @@ class TestMetadataPatchRFC7396AppendixA:
                 metadata_patch={'a': 'c'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
             from unittest.mock import ANY
@@ -864,7 +828,7 @@ class TestMetadataPatchRFC7396AppendixA:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_case2_add_new_key(self, mock_context, mock_repositories):
+    async def test_rfc7396_case2_add_new_key(self, mock_repositories):
         """RFC 7396 Case #2: Add new key {"a":"b"} + {"b":"c"} = {"a":"b","b":"c"}."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -874,7 +838,6 @@ class TestMetadataPatchRFC7396AppendixA:
                 metadata_patch={'b': 'c'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
             from unittest.mock import ANY
@@ -885,7 +848,7 @@ class TestMetadataPatchRFC7396AppendixA:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_case3_delete_key_with_null(self, mock_context, mock_repositories):
+    async def test_rfc7396_case3_delete_key_with_null(self, mock_repositories):
         """RFC 7396 Case #3: Delete key with null {"a":"b"} + {"a":null} = {}."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -895,7 +858,6 @@ class TestMetadataPatchRFC7396AppendixA:
                 metadata_patch={'a': None},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
             from unittest.mock import ANY
@@ -906,7 +868,7 @@ class TestMetadataPatchRFC7396AppendixA:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_case4_delete_one_preserve_other(self, mock_context, mock_repositories):
+    async def test_rfc7396_case4_delete_one_preserve_other(self, mock_repositories):
         """RFC 7396 Case #4: Delete one key, preserve another {"a":"b","b":"c"} + {"a":null} = {"b":"c"}."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -916,7 +878,6 @@ class TestMetadataPatchRFC7396AppendixA:
                 metadata_patch={'a': None},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
             from unittest.mock import ANY
@@ -927,7 +888,7 @@ class TestMetadataPatchRFC7396AppendixA:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_case5_array_replacement(self, mock_context, mock_repositories):
+    async def test_rfc7396_case5_array_replacement(self, mock_repositories):
         """RFC 7396 Case #5: Array replacement {"a":["b"]} + {"a":"c"} = {"a":"c"}."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -937,7 +898,6 @@ class TestMetadataPatchRFC7396AppendixA:
                 metadata_patch={'a': 'c'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
             from unittest.mock import ANY
@@ -948,7 +908,7 @@ class TestMetadataPatchRFC7396AppendixA:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_case6_replace_value_with_array(self, mock_context, mock_repositories):
+    async def test_rfc7396_case6_replace_value_with_array(self, mock_repositories):
         """RFC 7396 Case #6: Replace value with array {"a":"c"} + {"a":["b"]} = {"a":["b"]}."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -958,7 +918,6 @@ class TestMetadataPatchRFC7396AppendixA:
                 metadata_patch={'a': ['b']},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
             from unittest.mock import ANY
@@ -969,7 +928,7 @@ class TestMetadataPatchRFC7396AppendixA:
             )
 
     @pytest.mark.asyncio
-    async def test_rfc7396_case8_array_of_objects_replacement(self, mock_context, mock_repositories):
+    async def test_rfc7396_case8_array_of_objects_replacement(self, mock_repositories):
         """RFC 7396 Case #8: Array of objects replacement {"a":[{"b":"c"}]} + {"a":[1]} = {"a":[1]}."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -979,7 +938,6 @@ class TestMetadataPatchRFC7396AppendixA:
                 metadata_patch={'a': [1]},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
             from unittest.mock import ANY
@@ -998,7 +956,7 @@ class TestMetadataPatchTypeConversions:
     """
 
     @pytest.mark.asyncio
-    async def test_patch_object_to_scalar(self, mock_context, mock_repositories):
+    async def test_patch_object_to_scalar(self, mock_repositories):
         """Test replacing object value with scalar."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -1008,12 +966,11 @@ class TestMetadataPatchTypeConversions:
                 metadata_patch={'config': 'simple_value'},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
 
     @pytest.mark.asyncio
-    async def test_patch_scalar_to_object(self, mock_context, mock_repositories):
+    async def test_patch_scalar_to_object(self, mock_repositories):
         """Test replacing scalar value with object."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -1023,12 +980,11 @@ class TestMetadataPatchTypeConversions:
                 metadata_patch={'status': {'code': 200, 'message': 'OK'}},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
 
     @pytest.mark.asyncio
-    async def test_patch_array_to_object(self, mock_context, mock_repositories):
+    async def test_patch_array_to_object(self, mock_repositories):
         """Test replacing array value with object."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -1038,12 +994,11 @@ class TestMetadataPatchTypeConversions:
                 metadata_patch={'items': {'count': 3, 'data': [1, 2, 3]}},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True
 
     @pytest.mark.asyncio
-    async def test_patch_object_to_array(self, mock_context, mock_repositories):
+    async def test_patch_object_to_array(self, mock_repositories):
         """Test replacing object value with array."""
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -1053,6 +1008,5 @@ class TestMetadataPatchTypeConversions:
                 metadata_patch={'items': ['a', 'b', 'c']},
                 tags=None,
                 images=None,
-                ctx=mock_context,
             )
             assert result['success'] is True

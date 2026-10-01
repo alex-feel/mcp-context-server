@@ -18,24 +18,40 @@ import contextlib
 import importlib.util
 import os
 import sqlite3
-import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC
 from pathlib import Path
 from typing import Any
+from typing import Literal
 
 import pytest
 from anyio import Path as AsyncPath
 from fastmcp import Client
+from fastmcp.client.transports import ClientTransport
 from fastmcp.client.transports import PythonStdioTransport
+from mcp.client.stdio import get_default_environment
+from mcp.types.version import HANDSHAKE_PROTOCOL_VERSIONS
+from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 
 # Conditional skip marker for tests requiring sqlite-vec package
 requires_sqlite_vec = pytest.mark.skipif(
     importlib.util.find_spec('sqlite_vec') is None,
     reason='sqlite-vec package not installed',
 )
+
+# Protocol era a harness client negotiates. 'auto' adopts the sessionless
+# 2026-07-28 era (no initialize handshake) over stdio and streamable HTTP;
+# 'legacy' forces the initialize handshake that handshake-era clients such as
+# Claude Code use. The entry points run the full harness once per mode, and
+# ERA_PROTOCOL_VERSIONS lists the protocol versions each mode may negotiate.
+type ClientMode = Literal['auto', 'legacy']
+CLIENT_MODES: tuple[ClientMode, ...] = ('auto', 'legacy')
+ERA_PROTOCOL_VERSIONS: dict[ClientMode, tuple[str, ...]] = {
+    'auto': MODERN_PROTOCOL_VERSIONS,
+    'legacy': HANDSHAKE_PROTOCOL_VERSIONS,
+}
 
 
 class MCPServerIntegrationTest:
@@ -47,6 +63,7 @@ class MCPServerIntegrationTest:
         *,
         backend: str = 'sqlite',
         pg_url: str | None = None,
+        client_mode: ClientMode = 'auto',
     ) -> None:
         """Initialize the integration test suite.
 
@@ -55,6 +72,8 @@ class MCPServerIntegrationTest:
             backend: Storage backend to exercise ('sqlite' or 'postgresql').
             pg_url: PostgreSQL connection string; required when
                 ``backend='postgresql'``.
+            client_mode: Protocol era every harness client negotiates
+                (see :data:`ClientMode`).
         """
         self.client: Client[Any] | None = None
         self.test_results: list[tuple[str, bool, str]] = []
@@ -62,7 +81,23 @@ class MCPServerIntegrationTest:
         self.temp_db_path = temp_db_path
         self.backend = backend
         self.pg_url = pg_url
-        self.original_env: dict[str, str | None] = {}
+        self.client_mode: ClientMode = client_mode
+        self.registered_tools: frozenset[str] = frozenset()
+
+    def _new_client(self, transport: ClientTransport) -> Client[Any]:
+        """Build a client that negotiates the harness's protocol era.
+
+        Every harness connection, including the short-lived second servers some
+        tests start, is built here, so one run exercises the tool surface in
+        exactly the era ``client_mode`` selects.
+
+        Args:
+            transport: The transport to connect through.
+
+        Returns:
+            An unconnected client.
+        """
+        return Client(transport, mode=self.client_mode)
 
     async def start_server(self) -> bool:
         """Start the MCP server via FastMCP Client.
@@ -91,8 +126,8 @@ class MCPServerIntegrationTest:
                 # PostgreSQL path: the server auto-initializes its schema on
                 # startup, so there is no SQLite pre-init step. The backend and
                 # DSN MUST be passed explicitly via PythonStdioTransport(env=...)
-                # because Client(str(...)) applies the MCP SDK env whitelist that
-                # strips app-specific vars. Inherit the parent env (carries
+                # because a bare script path applies the MCP SDK env whitelist
+                # that strips app-specific vars. Inherit the parent env (carries
                 # EMBEDDING_MODEL / EMBEDDING_DIM in CI) and override routing.
                 server_env = {
                     **os.environ,
@@ -100,10 +135,10 @@ class MCPServerIntegrationTest:
                     'POSTGRESQL_CONNECTION_STRING': self.pg_url or '',
                     'MCP_TEST_MODE': '1',
                     # Neutralize any DISABLED_TOOLS inherited from the developer's
-                    # shell / .env. The SQLite entry point uses Client(str(...)),
-                    # whose MCP SDK env whitelist strips DISABLED_TOOLS, so it runs
-                    # the full tool surface; PG must match for true parity (an
-                    # inherited DISABLED_TOOLS would silently skip whole tools).
+                    # shell / .env. The SQLite path starts from the MCP SDK's
+                    # default stdio environment, which carries no DISABLED_TOOLS,
+                    # so it runs the full tool surface; PG must match for true
+                    # parity (an inherited DISABLED_TOOLS would skip whole tools).
                     'DISABLED_TOOLS': '',
                     'ENABLE_SEMANTIC_SEARCH': 'true',
                     'ENABLE_FTS': 'true',
@@ -122,70 +157,48 @@ class MCPServerIntegrationTest:
                     script_path=str(wrapper_script),
                     env=server_env,
                 )
-                self.client = Client(transport)
+                self.client = self._new_client(transport)
                 await self.client.__aenter__()
-                await self.client.ping()
-                print('[OK] Client connected successfully (postgresql)')
+                self.registered_tools = frozenset(tool.name for tool in await self.client.list_tools())
+                print(f'[OK] Client connected successfully (postgresql, {self.client_mode} mode)')
                 return True
 
-            # Environment variables MUST be set BEFORE creating Client
-            # The Client spawns a subprocess that inherits the current environment
-            if self.temp_db_path:
-                # Store original env to restore later
-                self.original_env['DB_PATH'] = os.environ.get('DB_PATH')
-                self.original_env['MCP_TEST_MODE'] = os.environ.get('MCP_TEST_MODE')
-                self.original_env['ENABLE_SEMANTIC_SEARCH'] = os.environ.get('ENABLE_SEMANTIC_SEARCH')
-                self.original_env['ENABLE_FTS'] = os.environ.get('ENABLE_FTS')
-                self.original_env['ENABLE_HYBRID_SEARCH'] = os.environ.get('ENABLE_HYBRID_SEARCH')
-                self.original_env['SUMMARY_OPENAI_REASONING_EFFORT'] = os.environ.get(
-                    'SUMMARY_OPENAI_REASONING_EFFORT',
+            # SQLite path: the environment is passed explicitly so the server
+            # opens this test's own database. It starts from the MCP SDK's
+            # default stdio environment, the same clean base a bare script path
+            # gets, so nothing else from the developer's shell reaches the server.
+            if self.temp_db_path is None:
+                raise RuntimeError('The SQLite harness requires temp_db_path')
+            default_db = Path.home() / '.mcp' / 'context_storage.db'
+            if self.temp_db_path.resolve() == default_db.resolve():
+                raise RuntimeError(
+                    'CRITICAL: Attempting to use default database in test!\n'
+                    f'Default: {default_db}\n'
+                    f'Current: {self.temp_db_path}',
                 )
-                self.original_env['SUMMARY_ANTHROPIC_EFFORT'] = os.environ.get(
-                    'SUMMARY_ANTHROPIC_EFFORT',
-                )
-
-                # Keep FTS and hybrid search enabled - hybrid search has graceful degradation
-                # These MUST be set before Client() is called
-                os.environ['DB_PATH'] = str(self.temp_db_path)
-                os.environ['MCP_TEST_MODE'] = '1'  # THIS IS CRITICAL!
-                os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
-                os.environ['ENABLE_FTS'] = 'true'
-                os.environ['ENABLE_HYBRID_SEARCH'] = 'true'
-                os.environ['SUMMARY_OPENAI_REASONING_EFFORT'] = 'low'
-                os.environ['SUMMARY_ANTHROPIC_EFFORT'] = 'low'
-
-                print('[INFO] Environment set BEFORE Client creation:')
-                print(f"[INFO] DB_PATH={os.environ.get('DB_PATH')}")
-                print(f"[INFO] MCP_TEST_MODE={os.environ.get('MCP_TEST_MODE')}")
-                print(f"[INFO] ENABLE_SEMANTIC_SEARCH={os.environ.get('ENABLE_SEMANTIC_SEARCH')}")
-                print(f"[INFO] ENABLE_FTS={os.environ.get('ENABLE_FTS')}")
-                print(f"[INFO] ENABLE_HYBRID_SEARCH={os.environ.get('ENABLE_HYBRID_SEARCH')}")
-                print(f'[INFO] Using temporary database: {self.temp_db_path}')
-
-                # Verify it's not the default database
-                default_db = Path.home() / '.mcp' / 'context_storage.db'
-                if self.temp_db_path.resolve() == default_db.resolve():
-                    raise RuntimeError(
-                        f'CRITICAL: Attempting to use default database in test!\n'
-                        f'Default: {default_db}\n'
-                        f'Current: {self.temp_db_path}',
-                    )
-
-                # Initialize the database schema
-                self._initialize_database()
-
-            # Create client with wrapper script
-            # The wrapper will detect pytest and force test mode with temp DB
-            self.client = Client(str(wrapper_script))
-            print(f'[INFO] Client created with wrapper: {wrapper_script}')
+            server_env = {
+                **get_default_environment(),
+                'STORAGE_BACKEND': 'sqlite',
+                'DB_PATH': str(self.temp_db_path),
+                'MCP_TEST_MODE': '1',
+                'ENABLE_SEMANTIC_SEARCH': 'true',
+                'ENABLE_FTS': 'true',
+                'ENABLE_HYBRID_SEARCH': 'true',
+                'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
+                'SUMMARY_ANTHROPIC_EFFORT': 'low',
+            }
+            print(f'[INFO] Using temporary database: {self.temp_db_path}')
+            transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
+            self.client = self._new_client(transport)
 
             # Connect to server
             await self.client.__aenter__()
 
-            # Verify connection by pinging
-            await self.client.ping()
+            # Confirm the server answers a request in the negotiated era and record
+            # the tools it registered; feature-gated checks follow this list
+            self.registered_tools = frozenset(tool.name for tool in await self.client.list_tools())
 
-            print('[OK] Client connected successfully')
+            print(f'[OK] Client connected successfully ({self.client_mode} mode)')
             return True
 
         except Exception as e:
@@ -194,35 +207,6 @@ class MCPServerIntegrationTest:
 
             traceback.print_exc()
             return False
-
-    def _initialize_database(self) -> None:
-        """Initialize the temporary database with schema."""
-        if not self.temp_db_path:
-            return
-
-        try:
-            # Ensure parent directory exists
-            self.temp_db_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Create database and apply schema
-            from app.schemas import load_schema
-
-            schema_sql = load_schema('sqlite')
-            with sqlite3.connect(str(self.temp_db_path)) as conn:
-                conn.executescript(schema_sql)
-
-                # Apply optimizations
-                conn.execute('PRAGMA foreign_keys = ON')
-                conn.execute('PRAGMA journal_mode = WAL')
-                conn.execute('PRAGMA synchronous = NORMAL')
-                conn.execute('PRAGMA temp_store = MEMORY')
-                conn.execute('PRAGMA busy_timeout = 30000')
-                conn.commit()
-
-            print(f'[OK] Database schema initialized at {self.temp_db_path}')
-        except Exception as e:
-            print(f'[WARNING] Failed to initialize database: {e}')
-            # Continue anyway - the server will initialize on startup
 
     def _create_test_image(self) -> str:
         """Create a small test image as base64.
@@ -292,7 +276,7 @@ class MCPServerIntegrationTest:
         database.
 
         ``PythonStdioTransport(env=...)`` passes the dict explicitly on both backends,
-        because the MCP SDK env whitelist used by ``Client(str(...))`` strips
+        because the MCP SDK env whitelist applied to a bare script path strips
         app-specific variables.
 
         Args:
@@ -326,10 +310,10 @@ class MCPServerIntegrationTest:
         server_env.update(extra_env)
 
         transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
-        second_client: Client[Any] = Client(transport)
+        second_client = self._new_client(transport)
         try:
             await second_client.__aenter__()
-            await second_client.ping()
+            await second_client.list_tools()
             yield second_client
         finally:
             with contextlib.suppress(Exception):
@@ -5689,9 +5673,9 @@ class MCPServerIntegrationTest:
         assert self.client is not None  # Type guard for Pyright
         try:
             # Check if ENABLE_HYBRID_SEARCH environment variable is set
-            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+            if 'hybrid_search_context' not in self.registered_tools:
                 self.test_results.append(
-                    (test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'),
+                    (test_name, True, 'Skipped (hybrid_search_context not registered)'),
                 )
                 return True
 
@@ -5864,15 +5848,15 @@ class MCPServerIntegrationTest:
         test_name = 'hybrid_search_adaptive_fts_mode'
         assert self.client is not None  # Type guard for Pyright
         try:
-            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+            if 'hybrid_search_context' not in self.registered_tools:
                 self.test_results.append(
-                    (test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'),
+                    (test_name, True, 'Skipped (hybrid_search_context not registered)'),
                 )
                 return True
 
-            if os.environ.get('ENABLE_FTS', '').lower() != 'true':
+            if 'fts_search_context' not in self.registered_tools:
                 self.test_results.append(
-                    (test_name, True, 'Skipped (ENABLE_FTS not enabled)'),
+                    (test_name, True, 'Skipped (fts_search_context not registered)'),
                 )
                 return True
 
@@ -5967,7 +5951,7 @@ class MCPServerIntegrationTest:
 
             has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
             has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
-            has_hybrid = (has_semantic or has_fts) and os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+            has_hybrid = (has_semantic or has_fts) and 'hybrid_search_context' in self.registered_tools
 
             # Create a separate thread for content_type tests
             ct_thread = f'{self.test_thread_id}_content_type'
@@ -6143,7 +6127,7 @@ class MCPServerIntegrationTest:
 
             has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
             has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
-            has_hybrid = (has_semantic or has_fts) and os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+            has_hybrid = (has_semantic or has_fts) and 'hybrid_search_context' in self.registered_tools
 
             # Create a separate thread for include_images tests
             img_thread = f'{self.test_thread_id}_include_images'
@@ -6302,7 +6286,7 @@ class MCPServerIntegrationTest:
 
             has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
             has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
-            has_hybrid = (has_semantic or has_fts) and os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+            has_hybrid = (has_semantic or has_fts) and 'hybrid_search_context' in self.registered_tools
 
             # Skip if no advanced search features are available
             if not has_semantic and not has_fts:
@@ -6578,8 +6562,8 @@ class MCPServerIntegrationTest:
         assert self.client is not None  # Type guard for Pyright
         try:
             # Check if hybrid search is available
-            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
-                self.test_results.append((test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'))
+            if 'hybrid_search_context' not in self.registered_tools:
+                self.test_results.append((test_name, True, 'Skipped (hybrid_search_context not registered)'))
                 return True
 
             stats = await self.client.call_tool('get_statistics', {})
@@ -6733,8 +6717,8 @@ class MCPServerIntegrationTest:
         assert self.client is not None  # Type guard for Pyright
         try:
             # Check if hybrid search is available
-            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
-                self.test_results.append((test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'))
+            if 'hybrid_search_context' not in self.registered_tools:
+                self.test_results.append((test_name, True, 'Skipped (hybrid_search_context not registered)'))
                 return True
 
             stats = await self.client.call_tool('get_statistics', {})
@@ -6885,8 +6869,8 @@ class MCPServerIntegrationTest:
         assert self.client is not None  # Type guard for Pyright
         try:
             # Check if hybrid search is available
-            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
-                self.test_results.append((test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'))
+            if 'hybrid_search_context' not in self.registered_tools:
+                self.test_results.append((test_name, True, 'Skipped (hybrid_search_context not registered)'))
                 return True
 
             stats = await self.client.call_tool('get_statistics', {})
@@ -7025,7 +7009,7 @@ class MCPServerIntegrationTest:
             fts_info = stats_data.get('fts', {})
             has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
             has_semantic = stats_data.get('semantic_search', {}).get('available', False)
-            hybrid_enabled = os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+            hybrid_enabled = 'hybrid_search_context' in self.registered_tools
             has_hybrid = (has_fts or has_semantic) and hybrid_enabled
 
             # Create a separate thread for explain_query tests
@@ -8148,8 +8132,8 @@ class MCPServerIntegrationTest:
         assert self.client is not None
         try:
             # Check if reranking and hybrid search are enabled
-            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
-                self.test_results.append((test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'))
+            if 'hybrid_search_context' not in self.registered_tools:
+                self.test_results.append((test_name, True, 'Skipped (hybrid_search_context not registered)'))
                 return True
 
             stats = await self.client.call_tool('get_statistics', {})
@@ -8666,8 +8650,8 @@ class MCPServerIntegrationTest:
         assert self.client is not None
         try:
             # Check if hybrid search is enabled
-            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
-                self.test_results.append((test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'))
+            if 'hybrid_search_context' not in self.registered_tools:
+                self.test_results.append((test_name, True, 'Skipped (hybrid_search_context not registered)'))
                 return True
 
             stats = await self.client.call_tool('get_statistics', {})
@@ -8826,49 +8810,40 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
-    async def test_session_crash_patch_applied(self) -> bool:
-        """Test that server handles tool calls correctly with session crash patches.
+    async def test_client_negotiates_requested_protocol_era(self) -> bool:
+        """Verify the harness client runs in the protocol era ``client_mode`` selects.
 
-        Verifies the server is operational with patches applied by exercising
-        multiple tool calls. The patch mechanism itself is tested in detail
-        by tests/patches/test_session_crash_patch.py; this integration test verifies
-        the server functions correctly end-to-end.
+        ``'auto'`` must adopt a sessionless (2026-07-28 or later) era with no
+        initialize handshake, so the run reaches the tool surface the way current
+        FastMCP clients do. ``'legacy'`` must complete the initialize handshake that
+        handshake-era clients such as Claude Code use, and a ping -- routed only in
+        that era -- must succeed.
 
         Returns:
-            bool: True if test passed.
+            bool: True if the negotiated era matches the requested mode.
         """
-        test_name = 'session_crash_patch_applied'
+        test_name = 'client_negotiates_requested_protocol_era'
         assert self.client is not None  # Type guard for Pyright
         try:
-            # Verify server handles a store_context call successfully
-            result = await self.client.call_tool(
-                'store_context',
-                {
-                    'thread_id': self.test_thread_id,
-                    'source': 'agent',
-                    'text': 'Session crash patch verification test entry',
-                    'tags': ['test', 'patch-verification'],
-                },
-            )
-
-            data = self._extract_content(result)
-            if not data.get('success'):
-                self.test_results.append(
-                    (test_name, False, f'Tool call failed with patches applied: {data}'),
-                )
+            protocol_version = self.client.protocol_version
+            expected_versions = ERA_PROTOCOL_VERSIONS[self.client_mode]
+            handshake_completed = self.client.initialize_result is not None
+            if protocol_version not in expected_versions or handshake_completed != (self.client_mode == 'legacy'):
+                self.test_results.append((
+                    test_name,
+                    False,
+                    (
+                        f'{self.client_mode} mode negotiated {protocol_version!r} '
+                        f'(handshake completed: {handshake_completed}); expected one of {expected_versions}'
+                    ),
+                ))
                 return False
-
-            # Verify get_statistics also works (exercises a different code path)
-            stats_result = await self.client.call_tool('get_statistics', {})
-            stats_data = self._extract_content(stats_result)
-            if 'total_entries' not in stats_data:
-                self.test_results.append(
-                    (test_name, False, f'get_statistics returned unexpected data: {stats_data}'),
-                )
+            if self.client_mode == 'legacy' and not await self.client.ping():
+                self.test_results.append((test_name, False, 'ping did not return an empty result'))
                 return False
 
             self.test_results.append(
-                (test_name, True, 'Server operational with session crash patches applied'),
+                (test_name, True, f'{self.client_mode} mode negotiated protocol {protocol_version}'),
             )
             return True
 
@@ -8877,10 +8852,12 @@ class MCPServerIntegrationTest:
             return False
 
     async def test_server_version_is_project_version(self) -> bool:
-        """Test that MCP protocol handshake reports the project version.
+        """Test that the negotiated server identity reports the project version.
 
         Verifies that the server reports its own version (from pyproject.toml)
-        rather than the FastMCP framework version or MCP SDK version.
+        rather than the FastMCP framework version or MCP SDK version. The identity
+        comes from the initialize handshake in the legacy era and from
+        ``server/discover`` in the sessionless era.
 
         Returns:
             bool: True if server version matches project version.
@@ -8890,12 +8867,10 @@ class MCPServerIntegrationTest:
         try:
             from app.server import SERVER_VERSION
 
-            init_result = self.client.initialize_result
-            if init_result is None:
-                self.test_results.append((test_name, False, 'InitializeResult not available'))
-                return False
+            server_info = self.client.server_info
+            assert server_info is not None, 'a connected client always carries the server identity'
 
-            server_version = init_result.serverInfo.version
+            server_version = server_info.version
             if server_version != SERVER_VERSION:
                 self.test_results.append((
                     test_name,
@@ -9114,8 +9089,8 @@ class MCPServerIntegrationTest:
             The MCP SDK helper mcp.client.stdio.get_default_environment() applies
             an OS-variable whitelist (PATH, SYSTEMROOT, ..., on Windows; HOME,
             LOGNAME, ..., on POSIX) when env=None is passed to the transport.
-            Constructing Client(str(wrapper_script)) implicitly delegates to this
-            whitelist, so application-specific env vars (DB_PATH, MCP_TEST_MODE,
+            Constructing Client(wrapper_script) from a bare script path delegates to
+            this whitelist, so application-specific env vars (DB_PATH, MCP_TEST_MODE,
             GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY) DO NOT reach the subprocess. This
             test builds the env dict explicitly via PythonStdioTransport(env=...)
             using the same safe_keys whitelist plus the four app-specific vars,
@@ -9149,28 +9124,17 @@ class MCPServerIntegrationTest:
                 'ENABLE_EMBEDDING_GENERATION': 'false',
             }
         else:
-            # Initialize schema (mirrors _initialize_database for primary server)
+            # Initialize the schema before the secondary server opens the file
             from app.schemas import load_schema
             schema_sql = load_schema('sqlite')
             with sqlite3.connect(str(tmp_db)) as init_conn:
                 init_conn.executescript(schema_sql)
                 init_conn.commit()
 
-            # Explicit env whitelist mirroring mcp.client.stdio.get_default_environment().
-            # The MCP SDK uses this exact list when env=None; we replicate it so the
-            # subprocess can still locate Python, system DLLs, temp dirs, etc.
-            if sys.platform == 'win32':
-                safe_keys = (
-                    'APPDATA', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA',
-                    'PATH', 'PATHEXT', 'PROCESSOR_ARCHITECTURE',
-                    'SYSTEMDRIVE', 'SYSTEMROOT', 'TEMP', 'USERNAME', 'USERPROFILE',
-                )
-            else:
-                safe_keys = ('HOME', 'LOGNAME', 'SHELL', 'TERM', 'USER')
-
-            subprocess_env = {
-                key: os.environ[key] for key in safe_keys if key in os.environ
-            }
+            # The MCP SDK's default stdio environment lets the subprocess locate
+            # Python, system DLLs, and temp dirs while keeping the developer's
+            # shell out of the run.
+            subprocess_env = get_default_environment()
             # Application-specific overrides REQUIRED by the secondary server.
             subprocess_env['DB_PATH'] = str(tmp_db)
             subprocess_env['MCP_TEST_MODE'] = '1'
@@ -9181,10 +9145,10 @@ class MCPServerIntegrationTest:
             script_path=str(wrapper_script),
             env=subprocess_env,
         )
-        secondary_client: Client[Any] = Client(transport)
+        secondary_client = self._new_client(transport)
         try:
             await secondary_client.__aenter__()
-            await secondary_client.ping()
+            await secondary_client.list_tools()
 
             store_result = await secondary_client.call_tool(
                 'store_context',
@@ -10291,7 +10255,7 @@ class MCPServerIntegrationTest:
 
             fts_info = stats_data.get('fts', {})
             has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
-            hybrid_enabled = os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+            hybrid_enabled = 'hybrid_search_context' in self.registered_tools
 
             if not has_fts or not hybrid_enabled:
                 self.test_results.append((test_name, True,
@@ -10752,7 +10716,7 @@ class MCPServerIntegrationTest:
         test_name = 'hybrid_search_rrf_scores_ordering'
         assert self.client is not None
         try:
-            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+            if 'hybrid_search_context' not in self.registered_tools:
                 self.test_results.append((test_name, True, 'Skipped (hybrid search disabled)'))
                 return True
 
@@ -11652,8 +11616,8 @@ class MCPServerIntegrationTest:
     async def test_tool_annotations_exposed_to_client(self) -> bool:
         """Verify tool behavior-hint annotations reach the client via list_tools.
 
-        Clients rely on readOnlyHint/destructiveHint/idempotentHint for
-        auto-approval and destructive-action confirmation. This asserts the
+        Clients rely on the readOnlyHint/destructiveHint/idempotentHint wire hints
+        for auto-approval and destructive-action confirmation. This asserts the
         hints declared in TOOL_ANNOTATIONS are delivered over the wire (tools
         absent due to DISABLED_TOOLS are skipped, not failed).
 
@@ -11664,23 +11628,23 @@ class MCPServerIntegrationTest:
         assert self.client is not None
         try:
             tools = await self.client.list_tools()
-            ann_by_name: dict[str, Any] = {t.name: getattr(t, 'annotations', None) for t in tools}
+            ann_by_name: dict[str, Any] = {t.name: t.annotations for t in tools}
 
             # (tool, hint attribute, expected value)
             expectations: list[tuple[str, str, bool]] = [
-                ('search_context', 'readOnlyHint', True),
-                ('get_context_by_ids', 'readOnlyHint', True),
-                ('list_threads', 'readOnlyHint', True),
-                ('get_statistics', 'readOnlyHint', True),
-                ('grep_context', 'readOnlyHint', True),
-                ('navigate_context', 'readOnlyHint', True),
-                ('read_context_range', 'readOnlyHint', True),
-                ('store_context', 'readOnlyHint', False),
-                ('store_context', 'destructiveHint', False),
-                ('update_context', 'destructiveHint', True),
-                ('update_context', 'idempotentHint', False),
-                ('delete_context', 'destructiveHint', True),
-                ('delete_context', 'idempotentHint', True),
+                ('search_context', 'read_only_hint', True),
+                ('get_context_by_ids', 'read_only_hint', True),
+                ('list_threads', 'read_only_hint', True),
+                ('get_statistics', 'read_only_hint', True),
+                ('grep_context', 'read_only_hint', True),
+                ('navigate_context', 'read_only_hint', True),
+                ('read_context_range', 'read_only_hint', True),
+                ('store_context', 'read_only_hint', False),
+                ('store_context', 'destructive_hint', False),
+                ('update_context', 'destructive_hint', True),
+                ('update_context', 'idempotent_hint', False),
+                ('delete_context', 'destructive_hint', True),
+                ('delete_context', 'idempotent_hint', True),
             ]
             checked = 0
             for tool_name, attr, expected in expectations:
@@ -12168,7 +12132,7 @@ class MCPServerIntegrationTest:
 
         # Build a server env mirroring connect_client(), then force FTS off.
         # PythonStdioTransport(env=...) passes the dict explicitly on both
-        # backends (the MCP SDK env whitelist used by Client(str(...)) would
+        # backends (the MCP SDK env whitelist applied to a bare script path would
         # strip app-specific vars), so the forced ENABLE_FTS reaches the server.
         server_env: dict[str, str] = {
             **os.environ,
@@ -12198,11 +12162,10 @@ class MCPServerIntegrationTest:
             script_path=str(wrapper_script),
             env=server_env,
         )
-        second_client: Client[Any] = Client(transport)
+        second_client = self._new_client(transport)
 
         try:
             await second_client.__aenter__()
-            await second_client.ping()
 
             # Determine whether an embedding provider is available; if not,
             # semantic_search_context cannot register and (with FTS forced off)
@@ -14365,13 +14328,6 @@ class MCPServerIntegrationTest:
                 await self.client.__aexit__(None, None, None)
                 print('[OK] Client disconnected and server stopped')
 
-            # Restore original environment variables
-            for key, value in self.original_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
             # Clean up temporary database file if it exists
             if self.temp_db_path:
                 async_temp_db_path = AsyncPath(self.temp_db_path)
@@ -14400,7 +14356,7 @@ class MCPServerIntegrationTest:
             bool: True if all tests passed.
         """
         print('\n' + '=' * 50)
-        print('MCP SERVER INTEGRATION TEST')
+        print(f'MCP SERVER INTEGRATION TEST ({self.backend}, {self.client_mode} client mode)')
         print('=' * 50)
 
         # Start server
@@ -14505,9 +14461,8 @@ class MCPServerIntegrationTest:
             ('Overfetch Chain Verification', self.test_overfetch_chain_verification),
             # Quality Improvement Tests
             ('Search Context Limit Clamping', self.test_search_context_limit_clamping),
-            # Session Crash Patch Tests
-            ('Session Crash Patch Applied', self.test_session_crash_patch_applied),
-            # Server Version Tests
+            # Protocol Era And Server Identity Tests
+            ('Client Negotiates Requested Protocol Era', self.test_client_negotiates_requested_protocol_era),
             ('Server Version Is Project Version', self.test_server_version_is_project_version),
             # Deduplication Data Integrity Tests
             ('Dedup Data Integrity', self.test_store_context_deduplication_data_integrity),

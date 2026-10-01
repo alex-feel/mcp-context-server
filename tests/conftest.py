@@ -61,7 +61,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from typing import cast
-from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -69,7 +68,6 @@ import pytest
 import pytest_asyncio
 from anyio import Path as AsyncPath
 from dotenv import load_dotenv
-from fastmcp import Context
 
 # ============================================================================
 # CRITICAL: Configure logging BEFORE importing app modules
@@ -414,16 +412,6 @@ async def async_test_db(temp_db_path: Path) -> AsyncGenerator[sqlite3.Connection
     conn = await asyncio.to_thread(_create_db)
     yield conn
     await asyncio.to_thread(conn.close)
-
-
-@pytest.fixture
-def mock_context() -> Context:
-    """Create a mock MCP context for testing."""
-    ctx = MagicMock(spec=Context)
-    ctx.info = AsyncMock()
-    ctx.warning = AsyncMock()
-    ctx.error = AsyncMock()
-    return ctx
 
 
 @pytest.fixture

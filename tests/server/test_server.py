@@ -12,12 +12,10 @@ from pathlib import Path
 from typing import Any
 from typing import Literal
 from typing import cast
-from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 # Import the actual async functions from app.server, not the MCP-wrapped versions
@@ -42,7 +40,6 @@ class TestStoreContext:
     @pytest.mark.asyncio
     async def test_store_text_context(
         self,
-        mock_context: Context,
         sample_context_data: dict[str, Any],
     ) -> None:
         """Test storing a simple text context entry."""
@@ -52,7 +49,6 @@ class TestStoreContext:
             text=sample_context_data['text'],
             metadata=sample_context_data['metadata'],
             tags=sample_context_data['tags'],
-            ctx=mock_context,
         )
 
         assert result['success'] is True
@@ -60,13 +56,9 @@ class TestStoreContext:
         assert result['thread_id'] == sample_context_data['thread_id']
         assert 'Context stored' in result['message']
 
-        # Verify context.info was called
-        assert cast(MagicMock, mock_context.info).called is True
-
     @pytest.mark.asyncio
     async def test_store_multimodal_context(
         self,
-        mock_context: Context,
         sample_multimodal_data: dict[str, Any],
     ) -> None:
         """Test storing context with images."""
@@ -77,7 +69,6 @@ class TestStoreContext:
             images=sample_multimodal_data['images'],
             metadata=sample_multimodal_data['metadata'],
             tags=sample_multimodal_data['tags'],
-            ctx=mock_context,
         )
 
         assert result['success'] is True
@@ -951,41 +942,6 @@ class TestGetStatistics:
         assert summary_info['enabled'] is True
         assert summary_info['available'] is False
         assert 'message' in summary_info
-
-
-@pytest.mark.usefixtures('initialized_server')
-class TestContextParameter:
-    """Test MCP Context parameter usage across tools."""
-
-    @pytest.mark.asyncio
-    async def test_context_info_logging(self) -> None:
-        """Test that context.info is called appropriately."""
-        mock_ctx = MagicMock(spec=Context)
-        mock_ctx.info = AsyncMock()
-
-        # Test various tools with context
-        await store_context(
-            thread_id='ctx_test',
-            source='user',
-            text='Test',
-            ctx=mock_ctx,
-        )
-        assert mock_ctx.info.call_count == 1
-
-        await search_context(limit=50, thread_id='ctx_test', ctx=mock_ctx)
-        assert mock_ctx.info.call_count == 2
-
-        await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'], ctx=mock_ctx)
-        assert mock_ctx.info.call_count == 3
-
-        await delete_context(thread_id='ctx_test', ctx=mock_ctx)
-        assert mock_ctx.info.call_count == 4
-
-        await list_threads(ctx=mock_ctx)
-        assert mock_ctx.info.call_count == 5
-
-        await get_statistics(ctx=mock_ctx)
-        assert mock_ctx.info.call_count == 6
 
 
 @pytest.mark.usefixtures('initialized_server')

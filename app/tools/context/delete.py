@@ -3,7 +3,6 @@
 import logging
 from typing import Annotated
 
-from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -29,7 +28,6 @@ async def delete_context(
         str | None,
         Field(min_length=1, description='Delete ALL entries in thread (mutually exclusive with context_ids)'),
     ] = None,
-    ctx: Context | None = None,
 ) -> dict[str, bool | int | str]:
     """Delete context entries by specific IDs or by entire thread. IRREVERSIBLE.
 
@@ -86,9 +84,6 @@ async def delete_context(
                 context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
             except ValueError as e:
                 raise ToolError(f'Invalid context ID: {e}') from e
-
-        if ctx:
-            await ctx.info(f'Deleting context: ids={context_ids}, thread={thread_id}')
 
         deleted = 0
         backend = repos.context.backend
