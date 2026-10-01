@@ -1,10 +1,10 @@
-"""Tests for the tri-state search feature toggles.
+"""Tests for app/settings/base.py: the tri-state feature toggles.
 
 Covers the ``_normalize_feature_toggle`` helper, the shared
 ``FeatureToggleSettings`` base, and the three concrete search-toggle classes
 (``SemanticSearchSettings``, ``FtsSettings``, ``HybridSearchSettings``): their
 'auto'/'true'/'false' ``mode`` field, the derived read-only ``enabled``
-property, their env aliases, and their composition on ``AppSettings``.
+property, and their env aliases.
 
 The toggles read their ``mode`` from environment-variable aliases, so the
 parametrized cases drive values through ``monkeypatch.setenv`` rather than
@@ -16,12 +16,11 @@ alias-resolution path operators actually use.
 import pytest
 from pydantic import ValidationError
 
-from app.settings import AppSettings
-from app.settings import FeatureToggleSettings
-from app.settings import FtsSettings
-from app.settings import HybridSearchSettings
-from app.settings import SemanticSearchSettings
-from app.settings import _normalize_feature_toggle
+from app.settings.base import FeatureToggleSettings
+from app.settings.base import _normalize_feature_toggle
+from app.settings.search import FtsSettings
+from app.settings.search import HybridSearchSettings
+from app.settings.search import SemanticSearchSettings
 
 
 class TestNormalizeFeatureToggle:
@@ -179,47 +178,3 @@ class TestEnabledProperty:
         descriptor = FeatureToggleSettings.__dict__['enabled']
         assert isinstance(descriptor, property)
         assert descriptor.fset is None
-
-
-class TestAppSettingsComposition:
-    """Tests that the three toggles remain composed on AppSettings."""
-
-    def test_defaults_all_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """AppSettings defaults give all three toggles mode='auto', enabled True."""
-        monkeypatch.delenv('ENABLE_SEMANTIC_SEARCH', raising=False)
-        monkeypatch.delenv('ENABLE_FTS', raising=False)
-        monkeypatch.delenv('ENABLE_HYBRID_SEARCH', raising=False)
-        settings = AppSettings()
-        assert settings.semantic_search.mode == 'auto'
-        assert settings.fts.mode == 'auto'
-        assert settings.hybrid_search.mode == 'auto'
-        assert settings.semantic_search.enabled is True
-        assert settings.fts.enabled is True
-        assert settings.hybrid_search.enabled is True
-
-    def test_semantic_search_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """ENABLE_SEMANTIC_SEARCH flows through to the nested toggle."""
-        monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'false')
-        settings = AppSettings()
-        assert settings.semantic_search.mode == 'false'
-        assert settings.semantic_search.enabled is False
-
-    def test_fts_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """ENABLE_FTS flows through to the nested toggle."""
-        monkeypatch.setenv('ENABLE_FTS', 'true')
-        settings = AppSettings()
-        assert settings.fts.mode == 'true'
-        assert settings.fts.enabled is True
-
-    def test_hybrid_search_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """ENABLE_HYBRID_SEARCH flows through to the nested toggle."""
-        monkeypatch.setenv('ENABLE_HYBRID_SEARCH', 'false')
-        settings = AppSettings()
-        assert settings.hybrid_search.mode == 'false'
-        assert settings.hybrid_search.enabled is False
-
-    def test_invalid_nested_value_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An invalid nested toggle value fails AppSettings construction."""
-        monkeypatch.setenv('ENABLE_FTS', 'bogus')
-        with pytest.raises(ValidationError):
-            AppSettings()

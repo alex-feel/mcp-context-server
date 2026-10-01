@@ -1,7 +1,7 @@
 """Tests for authentication module.
 
 This module tests the SimpleTokenVerifier and JWT authentication mechanisms
-using centralized AuthSettings from app.settings.
+using centralized AuthSettings from app.settings.auth.
 """
 
 import os
@@ -11,7 +11,6 @@ from unittest.mock import patch
 import pytest
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
 
-from app.settings import AuthSettings
 from app.settings import get_settings
 
 
@@ -19,39 +18,6 @@ from app.settings import get_settings
 def rsa_key_pair() -> RSAKeyPair:
     """Generate one RSA key pair for all JWT tests in this module."""
     return RSAKeyPair.generate()
-
-
-class TestAuthSettings:
-    """Tests for AuthSettings configuration."""
-
-    def test_settings_loads_token_from_env(self) -> None:
-        """Settings should load MCP_AUTH_TOKEN from environment."""
-        with patch.dict(os.environ, {'MCP_AUTH_TOKEN': 'test-token-123'}, clear=False):
-            settings = AuthSettings()
-            assert settings.auth_token is not None
-            assert settings.auth_token.get_secret_value() == 'test-token-123'
-
-    def test_settings_default_client_id(self) -> None:
-        """Settings should have default auth_client_id of 'mcp-client'."""
-        with patch.dict(os.environ, {'MCP_AUTH_TOKEN': 'test-token'}, clear=False):
-            settings = AuthSettings()
-            assert settings.auth_client_id == 'mcp-client'
-
-    def test_settings_custom_client_id(self) -> None:
-        """Settings should allow custom auth_client_id via environment."""
-        with patch.dict(
-            os.environ,
-            {'MCP_AUTH_TOKEN': 'test-token', 'MCP_AUTH_CLIENT_ID': 'custom-client'},
-            clear=False,
-        ):
-            settings = AuthSettings()
-            assert settings.auth_client_id == 'custom-client'
-
-    def test_token_default_is_none(self) -> None:
-        """AuthSettings should have auth_token defaulting to None in Field definition."""
-        # Verify the Field default is None by checking the model fields
-        field_info = AuthSettings.model_fields['auth_token']
-        assert field_info.default is None
 
 
 class TestSimpleTokenVerifier:
@@ -317,52 +283,6 @@ class TestAuthFactory:
 
             with pytest.raises(ConfigurationError, match='cannot be empty'):
                 create_auth_provider()
-
-
-class TestJwtAuthSettings:
-    """Tests for the JWT fields on AuthSettings."""
-
-    def test_jwt_field_defaults(self) -> None:
-        """JWT key/issuer/audience default to unset; algorithm and claim keys have documented defaults."""
-        env = {k: v for k, v in os.environ.items() if not k.startswith('MCP_AUTH')}
-        with patch.dict(os.environ, env, clear=True):
-            settings = AuthSettings()
-            assert settings.jwt_public_key is None
-            assert settings.jwt_jwks_uri is None
-            assert settings.jwt_issuer is None
-            assert settings.jwt_audience is None
-            assert settings.jwt_algorithm == 'RS256'
-            assert settings.groups_claim == 'groups'
-            assert settings.roles_claim == 'roles'
-
-    def test_jwt_fields_load_from_env(self) -> None:
-        """Every MCP_AUTH_JWT_* / claim-key env var maps onto its settings field."""
-        env_updates = {
-            'MCP_AUTH_PROVIDER': 'jwt',
-            'MCP_AUTH_JWT_PUBLIC_KEY': 'shared-secret',
-            'MCP_AUTH_JWT_ISSUER': 'https://issuer.test',
-            'MCP_AUTH_JWT_AUDIENCE': 'ctx-server',
-            'MCP_AUTH_JWT_ALGORITHM': 'HS256',
-            'MCP_AUTH_GROUPS_CLAIM': 'https://example.com/groups',
-            'MCP_AUTH_ROLES_CLAIM': 'realm_access.roles',
-        }
-        with patch.dict(os.environ, env_updates, clear=False):
-            settings = AuthSettings()
-            assert settings.provider == 'jwt'
-            assert settings.jwt_public_key is not None
-            assert settings.jwt_public_key.get_secret_value() == 'shared-secret'
-            assert settings.jwt_issuer == 'https://issuer.test'
-            assert settings.jwt_audience == 'ctx-server'
-            assert settings.jwt_algorithm == 'HS256'
-            assert settings.groups_claim == 'https://example.com/groups'
-            assert settings.roles_claim == 'realm_access.roles'
-
-    def test_jwt_public_key_is_secret(self) -> None:
-        """The key/secret value is masked in string representations."""
-        with patch.dict(os.environ, {'MCP_AUTH_JWT_PUBLIC_KEY': 'hs-shared-secret'}, clear=False):
-            settings = AuthSettings()
-            assert 'hs-shared-secret' not in str(settings.jwt_public_key)
-            assert 'hs-shared-secret' not in repr(settings.jwt_public_key)
 
 
 class TestJwtAuthFactory:

@@ -9,6 +9,8 @@ Tests verify:
 - AGENT_SUMMARY_PROMPT contains agent-specific instructions only
 - Both prompts contain shared base requirements
 - DEFAULT_SUMMARY_PROMPT is alias for AGENT_SUMMARY_PROMPT
+- DEFAULT_SUMMARY_PROMPT carries the core constraint phrases
+- resolve_summary_prompt resolves against real settings without a custom prompt
 """
 
 from unittest.mock import MagicMock
@@ -175,3 +177,38 @@ class TestDefaultSummaryPromptAlias:
         """DEFAULT_SUMMARY_PROMPT is a non-empty string."""
         assert isinstance(DEFAULT_SUMMARY_PROMPT, str)
         assert len(DEFAULT_SUMMARY_PROMPT) > 0
+
+
+class TestSummaryPrompt:
+    """Tests for DEFAULT_SUMMARY_PROMPT and resolve_summary_prompt(source)."""
+
+    def test_default_prompt_exists_and_non_empty(self) -> None:
+        """Verify DEFAULT_SUMMARY_PROMPT is defined and non-empty."""
+        assert DEFAULT_SUMMARY_PROMPT
+        assert len(DEFAULT_SUMMARY_PROMPT) > 100
+
+    def test_default_prompt_contains_key_constraints(self) -> None:
+        """Verify prompt contains essential constraint phrases."""
+        assert 'single' in DEFAULT_SUMMARY_PROMPT.lower()
+        assert 'paragraph' in DEFAULT_SUMMARY_PROMPT.lower()
+        assert 'do not add' in DEFAULT_SUMMARY_PROMPT.lower()
+        assert 'Output ONLY' in DEFAULT_SUMMARY_PROMPT
+
+    def test_resolve_returns_agent_prompt_when_whitespace(self) -> None:
+        """Verify resolve_summary_prompt returns source-specific prompt for whitespace."""
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = '   '
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('agent') == DEFAULT_SUMMARY_PROMPT
+
+    def test_resolve_returns_custom_when_set(self) -> None:
+        """Verify resolve_summary_prompt returns custom prompt when set."""
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = 'Custom prompt for testing'
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('agent') == 'Custom prompt for testing'
+
+    def test_resolve_with_real_settings(self) -> None:
+        """Verify resolve_summary_prompt works with real settings (no custom prompt)."""
+        result = resolve_summary_prompt('agent')
+        assert result == DEFAULT_SUMMARY_PROMPT

@@ -152,7 +152,6 @@ Tests mirror `app/`: `tests/<name>/` → `app/<name>/` (package) or `app/<name>.
 **Non-trivial mappings**:
 - `tests/core/` → `app/*.py` small utility root modules (models, errors, fusion, instructions, etc.)
 - `tests/server/` → `app/server.py` (dedicated directory; large/complex root modules get their own)
-- `tests/settings/` → `app/settings.py` (same reason)
 - `tests/integration/_harness.py` → shared backend-parametrized real-server harness (`MCPServerIntegrationTest`); imported by the per-backend entry points and intentionally NOT named `test_*` so pytest does not collect it directly
 - `tests/integration/sqlite/` and `tests/integration/postgresql/` → per-backend real-server entry points and backend-specific tests (no app mirror); PostgreSQL gated on `@requires_docker_postgres`
 
@@ -238,13 +237,13 @@ Build args: `EMBEDDING_EXTRA` (default `embeddings-ollama`), `SUMMARY_EXTRA` (de
 
 ## MCP Registry and server.json Maintenance
 
-`server.json` enables MCP client discovery. Every `Field(alias=...)` in `app/settings.py` MUST have a matching entry in `server.json` `environmentVariables` — enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
+`server.json` enables MCP client discovery. Every `Field(alias=...)` in the `app/settings/` package MUST have a matching entry in `server.json` `environmentVariables` — enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
 
-When adding or modifying environment variables in `app/settings.py`, update **both** `server.json` **and** `docs/environment-variables.md`. Operator-relevant environment variables that are intentionally NOT in `app/settings.py` (the `FASTMCP_*` governance class consumed at FastMCP import time — see [FASTMCP_* Env Var Governance](#fastmcp_-env-var-governance)) still MUST be documented in `docs/environment-variables.md` (the self-declared complete reference), even though they are correctly absent from `server.json`; a non-Docker (PyPI/uvx) operator has no other place to discover them.
+When adding or modifying environment variables in `app/settings/`, update **both** `server.json` **and** `docs/environment-variables.md`. Operator-relevant environment variables that are intentionally NOT in `app/settings/` (the `FASTMCP_*` governance class consumed at FastMCP import time — see [FASTMCP_* Env Var Governance](#fastmcp_-env-var-governance)) still MUST be documented in `docs/environment-variables.md` (the self-declared complete reference), even though they are correctly absent from `server.json`; a non-Docker (PyPI/uvx) operator has no other place to discover them.
 
 ## Environment Variables
 
-Configuration via `.env` file or environment. **Canonical source**: `app/settings.py` — all env vars with defaults, descriptions, and validation. Full reference: `docs/environment-variables.md`.
+Configuration via `.env` file or environment. **Canonical source**: the `app/settings/` package — all env vars with defaults, descriptions, and validation. Full reference: `docs/environment-variables.md`.
 
 **Core**: `STORAGE_BACKEND` (sqlite*/postgresql), `LOG_LEVEL` (ERROR*), `DB_PATH`, `MAX_IMAGE_SIZE_MB` (10*), `MAX_TOTAL_SIZE_MB` (100*), `DISABLED_TOOLS`
 
@@ -254,7 +253,7 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 
 **Access Control**: `ACCESS_CONTROL_DEFAULT_PRINCIPAL` (local*; owner stamped without a verified token, also the migration backfill owner; DDL-safe charset enforced), `ACCESS_CONTROL_DEFAULT_VISIBILITY` (private*/shared/public), `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS` (none*/author_groups), `ACCESS_CONTROL_PUBLISH_ROLE` (unset*; when set, 'public' requires this role)
 
-**FastMCP Logging** (NOT in `app/settings.py`): `FASTMCP_ENABLE_RICH_LOGGING` (true*; set `false` in Docker/cloud), `FASTMCP_LOG_LEVEL`/`FASTMCP_LOG_ENABLED` (import-time). `LOG_LEVEL` is the single effective verbosity control across all three logger trees: `config_logger` re-aligns the non-propagating `fastmcp` tree at startup (and, when `FASTMCP_LOG_ENABLED=false` leaves that tree unconfigured, silences it with propagate-off + a `NullHandler` to honor the documented "removes FastMCP-internal output" contract), and `main()` passes `log_level=` to the HTTP-family `mcp.run()` calls so uvicorn's run-time `uvicorn`/`uvicorn.access` loggers follow `LOG_LEVEL` too (without it they fall back to `FASTMCP_LOG_LEVEL` and leak an INFO banner plus a per-request access line regardless of `LOG_LEVEL`) — see [FASTMCP_* Governance](#fastmcp_-env-var-governance).
+**FastMCP Logging** (NOT in `app/settings/`): `FASTMCP_ENABLE_RICH_LOGGING` (true*; set `false` in Docker/cloud), `FASTMCP_LOG_LEVEL`/`FASTMCP_LOG_ENABLED` (import-time). `LOG_LEVEL` is the single effective verbosity control across all three logger trees: `config_logger` re-aligns the non-propagating `fastmcp` tree at startup (and, when `FASTMCP_LOG_ENABLED=false` leaves that tree unconfigured, silences it with propagate-off + a `NullHandler` to honor the documented "removes FastMCP-internal output" contract), and `main()` passes `log_level=` to the HTTP-family `mcp.run()` calls so uvicorn's run-time `uvicorn`/`uvicorn.access` loggers follow `LOG_LEVEL` too (without it they fall back to `FASTMCP_LOG_LEVEL` and leak an INFO banner plus a per-request access line regardless of `LOG_LEVEL`) — see [FASTMCP_* Governance](#fastmcp_-env-var-governance).
 
 **Feature Toggles**: `ENABLE_EMBEDDING_GENERATION` (true*), `ENABLE_SEMANTIC_SEARCH` (auto*), `ENABLE_FTS` (auto*), `ENABLE_HYBRID_SEARCH` (auto*), `ENABLE_GREP_CONTEXT` (auto*), `ENABLE_CONTEXT_NAVIGATION` (auto*), `ENABLE_CONTEXT_RANGE` (auto*), `ENABLE_CHUNKING` (true*), `ENABLE_RERANKING` (true*), `ENABLE_SUMMARY_GENERATION` (true*), `ENABLE_INDEX_TREE_NODE_SUMMARIES` (true*). The search and navigation tool toggles are tri-state `Literal['auto','true','false']` (base class `FeatureToggleSettings`; derived read-only `.enabled` property = `mode != 'false'`, so `auto` and `true` are both enabled): `auto` (default) registers the tool when prerequisites are present and skips quietly otherwise, `true` registers it when prerequisites are present and otherwise logs a warning and still skips it (only the prerequisite-free tools — FTS, grep, navigate, range — treat `true` as a genuine force-on), `false` forces it off. Boolean spellings (true/false/1/0/yes/no/on/off) are coerced via `_normalize_feature_toggle()`. Default `auto` means search and navigation work out of the box: semantic registers when an embedding provider is available, FTS always (no extra deps), hybrid when at least one of FTS/semantic is available, and grep/navigate/range always (pure-Python). `ENABLE_INDEX_TREE_NODE_SUMMARIES` (plain bool, default true) gates the optional per-node LLM summary layer + the `context_index_nodes` table; grep/navigate bounds and node-summary config (`GREP_*`, `INDEX_TREE_NODE_SUMMARY_*`) are in `docs/environment-variables.md`.
 
@@ -266,7 +265,7 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 
 **Compression** (default ON in v3.0.0): `ENABLE_EMBEDDING_COMPRESSION` (true*; false to opt out, keep fp32), `COMPRESSION_PROVIDER` (turboquant*), `COMPRESSION_BITS` (4*; range 2-4), `COMPRESSION_VARIANT` (ip*/mse), `COMPRESSION_SEED` (0*; load-bearing, immutable after first compressed row), `COMPRESSION_MAX_CONCURRENT` (min(cpu_count, 4)*; range 1-32). Full reference: `docs/embedding-compression.md`.
 
-**Other vars** (provider-specific, PostgreSQL, reranking, chunking, hybrid, FTS, search, metadata indexing): see `app/settings.py` for the complete list with defaults and descriptions.
+**Other vars** (provider-specific, PostgreSQL, reranking, chunking, hybrid, FTS, search, metadata indexing): see `app/settings/` for the complete list with defaults and descriptions.
 
 *\* = default value*
 
@@ -310,7 +309,7 @@ Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in 
 
 ### Docker-Compose Environment Variable Policy
 
-**CRITICAL:** Compose files MUST contain ONLY variables REQUIRED for the deployment to function; all else uses `app/settings.py` defaults. This prevents drift between code defaults and hardcoded compose values.
+**CRITICAL:** Compose files MUST contain ONLY variables REQUIRED for the deployment to function; all else uses `app/settings/` defaults. This prevents drift between code defaults and hardcoded compose values.
 
 **Configurable** via `${VAR:-default}` interpolation (default MUST match the previously hardcoded value): `LOG_LEVEL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PROVIDER`, `SUMMARY_MODEL`, `SUMMARY_PROVIDER`; PostgreSQL variants add `POSTGRESQL_USER`, `POSTGRESQL_PASSWORD`, `POSTGRESQL_DATABASE`. Ollama sidecar model names use the same interpolation.
 
@@ -365,7 +364,7 @@ All GitHub Actions workflows MUST follow these rules:
 
 ### Environment Variables — Centralized Configuration
 
-**Never use `os.environ`/`os.getenv()` directly** — always `get_settings()` from `app/settings.py`. Use `Field(alias='ENV_VAR_NAME')`.
+**Never use `os.environ`/`os.getenv()` directly** — always `get_settings()` from `app.settings`. Use `Field(alias='ENV_VAR_NAME')`.
 
 ```python
 # WRONG: os.getenv('DB_PATH')
@@ -402,15 +401,15 @@ class AppSettings(CommonSettings):
     my_feature: MyFeatureSettings = Field(default_factory=MyFeatureSettings)
 ```
 
-Existing settings classes are enumerated in `app/settings.py` (one per domain, e.g. `EmbeddingSettings`, `SummarySettings`, `RerankingSettings`, `FtsSettings`, `HybridSearchSettings`, `GrepContextSettings`, `ContextNavigationSettings`, `ContextRangeSettings`, `IndexTreeNodeSummarySettings`, `ChunkingSettings`, `RetrievalSettings`, `LangSmithSettings`); `StorageSettings` extends `BaseSettings`, the search and navigation toggle classes (`SemanticSearchSettings`/`FtsSettings`/`HybridSearchSettings`/`GrepContextSettings`/`ContextNavigationSettings`/`ContextRangeSettings`) extend `FeatureToggleSettings`, the rest extend `CommonSettings`.
+Settings classes live in the `app/settings/` package, one domain group per module: `base.py` (`CommonSettings`, `FeatureToggleSettings`), `server.py` (logging, tool management, transport, instructions), `auth.py` (`AuthSettings`, `AccessControlSettings`, `SAFE_PRINCIPAL_ID_PATTERN`), `storage.py` (`StorageSettings`), `providers.py` (`OllamaSettings`, `LangSmithSettings`), `embedding.py` (`EmbeddingSettings`, `ChunkingSettings`, `CompressionSettings`), `summary.py` (`SummarySettings`, `IndexTreeNodeSummarySettings`), `search.py` (search, semantic, FTS, hybrid, FTS passage, reranking, retrieval), `navigation.py` (grep, range, navigation). `AppSettings` and `get_settings()` are defined in `app/settings/__init__.py` and are the only names imported from `app.settings`; import a domain class from its module (`from app.settings.storage import StorageSettings`), because mypy's `implicit_reexport = false` rejects the package-level form. A new class goes into its domain module (a new module for a new domain) and is composed into `AppSettings`. `StorageSettings` extends `BaseSettings`, the search and navigation toggle classes (`SemanticSearchSettings`/`FtsSettings`/`HybridSearchSettings`/`GrepContextSettings`/`ContextNavigationSettings`/`ContextRangeSettings`) extend `FeatureToggleSettings`, the rest extend `CommonSettings`.
 
 ### FASTMCP_* Env Var Governance
 
-`FASTMCP_*` env vars belong in `app/settings.py` (and `server.json`) ONLY when the project takes **programmatic action** with them (passed to `mcp.run()`, used in logic). Import-time-only vars should NOT be in `settings.py`.
+`FASTMCP_*` env vars belong in `app/settings/` (and `server.json`) ONLY when the project takes **programmatic action** with them (passed to `mcp.run()`, used in logic). Import-time-only vars should NOT be in `app/settings/`.
 
-- **In `settings.py`** (passed to `mcp.run()`): `FASTMCP_HOST` (`host=`), `FASTMCP_PORT` (`port=`), `FASTMCP_STATELESS_HTTP` (`stateless_http=`).
-- **NOT in `settings.py`, operative** (consumed by FastMCP with no overriding explicit argument; documented in `docs/environment-variables.md`): `FASTMCP_ENABLE_RICH_LOGGING`, `FASTMCP_JSON_RESPONSE`, `FASTMCP_LOG_LEVEL`, `FASTMCP_LOG_ENABLED` (the log pair is import-time only — `config_logger` re-aligns the `fastmcp` logger tree with `LOG_LEVEL` at startup).
-- **NOT in `settings.py`, inert** (an explicit argument supersedes the env fallback): `FASTMCP_TRANSPORT` (project uses `MCP_TRANSPORT` + explicit `transport=` arg), `FASTMCP_STRICT_INPUT_VALIDATION` (pinned `strict_input_validation=False` at the `FastMCP()` call — lax scalar coercion is load-bearing because the JSON-string middleware repairs only array/object params).
+- **In `app/settings/server.py`** (`TransportSettings`, passed to `mcp.run()`): `FASTMCP_HOST` (`host=`), `FASTMCP_PORT` (`port=`), `FASTMCP_STATELESS_HTTP` (`stateless_http=`).
+- **NOT in `app/settings/`, operative** (consumed by FastMCP with no overriding explicit argument; documented in `docs/environment-variables.md`): `FASTMCP_ENABLE_RICH_LOGGING`, `FASTMCP_JSON_RESPONSE`, `FASTMCP_LOG_LEVEL`, `FASTMCP_LOG_ENABLED` (the log pair is import-time only — `config_logger` re-aligns the `fastmcp` logger tree with `LOG_LEVEL` at startup).
+- **NOT in `app/settings/`, inert** (an explicit argument supersedes the env fallback): `FASTMCP_TRANSPORT` (project uses `MCP_TRANSPORT` + explicit `transport=` arg), `FASTMCP_STRICT_INPUT_VALIDATION` (pinned `strict_input_validation=False` at the `FastMCP()` call — lax scalar coercion is load-bearing because the JSON-string middleware repairs only array/object params).
 
 ### Adding New MCP Tools
 

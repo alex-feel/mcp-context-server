@@ -15,7 +15,7 @@ from app.errors import ConfigurationError
 from app.errors import DependencyError
 from app.errors import classify_provider_error
 from app.migrations.dependencies import check_summary_provider_dependencies
-from app.settings import SummarySettings
+from app.settings.summary import SummarySettings
 
 
 def _make_summary_settings(

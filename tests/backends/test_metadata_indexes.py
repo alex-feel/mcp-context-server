@@ -10,11 +10,8 @@ Tests cover:
 """
 
 import logging
-import os
 import sqlite3
 from collections.abc import AsyncGenerator
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,25 +19,8 @@ import pytest
 import pytest_asyncio
 
 from app.backends import StorageBackend
-from app.settings import StorageSettings
-
-
-@contextmanager
-def env_var(key: str, value: str | None) -> Generator[None, None, None]:
-    """Context manager for temporarily setting an environment variable."""
-    original = os.environ.get(key)
-    try:
-        if value is not None:
-            os.environ[key] = value
-        elif key in os.environ:
-            del os.environ[key]
-        yield
-    finally:
-        if original is not None:
-            os.environ[key] = original
-        elif key in os.environ:
-            del os.environ[key]
-
+from app.settings.storage import StorageSettings
+from tests.helpers import env_var
 
 # ============================================================================
 # Settings Parsing Tests

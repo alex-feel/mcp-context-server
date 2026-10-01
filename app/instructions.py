@@ -9,7 +9,7 @@ during initialization via the MCP protocol's instructions field.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.settings import InstructionsSettings
+    from app.settings.server import InstructionsSettings
 
 # Default server instructions sent to MCP clients during initialization.
 # Override at runtime via MCP_SERVER_INSTRUCTIONS environment variable.

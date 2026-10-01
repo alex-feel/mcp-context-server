@@ -1,284 +1,33 @@
-"""
-Tests for application settings validation.
+"""Tests for app/settings/storage.py: StorageSettings validation.
 
-Ensures settings validators fail fast with clear error messages
+Ensures the storage validators fail fast with clear error messages
 for invalid configuration values.
 """
-
-import os
-from collections.abc import Generator
-from contextlib import contextmanager
 
 import pytest
 from pydantic import ValidationError
 
-from app.settings import AppSettings
-
-
-@contextmanager
-def env_var(key: str, value: str | None) -> Generator[None, None, None]:
-    """Context manager for temporarily setting an environment variable."""
-    original = os.environ.get(key)
-    try:
-        if value is not None:
-            os.environ[key] = value
-        elif key in os.environ:
-            del os.environ[key]
-        yield
-    finally:
-        if original is not None:
-            os.environ[key] = original
-        elif key in os.environ:
-            del os.environ[key]
-
-
-class TestFtsLanguageValidation:
-    """Test FTS_LANGUAGE setting validation."""
-
-    def test_valid_languages_accepted(self) -> None:
-        """Test that all valid PostgreSQL text search configurations are accepted."""
-        valid_languages = [
-            'simple',
-            'arabic',
-            'armenian',
-            'basque',
-            'catalan',
-            'danish',
-            'dutch',
-            'english',
-            'finnish',
-            'french',
-            'german',
-            'greek',
-            'hindi',
-            'hungarian',
-            'indonesian',
-            'irish',
-            'italian',
-            'lithuanian',
-            'nepali',
-            'norwegian',
-            'portuguese',
-            'romanian',
-            'russian',
-            'serbian',
-            'spanish',
-            'swedish',
-            'tamil',
-            'turkish',
-            'yiddish',
-        ]
-
-        for lang in valid_languages:
-            with env_var('FTS_LANGUAGE', lang):
-                settings = AppSettings()
-                assert settings.fts.language == lang.lower(), f'Language {lang} should be accepted'
-
-    def test_valid_languages_case_insensitive(self) -> None:
-        """Test that language validation is case-insensitive."""
-        case_variations = [
-            ('english', 'english'),
-            ('English', 'english'),
-            ('ENGLISH', 'english'),
-            ('EnGlIsH', 'english'),
-            ('German', 'german'),
-            ('FRENCH', 'french'),
-            ('Russian', 'russian'),
-        ]
-
-        for input_lang, expected_output in case_variations:
-            with env_var('FTS_LANGUAGE', input_lang):
-                settings = AppSettings()
-                assert settings.fts.language == expected_output, (
-                    f'Language {input_lang} should be normalized to {expected_output}'
-                )
-
-    def test_invalid_language_raises_error(self) -> None:
-        """Test that invalid languages raise ValueError with clear message."""
-        invalid_languages = [
-            'invalid',
-            'nonsense',
-            'foo',
-            'bar',
-            'unknown',
-            'eng',
-            'en',
-            'de',
-            'fr',
-        ]
-
-        for lang in invalid_languages:
-            with env_var('FTS_LANGUAGE', lang):
-                with pytest.raises(ValidationError) as exc_info:
-                    AppSettings()
-
-                # Check error message contains useful information
-                error_str = str(exc_info.value)
-                assert 'FTS_LANGUAGE' in error_str, f'Error should mention FTS_LANGUAGE for {lang}'
-                assert 'valid options' in error_str.lower(), f'Error should mention valid options for {lang}'
-
-    def test_invalid_language_error_shows_valid_options(self) -> None:
-        """Test that the error message shows the list of valid options."""
-        with env_var('FTS_LANGUAGE', 'invalid_language'):
-            with pytest.raises(ValidationError) as exc_info:
-                AppSettings()
-
-            error_str = str(exc_info.value)
-            # Check that at least some valid languages are mentioned in the error
-            assert 'english' in error_str.lower(), 'Error should list english as a valid option'
-            assert 'german' in error_str.lower(), 'Error should list german as a valid option'
-            assert 'french' in error_str.lower(), 'Error should list french as a valid option'
-
-    def test_default_language_is_english(self) -> None:
-        """Test that the default FTS language is english."""
-        # Ensure FTS_LANGUAGE is not set
-        with env_var('FTS_LANGUAGE', None):
-            settings = AppSettings()
-            assert settings.fts.language == 'english'
-
-    def test_fts_language_via_environment_variable(self) -> None:
-        """Test that FTS_LANGUAGE can be set via environment variable."""
-        # Test valid language via env var
-        with env_var('FTS_LANGUAGE', 'german'):
-            settings = AppSettings()
-            assert settings.fts.language == 'german'
-
-        # Test case normalization via env var
-        with env_var('FTS_LANGUAGE', 'FRENCH'):
-            settings = AppSettings()
-            assert settings.fts.language == 'french'
-
-    def test_invalid_language_via_environment_variable(self) -> None:
-        """Test that invalid FTS_LANGUAGE via env var raises error."""
-        with env_var('FTS_LANGUAGE', 'completely_invalid_language'):
-            with pytest.raises(ValidationError) as exc_info:
-                AppSettings()
-
-            error_str = str(exc_info.value)
-            assert 'FTS_LANGUAGE' in error_str
-
-    def test_whitespace_language_raises_error(self) -> None:
-        """Test that whitespace-only language raises error."""
-        whitespace_variants = ['   ', '\t', '\n', ' \t\n ']
-
-        for ws in whitespace_variants:
-            with env_var('FTS_LANGUAGE', ws), pytest.raises(ValidationError):
-                AppSettings()
-
-    def test_all_29_valid_languages_count(self) -> None:
-        """Test that exactly 29 valid languages are supported."""
-        # This ensures we don't accidentally add or remove languages
-        valid_languages = {
-            'simple',
-            'arabic',
-            'armenian',
-            'basque',
-            'catalan',
-            'danish',
-            'dutch',
-            'english',
-            'finnish',
-            'french',
-            'german',
-            'greek',
-            'hindi',
-            'hungarian',
-            'indonesian',
-            'irish',
-            'italian',
-            'lithuanian',
-            'nepali',
-            'norwegian',
-            'portuguese',
-            'romanian',
-            'russian',
-            'serbian',
-            'spanish',
-            'swedish',
-            'tamil',
-            'turkish',
-            'yiddish',
-        }
-        assert len(valid_languages) == 29, 'Should have exactly 29 valid PostgreSQL text search configurations'
-
-        # Verify all are accepted
-        for lang in valid_languages:
-            with env_var('FTS_LANGUAGE', lang):
-                settings = AppSettings()
-                assert settings.fts.language == lang
-
-
-class TestAuthProviderSetting:
-    """Tests for MCP_AUTH_PROVIDER setting in AuthSettings."""
-
-    def test_auth_provider_default_is_none(self) -> None:
-        """AuthSettings provider should default to 'none'."""
-        from app.settings import AuthSettings
-
-        settings = AuthSettings()
-        assert settings.provider == 'none'
-
-    def test_auth_provider_from_env(self) -> None:
-        """AuthSettings should load MCP_AUTH_PROVIDER from environment."""
-        from app.settings import AuthSettings
-
-        with env_var('MCP_AUTH_PROVIDER', 'simple_token'):
-            settings = AuthSettings()
-            assert settings.provider == 'simple_token'
-
-    def test_auth_provider_invalid_value(self) -> None:
-        """AuthSettings should reject invalid provider values."""
-        from app.settings import AuthSettings
-
-        with env_var('MCP_AUTH_PROVIDER', 'invalid'), pytest.raises(ValidationError):
-            AuthSettings()
-
-
-class TestTransportStatelessHttp:
-    """Tests for FASTMCP_STATELESS_HTTP setting in TransportSettings."""
-
-    def test_stateless_http_default_is_true(self) -> None:
-        """FASTMCP_STATELESS_HTTP should default to True."""
-        from app.settings import TransportSettings
-
-        settings = TransportSettings()
-        assert settings.stateless_http is True
-
-    def test_stateless_http_enabled_via_env(self) -> None:
-        """FASTMCP_STATELESS_HTTP=true should enable stateless mode."""
-        from app.settings import TransportSettings
-
-        with env_var('FASTMCP_STATELESS_HTTP', 'true'):
-            settings = TransportSettings()
-            assert settings.stateless_http is True
-
-    def test_stateless_http_disabled_via_env(self) -> None:
-        """FASTMCP_STATELESS_HTTP=false should disable stateless mode."""
-        from app.settings import TransportSettings
-
-        with env_var('FASTMCP_STATELESS_HTTP', 'false'):
-            settings = TransportSettings()
-            assert settings.stateless_http is False
+from tests.helpers import env_var
 
 
 class TestStorageImageSizeLimits:
     """MAX_IMAGE_SIZE_MB / MAX_TOTAL_SIZE_MB must be at least 1 megabyte."""
 
     def test_defaults_are_positive(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
         assert settings.max_image_size_mb == 10
         assert settings.max_total_size_mb == 100
 
     def test_zero_image_size_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('MAX_IMAGE_SIZE_MB', '0'), pytest.raises(ValidationError):
             StorageSettings()
 
     def test_negative_total_size_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('MAX_TOTAL_SIZE_MB', '-5'), pytest.raises(ValidationError):
             StorageSettings()
@@ -294,18 +43,18 @@ class TestStoragePoolLimits:
     """
 
     def test_default_is_positive(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         assert StorageSettings().pool_max_readers == 8
 
     def test_zero_readers_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POOL_MAX_READERS', '0'), pytest.raises(ValidationError):
             StorageSettings()
 
     def test_negative_readers_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POOL_MAX_READERS', '-1'), pytest.raises(ValidationError):
             StorageSettings()
@@ -322,30 +71,30 @@ class TestPostgresqlPortBounds:
     """
 
     def test_default_port_is_valid(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         assert StorageSettings().postgresql_port == 5432
 
     def test_zero_port_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POSTGRESQL_PORT', '0'), pytest.raises(ValidationError):
             StorageSettings()
 
     def test_negative_port_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POSTGRESQL_PORT', '-1'), pytest.raises(ValidationError):
             StorageSettings()
 
     def test_above_max_port_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POSTGRESQL_PORT', '70000'), pytest.raises(ValidationError):
             StorageSettings()
 
     def test_boundary_ports_accepted(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POSTGRESQL_PORT', '1'):
             assert StorageSettings().postgresql_port == 1
@@ -366,33 +115,33 @@ class TestPostgresqlPoolLimits:
     """
 
     def test_defaults_are_valid(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
         assert settings.postgresql_pool_min == 2
         assert settings.postgresql_pool_max == 20
 
     def test_zero_pool_max_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POSTGRESQL_POOL_MAX', '0'), pytest.raises(ValidationError):
             StorageSettings()
 
     def test_negative_pool_min_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POSTGRESQL_POOL_MIN', '-1'), pytest.raises(ValidationError):
             StorageSettings()
 
     def test_zero_pool_min_accepted(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POSTGRESQL_POOL_MIN', '0'):
             assert StorageSettings().postgresql_pool_min == 0
 
     def test_pool_min_above_max_rejected(self) -> None:
         """min above max would reach asyncpg as ValueError('min_size is greater than max_size')."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with (
             env_var('POSTGRESQL_POOL_MIN', '2'),
@@ -402,7 +151,7 @@ class TestPostgresqlPoolLimits:
             StorageSettings()
 
     def test_pool_min_equal_max_accepted(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('POSTGRESQL_POOL_MIN', '5'), env_var('POSTGRESQL_POOL_MAX', '5'):
             settings = StorageSettings()
@@ -411,7 +160,7 @@ class TestPostgresqlPoolLimits:
 
     def test_connect_timeout_defaults_to_asyncpg_default(self) -> None:
         """The establishment timeout is a separate knob from the acquire timeout."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
         assert settings.postgresql_connect_timeout_s == 60.0
@@ -427,7 +176,7 @@ class TestPostgresqlPoolLimits:
         classification depends on. Nothing else rejects the ordering, so an operator
         could set it silently.
         """
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with (
             env_var('POSTGRESQL_CONNECT_TIMEOUT_S', '180'),
@@ -445,7 +194,7 @@ class TestPostgresqlPoolLimits:
 
     def test_connect_timeout_below_pool_timeout_accepted(self) -> None:
         """A correctly ordered pair passes, including a tuned-down acquire budget."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with (
             env_var('POSTGRESQL_CONNECT_TIMEOUT_S', '20'),
@@ -494,7 +243,7 @@ class TestPostgresqlPoolLimits:
         restart-loop-on-permanent-misconfiguration class the pool-size bounds
         close.
         """
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var(env_name, value), pytest.raises(ValidationError):
             StorageSettings()
@@ -510,7 +259,7 @@ class TestPostgresqlPoolLimits:
     )
     def test_boundary_timing_values_accepted(self, env_name: str, value: str) -> None:
         """Documented boundary values (single attempt, no delay, flat backoff) stay valid."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var(env_name, value):
             StorageSettings()
@@ -541,7 +290,7 @@ class TestSqlitePragmaValidation:
     )
     def test_unrecognized_pragma_argument_rejected(self, env_name: str, value: str) -> None:
         """A value SQLite would silently ignore fails at the configuration boundary."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var(env_name, value), pytest.raises(ValidationError, match='SQLite'):
             StorageSettings()
@@ -560,7 +309,7 @@ class TestSqlitePragmaValidation:
     )
     def test_recognized_pragma_argument_normalized(self, env_name: str, value: str, expected: str) -> None:
         """Every spelling SQLite accepts stays valid and is normalized to upper case."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var(env_name, value):
             settings = StorageSettings()
@@ -568,7 +317,7 @@ class TestSqlitePragmaValidation:
 
     def test_defaults_are_valid_pragma_arguments(self) -> None:
         """The shipped defaults pass their own validation."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
         assert settings.sqlite_journal_mode == 'WAL'
@@ -579,7 +328,7 @@ class TestSqlitePragmaValidation:
     @pytest.mark.parametrize('value', ['5000', '256', '131072', '0'])
     def test_unsupported_page_size_rejected(self, value: str) -> None:
         """A page size SQLite would ignore is rejected instead of silently dropped."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('SQLITE_PAGE_SIZE', value), pytest.raises(ValidationError, match='power of two'):
             StorageSettings()
@@ -587,74 +336,10 @@ class TestSqlitePragmaValidation:
     @pytest.mark.parametrize('value', ['512', '4096', '65536'])
     def test_supported_page_size_accepted(self, value: str) -> None:
         """Every power of two in SQLite's supported range stays valid."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('SQLITE_PAGE_SIZE', value):
             assert StorageSettings().sqlite_page_size == int(value)
-
-
-class TestPgvectorDimensionLimit:
-    """EMBEDDING_DIM against the pgvector index cap on the fp32 PostgreSQL path.
-
-    pgvector caps HNSW/IVFFlat index dimensionality at 2000 for the vector type.
-    The fp32 PostgreSQL path always builds an HNSW index over vector(dim), so a
-    dimension above 2000 passes pydantic's le=4096 field bound yet crashes the
-    semantic-search migration at CREATE INDEX. Enabling compression (BYTEA
-    payloads, no pgvector index) or using SQLite (sqlite-vec has no such cap)
-    removes the constraint, so the guard is scoped to PostgreSQL + fp32 + embedding
-    generation on and rejects the misconfiguration at the settings boundary.
-    """
-
-    def test_fp32_postgresql_dim_above_limit_rejected(self) -> None:
-        """PostgreSQL + compression off + dim above 2000 is rejected before boot."""
-        with (
-            env_var('STORAGE_BACKEND', 'postgresql'),
-            env_var('ENABLE_EMBEDDING_COMPRESSION', 'false'),
-            env_var('ENABLE_EMBEDDING_GENERATION', 'true'),
-            env_var('EMBEDDING_DIM', '2500'),
-            pytest.raises(ValidationError, match='pgvector index limit'),
-        ):
-            AppSettings()
-
-    def test_fp32_postgresql_dim_at_limit_accepted(self) -> None:
-        """The exact 2000-dimension boundary is a valid fp32 PostgreSQL configuration."""
-        with (
-            env_var('STORAGE_BACKEND', 'postgresql'),
-            env_var('ENABLE_EMBEDDING_COMPRESSION', 'false'),
-            env_var('ENABLE_EMBEDDING_GENERATION', 'true'),
-            env_var('EMBEDDING_DIM', '2000'),
-        ):
-            assert AppSettings().embedding.dim == 2000
-
-    def test_compressed_postgresql_dim_above_limit_accepted(self) -> None:
-        """With compression on, the vector is stored as BYTEA and the dim cap does not apply."""
-        with (
-            env_var('STORAGE_BACKEND', 'postgresql'),
-            env_var('ENABLE_EMBEDDING_COMPRESSION', 'true'),
-            env_var('ENABLE_EMBEDDING_GENERATION', 'true'),
-            env_var('EMBEDDING_DIM', '2500'),
-        ):
-            assert AppSettings().embedding.dim == 2500
-
-    def test_sqlite_dim_above_limit_accepted(self) -> None:
-        """SQLite's sqlite-vec has no per-dimension index cap, so the guard does not fire."""
-        with (
-            env_var('STORAGE_BACKEND', 'sqlite'),
-            env_var('ENABLE_EMBEDDING_COMPRESSION', 'false'),
-            env_var('ENABLE_EMBEDDING_GENERATION', 'true'),
-            env_var('EMBEDDING_DIM', '2500'),
-        ):
-            assert AppSettings().embedding.dim == 2500
-
-    def test_generation_off_postgresql_dim_above_limit_accepted(self) -> None:
-        """With generation off, no fresh fp32 vector table is provisioned, so the guard defers."""
-        with (
-            env_var('STORAGE_BACKEND', 'postgresql'),
-            env_var('ENABLE_EMBEDDING_COMPRESSION', 'false'),
-            env_var('ENABLE_EMBEDDING_GENERATION', 'false'),
-            env_var('EMBEDDING_DIM', '2500'),
-        ):
-            assert AppSettings().embedding.dim == 2500
 
 
 class TestBlankDbPath:
@@ -667,13 +352,13 @@ class TestBlankDbPath:
     """
 
     def test_empty_db_path_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('DB_PATH', ''), pytest.raises(ValidationError, match='must not be empty'):
             StorageSettings()
 
     def test_whitespace_db_path_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('DB_PATH', '   '), pytest.raises(ValidationError, match='must not be empty'):
             StorageSettings()
@@ -681,13 +366,13 @@ class TestBlankDbPath:
     def test_valid_db_path_accepted(self) -> None:
         from pathlib import Path
 
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('DB_PATH', '/tmp/context.db'):
             assert StorageSettings().db_path == Path('/tmp/context.db')
 
     def test_default_db_path_accepted(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('DB_PATH', None):
             assert StorageSettings().db_path is not None
@@ -709,21 +394,21 @@ class TestMetadataIndexedFieldNames:
     """
 
     def test_default_fields_accepted(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
         assert 'status' in settings.metadata_indexed_fields
         assert settings.metadata_indexed_fields['technologies'] == 'array'
 
     def test_invalid_grammar_field_rejected(self) -> None:
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('METADATA_INDEXED_FIELDS', 'bad-field'), pytest.raises(ValidationError, match='invalid field name'):
             StorageSettings()
 
     def test_field_over_fifty_characters_rejected(self) -> None:
         """A 51-character field truncates in PostgreSQL's catalog once prefixed, so it is refused."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         field = 'a' * 51
         with env_var('METADATA_INDEXED_FIELDS', field), pytest.raises(ValidationError, match='at most 50'):
@@ -731,7 +416,7 @@ class TestMetadataIndexedFieldNames:
 
     def test_field_at_fifty_characters_accepted(self) -> None:
         """The 50-character boundary keeps the generated idx_metadata_ name within 63 bytes."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         field = 'a' * 50
         with env_var('METADATA_INDEXED_FIELDS', field):
@@ -739,7 +424,7 @@ class TestMetadataIndexedFieldNames:
 
     def test_casefold_colliding_fields_rejected(self) -> None:
         """Two names differing only in case collide on SQLite, so the config is refused."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with (
             env_var('METADATA_INDEXED_FIELDS', 'Status,status'),
@@ -754,7 +439,7 @@ class TestMetadataIndexedFieldNames:
         that message describes a nonexistent casing problem and misdirects the
         operator away from the actual duplicate entry.
         """
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with (
             env_var('METADATA_INDEXED_FIELDS', 'status,status'),
@@ -765,7 +450,7 @@ class TestMetadataIndexedFieldNames:
 
     def test_duplicate_field_with_conflicting_type_hints_rejected(self) -> None:
         """A repeated name carrying conflicting type hints gets the duplicate diagnostic."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with (
             env_var('METADATA_INDEXED_FIELDS', 'status:string,status:integer'),
@@ -775,51 +460,9 @@ class TestMetadataIndexedFieldNames:
 
     def test_distinct_fields_accepted(self) -> None:
         """Case-distinct-but-not-colliding names remain valid."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         with env_var('METADATA_INDEXED_FIELDS', 'status,agent_name'):
             fields = StorageSettings().metadata_indexed_fields
         assert 'status' in fields
         assert 'agent_name' in fields
-
-
-class TestEmbeddingQueryInstruction:
-    """Test the EMBEDDING_QUERY_INSTRUCTION field on EmbeddingSettings."""
-
-    def test_query_instruction_default_none(self) -> None:
-        """The instruction defaults to None so query embedding text stays bare."""
-        from app.settings import EmbeddingSettings
-
-        with env_var('EMBEDDING_QUERY_INSTRUCTION', None):
-            settings = EmbeddingSettings()
-        assert settings.query_instruction is None
-
-    def test_query_instruction_field_alias(self) -> None:
-        """The field maps to the EMBEDDING_QUERY_INSTRUCTION environment variable."""
-        from app.settings import EmbeddingSettings
-
-        field_info = EmbeddingSettings.model_fields['query_instruction']
-        assert field_info.alias == 'EMBEDDING_QUERY_INSTRUCTION'
-
-    def test_query_instruction_env_value_preserved_verbatim(self) -> None:
-        """A multi-line env value survives verbatim, including the embedded newline."""
-        from app.settings import EmbeddingSettings
-
-        value = 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:'
-        with env_var('EMBEDDING_QUERY_INSTRUCTION', value):
-            settings = EmbeddingSettings()
-        assert settings.query_instruction == value
-
-    def test_query_instruction_empty_env_is_falsy(self) -> None:
-        """An empty env value stays falsy so the query path treats it as unset."""
-        from app.settings import EmbeddingSettings
-
-        with env_var('EMBEDDING_QUERY_INSTRUCTION', ''):
-            settings = EmbeddingSettings()
-        assert not settings.query_instruction
-
-    def test_query_instruction_via_app_settings(self) -> None:
-        """The env value propagates through AppSettings.embedding."""
-        with env_var('EMBEDDING_QUERY_INSTRUCTION', 'Prefix: '):
-            settings = AppSettings()
-        assert settings.embedding.query_instruction == 'Prefix: '

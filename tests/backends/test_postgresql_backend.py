@@ -334,7 +334,7 @@ class TestPoolHardeningSettings:
 
     def test_pool_hardening_settings_defaults(self) -> None:
         """Verify pool hardening settings have expected defaults."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
 
@@ -344,7 +344,7 @@ class TestPoolHardeningSettings:
 
     def test_pool_hardening_settings_field_constraints(self) -> None:
         """Verify pool hardening settings have ge=0 constraint allowing zero."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         # Default settings should have valid values
         settings = StorageSettings()
@@ -384,7 +384,7 @@ class TestPoolHardeningCallbacks:
 
     def test_pool_hardening_defaults_are_non_zero(self) -> None:
         """Verify default pool hardening settings are non-zero (enabled)."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
 
@@ -394,7 +394,7 @@ class TestPoolHardeningCallbacks:
 
     def test_pool_hardening_values_match_plan(self) -> None:
         """Verify pool hardening defaults match implementation guide values."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
 
@@ -525,7 +525,7 @@ class TestTcpKeepaliveSettings:
 
     def test_tcp_keepalive_settings_defaults(self) -> None:
         """Verify TCP keepalive settings have expected defaults."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
 
@@ -535,7 +535,7 @@ class TestTcpKeepaliveSettings:
 
     def test_tcp_keepalive_settings_allow_zero(self) -> None:
         """Verify TCP keepalive settings allow zero (disabled)."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
 
@@ -546,7 +546,7 @@ class TestTcpKeepaliveSettings:
 
     def test_tcp_keepalive_settings_types_are_int(self) -> None:
         """Verify TCP keepalive settings are integers (required by setsockopt)."""
-        from app.settings import StorageSettings
+        from app.settings.storage import StorageSettings
 
         settings = StorageSettings()
 

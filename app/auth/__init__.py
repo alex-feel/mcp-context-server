@@ -29,7 +29,7 @@ See also:
     - app.auth.claims: IdP-agnostic claim extraction helpers
     - app.auth.principal: per-request RequestPrincipal resolution
     - app.auth.access: effective-principal resolution and the publish gate
-    - app.settings.AuthSettings: Authentication configuration
+    - app.settings.auth.AuthSettings: Authentication configuration
     - FastMCP authentication docs: https://gofastmcp.com/servers/auth
 """
 
@@ -43,8 +43,8 @@ from app.auth.principal import RequestPrincipal
 from app.auth.principal import resolve_request_principal
 from app.auth.simple_token import SimpleTokenVerifier
 from app.errors import ConfigurationError
-from app.settings import AuthSettings
 from app.settings import get_settings
+from app.settings.auth import AuthSettings
 
 if TYPE_CHECKING:
     from fastmcp.server.auth import TokenVerifier as AuthProvider

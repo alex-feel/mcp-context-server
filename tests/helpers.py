@@ -6,6 +6,9 @@ Application modules are imported inside the helpers, so importing this
 module never loads the application or reads settings.
 """
 
+import os
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -96,3 +99,39 @@ async def store_single_chunk_embedding(
 
     chunk = ChunkEmbedding(embedding=embedding, start_index=0, end_index=0)
     await repo.store_chunked(context_id, [chunk], model)
+
+
+@contextmanager
+def env_var(key: str, value: str | None) -> Generator[None, None, None]:
+    """Context manager for temporarily setting an environment variable."""
+    original = os.environ.get(key)
+    try:
+        if value is not None:
+            os.environ[key] = value
+        elif key in os.environ:
+            del os.environ[key]
+        yield
+    finally:
+        if original is not None:
+            os.environ[key] = original
+        elif key in os.environ:
+            del os.environ[key]
+
+
+@contextmanager
+def env_vars(**kwargs: str | None) -> Generator[None, None, None]:
+    """Context manager for temporarily setting multiple environment variables."""
+    originals = {key: os.environ.get(key) for key in kwargs}
+    try:
+        for key, value in kwargs.items():
+            if value is not None:
+                os.environ[key] = value
+            elif key in os.environ:
+                del os.environ[key]
+        yield
+    finally:
+        for key, original in originals.items():
+            if original is not None:
+                os.environ[key] = original
+            elif key in os.environ:
+                del os.environ[key]

@@ -211,7 +211,7 @@ class TestServerJsonSchemaValidation:
         server_json_content: dict[str, Any],
     ) -> None:
         """
-        Verify all env vars from settings.py are in server.json.
+        Verify all env vars from app.settings are in server.json.
 
         Uses recursive detection to automatically find ALL environment variable aliases
         from AppSettings and all nested settings classes (StorageSettings, TransportSettings,
@@ -331,7 +331,7 @@ class TestServerJsonSchemaValidation:
         missing = settings_env_vars - server_json_env_vars
         if missing:
             pytest.fail(
-                f'Environment variables defined in settings.py but missing from server.json:\n'
+                f'Environment variables defined in app.settings but missing from server.json:\n'
                 f'{sorted(missing)}',
             )
 

@@ -1,24 +1,23 @@
-"""Tests for SummarySettings, field aliases, and summary prompt configuration.
+"""Tests for app/settings/summary.py.
 
 Tests verify:
 - SummarySettings field defaults, env var overrides, and validation ranges
 - Field alias names match expected environment variable names
 - Field constraints (ge, le, default) are correctly configured
 - SUMMARY_MIN_CONTENT_LENGTH in SummarySettings
-- DEFAULT_SUMMARY_PROMPT and resolve_summary_prompt() behavior
+- The Ollama-specific summary settings
 - SummarySettings integration with AppSettings
+- IndexTreeNodeSummarySettings defaults, overrides, and bounds
 """
 
-from unittest.mock import MagicMock
-from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
 
 from app.settings import AppSettings
-from app.settings import SummarySettings
-from app.summary.instructions import DEFAULT_SUMMARY_PROMPT
-from app.summary.instructions import resolve_summary_prompt
+from app.settings import get_settings
+from app.settings.summary import SummarySettings
+from tests.helpers import env_vars
 
 
 class TestSummarySettings:
@@ -351,60 +350,6 @@ class TestSummarySettingsFieldAliases:
         assert field_info.alias == 'SUMMARY_PROMPT'
 
 
-class TestSummaryPrompt:
-    """Tests for DEFAULT_SUMMARY_PROMPT and resolve_summary_prompt(source)."""
-
-    def test_default_prompt_exists_and_non_empty(self) -> None:
-        """Verify DEFAULT_SUMMARY_PROMPT is defined and non-empty."""
-        assert DEFAULT_SUMMARY_PROMPT
-        assert len(DEFAULT_SUMMARY_PROMPT) > 100
-
-    def test_default_prompt_contains_no_think(self) -> None:
-        """Verify DEFAULT_SUMMARY_PROMPT starts with /no_think."""
-        assert DEFAULT_SUMMARY_PROMPT.startswith('/no_think')
-
-    def test_default_prompt_contains_key_constraints(self) -> None:
-        """Verify prompt contains essential constraint phrases."""
-        assert 'single' in DEFAULT_SUMMARY_PROMPT.lower()
-        assert 'paragraph' in DEFAULT_SUMMARY_PROMPT.lower()
-        assert 'do not add' in DEFAULT_SUMMARY_PROMPT.lower()
-        assert 'Output ONLY' in DEFAULT_SUMMARY_PROMPT
-
-    def test_resolve_returns_agent_prompt_when_none(self) -> None:
-        """Verify resolve_summary_prompt('agent') returns AGENT_SUMMARY_PROMPT when no custom."""
-        mock_settings = MagicMock()
-        mock_settings.summary.prompt = None
-        with patch('app.settings.get_settings', return_value=mock_settings):
-            assert resolve_summary_prompt('agent') == DEFAULT_SUMMARY_PROMPT
-
-    def test_resolve_returns_user_prompt_when_empty(self) -> None:
-        """Verify resolve_summary_prompt('user') returns USER_SUMMARY_PROMPT when empty."""
-        from app.summary.instructions import USER_SUMMARY_PROMPT
-        mock_settings = MagicMock()
-        mock_settings.summary.prompt = ''
-        with patch('app.settings.get_settings', return_value=mock_settings):
-            assert resolve_summary_prompt('user') == USER_SUMMARY_PROMPT
-
-    def test_resolve_returns_agent_prompt_when_whitespace(self) -> None:
-        """Verify resolve_summary_prompt returns source-specific prompt for whitespace."""
-        mock_settings = MagicMock()
-        mock_settings.summary.prompt = '   '
-        with patch('app.settings.get_settings', return_value=mock_settings):
-            assert resolve_summary_prompt('agent') == DEFAULT_SUMMARY_PROMPT
-
-    def test_resolve_returns_custom_when_set(self) -> None:
-        """Verify resolve_summary_prompt returns custom prompt when set."""
-        mock_settings = MagicMock()
-        mock_settings.summary.prompt = 'Custom prompt for testing'
-        with patch('app.settings.get_settings', return_value=mock_settings):
-            assert resolve_summary_prompt('agent') == 'Custom prompt for testing'
-
-    def test_resolve_with_real_settings(self) -> None:
-        """Verify resolve_summary_prompt works with real settings (no custom prompt)."""
-        result = resolve_summary_prompt('agent')
-        assert result == DEFAULT_SUMMARY_PROMPT
-
-
 class TestAppSettingsSummaryIntegration:
     """Tests for SummarySettings integration with AppSettings."""
 
@@ -433,3 +378,115 @@ class TestAppSettingsSummaryIntegration:
         settings = AppSettings()
         assert settings.summary.model == 'qwen3:4b'
         assert settings.summary.generation_enabled is False
+
+
+class TestSummaryOllamaSettings:
+    """Test SUMMARY_OLLAMA_TRUNCATE and SUMMARY_OLLAMA_NUM_CTX settings."""
+
+    def test_summary_ollama_truncate_default_is_false(self) -> None:
+        """Verify SUMMARY_OLLAMA_TRUNCATE defaults to false."""
+        with env_vars(SUMMARY_OLLAMA_TRUNCATE=None):
+            settings = AppSettings()
+            assert settings.summary.ollama_truncate is False
+
+    def test_summary_ollama_truncate_can_be_set_true(self) -> None:
+        """Verify SUMMARY_OLLAMA_TRUNCATE can be explicitly set to true."""
+        with env_vars(SUMMARY_OLLAMA_TRUNCATE='true'):
+            settings = AppSettings()
+            assert settings.summary.ollama_truncate is True
+
+    def test_summary_ollama_truncate_can_be_set_false(self) -> None:
+        """Verify SUMMARY_OLLAMA_TRUNCATE can be explicitly set to false."""
+        with env_vars(SUMMARY_OLLAMA_TRUNCATE='false'):
+            settings = AppSettings()
+            assert settings.summary.ollama_truncate is False
+
+    def test_summary_ollama_num_ctx_default_is_32768(self) -> None:
+        """Verify SUMMARY_OLLAMA_NUM_CTX defaults to 32768."""
+        with env_vars(SUMMARY_OLLAMA_NUM_CTX=None):
+            settings = AppSettings()
+            assert settings.summary.ollama_num_ctx == 32768
+
+    def test_summary_ollama_num_ctx_can_be_customized(self) -> None:
+        """Verify SUMMARY_OLLAMA_NUM_CTX can be set to custom value."""
+        with env_vars(SUMMARY_OLLAMA_NUM_CTX='8192'):
+            settings = AppSettings()
+            assert settings.summary.ollama_num_ctx == 8192
+
+    def test_summary_ollama_num_ctx_minimum_validation(self) -> None:
+        """Verify SUMMARY_OLLAMA_NUM_CTX validates minimum value (512)."""
+        with env_vars(SUMMARY_OLLAMA_NUM_CTX='100'), pytest.raises(ValidationError):
+            AppSettings()
+
+    def test_summary_ollama_num_ctx_maximum_validation(self) -> None:
+        """Verify SUMMARY_OLLAMA_NUM_CTX validates maximum value (2097152)."""
+        with env_vars(SUMMARY_OLLAMA_NUM_CTX='3000000'), pytest.raises(ValidationError):
+            AppSettings()
+
+
+class TestIndexTreeNodeSummarySettings:
+    """Per-node index_tree summary settings parse with the documented defaults."""
+
+    def test_node_summaries_default_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', raising=False)
+        get_settings.cache_clear()
+        assert get_settings().index_tree.node_summaries_enabled is True
+
+    def test_node_summaries_can_disable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'false')
+        get_settings.cache_clear()
+        assert get_settings().index_tree.node_summaries_enabled is False
+
+    def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in (
+            'INDEX_TREE_NODE_SUMMARY_PROMPT',
+            'INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH',
+            'INDEX_TREE_NODE_SUMMARY_TIMEOUT_S',
+            'INDEX_TREE_NODE_SUMMARY_MAX_NODES',
+            'INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S',
+        ):
+            monkeypatch.delenv(name, raising=False)
+        get_settings.cache_clear()
+        index_tree = get_settings().index_tree
+        assert index_tree.prompt is None
+        assert index_tree.min_content_length == 500
+        assert index_tree.timeout_s == 240.0
+        assert index_tree.max_concurrent >= 1
+        # Total-work bounds: the concurrency caps limit how much runs at once,
+        # these limit how much runs in total for one entry.
+        assert index_tree.max_nodes == 200
+        assert index_tree.total_timeout_s == 600.0
+
+    def test_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '50')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TIMEOUT_S', '12.5')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT', '7')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '25')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '90')
+        get_settings.cache_clear()
+        index_tree = get_settings().index_tree
+        assert index_tree.min_content_length == 50
+        assert index_tree.timeout_s == 12.5
+        assert index_tree.max_concurrent == 7
+        assert index_tree.max_nodes == 25
+        assert index_tree.total_timeout_s == 90.0
+
+    @pytest.mark.parametrize(
+        ('name', 'value'),
+        [
+            ('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '0'),
+            ('INDEX_TREE_NODE_SUMMARY_MAX_NODES', '10001'),
+            ('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '0'),
+            ('INDEX_TREE_NODE_SUMMARY_TOTAL_TIMEOUT_S', '3601'),
+        ],
+    )
+    def test_total_work_bounds_are_range_checked(
+        self, monkeypatch: pytest.MonkeyPatch, name: str, value: str,
+    ) -> None:
+        """Out-of-range values are refused rather than silently disabling the bound."""
+        from pydantic import ValidationError
+
+        monkeypatch.setenv(name, value)
+        get_settings.cache_clear()
+        with pytest.raises(ValidationError):
+            get_settings()

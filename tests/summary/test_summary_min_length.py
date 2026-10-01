@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 import app.server
 from app.repositories.context_repository.records import EntryProbe
-from app.settings import SummarySettings
+from app.settings.summary import SummarySettings
 from app.startup import ensure_repositories
 
 store_context = app.server.store_context
