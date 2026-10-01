@@ -158,10 +158,10 @@ class TestStoreContextMinContentLength:
         short_text = 'a' * 499  # Just below default threshold of 500
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=mock_summary_provider),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_summary_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary_provider),
         ):
             result = await store_context(
@@ -189,10 +189,10 @@ class TestStoreContextMinContentLength:
         long_text = 'a' * 500  # Exactly at default threshold of 500
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=Mock()),
             patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
                 'app.tools._generation.generate_summary_with_timeout',
@@ -223,10 +223,10 @@ class TestStoreContextMinContentLength:
         boundary_text = 'x' * 500
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=Mock()),
             patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
                 'app.tools._generation.generate_summary_with_timeout',
@@ -258,10 +258,10 @@ class TestStoreContextMinContentLength:
         below_text = 'b' * 499
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=mock_summary_provider),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_summary_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary_provider),
         ):
             result = await store_context(
@@ -284,10 +284,10 @@ class TestStoreContextMinContentLength:
         above_text = 'c' * 501
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=Mock()),
             patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
                 'app.tools._generation.generate_summary_with_timeout',
@@ -310,7 +310,7 @@ class TestStoreContextMinContentLength:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """With min_content_length=0, even short text gets summary."""
-        import app.tools.context as context_module
+        import app.tools.context.store as context_store_module
 
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
@@ -324,13 +324,13 @@ class TestStoreContextMinContentLength:
         mock_settings.chunking.enabled = False
 
         # Replace module-level settings (frozen Pydantic model cannot be patched in-place)
-        monkeypatch.setattr(context_module, 'settings', mock_settings)
+        monkeypatch.setattr(context_store_module, 'settings', mock_settings)
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=Mock()),
             patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
                 'app.tools._generation.generate_summary_with_timeout',
@@ -362,8 +362,8 @@ class TestUpdateContextMinContentLength:
         short_text = 'a' * 100  # Well below default threshold of 500
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.update.get_summary_provider', return_value=Mock()),
             patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch('app.tools._generation.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
@@ -393,8 +393,8 @@ class TestUpdateContextMinContentLength:
         long_text = 'a' * 500  # Well above default threshold of 300
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repos),
-            patch('app.tools.context.get_summary_provider', return_value=Mock()),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.update.get_summary_provider', return_value=Mock()),
             patch('app.tools._generation.get_summary_provider', return_value=Mock()),
             patch(
                 'app.tools._generation.generate_summary_with_timeout',

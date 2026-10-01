@@ -68,7 +68,6 @@ class TestGenerateSummaryWithTimeout:
         mock_provider.summarize = AsyncMock(return_value='')
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
@@ -85,7 +84,6 @@ class TestGenerateSummaryWithTimeout:
         mock_provider.summarize = AsyncMock(return_value='   \n\t  ')
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
@@ -103,7 +101,6 @@ class TestGenerateSummaryWithTimeout:
         mock_provider.summarize = AsyncMock(return_value=expected)
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=120.0),
         ):
@@ -117,7 +114,6 @@ class TestGenerateSummaryWithTimeout:
     async def test_no_provider_returns_none(self) -> None:
         """No summary provider configured -> returns None without error."""
         with (
-            patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
             from app.tools._generation import generate_summary_with_timeout

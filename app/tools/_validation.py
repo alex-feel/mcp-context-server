@@ -310,8 +310,9 @@ def validate_and_normalize_images(
     # Enforce the documented per-entry count limit here at the single shared
     # chokepoint so it covers store_context, update_context, AND both batch
     # tools (whose per-entry image lists never pass through the Pydantic
-    # models). The tool-boundary Field declarations in app/tools/context.py
-    # advertise the same bound as maxItems in the MCP wire schema.
+    # models). The tool-boundary Field declarations in app/tools/context/store.py
+    # and app/tools/context/update.py advertise the same bound as maxItems in the
+    # MCP wire schema.
     if len(images) > MAX_IMAGES_PER_ENTRY:
         msg = f'Too many images: {len(images)} provided, maximum is {MAX_IMAGES_PER_ENTRY} per entry'
         if error_mode == 'raise':

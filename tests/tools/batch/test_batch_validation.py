@@ -260,7 +260,7 @@ class TestIdListBoundaryCaps:
         return TypeAdapter(annotation)
 
     def test_get_context_by_ids_rejects_oversized_id_list(self) -> None:
-        from app.tools.context import get_context_by_ids
+        from app.tools.context.retrieve import get_context_by_ids
 
         adapter = self._param_adapter(get_context_by_ids, 'context_ids')
         ids = [generate_id() for _ in range(101)]

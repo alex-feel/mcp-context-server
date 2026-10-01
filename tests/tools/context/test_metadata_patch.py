@@ -110,7 +110,7 @@ class TestMetadataPatchBasicOperations:
 
         RFC 7396: New keys in patch object are added to target.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
                 text=None,
@@ -139,7 +139,7 @@ class TestMetadataPatchBasicOperations:
 
         RFC 7396: Existing keys in target are replaced with patch values.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000001c8',
                 text=None,
@@ -167,7 +167,7 @@ class TestMetadataPatchBasicOperations:
         RFC 7396: A null value in the patch removes the key from target.
         WARNING: This means you cannot set a value to null - null always means delete.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000315',
                 text=None,
@@ -206,7 +206,7 @@ class TestMetadataPatchNestedOperations:
             },
         }
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000006f',
                 text=None,
@@ -240,7 +240,7 @@ class TestMetadataPatchNestedOperations:
             },
         }
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000000de',
                 text=None,
@@ -273,7 +273,7 @@ class TestMetadataPatchMultipleFields:
             'completed': False,
         }
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000014d',
                 text=None,
@@ -307,7 +307,7 @@ class TestMetadataPatchMultipleFields:
             'field_to_remove': None,  # RFC 7396: null means delete
         }
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000001bc',
                 text=None,
@@ -336,7 +336,7 @@ class TestMetadataPatchEdgeCases:
 
         RFC 7396: Empty patch is a no-op for the data but still updates timestamp.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000022b',
                 text=None,
@@ -361,7 +361,7 @@ class TestMetadataPatchEdgeCases:
 
         The patch should create new metadata from scratch.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000029a',
                 text=None,
@@ -382,7 +382,7 @@ class TestMetadataPatchEdgeCases:
         This is tested at the repository level, but we verify the tool correctly
         delegates to the patch_metadata method.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000309',
                 text=None,
@@ -408,7 +408,7 @@ class TestMetadataPatchEdgeCases:
             'tags_list': ['new', 'array', 'values'],
         }
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000378',
                 text=None,
@@ -438,7 +438,7 @@ class TestMetadataPatchValidation:
         These parameters are mutually exclusive - use metadata for full replacement
         or metadata_patch for partial updates.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd000003e7',
@@ -459,7 +459,7 @@ class TestMetadataPatchValidation:
         """Test error when context entry doesn't exist."""
         mock_repositories.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd00003039',
@@ -484,7 +484,7 @@ class TestMetadataPatchValidation:
         """
         mock_repositories.context.patch_metadata.return_value = (False, [])
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd00000457',
@@ -507,7 +507,7 @@ class TestMetadataPatchWithOtherFields:
     @pytest.mark.asyncio
     async def test_patch_with_text_update(self, mock_context, mock_repositories):
         """Test metadata_patch combined with text content update."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000008ae',
                 text='Updated text content',
@@ -529,7 +529,7 @@ class TestMetadataPatchWithOtherFields:
     @pytest.mark.asyncio
     async def test_patch_with_tags_update(self, mock_context, mock_repositories):
         """Test metadata_patch combined with tags update."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000d05',
                 text=None,
@@ -550,7 +550,7 @@ class TestMetadataPatchWithOtherFields:
 
         Unlike the error when no fields provided, metadata_patch alone should work.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000115c',
                 text=None,
@@ -574,7 +574,7 @@ class TestMetadataPatchTimestamp:
 
         The repository method should update the timestamp atomically with the patch.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000015b3',
                 text=None,
@@ -596,7 +596,7 @@ class TestMetadataPatchSpecialValues:
     @pytest.mark.asyncio
     async def test_patch_with_boolean_values(self, mock_context, mock_repositories):
         """Test patching with boolean values."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001a0a',
                 text=None,
@@ -618,7 +618,7 @@ class TestMetadataPatchSpecialValues:
     @pytest.mark.asyncio
     async def test_patch_with_numeric_values(self, mock_context, mock_repositories):
         """Test patching with integer and float values."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001e61',
                 text=None,
@@ -640,7 +640,7 @@ class TestMetadataPatchSpecialValues:
     @pytest.mark.asyncio
     async def test_patch_with_string_values(self, mock_context, mock_repositories):
         """Test patching with various string values including special characters."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000022b8',
                 text=None,
@@ -687,7 +687,7 @@ class TestRFC7396DeepMergeSemantics:
             },
         }
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001ce4',
                 text=None,
@@ -717,7 +717,7 @@ class TestRFC7396DeepMergeSemantics:
         CRITICAL: A null value in the TARGET is preserved (it's actual data).
         Only null values in the PATCH cause deletion.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001cf5',
                 text=None,
@@ -755,7 +755,7 @@ class TestRFC7396DeepMergeSemantics:
             },
         }
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001cf7',
                 text=None,
@@ -784,7 +784,7 @@ class TestRFC7396DeepMergeSemantics:
 
         Key "d" should be preserved because it's not mentioned in the patch.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001ce8',
                 text=None,
@@ -813,7 +813,7 @@ class TestRFC7396DeepMergeSemantics:
 
         Key "b" should be deleted, but key "d" should be preserved.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001ce9',
                 text=None,
@@ -845,7 +845,7 @@ class TestMetadataPatchRFC7396AppendixA:
     @pytest.mark.asyncio
     async def test_rfc7396_case1_simple_value_replacement(self, mock_context, mock_repositories):
         """RFC 7396 Case #1: Simple value replacement {"a":"b"} + {"a":"c"} = {"a":"c"}."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001c85',
                 text=None,
@@ -866,7 +866,7 @@ class TestMetadataPatchRFC7396AppendixA:
     @pytest.mark.asyncio
     async def test_rfc7396_case2_add_new_key(self, mock_context, mock_repositories):
         """RFC 7396 Case #2: Add new key {"a":"b"} + {"b":"c"} = {"a":"b","b":"c"}."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001c86',
                 text=None,
@@ -887,7 +887,7 @@ class TestMetadataPatchRFC7396AppendixA:
     @pytest.mark.asyncio
     async def test_rfc7396_case3_delete_key_with_null(self, mock_context, mock_repositories):
         """RFC 7396 Case #3: Delete key with null {"a":"b"} + {"a":null} = {}."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001c87',
                 text=None,
@@ -908,7 +908,7 @@ class TestMetadataPatchRFC7396AppendixA:
     @pytest.mark.asyncio
     async def test_rfc7396_case4_delete_one_preserve_other(self, mock_context, mock_repositories):
         """RFC 7396 Case #4: Delete one key, preserve another {"a":"b","b":"c"} + {"a":null} = {"b":"c"}."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001c88',
                 text=None,
@@ -929,7 +929,7 @@ class TestMetadataPatchRFC7396AppendixA:
     @pytest.mark.asyncio
     async def test_rfc7396_case5_array_replacement(self, mock_context, mock_repositories):
         """RFC 7396 Case #5: Array replacement {"a":["b"]} + {"a":"c"} = {"a":"c"}."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001c89',
                 text=None,
@@ -950,7 +950,7 @@ class TestMetadataPatchRFC7396AppendixA:
     @pytest.mark.asyncio
     async def test_rfc7396_case6_replace_value_with_array(self, mock_context, mock_repositories):
         """RFC 7396 Case #6: Replace value with array {"a":"c"} + {"a":["b"]} = {"a":["b"]}."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001c8a',
                 text=None,
@@ -971,7 +971,7 @@ class TestMetadataPatchRFC7396AppendixA:
     @pytest.mark.asyncio
     async def test_rfc7396_case8_array_of_objects_replacement(self, mock_context, mock_repositories):
         """RFC 7396 Case #8: Array of objects replacement {"a":[{"b":"c"}]} + {"a":[1]} = {"a":[1]}."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001c8c',
                 text=None,
@@ -1000,7 +1000,7 @@ class TestMetadataPatchTypeConversions:
     @pytest.mark.asyncio
     async def test_patch_object_to_scalar(self, mock_context, mock_repositories):
         """Test replacing object value with scalar."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00002329',
                 text=None,
@@ -1015,7 +1015,7 @@ class TestMetadataPatchTypeConversions:
     @pytest.mark.asyncio
     async def test_patch_scalar_to_object(self, mock_context, mock_repositories):
         """Test replacing scalar value with object."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000232a',
                 text=None,
@@ -1030,7 +1030,7 @@ class TestMetadataPatchTypeConversions:
     @pytest.mark.asyncio
     async def test_patch_array_to_object(self, mock_context, mock_repositories):
         """Test replacing array value with object."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000232b',
                 text=None,
@@ -1045,7 +1045,7 @@ class TestMetadataPatchTypeConversions:
     @pytest.mark.asyncio
     async def test_patch_object_to_array(self, mock_context, mock_repositories):
         """Test replacing object value with array."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000232c',
                 text=None,

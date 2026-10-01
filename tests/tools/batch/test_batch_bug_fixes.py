@@ -31,7 +31,7 @@ class TestUpdateContextImageValidation:
     async def test_update_context_rejects_empty_image_data(self):
         """update_context rejects images with empty data field."""
         from app.tools.batch.store import store_context_batch
-        from app.tools.context import update_context
+        from app.tools.context.update import update_context
 
         store_result = await store_context_batch(
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
@@ -46,7 +46,7 @@ class TestUpdateContextImageValidation:
     async def test_update_context_rejects_whitespace_image_data(self):
         """update_context rejects images with whitespace-only data."""
         from app.tools.batch.store import store_context_batch
-        from app.tools.context import update_context
+        from app.tools.context.update import update_context
 
         store_result = await store_context_batch(
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
@@ -61,7 +61,7 @@ class TestUpdateContextImageValidation:
     async def test_update_context_image_errors_include_index(self):
         """Error messages include per-image index."""
         from app.tools.batch.store import store_context_batch
-        from app.tools.context import update_context
+        from app.tools.context.update import update_context
 
         store_result = await store_context_batch(
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
@@ -133,7 +133,7 @@ class TestBatchImageValidation:
     async def test_store_batch_defaults_mime_type(self):
         """store_context_batch defaults mime_type to image/png."""
         from app.tools.batch.store import store_context_batch
-        from app.tools.context import get_context_by_ids
+        from app.tools.context.retrieve import get_context_by_ids
 
         valid_image = base64.b64encode(b'\x89PNG\r\n\x1a\n').decode()
         store_result = await store_context_batch(
@@ -159,7 +159,7 @@ class TestBatchImageValidation:
         """update_context_batch defaults mime_type to image/png."""
         from app.tools.batch.store import store_context_batch
         from app.tools.batch.update import update_context_batch
-        from app.tools.context import get_context_by_ids
+        from app.tools.context.retrieve import get_context_by_ids
 
         # Create entry without images
         store_result = await store_context_batch(
@@ -862,8 +862,8 @@ class TestBatchDeleteEmbeddingCleanup:
         """
         from app.startup import ensure_repositories
         from app.tools.batch.delete import delete_context_batch
-        from app.tools.context import get_context_by_ids
-        from app.tools.context import store_context
+        from app.tools.context.retrieve import get_context_by_ids
+        from app.tools.context.store import store_context
 
         repos = await ensure_repositories()
         thread = 'batch-del-snapshot-window'

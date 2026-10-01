@@ -127,7 +127,7 @@ class TestUpdateContext:
         With no summary provider configured at update time, a text change clears the
         (now-stale) summary instead of leaving one that describes the replaced text.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
                 text='Updated text content',
@@ -164,7 +164,7 @@ class TestUpdateContext:
         metadata: MetadataDict = {'status': 'completed', 'priority': 5}
         mock_repositories.context.update_context_entry.return_value = (True, ['metadata'])
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000001c8',
                 text=None,
@@ -198,7 +198,7 @@ class TestUpdateContext:
         """Test replacing tags."""
         tags = ['python', 'testing', 'async']
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000315',
                 text=None,
@@ -230,7 +230,7 @@ class TestUpdateContext:
         observed the change. The auto-managed block now issues the
         context_entries write that carries the stamp.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000316',
                 tags=['alpha'],
@@ -253,7 +253,7 @@ class TestUpdateContext:
         self, mock_context, mock_repositories,
     ):
         """patch_metadata already writes context_entries, so no extra stamping write."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000317',
                 metadata_patch={'k': 'v'},
@@ -276,7 +276,7 @@ class TestUpdateContext:
         ]
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
             patch('app.tools._validation.MAX_IMAGE_SIZE_MB', 10),
             patch('app.tools._validation.MAX_TOTAL_SIZE_MB', 100),
         ):
@@ -306,7 +306,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_remove_all_images_updates_content_type(self, mock_context, mock_repositories):
         """Test that providing empty images list removes images and sets content_type to text."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000000de',
                 text=None,
@@ -335,7 +335,7 @@ class TestUpdateContext:
         """Test updating multiple fields in one call."""
         mock_repositories.context.update_context_entry.return_value = (True, ['text_content', 'metadata'])
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000014d',
                 text='New text',
@@ -355,7 +355,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_no_fields_provided_error(self, mock_context, mock_repositories):
         """Test error when no fields are provided for update."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd000001bc',
@@ -372,7 +372,7 @@ class TestUpdateContext:
         """Test error when context entry doesn't exist."""
         mock_repositories.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd000003e7',
@@ -394,7 +394,7 @@ class TestUpdateContext:
             },
         ]
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd0000022b',
@@ -416,7 +416,7 @@ class TestUpdateContext:
             },
         ]
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd0000029a',
@@ -444,7 +444,7 @@ class TestUpdateContext:
         ]
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
             patch('app.tools._validation.MAX_IMAGE_SIZE_MB', 10),
         ):  # 10MB limit
             with pytest.raises(ToolError) as exc_info:
@@ -475,7 +475,7 @@ class TestUpdateContext:
         ]
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
             patch('app.tools._validation.MAX_IMAGE_SIZE_MB', 50),
             patch('app.tools._validation.MAX_TOTAL_SIZE_MB', 100),  # Each image OK, Total exceeds
             pytest.raises(ToolError, match='[Tt]otal.*size.*exceeds'),
@@ -495,7 +495,7 @@ class TestUpdateContext:
         mock_repositories.context.update_context_entry.return_value = (False, [])
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
             pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd000003e7 not found'),
         ):
             await update_context(
@@ -514,7 +514,7 @@ class TestUpdateContext:
         mock_repositories.images.count_images_for_context.return_value = 2
         mock_repositories.context.get_content_type.return_value = 'text'  # Wrong content type
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000457',
                 text='Updated text',
@@ -540,7 +540,7 @@ class TestUpdateContext:
         mock_repositories.tags.replace_tags_for_context.side_effect = Exception('Database error')
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
             pytest.raises(ToolError, match='Failed to update context'),
         ):
             await update_context(
@@ -555,7 +555,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_context_logging(self, mock_context, mock_repositories):
         """Test that context logging is called appropriately."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             await update_context(
                 context_id='0190abcdef1234567890abcd00000d05',
                 text='Test',
@@ -571,7 +571,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_context_logging_normalizes_id_before_emit(self, mock_context, mock_repositories):
         """Whitespace and uppercase in context_id are folded to canonical form before ctx.info logs it."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             await update_context(
                 context_id='  0190ABCDEF1234567890ABCD00000D05  ',
                 text='Test',
@@ -602,7 +602,7 @@ class TestUpdateContext:
         mock_repositories.tags.replace_tags_for_context.side_effect = track_tags
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
             pytest.raises(ToolError, match='Failed to update context'),
         ):
             await update_context(
@@ -622,7 +622,7 @@ class TestUpdateContext:
     async def test_empty_text_validation_error(self, mock_repositories):
         """Test that empty text is properly validated in the function body."""
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
             # Empty string is now validated in the function body, not by Pydantic
             pytest.raises(ToolError, match='text cannot be empty'),
         ):
@@ -640,7 +640,7 @@ class TestUpdateContext:
         in the function body which properly checks for non-whitespace content.
         """
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
             # Whitespace-only strings are now caught in function validation
             pytest.raises(ToolError, match='text cannot be empty or contain only whitespace'),
         ):
@@ -652,7 +652,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_valid_single_character_text(self, mock_context, mock_repositories):
         """Test that single character text is valid."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000315',
                 text='x',  # Single character should pass
@@ -677,10 +677,10 @@ class TestUpdateContext:
         images = [{'data': img_data}]  # No mime_type key
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
             result = await update_context(
@@ -709,10 +709,10 @@ class TestUpdateContext:
         images = [{'data': img_data, 'mime_type': 'image/jpeg'}]
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
             result = await update_context(
@@ -734,10 +734,10 @@ class TestUpdateContext:
     ):
         """No embedding generation when embedding provider is None."""
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch('app.tools._generation.generate_embeddings_with_timeout') as mock_embed,
         ):
@@ -762,10 +762,10 @@ class TestUpdateContext:
         mock_embeddings_result = [{'chunk_index': 0, 'text': 'Updated text', 'embedding': [0.1] * 1024}]
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch(
                 'app.tools._generation.generate_embeddings_with_timeout',
@@ -791,10 +791,10 @@ class TestUpdateContext:
     ):
         """Text change with no providers skips both embedding and summary generation."""
         with (
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch('app.tools._generation.generate_embeddings_with_timeout') as mock_embed,
             patch('app.tools._generation.generate_summary_with_timeout') as mock_summary,
@@ -829,12 +829,12 @@ class TestUpdateContext:
             return (['text_content'], 1)
 
         with (
-            patch('app.tools.context.settings', _settings_with_node_summaries(True)),
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
-            patch('app.tools.context.execute_update_in_transaction', side_effect=capture_update),
+            patch('app.tools.context.update.settings', _settings_with_node_summaries(True)),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
+            patch('app.tools.context.update.execute_update_in_transaction', side_effect=capture_update),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
@@ -863,12 +863,12 @@ class TestUpdateContext:
             return (['text_content'], 1)
 
         with (
-            patch('app.tools.context.settings', _settings_with_node_summaries(True)),
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
-            patch('app.tools.context.execute_update_in_transaction', side_effect=capture_update),
+            patch('app.tools.context.update.settings', _settings_with_node_summaries(True)),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
+            patch('app.tools.context.update.execute_update_in_transaction', side_effect=capture_update),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
@@ -898,12 +898,12 @@ class TestUpdateContext:
             return (['text_content'], 1)
 
         with (
-            patch('app.tools.context.settings', _settings_with_node_summaries(False)),
-            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
-            patch('app.tools.context.execute_update_in_transaction', side_effect=capture_update),
+            patch('app.tools.context.update.settings', _settings_with_node_summaries(False)),
+            patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
+            patch('app.tools.context.update.execute_update_in_transaction', side_effect=capture_update),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
@@ -925,7 +925,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_basic_integration(self, mock_context, mock_repositories):
         """Test basic metadata_patch integration with repository."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000064',
                 text=None,
@@ -950,7 +950,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_with_text_update(self, mock_context, mock_repositories):
         """Test metadata_patch combined with text content update."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000000c8',
                 text='New content',
@@ -972,7 +972,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_mutual_exclusivity_error(self, mock_context, mock_repositories):
         """Test error when both metadata and metadata_patch are provided."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd0000012c',
@@ -991,7 +991,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_counts_as_valid_update(self, mock_context, mock_repositories):
         """Test that metadata_patch alone is a valid update (no 'no fields provided' error)."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             # Should NOT raise 'At least one field must be provided' error
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000190',
@@ -1010,7 +1010,7 @@ class TestMetadataPatchIntegration:
         """A metadata_patch against a missing entry surfaces a clean not-found error."""
         mock_repositories.context.patch_metadata.return_value = (False, [])
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id='0190abcdef1234567890abcd000001f4',
@@ -1027,7 +1027,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_with_tags(self, mock_context, mock_repositories):
         """Test metadata_patch combined with tags update."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000258',
                 text=None,
@@ -1048,7 +1048,7 @@ class TestMetadataPatchIntegration:
         metadata: MetadataDict = {'full': 'replacement', 'all_fields': True}
         mock_repositories.context.update_context_entry.return_value = (True, ['metadata'])
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd000002bc',
                 text=None,
@@ -1069,7 +1069,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_empty_dict(self, mock_context, mock_repositories):
         """Test metadata_patch with empty dict (should still be valid update)."""
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000320',
                 text=None,
@@ -1112,7 +1112,7 @@ class TestMetadataPatchRFC7396Semantics:
         """
         nested_patch: MetadataDict = {'a': {'b': 'd', 'c': None}}
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001b5f',
                 text=None,
@@ -1137,7 +1137,7 @@ class TestMetadataPatchRFC7396Semantics:
 
         Verifies that adding new keys does not affect existing null values in target.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001b65',
                 text=None,
@@ -1164,7 +1164,7 @@ class TestMetadataPatchRFC7396Semantics:
         """
         deep_patch: MetadataDict = {'a': {'bb': {'ccc': None}}}
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001b67',
                 text=None,
@@ -1190,7 +1190,7 @@ class TestMetadataPatchRFC7396Semantics:
         When patching {"a": {"b": "updated"}}, sibling keys in the nested object
         should be preserved. This test verifies the correct patch is passed.
         """
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00001bbc',
                 text=None,
@@ -1227,7 +1227,7 @@ class TestContextIdLoggingNormalization:
         """Whitespace and uppercase in context_ids are folded before ctx.info logs them."""
         mock_repositories.context.get_by_ids = AsyncMock(return_value=[])
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.retrieve.ensure_repositories', return_value=mock_repositories):
             await get_context_by_ids(
                 context_ids=['  0190ABCDEF1234567890ABCD00000D05  '],
                 include_images=False,
@@ -1245,7 +1245,7 @@ class TestContextIdLoggingNormalization:
         """Whitespace and uppercase in context_ids are folded before ctx.info logs them."""
         mock_repositories.context.delete_by_ids = AsyncMock(return_value=1)
 
-        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.delete.ensure_repositories', return_value=mock_repositories):
             await delete_context(
                 context_ids=['  0190ABCDEF1234567890ABCD00000D05  '],
                 thread_id=None,
@@ -1271,7 +1271,7 @@ class TestUpdatedAtAutoManagement:
         """
         import asyncio
 
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         stored = await store_context(
             thread_id='updated-at-tags-only',

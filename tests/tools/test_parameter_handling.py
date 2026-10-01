@@ -1272,7 +1272,7 @@ class TestWritePathTagCaps:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Tag 0 is too long'),
         ):
             await app.server.store_context(
@@ -1290,7 +1290,7 @@ class TestWritePathTagCaps:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Too many tags'),
         ):
             await app.server.store_context(
@@ -1308,7 +1308,7 @@ class TestWritePathTagCaps:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Tag 0 is too long'),
         ):
             await app.server.update_context(
@@ -1706,7 +1706,7 @@ class TestIndexedWriteValueUpperBound:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='thread_id is too long'),
         ):
             await app.server.store_context(
@@ -1733,7 +1733,7 @@ class TestIndexedWriteValueUpperBound:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'status' is indexed"),
         ):
             await app.server.store_context(
@@ -1765,7 +1765,7 @@ class TestIndexedWriteValueUpperBound:
 
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'project' is indexed"),
         ):
             await app.server.update_context(
@@ -1873,7 +1873,7 @@ class TestTypedIndexedMetadataCastCompatibility:
         """The rejection happens in the validation phase, before any DB or model work."""
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'priority'"),
         ):
             await app.server.store_context(
@@ -1889,7 +1889,7 @@ class TestTypedIndexedMetadataCastCompatibility:
         """A number too large for a 32-bit INTEGER is refused with a range message."""
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='out of range'),
         ):
             await app.server.store_context(
@@ -1917,7 +1917,7 @@ class TestTypedIndexedMetadataCastCompatibility:
         """The merge-patch form reaches the same expression index, so it is checked too."""
         ensure_repos = AsyncMock()
         with (
-            patch('app.tools.context.ensure_repositories', ensure_repos),
+            patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'priority'"),
         ):
             await app.server.update_context(

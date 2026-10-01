@@ -53,15 +53,15 @@ class TestStoreContextReconcile:
     @pytest.mark.asyncio
     async def test_reconcile_regenerates_and_retries(self) -> None:
         """A reconcile signal triggers one regeneration and a successful retry."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         _, mock_begin_transaction = _make_mock_txn()
 
         with (
-            patch('app.tools.context.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.context.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=None),
+            patch('app.tools.context.store.execute_store_in_transaction') as mock_exec,
             patch(
                 'app.tools._generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
@@ -118,17 +118,17 @@ class TestStoreContextReconcile:
         regenerate the summary for THIS entry's text instead of persisting the
         candidate's since-stale reuse.
         """
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         _, mock_begin_transaction = _make_mock_txn()
 
         with (
-            patch('app.tools.context.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
-            patch('app.tools.context.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.context.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools.context.store.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='fresh summary for this text',
             ) as mock_gen_summary,
@@ -175,15 +175,15 @@ class TestStoreContextReconcile:
     @pytest.mark.asyncio
     async def test_reconcile_does_not_loop_forever(self) -> None:
         """A repeated reconcile signal surfaces a ToolError rather than looping."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         _, mock_begin_transaction = _make_mock_txn()
 
         with (
-            patch('app.tools.context.ensure_repositories') as mock_repos_fn,
-            patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.execute_store_in_transaction') as mock_exec,
+            patch('app.tools.context.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=None),
+            patch('app.tools.context.store.execute_store_in_transaction') as mock_exec,
             patch(
                 'app.tools._generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,

@@ -105,7 +105,7 @@ class TestConcurrentEmbeddingOperations:
             """Store a single context entry."""
             from fastmcp.exceptions import ToolError
 
-            from app.tools.context import store_context
+            from app.tools.context.store import store_context
 
             try:
                 await store_context(
@@ -120,8 +120,8 @@ class TestConcurrentEmbeddingOperations:
                     results.append((idx, False, str(e)))
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.store.ensure_repositories', return_value=repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
             # Mock embedding repository to avoid vec_context_embeddings table issues
@@ -215,7 +215,6 @@ class TestConcurrentEmbeddingOperations:
             patch('app.tools.batch.store.ensure_repositories', return_value=repos),
             patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
             patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
@@ -283,7 +282,7 @@ class TestConcurrentEmbeddingOperations:
 
         async def update_one(idx: int) -> None:
             """Update a single entry."""
-            from app.tools.context import update_context
+            from app.tools.context.update import update_context
 
             try:
                 await update_context(
@@ -297,8 +296,8 @@ class TestConcurrentEmbeddingOperations:
                     results.append(False)
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock(return_value=None)),
@@ -377,8 +376,8 @@ class TestTransactionRollbackComprehensive:
             raise Exception('Simulated tag storage failure')
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.store.ensure_repositories', return_value=repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
@@ -386,7 +385,7 @@ class TestTransactionRollbackComprehensive:
         ):
             from fastmcp.exceptions import ToolError
 
-            from app.tools.context import store_context
+            from app.tools.context.store import store_context
 
             with pytest.raises(ToolError):
                 await store_context(
@@ -457,7 +456,6 @@ class TestTransactionRollbackComprehensive:
             patch('app.tools.batch.update.ensure_repositories', return_value=repos),
             patch('app.tools.batch.update.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
             patch('app.tools._generation.get_chunking_service', return_value=mock_chunking),

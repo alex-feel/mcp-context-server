@@ -321,7 +321,7 @@ async def update_context_batch(
                 # No summary provider at update time (summary generation disabled/absent).
                 # The stored summary describes the REPLACED text, so CLEAR it instead of
                 # leaving a stale summary -- mirroring the too-short branch above, the
-                # single-update path (context.py), and the stale-embedding / index_tree
+                # single-update path (app/tools/context/update.py), and the stale-embedding / index_tree
                 # node-row clears that already run on this same text-change path.
                 update_summaries[vu_idx] = None
                 update_clear_summaries.add(vu_idx)

@@ -132,7 +132,6 @@ async def test_semaphore_limits_concurrency() -> None:
     max_concurrent_setting = 2
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.compute_embedding_total_timeout', return_value=999.0),
         patch('app.tools._generation._generate_embeddings_for_text', side_effect=mock_generate),
@@ -176,14 +175,14 @@ async def test_total_timeout_raises_tool_error() -> None:
     mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.compute_embedding_total_timeout', return_value=0.05),
         patch('app.tools._generation._generate_embeddings_for_text', side_effect=slow_embedding),
         patch('app.tools._generation.settings') as mock_settings,
-        patch('app.tools.context.ensure_repositories', new_callable=AsyncMock, return_value=mock_repos),
+        patch('app.tools.context.store.ensure_repositories', new_callable=AsyncMock, return_value=mock_repos),
     ):
         mock_settings.embedding.max_concurrent = 3
 
@@ -193,7 +192,7 @@ async def test_total_timeout_raises_tool_error() -> None:
         generation_module._reset_embedding_semaphore()
 
         try:
-            from app.tools.context import store_context
+            from app.tools.context.store import store_context
 
             with pytest.raises(ToolError, match='total timeout'):
                 await store_context(
@@ -213,10 +212,10 @@ async def test_embedding_disabled_skips_semaphore() -> None:
     mock_sem.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=None),
+        patch('app.tools.context.store.get_embedding_provider', return_value=None),
         patch('app.tools._generation.get_embedding_provider', return_value=None),
         patch('app.tools._generation._embedding_semaphore', new=mock_sem),
-        patch('app.tools.context.ensure_repositories', new_callable=AsyncMock) as mock_repos,
+        patch('app.tools.context.store.ensure_repositories', new_callable=AsyncMock) as mock_repos,
     ):
         mock_backend = MagicMock()
         mock_txn = MagicMock()
@@ -229,7 +228,7 @@ async def test_embedding_disabled_skips_semaphore() -> None:
         mock_repos.return_value.images.store_images = AsyncMock()
         mock_repos.return_value.embeddings.store_chunked = AsyncMock()
 
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         result = await store_context(
             thread_id='test-thread',
@@ -424,7 +423,6 @@ def test_embedding_max_concurrent_setting_bounds() -> None:
 async def testgenerate_embeddings_with_timeout_returns_none_when_no_provider() -> None:
     """Verify helper returns None when embedding provider is not configured."""
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=None),
         patch('app.tools._generation.get_embedding_provider', return_value=None),
     ):
         from app.tools._generation import generate_embeddings_with_timeout
@@ -439,7 +437,6 @@ async def testgenerate_embeddings_with_timeout_success() -> None:
     mock_embeddings = [MagicMock()]
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.compute_embedding_total_timeout', return_value=999.0),
         patch('app.tools._generation._generate_embeddings_for_text', new_callable=AsyncMock, return_value=mock_embeddings),
@@ -471,7 +468,6 @@ async def testgenerate_embeddings_with_timeout_raises_on_timeout() -> None:
         return [MagicMock()]
 
     with (
-        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools._generation.compute_embedding_total_timeout', return_value=0.05),
         patch('app.tools._generation._generate_embeddings_for_text', side_effect=slow_embedding),

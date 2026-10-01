@@ -24,9 +24,9 @@ from app.startup import ensure_repositories
 from app.tools.batch.delete import delete_context_batch
 from app.tools.batch.store import store_context_batch
 from app.tools.batch.update import update_context_batch
-from app.tools.context import delete_context
-from app.tools.context import store_context
-from app.tools.context import update_context
+from app.tools.context.delete import delete_context
+from app.tools.context.store import store_context
+from app.tools.context.update import update_context
 from app.types import JsonValue
 
 
@@ -763,8 +763,8 @@ class TestGenerationConformance:
 
         # Mock embedding storage to avoid missing vec_context_embeddings table
         with (
-            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.store.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.store.get_summary_provider', return_value=None),
             patch('app.tools._generation.generate_embeddings_with_timeout', mock_gen_embed),
             patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.batch.store.get_summary_provider', return_value=None),
@@ -811,8 +811,8 @@ class TestGenerationConformance:
         thread_b = f'{_THREAD_PREFIX}_gen_summ_b'
 
         with (
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools.batch.store.get_summary_provider', return_value=mock_provider),
@@ -855,8 +855,8 @@ class TestGenerationConformance:
         thread_b = f'{_THREAD_PREFIX}_gen_skip_b'
 
         with (
-            patch('app.tools.context.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools.batch.store.get_summary_provider', return_value=mock_provider),

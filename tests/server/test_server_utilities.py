@@ -302,7 +302,7 @@ class TestStoreContextEdgeCases:
         from app.server import store_context
 
         # Mock the repository to return (None, False)
-        with patch('app.tools.context.ensure_repositories') as mock_ensure:
+        with patch('app.tools.context.store.ensure_repositories') as mock_ensure:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(None, False))
             mock_ensure.return_value = mock_repos

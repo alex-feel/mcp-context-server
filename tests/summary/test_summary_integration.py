@@ -140,13 +140,9 @@ class TestGenerateSummaryWithTimeout:
         mock_provider.summarize = AsyncMock(return_value='Generated summary')
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
-            patch('app.tools.context.settings') as mock_settings,
         ):
-            mock_settings.summary.max_concurrent = 2
-
             result = await generation_module.generate_summary_with_timeout('Long text', 'agent')
 
         assert result == 'Generated summary'
@@ -164,21 +160,16 @@ class TestGenerateSummaryWithTimeout:
         mock_provider.summarize = AsyncMock(side_effect=slow_summary)
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=0.05),
-            patch('app.tools.context.settings') as mock_settings,
+            pytest.raises(ToolError, match='Summary generation exceeded total timeout'),
         ):
-            mock_settings.summary.max_concurrent = 2
-
-            with pytest.raises(ToolError, match='Summary generation exceeded total timeout'):
-                await generation_module.generate_summary_with_timeout('Long text', 'agent')
+            await generation_module.generate_summary_with_timeout('Long text', 'agent')
 
     @pytest.mark.asyncio
     async def test_provider_none_skips_generation(self) -> None:
         """Return None when no summary provider is configured."""
         with (
-            patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
         ):
             result = await generation_module.generate_summary_with_timeout('Long text', 'agent')
@@ -208,10 +199,10 @@ class TestSummaryStoreWithMocks:
             return 'Generated summary'
 
         with (
-            patch('app.tools.context.ensure_repositories', new=AsyncMock(return_value=repos)),
-            patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
             patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
-            patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=MagicMock()),
             patch('app.tools._generation.get_summary_provider', return_value=MagicMock()),
             patch('app.tools._generation.generate_embeddings_with_timeout', side_effect=fake_embedding),
             patch('app.tools._generation.generate_summary_with_timeout', side_effect=fake_summary),
@@ -268,9 +259,9 @@ class TestSummaryIntegration:
         updated_text = 'x' * 500
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
+            patch('app.tools.context.update.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
         ):
@@ -304,7 +295,7 @@ class TestSummaryIntegration:
         mock_provider.summarize = AsyncMock(return_value='Should not be used')
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
+            patch('app.tools.context.update.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
         ):
             result = await update_context(
@@ -374,9 +365,9 @@ class TestSummaryIntegration:
         mock_provider.summarize = AsyncMock(side_effect=['Original summary', 'Unexpected second summary'])
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
         ):
@@ -408,9 +399,9 @@ class TestSummaryIntegration:
         dedup_text = 'y' * 500
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
         ):
@@ -441,9 +432,9 @@ class TestSummaryIntegration:
         mock_provider2.summarize = AsyncMock(return_value='Summary for missing case')
 
         with (
-            patch('app.tools.context.get_summary_provider', return_value=mock_provider2),
+            patch('app.tools.context.store.get_summary_provider', return_value=mock_provider2),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider2),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
         ):

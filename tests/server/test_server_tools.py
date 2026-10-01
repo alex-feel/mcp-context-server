@@ -360,13 +360,13 @@ class TestGetContextByIds:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """By default, get_context_by_ids must NOT include the summary key."""
-        import app.tools.context as context_module
+        import app.tools.context.retrieve as retrieve_module
         from app.settings import get_settings
         monkeypatch.delenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', raising=False)
         get_settings.cache_clear()
         # Refresh the module-level binding to pick up the new setting
-        monkeypatch.setattr(context_module, 'settings', get_settings())
-        assert context_module.settings.retrieval.include_summary is False
+        monkeypatch.setattr(retrieve_module, 'settings', get_settings())
+        assert retrieve_module.settings.retrieval.include_summary is False
 
         result = await store_context(
             thread_id='retrieval_default_thread',
@@ -389,11 +389,11 @@ class TestGetContextByIds:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Explicit GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=false must omit summary."""
-        import app.tools.context as context_module
+        import app.tools.context.retrieve as retrieve_module
         from app.settings import get_settings
         monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'false')
         get_settings.cache_clear()
-        monkeypatch.setattr(context_module, 'settings', get_settings())
+        monkeypatch.setattr(retrieve_module, 'settings', get_settings())
 
         result = await store_context(
             thread_id='retrieval_explicit_false_thread',
@@ -419,11 +419,11 @@ class TestGetContextByIds:
         the search-tools contract and provides an explicit "feature on, no data yet"
         signal distinct from the "feature disabled" key-omission.
         """
-        import app.tools.context as context_module
+        import app.tools.context.retrieve as retrieve_module
         from app.settings import get_settings
         monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'true')
         get_settings.cache_clear()
-        monkeypatch.setattr(context_module, 'settings', get_settings())
+        monkeypatch.setattr(retrieve_module, 'settings', get_settings())
 
         result = await store_context(
             thread_id='retrieval_explicit_true_thread',
@@ -455,12 +455,12 @@ class TestGetContextByIds:
         AND the database has a non-empty summary string, the value is surfaced
         verbatim (no normalization, no transformation).
         """
-        import app.tools.context as context_module
+        import app.tools.context.retrieve as retrieve_module
         from app.settings import get_settings
         from app.startup import ensure_repositories
         monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'true')
         get_settings.cache_clear()
-        monkeypatch.setattr(context_module, 'settings', get_settings())
+        monkeypatch.setattr(retrieve_module, 'settings', get_settings())
 
         store_result = await store_context(
             thread_id='retrieval_summary_passthrough_thread',
@@ -495,11 +495,11 @@ class TestGetContextByIds:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Strip must not affect id, text_content, metadata, tags, or content_type."""
-        import app.tools.context as context_module
+        import app.tools.context.retrieve as retrieve_module
         from app.settings import get_settings
         monkeypatch.delenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', raising=False)
         get_settings.cache_clear()
-        monkeypatch.setattr(context_module, 'settings', get_settings())
+        monkeypatch.setattr(retrieve_module, 'settings', get_settings())
 
         result = await store_context(
             thread_id='retrieval_other_fields_thread',

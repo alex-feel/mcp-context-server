@@ -1,6 +1,6 @@
 """Tool-level regression test for the optimistic-concurrency version guard.
 
-This exercises ``app.tools.context.update_context`` against a REAL SQLite backend
+This exercises ``app.tools.context.update.update_context`` against a REAL SQLite backend
 (no mocked repositories) to prove that two concurrent updates to the SAME entry
 cannot silently lose an update: the loser is caught by the ``version`` CAS guard,
 re-reads the current version, and retries, so the row ends in a single consistent
@@ -44,7 +44,7 @@ from app.repositories import RepositoryContainer
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
-from app.tools.context import update_context
+from app.tools.context.update import update_context
 from app.types import UpdateContextSuccessDict
 
 # Text long enough to clear SUMMARY_MIN_CONTENT_LENGTH (default 500) so the
@@ -122,10 +122,10 @@ class TestUpdateContextVersionGuard:
 
         # Real version-aware update path; only generation providers are faked.
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.context.update.get_summary_provider', return_value=MagicMock()),
             patch('app.tools._generation.get_summary_provider', return_value=MagicMock()),
             patch(
                 'app.tools._generation.generate_summary_with_timeout',
@@ -198,10 +198,10 @@ class TestUpdateContextVersionGuard:
             return result
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(
                 repos.context, 'check_entry_exists', side_effect=check_then_bump,
@@ -265,10 +265,10 @@ class TestUpdateContextVersionGuard:
 
         # No text -> no generation; only metadata changes. Providers are None.
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(
                 repos.context, 'check_entry_exists', side_effect=check_then_bump,
@@ -323,13 +323,13 @@ class TestUpdateContextVersionGuard:
 
         # No text -> no generation; isolates the in-transaction CAS retry loop.
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch(
-                'app.tools.context.execute_update_in_transaction',
+                'app.tools.context.update.execute_update_in_transaction',
                 new=AsyncMock(side_effect=always_conflict),
             ),
             pytest.raises(ToolError, match='kept changing'),
@@ -367,14 +367,14 @@ class TestUpdateContextVersionGuard:
             return EntryProbe(False, None, None, None)
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=vanish_on_reread),
             patch(
-                'app.tools.context.execute_update_in_transaction',
+                'app.tools.context.update.execute_update_in_transaction',
                 new=AsyncMock(side_effect=VersionConflictError(entry_id)),
             ),
             pytest.raises(ToolError, match='not found'),
@@ -420,14 +420,14 @@ class TestUpdateContextVersionGuard:
             return ['metadata'], False
 
         with (
-            patch('app.tools.context.ensure_repositories', return_value=repos),
-            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
-            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.context, 'check_entry_exists', side_effect=flaky_reread),
             patch(
-                'app.tools.context.execute_update_in_transaction',
+                'app.tools.context.update.execute_update_in_transaction',
                 new=AsyncMock(side_effect=conflict_once),
             ),
         ):

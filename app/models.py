@@ -19,9 +19,10 @@ from app.types import MetadataDict
 # the shared validation chokepoint (validate_and_normalize_images in
 # app/tools/_validation.py, covering store_context, update_context, and both
 # batch tools), and the tool-boundary Field declarations in
-# app/tools/context.py (so the MCP wire schema advertises the bound as
-# maxItems). It lives here because app.models imports nothing from app.tools,
-# so the tools layer can import it without an import cycle.
+# app/tools/context/store.py and app/tools/context/update.py (so the MCP wire
+# schema advertises the bound as maxItems). It lives here because app.models
+# imports nothing from app.tools, so the tools layer can import it without an
+# import cycle.
 MAX_IMAGES_PER_ENTRY = 10
 
 # Single source of truth for the per-entry tag WRITE-path limits (the read/filter
@@ -29,8 +30,9 @@ MAX_IMAGES_PER_ENTRY = 10
 # aligned places, exactly like MAX_IMAGES_PER_ENTRY: the Pydantic models below,
 # the shared validation chokepoint (tag_limits_error in app/tools/_validation.py,
 # covering store_context, update_context, and both batch tools), and the
-# tool-boundary Field declarations in app/tools/context.py (so the MCP wire
-# schema advertises the bounds as maxItems / maxLength).
+# tool-boundary Field declarations in app/tools/context/store.py and
+# app/tools/context/update.py (so the MCP wire schema advertises the bounds as
+# maxItems / maxLength).
 #
 # MAX_TAG_LENGTH is deliberately far below PostgreSQL's ~2704-byte btree
 # index-tuple ceiling for idx_tags_tag: even if every code point encoded to 4

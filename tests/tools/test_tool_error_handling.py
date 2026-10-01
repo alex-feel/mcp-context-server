@@ -72,7 +72,10 @@ def mock_server_dependencies(mock_repos):
         MagicMock: The mock repository container.
     """
     with (
-        patch('app.tools.context.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.context.retrieve.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.context.update.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.context.delete.ensure_repositories', return_value=mock_repos),
         patch('app.tools.search.browse.ensure_repositories', return_value=mock_repos),
         patch('app.tools.search.semantic.ensure_repositories', return_value=mock_repos),
         patch('app.tools.search.fts.ensure_repositories', return_value=mock_repos),

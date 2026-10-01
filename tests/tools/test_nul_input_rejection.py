@@ -25,7 +25,7 @@ class TestStoreContextNulRejection:
     @pytest.mark.parametrize('bad', [NUL, SURROGATE])
     async def test_thread_id_rejected(self, bad: str) -> None:
         """A NUL/surrogate thread_id is rejected before generation."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         with pytest.raises(ToolError):
             await store_context(thread_id=f'thread{bad}', source='user', text='hello')
@@ -33,7 +33,7 @@ class TestStoreContextNulRejection:
     @pytest.mark.asyncio
     async def test_text_rejected(self) -> None:
         """A NUL in text is rejected before generation."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         with pytest.raises(ToolError):
             await store_context(thread_id='nul-thread', source='user', text=f'he{NUL}llo')
@@ -41,7 +41,7 @@ class TestStoreContextNulRejection:
     @pytest.mark.asyncio
     async def test_tag_rejected(self) -> None:
         """A NUL in a tag is rejected before generation."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         with pytest.raises(ToolError):
             await store_context(thread_id='nul-thread', source='user', text='hello', tags=[f'ta{NUL}g'])
@@ -49,7 +49,7 @@ class TestStoreContextNulRejection:
     @pytest.mark.asyncio
     async def test_metadata_value_and_key_rejected(self) -> None:
         """A NUL in a metadata value OR key is rejected before generation."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         with pytest.raises(ToolError):
             await store_context(
@@ -68,8 +68,8 @@ class TestUpdateContextNulRejection:
     @pytest.mark.asyncio
     async def test_text_rejected_on_existing_entry(self) -> None:
         """A NUL-bearing text update on a real entry is rejected before generation."""
-        from app.tools.context import store_context
-        from app.tools.context import update_context
+        from app.tools.context.store import store_context
+        from app.tools.context.update import update_context
 
         stored = await store_context(thread_id='update-nul', source='user', text='original text')
         context_id = stored['context_id']
@@ -109,7 +109,7 @@ class TestReadPathNulRejection:
     @pytest.mark.asyncio
     async def test_delete_context_thread_id_rejected(self) -> None:
         """delete_context rejects a NUL thread_id before it reaches delete_by_thread's bind."""
-        from app.tools.context import delete_context
+        from app.tools.context.delete import delete_context
 
         with pytest.raises(ToolError):
             await delete_context(thread_id=f'thread{NUL}')

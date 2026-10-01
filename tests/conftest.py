@@ -303,9 +303,13 @@ def force_compression_off(monkeypatch: pytest.MonkeyPatch) -> Generator[None, No
     import app.tools._delete_cleanup as _delete_cleanup_module
     import app.tools._generation as _generation_module
     import app.tools._validation as _validation_module
-    import app.tools.context as _context_module
+    import app.tools.context.retrieve as _context_retrieve_module
+    import app.tools.context.store as _context_store_module
+    import app.tools.context.update as _context_update_module
     import app.tools.discovery as _discovery_module
-    monkeypatch.setattr(_context_module, 'settings', fresh)
+    monkeypatch.setattr(_context_store_module, 'settings', fresh)
+    monkeypatch.setattr(_context_retrieve_module, 'settings', fresh)
+    monkeypatch.setattr(_context_update_module, 'settings', fresh)
     monkeypatch.setattr(_validation_module, 'settings', fresh)
     monkeypatch.setattr(_generation_module, 'settings', fresh)
     monkeypatch.setattr(_delete_cleanup_module, 'settings', fresh)

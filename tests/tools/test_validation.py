@@ -19,8 +19,8 @@ from app.tools._validation import entry_boundary_error
 from app.tools._validation import indexed_value_error
 from app.tools._validation import reject_invalid_indexed_values
 from app.tools._validation import validate_and_normalize_images
-from app.tools.context import store_context
-from app.tools.context import update_context
+from app.tools.context.store import store_context
+from app.tools.context.update import update_context
 
 # Valid base64 PNG (1x1 transparent pixel)
 VALID_BASE64_PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 50).decode()

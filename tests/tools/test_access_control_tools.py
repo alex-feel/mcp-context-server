@@ -51,7 +51,7 @@ class TestOwnerStamping:
     @pytest.mark.asyncio
     async def test_store_without_token_stamps_default_principal(self) -> None:
         """With no verified token the configured default principal owns the row."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         result = await store_context(
             thread_id='access-tools', source='agent', text='default-principal entry',
@@ -63,9 +63,9 @@ class TestOwnerStamping:
     @pytest.mark.asyncio
     async def test_store_stamps_verified_principal(self) -> None:
         """A verified principal becomes the row owner."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
-        with patch('app.tools.context.resolve_effective_principal', return_value=_principal('alice')):
+        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
             result = await store_context(
                 thread_id='access-tools', source='agent', text='alice-owned entry',
             )
@@ -93,8 +93,8 @@ class TestOwnerStamping:
         """No write tool exposes owner_id in its signature (wire schema source)."""
         from app.tools.batch.store import store_context_batch
         from app.tools.batch.update import update_context_batch
-        from app.tools.context import store_context
-        from app.tools.context import update_context
+        from app.tools.context.store import store_context
+        from app.tools.context.update import update_context
 
         for tool in (store_context, update_context, store_context_batch, update_context_batch):
             assert 'owner_id' not in inspect.signature(tool).parameters
@@ -107,7 +107,7 @@ class TestPublishGate:
     @pytest.mark.asyncio
     async def test_store_public_denied_without_role(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Publishing without the configured role fails before any storage."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         monkeypatch.setenv('ACCESS_CONTROL_PUBLISH_ROLE', 'publisher')
         get_settings.cache_clear()
@@ -123,13 +123,13 @@ class TestPublishGate:
     @pytest.mark.asyncio
     async def test_store_public_allowed_with_role(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A caller carrying the publish role stores a public entry."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         monkeypatch.setenv('ACCESS_CONTROL_PUBLISH_ROLE', 'publisher')
         get_settings.cache_clear()
         try:
             publisher = _principal('alice', roles=frozenset({'publisher'}))
-            with patch('app.tools.context.resolve_effective_principal', return_value=publisher):
+            with patch('app.tools.context.store.resolve_effective_principal', return_value=publisher):
                 result = await store_context(
                     thread_id='access-tools', source='agent',
                     text='allowed publish', visibility='public',
@@ -142,7 +142,7 @@ class TestPublishGate:
     @pytest.mark.asyncio
     async def test_store_public_allowed_when_role_unset(self) -> None:
         """With no publish role configured, any owner may publish."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         result = await store_context(
             thread_id='access-tools', source='agent',
@@ -154,8 +154,8 @@ class TestPublishGate:
     @pytest.mark.asyncio
     async def test_update_public_denied_without_role(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Updating visibility to public is gated exactly like storing it."""
-        from app.tools.context import store_context
-        from app.tools.context import update_context
+        from app.tools.context.store import store_context
+        from app.tools.context.update import update_context
 
         stored = await store_context(
             thread_id='access-tools', source='agent', text='to be published later',
@@ -176,8 +176,8 @@ class TestOwnerOnlyVisibilityChange:
     @pytest.mark.asyncio
     async def test_owner_changes_visibility(self) -> None:
         """The owner flips visibility and the field is reported."""
-        from app.tools.context import store_context
-        from app.tools.context import update_context
+        from app.tools.context.store import store_context
+        from app.tools.context.update import update_context
 
         result = await store_context(
             thread_id='access-tools', source='agent', text='owner visibility change',
@@ -190,15 +190,15 @@ class TestOwnerOnlyVisibilityChange:
     @pytest.mark.asyncio
     async def test_non_owner_visibility_change_rejected(self) -> None:
         """A different principal cannot change visibility."""
-        from app.tools.context import store_context
-        from app.tools.context import update_context
+        from app.tools.context.store import store_context
+        from app.tools.context.update import update_context
 
-        with patch('app.tools.context.resolve_effective_principal', return_value=_principal('alice')):
+        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
             result = await store_context(
                 thread_id='access-tools', source='agent', text='alice-only visibility',
             )
         with (
-            patch('app.tools.context.resolve_effective_principal', return_value=_principal('bob')),
+            patch('app.tools.context.update.resolve_effective_principal', return_value=_principal('bob')),
             pytest.raises(ToolError, match='Only the owner'),
         ):
             await update_context(context_id=result['context_id'], visibility='public')
@@ -207,14 +207,14 @@ class TestOwnerOnlyVisibilityChange:
     async def test_non_owner_text_update_still_allowed(self) -> None:
         """A text-only update carries no visibility change and is not owner-gated
         (read/write scoping arrives with read-path enforcement)."""
-        from app.tools.context import store_context
-        from app.tools.context import update_context
+        from app.tools.context.store import store_context
+        from app.tools.context.update import update_context
 
-        with patch('app.tools.context.resolve_effective_principal', return_value=_principal('alice')):
+        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
             result = await store_context(
                 thread_id='access-tools', source='agent', text='text update target',
             )
-        with patch('app.tools.context.resolve_effective_principal', return_value=_principal('bob')):
+        with patch('app.tools.context.update.resolve_effective_principal', return_value=_principal('bob')):
             updated = await update_context(context_id=result['context_id'], text='new body')
         assert 'text_content' in updated['updated_fields']
 
@@ -222,9 +222,9 @@ class TestOwnerOnlyVisibilityChange:
     async def test_batch_non_owner_visibility_change_records_per_entry_error(self) -> None:
         """Non-atomic batch: an unauthorized visibility change fails only that entry."""
         from app.tools.batch.update import update_context_batch
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
-        with patch('app.tools.context.resolve_effective_principal', return_value=_principal('alice')):
+        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
             result = await store_context(
                 thread_id='access-tools', source='agent', text='batch visibility target',
             )
@@ -242,9 +242,9 @@ class TestOwnerOnlyVisibilityChange:
     async def test_atomic_batch_non_owner_visibility_change_aborts(self) -> None:
         """Atomic batch: an unauthorized visibility change aborts the whole batch."""
         from app.tools.batch.update import update_context_batch
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
-        with patch('app.tools.context.resolve_effective_principal', return_value=_principal('alice')):
+        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
             result = await store_context(
                 thread_id='access-tools', source='agent', text='atomic batch visibility target',
             )
@@ -272,7 +272,7 @@ class TestBatchVisibilityVersionTracking:
         a self-inflicted version conflict.
         """
         from app.tools.batch.update import update_context_batch
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         stored = await store_context(
             thread_id='access-tools', source='agent', text='visibility-then-text target',
@@ -292,7 +292,7 @@ class TestBatchVisibilityVersionTracking:
     async def test_non_atomic_batch_visibility_then_text_on_same_entry(self) -> None:
         """The non-atomic loop tracks the visibility version bump identically."""
         from app.tools.batch.update import update_context_batch
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         stored = await store_context(
             thread_id='access-tools', source='agent', text='non-atomic visibility-then-text target',
@@ -355,15 +355,15 @@ class TestAuthorGroupGrants:
     @pytest.mark.asyncio
     async def test_author_groups_write_read_grants(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Each author group receives a read grant in the store transaction."""
-        import app.tools.context as context_module
-        from app.tools.context import store_context
+        import app.tools.context.store as context_store_module
+        from app.tools.context.store import store_context
 
         monkeypatch.setenv('ACCESS_CONTROL_DEFAULT_GROUP_GRANTS', 'author_groups')
         get_settings.cache_clear()
-        monkeypatch.setattr(context_module, 'settings', get_settings())
+        monkeypatch.setattr(context_store_module, 'settings', get_settings())
         try:
             author = _principal('alice', groups=frozenset({'team-b', 'team-a'}))
-            with patch('app.tools.context.resolve_effective_principal', return_value=author):
+            with patch('app.tools.context.store.resolve_effective_principal', return_value=author):
                 result = await store_context(
                     thread_id='access-tools', source='agent', text='group-granted entry',
                 )
@@ -381,10 +381,10 @@ class TestAuthorGroupGrants:
     @pytest.mark.asyncio
     async def test_default_none_writes_no_grants(self) -> None:
         """With the default policy no grant rows are written."""
-        from app.tools.context import store_context
+        from app.tools.context.store import store_context
 
         author = _principal('alice', groups=frozenset({'team-a'}))
-        with patch('app.tools.context.resolve_effective_principal', return_value=author):
+        with patch('app.tools.context.store.resolve_effective_principal', return_value=author):
             result = await store_context(
                 thread_id='access-tools', source='agent', text='ungranted entry',
             )

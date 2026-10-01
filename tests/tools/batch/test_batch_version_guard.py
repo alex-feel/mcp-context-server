@@ -25,7 +25,7 @@ adversarial review flagged in the just-landed version guard are closed here:
    token, pinning that ANY same-id write moves ``version`` forward (closing the
    dedup-vs-update lost-update window).
 
-Backend/repos setup mirrors ``tests/tools/test_update_concurrency_version_guard.py``
+Backend/repos setup mirrors ``tests/tools/context/test_update_concurrency_version_guard.py``
 and ``tests/tools/test_generation_first.py``: a real ``SQLiteBackend`` +
 ``RepositoryContainer`` built from ``load_schema('sqlite')``. Embedding/summary
 providers are patched to ``None`` so generation does not run (no Ollama needed) and
