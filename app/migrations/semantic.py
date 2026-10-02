@@ -81,7 +81,7 @@ async def apply_semantic_search_migration(
         backend: Storage backend instance.
         force: When True, apply the migration regardless of
             ``settings.embedding.generation_enabled``. Used by the migration CLI
-            (``app.cli.migrate``) to create the fp32 vector layout on a target
+            (``app.cli.migrate_uuid.pg_target``) to create the fp32 vector layout on a target
             database while preserving the server's default behavior (gated on
             embedding generation with the infra-present fallthrough) for all
             other callers.

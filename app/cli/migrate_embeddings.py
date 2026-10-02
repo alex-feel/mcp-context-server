@@ -5,7 +5,7 @@ Implements the ``--embed-missing`` CLI flag of
 lack an embedding_metadata row and runs the live embedding pipeline
 against their ``text_content`` to fill the gap.
 
-Shape gamma (HYBRID):
+Modes:
     Standalone:
         Backfills against the existing storage layout. When
         ``ENABLE_EMBEDDING_COMPRESSION=true`` is set in the invocation
@@ -14,7 +14,7 @@ Shape gamma (HYBRID):
         the fp32 ``vec_context_embeddings`` table.
 
     Composed with ``--compress``:
-        The orchestrator in :mod:`app.cli.migrate` runs ``--compress``
+        The dispatcher in :mod:`app.cli.migrate` runs ``--compress``
         first (fp32 -> compressed), then dispatches to this module to
         backfill any missing entries directly into the compressed
         layout.
@@ -36,14 +36,14 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.cli._database_url import mask_credentials
+from app.cli._database_url import parse_backend_url
 from app.cli._embedding_introspect import dimension_conflict_error
 from app.cli._embedding_introspect import distinct_embedding_models
 from app.cli._embedding_introspect import embedding_metadata_table_exists
 from app.cli._embedding_runtime import EmbeddingPipelineUnavailableError
 from app.cli._embedding_runtime import initialize_cli_embedding_pipeline
 from app.cli._embedding_runtime import shutdown_cli_embedding_pipeline
-from app.cli.migrate import mask_credentials
-from app.cli.migrate import parse_backend_url
 from app.embeddings.base import EmbeddingProvider
 from app.settings import get_settings
 

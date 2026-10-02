@@ -7,12 +7,11 @@ store path emits for a metadata NUL (SQLSTATE 22P05). A jsonb column has a third
 divergence class with the same consequence: a non-finite JSON number. ``json.loads``
 accepts the non-standard tokens ``NaN``/``Infinity``/``-Infinity`` and silently turns
 a standard-but-overflowing literal such as ``1e400`` into ``inf``, and the copy path's
-``json.dumps`` re-emits those as the invalid tokens PostgreSQL rejects. Before the
-pre-check covered a class, such a value aborted the whole cross-backend migration
-mid-transaction with only a raw driver error and no row identification, and
-``--dry-run`` could not surface it first. These tests prove each offending row is now
-identified and skipped, the run does not crash, and ``--dry-run`` surfaces the same
-rows without inserting.
+``json.dumps`` re-emits those as the invalid tokens PostgreSQL rejects. Unscreened, such
+a value aborts the whole cross-backend migration mid-transaction with only a raw driver
+error and no row identification, and ``--dry-run`` cannot surface it first. These tests
+prove each offending row is identified and skipped, the run does not crash, and
+``--dry-run`` surfaces the same rows without inserting.
 
 The full-run tests drive the real ``run_migration_mixed_sqlite_to_postgresql``
 against a fake asyncpg target connection (the PostgreSQL probe helpers are patched
@@ -22,62 +21,15 @@ test -- run unchanged.
 
 import json
 import sqlite3
-from collections.abc import Generator
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from app.cli.migrate import MigrationOptions
-from app.cli.migrate import MigrationStats
-from app.cli.migrate import _pg_unstorable_column_reason
-from app.cli.migrate import rewrite_metadata_references
-from app.cli.migrate import run_migration_mixed_sqlite_to_postgresql
-from app.settings import get_settings
-
-# Integer-keyed source schema (the shape the CLI accepts as input). Production
-# code under app/ no longer uses this layout; each migration test file defines
-# its own bootstrap copy so it stays self-contained.
-_INTEGER_KEYED_SCHEMA_SQL = '''
-CREATE TABLE IF NOT EXISTS context_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    thread_id TEXT NOT NULL,
-    source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
-    content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
-    text_content TEXT,
-    metadata JSON,
-    summary TEXT,
-    content_hash TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS tags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    context_entry_id INTEGER NOT NULL,
-    tag TEXT NOT NULL,
-    FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS image_attachments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    context_entry_id INTEGER NOT NULL,
-    image_data BLOB NOT NULL,
-    mime_type TEXT NOT NULL,
-    image_metadata JSON,
-    position INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
-);
-'''
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> Generator[None, None, None]:
-    """Reset the settings cache around every test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+from app.cli.migrate_uuid.records import MigrationOptions
+from app.cli.migrate_uuid.records import MigrationStats
+from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
+from tests.cli.migrate_uuid._sources import INTEGER_KEYED_SCHEMA_SQL
 
 
 def _seed_source(
@@ -95,7 +47,7 @@ def _seed_source(
     """
     conn = sqlite3.connect(str(path))
     try:
-        conn.executescript(_INTEGER_KEYED_SCHEMA_SQL)
+        conn.executescript(INTEGER_KEYED_SCHEMA_SQL)
         for entry in entries:
             metadata = entry.get('metadata')
             if isinstance(metadata, (dict, list)):
@@ -206,9 +158,9 @@ async def _run_with_fake_target(
     )
     with (
         mock.patch('asyncpg.connect', _fake_connect),
-        mock.patch('app.cli.migrate._target_pg_has_data', _has_data),
-        mock.patch('app.cli.migrate._pg_table_exists', _table_exists),
-        mock.patch('app.cli.migrate.ensure_target_pg_fts', _ensure_fts),
+        mock.patch('app.cli.migrate_uuid.sqlite_to_postgresql.target_pg_has_data', _has_data),
+        mock.patch('app.cli.migrate_uuid.sqlite_to_postgresql.pg_table_exists', _table_exists),
+        mock.patch('app.cli.migrate_uuid.sqlite_to_postgresql.ensure_target_pg_fts', _ensure_fts),
     ):
         stats = await run_migration_mixed_sqlite_to_postgresql(options)
     return stats, fake_conn
@@ -246,147 +198,6 @@ def _mixed_source_with_nul_rows(path: Path) -> None:
             (2, 'image/png', json.dumps({'caption': 'fine'})),
         ],
     )
-
-
-class TestUnstorableColumnReason:
-    """Unit coverage for the per-column detection helper, including the jsonb escape."""
-
-    def test_raw_nul_and_surrogate_detected_clean_passes(self) -> None:
-        """A raw TEXT NUL/surrogate is flagged; clean text and None pass."""
-        assert _pg_unstorable_column_reason('a\x00b', is_jsonb=False) is not None
-        assert _pg_unstorable_column_reason('\ud800', is_jsonb=False) is not None
-        assert _pg_unstorable_column_reason('clean value', is_jsonb=False) is None
-        assert _pg_unstorable_column_reason(None, is_jsonb=False) is None
-
-    def test_jsonb_escape_needs_the_decoded_check(self) -> None:
-        """A metadata NUL serializes to the \\u0000 escape (no literal byte); only the
-        decoded-structure check under is_jsonb=True catches it."""
-        escaped = json.dumps({'note': 'has\x00nul'}, ensure_ascii=False)
-        assert '\x00' not in escaped  # stored as the six-char escape, not a literal NUL
-        # The raw-string check alone misses the escape ...
-        assert _pg_unstorable_column_reason(escaped, is_jsonb=False) is None
-        # ... but the jsonb path decodes and detects it.
-        assert _pg_unstorable_column_reason(escaped, is_jsonb=True) is not None
-
-    def test_jsonb_literal_nul_and_malformed_json(self) -> None:
-        """A literal NUL in the serialized jsonb is flagged; unparseable JSON destined for a
-        jsonb column is itself unstorable (the ``::jsonb`` cast rejects it mid-transaction),
-        while the same unparseable content in a raw TEXT column has no cast and passes."""
-        assert _pg_unstorable_column_reason('{"k": "a\x00b"}', is_jsonb=True) is not None
-        assert _pg_unstorable_column_reason('{not valid json', is_jsonb=True) is not None
-        assert _pg_unstorable_column_reason('{not valid json', is_jsonb=False) is None
-
-
-class TestNonFiniteJsonNumbers:
-    """Unit coverage for the jsonb non-finite-number branch of the same helper."""
-
-    @pytest.mark.parametrize(
-        'metadata_json',
-        [
-            '{"score": 1e400}',        # standard JSON that json.loads turns into inf
-            '{"score": Infinity}',     # non-standard token json.loads accepts
-            '{"score": -Infinity}',
-            '{"a": NaN}',
-            '{"a": {"b": [1.0, NaN]}}',  # nested, reached by the walker
-        ],
-    )
-    def test_non_finite_number_is_unstorable_in_jsonb(self, metadata_json: str) -> None:
-        """Every spelling that decodes to a non-finite float is flagged for a jsonb column."""
-        assert _pg_unstorable_column_reason(metadata_json, is_jsonb=True) is not None
-
-    def test_finite_numbers_and_clean_json_pass(self) -> None:
-        """Ordinary finite numbers stay storable."""
-        assert _pg_unstorable_column_reason('{"score": 1.5}', is_jsonb=True) is None
-        assert _pg_unstorable_column_reason('{"score": 1e300}', is_jsonb=True) is None
-        assert _pg_unstorable_column_reason('{"a": [1, 2, 3]}', is_jsonb=True) is None
-
-    def test_message_names_the_offending_value(self) -> None:
-        """The recorded reason identifies the non-finite float so the row can be repaired."""
-        reason = _pg_unstorable_column_reason('{"score": 1e400}', is_jsonb=True)
-        assert reason is not None
-        assert 'Non-finite float' in reason
-
-    def test_rewrite_never_manufactures_an_invalid_token(self) -> None:
-        """Re-serialization preserves the source literal instead of emitting Infinity.
-
-        Re-encoding is where the invalid token would be created, on ALL FOUR migration
-        directions: json.loads turns 1e400 into inf and a default json.dumps writes it
-        back as the token ``Infinity``, which no RFC 8259 parser accepts. That converted
-        valid source metadata into invalid target metadata on every SQLite target
-        (json_valid flips to 0) and aborted the transaction on every PostgreSQL target.
-        """
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references('{"score": 1e400}', {}, stats, 1)
-
-        assert rewritten == '{"score": 1e400}'
-        assert json.loads(rewritten)  # still parseable JSON
-        assert 'Infinity' not in rewritten
-        # The skipped rewrite is reported, and a non-empty error list exits non-zero.
-        assert len(stats.errors) == 1
-        assert 'row 1' in stats.errors[0]
-
-    def test_discarded_rewrites_are_not_reported_as_rewritten(self) -> None:
-        """Remappings the encoder rejects are not counted as remappings that landed.
-
-        The walker counts each remapping as it mutates the parsed structure, but the
-        re-encode then fails and the ORIGINAL metadata -- still carrying the integer ids
-        -- is what reaches the target. Counting those remappings makes the run summary and
-        the --report JSON claim rewrites the target does not have, contradicting the error
-        the same branch records.
-        """
-        stats = MigrationStats()
-        metadata_json = '{"references": {"context_ids": [1, 2, 3]}, "score": 1e400}'
-        mapping = {1: 'a' * 32, 2: 'b' * 32, 3: 'c' * 32}
-
-        rewritten = rewrite_metadata_references(metadata_json, mapping, stats, 5)
-
-        assert rewritten == metadata_json
-        assert json.loads(rewritten)['references']['context_ids'] == [1, 2, 3]
-        assert stats.references_rewritten == 0
-        assert len(stats.errors) == 1
-        assert 'row 5' in stats.errors[0]
-
-    def test_successful_rewrites_are_still_counted(self) -> None:
-        """The rollback is confined to the discard branch."""
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references(
-            '{"references": {"context_ids": [1, 2]}, "score": 1e300}',
-            {1: 'a' * 32, 2: 'b' * 32},
-            stats,
-            6,
-        )
-
-        assert rewritten is not None
-        assert json.loads(rewritten)['references']['context_ids'] == ['a' * 32, 'b' * 32]
-        assert stats.references_rewritten == 2
-        assert stats.errors == []
-
-    @pytest.mark.parametrize(
-        'metadata_json',
-        ['{"score": Infinity}', '{"a": NaN}', '{"score": -Infinity}'],
-    )
-    def test_non_standard_source_tokens_are_preserved_not_re_emitted(self, metadata_json: str) -> None:
-        """A source already carrying a non-standard token is preserved and reported.
-
-        Rewriting it would re-emit the same invalid token; preserving it verbatim keeps
-        the target byte-identical to the source, and the recorded error tells the
-        operator to repair the value.
-        """
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references(metadata_json, {}, stats, 7)
-
-        assert rewritten == metadata_json
-        assert len(stats.errors) == 1
-        assert 'row 7' in stats.errors[0]
-
-    def test_finite_metadata_still_round_trips(self) -> None:
-        """The guard does not disturb ordinary metadata."""
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references('{"score": 1e300, "a": [1, 2]}', {}, stats, 3)
-
-        assert rewritten is not None
-        assert json.loads(rewritten) == {'score': 1e300, 'a': [1, 2]}
-        assert stats.errors == []
 
 
 class TestSqliteToPostgresqlNulPrecheck:
@@ -497,13 +308,13 @@ class TestSqliteToPostgresqlNulPrecheck:
         """A row whose content_hash carries a NUL is identified and skipped, not aborted.
 
         content_hash is a plain TEXT column bound raw at the INSERT (no CHECK
-        constraint on either backend). It was absent from the unstorable-string
-        pre-check candidates, so a NUL there passed the pre-check and asyncpg
-        rejected the bind mid-transaction (CharacterNotInRepertoireError,
-        SQLSTATE 22021), rolling back the whole cross-backend migration with only
-        the raw driver error and no row identification. The pre-check now inspects
-        content_hash too, so the offending row is skipped and reported while the
-        clean data migrates and the run commits.
+        constraint on either backend). Left out of the unstorable-string pre-check
+        candidates, a NUL there would pass the pre-check and asyncpg would reject
+        the bind mid-transaction (CharacterNotInRepertoireError, SQLSTATE 22021),
+        rolling back the whole cross-backend migration with only the raw driver
+        error and no row identification. The pre-check inspects content_hash, so
+        the offending row is skipped and reported while the clean data migrates
+        and the run commits.
         """
         source = tmp_path / 'content_hash_nul_source.db'
         _seed_source(

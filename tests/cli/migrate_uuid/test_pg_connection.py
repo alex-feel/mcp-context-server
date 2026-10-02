@@ -1,4 +1,4 @@
-"""Regression tests for the migration CLI's PostgreSQL connection budget.
+"""Tests for the PostgreSQL connection helpers: the target emptiness probe and the connection budget.
 
 ``POSTGRESQL_CONNECT_TIMEOUT_S`` bounds connection ESTABLISHMENT (TCP connect plus the
 PostgreSQL startup handshake). The server pool applies it to every connection it opens,
@@ -11,47 +11,87 @@ is equally wrong, since a deliberately short budget would not fail fast either.
 
 import json
 import sqlite3
-from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import pytest
 
-from app.cli.migrate import MigrationOptions
-from app.cli.migrate import _pg_connect_kwargs
-from app.cli.migrate import run_migration_mixed_sqlite_to_postgresql
+from app.cli.migrate_uuid.pg_connection import pg_connect_kwargs
+from app.cli.migrate_uuid.records import MigrationOptions
+from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
 from app.settings import get_settings
-
-_INTEGER_KEYED_SCHEMA_SQL = '''
-CREATE TABLE IF NOT EXISTS context_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    thread_id TEXT NOT NULL,
-    source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
-    content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
-    text_content TEXT,
-    metadata JSON,
-    summary TEXT,
-    content_hash TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-'''
+from tests.cli.migrate_uuid._sources import INTEGER_KEYED_ENTRIES_SCHEMA_SQL
 
 
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> Generator[None, None, None]:
-    """Reset the settings cache around every test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+class TestTargetPgHasDataSchemaQuoting:
+    """The empty-target COUNT(*) probe quotes POSTGRESQL_SCHEMA via the shared helper.
+
+    A schema name containing a double-quote is a valid quoted PostgreSQL identifier and is
+    reachable operator config (POSTGRESQL_SCHEMA has no charset validation). The COUNT(*)
+    target-emptiness probe must double the embedded quote exactly as CREATE SCHEMA and the
+    search_path builder do -- all three route through quote_pg_identifier -- so the sites
+    cannot drift and a pathological schema name does not abort the migration with a raw
+    PostgresSyntaxError.
+    """
+
+    @pytest.mark.asyncio
+    async def test_count_probe_doubles_embedded_quote_in_schema(self) -> None:
+        """A schema with an embedded double-quote yields the doubled-quote COUNT(*),
+        not the malformed single-quote-wrapped form."""
+        from typing import Any
+        from typing import cast
+
+        from app.backends.postgresql_backend.session import quote_pg_identifier
+        from app.cli.migrate_uuid.pg_connection import target_pg_has_data
+
+        captured: list[str] = []
+
+        class _RecordingConn:
+            async def fetchval(self, query: str, *_args: object) -> object:
+                captured.append(query)
+                if 'information_schema.tables' in query:
+                    return True  # the table exists in the probed schema
+                return 5  # non-zero row count
+
+        has_data = await target_pg_has_data(cast(Any, _RecordingConn()), schema='weird"schema')
+
+        assert has_data is True
+        count_query = next(q for q in captured if 'COUNT(*)' in q)
+        assert quote_pg_identifier('weird"schema') == '"weird""schema"'
+        assert '"weird""schema".context_entries' in count_query
+        # The malformed single-quote-wrapped form must NOT appear.
+        assert '"weird"schema".context_entries' not in count_query
+
+    @pytest.mark.asyncio
+    async def test_count_probe_with_none_schema_is_unqualified(self) -> None:
+        """schema=None keeps the unqualified current_schema() COUNT(*), unchanged."""
+        from typing import Any
+        from typing import cast
+
+        from app.cli.migrate_uuid.pg_connection import target_pg_has_data
+
+        captured: list[str] = []
+
+        class _RecordingConn:
+            async def fetchval(self, query: str, *_args: object) -> object:
+                captured.append(query)
+                if 'information_schema.tables' in query:
+                    return True
+                return 0
+
+        has_data = await target_pg_has_data(cast(Any, _RecordingConn()), schema=None)
+
+        assert has_data is False
+        count_query = next(q for q in captured if 'COUNT(*)' in q)
+        assert count_query == 'SELECT COUNT(*) FROM context_entries'
 
 
 def _seed_single_row_source(path: Path) -> None:
     """Create a minimal integer-keyed source database with one row."""
     conn = sqlite3.connect(str(path))
     try:
-        conn.executescript(_INTEGER_KEYED_SCHEMA_SQL)
+        conn.executescript(INTEGER_KEYED_ENTRIES_SCHEMA_SQL)
         conn.execute(
             'INSERT INTO context_entries '
             '(id, thread_id, source, content_type, text_content, metadata, created_at, updated_at) '
@@ -80,7 +120,7 @@ class TestPgConnectKwargs:
 
     def test_default_matches_the_configured_default(self) -> None:
         """With no override the CLI applies the settings default explicitly."""
-        kwargs = _pg_connect_kwargs()
+        kwargs = pg_connect_kwargs()
 
         assert kwargs['timeout'] == get_settings().storage.postgresql_connect_timeout_s
 
@@ -90,7 +130,7 @@ class TestPgConnectKwargs:
         monkeypatch.setenv('POSTGRESQL_CONNECT_TIMEOUT_S', configured)
         get_settings.cache_clear()
 
-        kwargs = _pg_connect_kwargs()
+        kwargs = pg_connect_kwargs()
 
         assert kwargs['timeout'] == float(configured)
         # The statement-cache parameter shared with the server pool stays; the startup
@@ -137,9 +177,9 @@ class TestMigrationConnectionsHonorTheBudget:
         )
         with (
             mock.patch('asyncpg.connect', _fake_connect),
-            mock.patch('app.cli.migrate._target_pg_has_data', _has_data),
-            mock.patch('app.cli.migrate._pg_table_exists', _table_exists),
-            mock.patch('app.cli.migrate.ensure_target_pg_fts', _ensure_fts),
+            mock.patch('app.cli.migrate_uuid.sqlite_to_postgresql.target_pg_has_data', _has_data),
+            mock.patch('app.cli.migrate_uuid.sqlite_to_postgresql.pg_table_exists', _table_exists),
+            mock.patch('app.cli.migrate_uuid.sqlite_to_postgresql.ensure_target_pg_fts', _ensure_fts),
         ):
             stats = await run_migration_mixed_sqlite_to_postgresql(options)
 

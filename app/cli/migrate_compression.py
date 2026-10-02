@@ -1,8 +1,7 @@
 """Compression CLI handler for ``mcp-context-server-migrate``.
 
-Implements the ``--compress`` and ``--decompress`` flags. The handler is
-kept in a separate module from ``app.cli.migrate`` to bound the size of
-the v2->v3 migration script.
+Implements the ``--compress`` and ``--decompress`` flags, which the
+``app.cli.migrate`` dispatcher routes here.
 
 Operations:
     ``run_compress``:
@@ -52,8 +51,8 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.backends.postgresql_backend.session import apply_session_gucs
 from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
-from app.cli.migrate import mask_credentials
-from app.cli.migrate import parse_backend_url
+from app.cli._database_url import mask_credentials
+from app.cli._database_url import parse_backend_url
 from app.compression.base import CompressionProvider
 from app.compression.provenance import read_compression_metadata
 from app.compression.types import CompressionMetadata

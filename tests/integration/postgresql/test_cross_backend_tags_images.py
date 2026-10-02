@@ -1,9 +1,9 @@
 """Cross-backend migration regression tests for tags / images / FTS.
 
-Before these fixes, the cross-backend migration paths copied ONLY
-``context_entries`` and silently dropped ``tags`` and ``image_attachments``
-(contradicting the documented contract that only vector embeddings are
-dropped), and the PostgreSQL->SQLite path never rebuilt the SQLite FTS index.
+The documented contract of the cross-backend migration paths is that only
+vector embeddings are dropped: ``tags`` and ``image_attachments`` travel with
+``context_entries``, and the PostgreSQL->SQLite path rebuilds the SQLite FTS
+index.
 
 These tests exercise both directions against a live pgvector Docker container
 (behind ``requires_docker_postgres``) and assert that tags and image
@@ -24,9 +24,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.cli.migrate import MigrationOptions
-from app.cli.migrate import run_migration_mixed_postgresql_to_sqlite
-from app.cli.migrate import run_migration_mixed_sqlite_to_postgresql
+from app.cli.migrate_uuid.postgresql_to_sqlite import run_migration_mixed_postgresql_to_sqlite
+from app.cli.migrate_uuid.records import MigrationOptions
+from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 

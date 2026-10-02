@@ -37,7 +37,8 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
     or merging into ``asyncpg.create_pool(dsn, **kwargs)``. This is the single
     source of truth for the connection parameters that BOTH the long-lived server
     pool (``PostgreSQLBackend.initialize``) and the short-lived migration CLI
-    (``app.cli.migrate``) must apply identically:
+    (``app.cli.migrate_uuid.pg_connection``, ``app.cli.migrate_compression``) must
+    apply identically:
 
     - ``statement_cache_size``: ``POSTGRESQL_STATEMENT_CACHE_SIZE`` (default 100;
       set 0 to disable prepared statements for transaction-mode poolers such as

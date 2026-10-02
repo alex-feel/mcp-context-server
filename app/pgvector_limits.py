@@ -8,7 +8,7 @@ mid-DDL. Three consumers share this module so the constraint cannot drift
 per-path: the settings validator (``AppSettings.validate_pgvector_dimension_limit``),
 the compression CLI's ``--decompress`` fp32 rebuild
 (``app.cli.migrate_compression.run_decompress``), and the migration CLI's
-PostgreSQL target auto-init (``app.cli.migrate.initialize_target_postgresql``).
+PostgreSQL target auto-init (``app.cli.migrate_uuid.pg_target.initialize_target_postgresql``).
 
 This module is intentionally dependency-free: it MUST NOT import
 ``app.settings`` (or anything that imports it) because ``app.settings`` is one

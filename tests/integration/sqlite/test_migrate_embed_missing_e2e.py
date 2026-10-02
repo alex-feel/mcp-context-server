@@ -364,9 +364,9 @@ def test_compress_then_embed_missing_composed(
 ) -> None:
     """``--compress`` followed by ``--embed-missing`` lands backfilled rows compressed.
 
-    Validates Shape gamma HYBRID composition behavior: pre-existing fp32
-    embeddings are compressed first, then missing entries are embedded
-    directly into the compressed table.
+    Validates how the two modes compose: pre-existing fp32 embeddings are
+    compressed first, then missing entries are embedded directly into the
+    compressed table.
     """
     db = tmp_path / 'compose.db'
     # Reuse the fp32 seed pattern from test_migrate_compress_e2e to plant

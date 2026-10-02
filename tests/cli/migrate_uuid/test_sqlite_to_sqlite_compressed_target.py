@@ -4,47 +4,26 @@ A v3 server started once against a fresh database path leaves an EMPTY database
 that already carries compression provenance (compression is default-on):
 ``compression_metadata`` with a singleton row, ``vec_context_embeddings_compressed``,
 and zero ``context_entries`` rows. Migrating an embedding-carrying source into that
-database used to report complete success while silently condemning every migrated
-vector: ``initialize_target_sqlite`` re-creates the fp32 ``vec_context_embeddings``
-table (``CREATE VIRTUAL TABLE IF NOT EXISTS`` masks the compressed layout), the
-follow-up ``--compress`` is a no-op because a provenance row already exists, and the
-next server start applies the compression migration whose leading
-``DROP TABLE IF EXISTS vec_context_embeddings`` destroys the copied vectors.
+database without the backstop reports complete success while silently condemning
+every migrated vector: ``initialize_target_sqlite`` re-creates the fp32
+``vec_context_embeddings`` table (``CREATE VIRTUAL TABLE IF NOT EXISTS`` masks the
+compressed layout), the follow-up ``--compress`` is a no-op because a provenance row
+already exists, and the next server start applies the compression migration whose
+leading ``DROP TABLE IF EXISTS vec_context_embeddings`` destroys the copied vectors.
 
-The PostgreSQL runner has always refused this shape; these tests pin the symmetric
-SQLite refusal, including the ``--dry-run`` preview (which must probe the REAL target
+The PostgreSQL runner refuses this shape; these tests pin the symmetric SQLite
+refusal, including the ``--dry-run`` preview (which must probe the REAL target
 file, not the in-memory dry-run handle).
 """
 
 import sqlite3
-from collections.abc import Generator
 from pathlib import Path
 
-import pytest
-
-from app.cli.migrate import MigrationOptions
-from app.cli.migrate import _read_schema_file
-from app.cli.migrate import run_migration_sqlite_to_sqlite
-from app.cli.migrate import target_sqlite_is_compressed
-from app.settings import get_settings
-
-# Integer-keyed source schema (the shape the CLI accepts as input). Production
-# code under app/ no longer uses this layout; each migration test file defines
-# its own bootstrap copy so it stays self-contained.
-_INTEGER_KEYED_SCHEMA_SQL = '''
-CREATE TABLE IF NOT EXISTS context_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    thread_id TEXT NOT NULL,
-    source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
-    content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
-    text_content TEXT,
-    metadata JSON,
-    summary TEXT,
-    content_hash TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-'''
+from app.cli.migrate_uuid.sqlite_target import read_schema_file
+from app.cli.migrate_uuid.sqlite_target import target_sqlite_is_compressed
+from app.cli.migrate_uuid.sqlite_to_sqlite import run_migration_sqlite_to_sqlite
+from tests.cli.migrate_uuid._sources import INTEGER_KEYED_ENTRIES_SCHEMA_SQL
+from tests.cli.migrate_uuid._sources import build_sqlite_options
 
 _EMBEDDING_METADATA_DDL = (
     'CREATE TABLE embedding_metadata ('
@@ -55,6 +34,7 @@ _EMBEDDING_METADATA_DDL = (
     'created_at TEXT NOT NULL, '
     'updated_at TEXT NOT NULL)'
 )
+
 
 _COMPRESSION_METADATA_DDL = (
     'CREATE TABLE compression_metadata ('
@@ -68,6 +48,7 @@ _COMPRESSION_METADATA_DDL = (
     'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'
 )
 
+
 _COMPRESSED_PAYLOAD_DDL = (
     'CREATE TABLE vec_context_embeddings_compressed ('
     'id INTEGER PRIMARY KEY AUTOINCREMENT, '
@@ -75,6 +56,7 @@ _COMPRESSED_PAYLOAD_DDL = (
     'chunk_index INTEGER NOT NULL, '
     'payload BLOB NOT NULL)'
 )
+
 
 _TARGET_CONTEXT_ENTRIES_DDL = (
     'CREATE TABLE context_entries ('
@@ -86,28 +68,6 @@ _TARGET_CONTEXT_ENTRIES_DDL = (
 )
 
 
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> Generator[None, None, None]:
-    """Reset the settings cache around every test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
-def _build_options(source: Path, target: Path, *, dry_run: bool = False) -> MigrationOptions:
-    """Build a :class:`MigrationOptions` for direct invocation.
-
-    Returns:
-        Options addressing ``source`` and ``target`` as SQLite URLs.
-    """
-    return MigrationOptions(
-        source_url=f'sqlite:///{source.as_posix()}',
-        target_url=f'sqlite:///{target.as_posix()}',
-        dry_run=dry_run,
-        report_path=None,
-    )
-
-
 def _seed_source_with_embeddings(path: Path) -> None:
     """Create an integer-keyed source carrying an ``embedding_metadata`` table.
 
@@ -117,7 +77,7 @@ def _seed_source_with_embeddings(path: Path) -> None:
     """
     conn = sqlite3.connect(str(path))
     try:
-        conn.executescript(_INTEGER_KEYED_SCHEMA_SQL)
+        conn.executescript(INTEGER_KEYED_ENTRIES_SCHEMA_SQL)
         conn.execute(
             'INSERT INTO context_entries '
             '(id, thread_id, source, content_type, text_content, created_at, updated_at) '
@@ -143,7 +103,7 @@ def _make_compressed_target(path: Path, *, with_provenance_row: bool = True) -> 
     """
     conn = sqlite3.connect(str(path))
     try:
-        conn.executescript(_read_schema_file('sqlite_schema.sql'))
+        conn.executescript(read_schema_file('sqlite_schema.sql'))
         conn.execute(_COMPRESSION_METADATA_DDL)
         conn.execute(_COMPRESSED_PAYLOAD_DDL)
         if with_provenance_row:
@@ -246,7 +206,7 @@ class TestCompressedTargetBackstop:
         target = tmp_path / 'compressed_target.db'
         _make_compressed_target(target)
 
-        stats = run_migration_sqlite_to_sqlite(_build_options(source, target))
+        stats = run_migration_sqlite_to_sqlite(build_sqlite_options(source, target))
 
         assert stats.rows_migrated == 0
         assert any('configured for compressed embeddings' in e for e in stats.errors)
@@ -268,7 +228,7 @@ class TestCompressedTargetBackstop:
         target = tmp_path / 'compressed_target_dry.db'
         _make_compressed_target(target)
 
-        stats = run_migration_sqlite_to_sqlite(_build_options(source, target, dry_run=True))
+        stats = run_migration_sqlite_to_sqlite(build_sqlite_options(source, target, dry_run=True))
 
         assert not stats.errors
         assert any('configured for compressed embeddings' in w for w in stats.warnings)
@@ -280,7 +240,7 @@ class TestCompressedTargetBackstop:
         _seed_source_with_embeddings(source)
         target = tmp_path / 'fresh_target.db'
 
-        stats = run_migration_sqlite_to_sqlite(_build_options(source, target))
+        stats = run_migration_sqlite_to_sqlite(build_sqlite_options(source, target))
 
         assert not any('compressed embeddings' in e for e in stats.errors)
         assert stats.rows_migrated == 1
@@ -294,7 +254,7 @@ class TestCompressedTargetBackstop:
         source = tmp_path / 'source_plain.db'
         conn = sqlite3.connect(str(source))
         try:
-            conn.executescript(_INTEGER_KEYED_SCHEMA_SQL)
+            conn.executescript(INTEGER_KEYED_ENTRIES_SCHEMA_SQL)
             conn.execute(
                 'INSERT INTO context_entries '
                 '(id, thread_id, source, content_type, text_content, created_at, updated_at) '
@@ -307,7 +267,7 @@ class TestCompressedTargetBackstop:
         target = tmp_path / 'compressed_target_plain.db'
         _make_compressed_target(target)
 
-        stats = run_migration_sqlite_to_sqlite(_build_options(source, target))
+        stats = run_migration_sqlite_to_sqlite(build_sqlite_options(source, target))
 
         assert not any('compressed embeddings' in e for e in stats.errors)
         assert stats.rows_migrated == 1

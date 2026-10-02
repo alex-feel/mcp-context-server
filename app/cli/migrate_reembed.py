@@ -46,14 +46,14 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.cli._database_url import mask_credentials
+from app.cli._database_url import parse_backend_url
 from app.cli._embedding_introspect import dimension_conflict_error
 from app.cli._embedding_introspect import distinct_embedding_models
 from app.cli._embedding_introspect import embedding_metadata_table_exists
 from app.cli._embedding_runtime import EmbeddingPipelineUnavailableError
 from app.cli._embedding_runtime import initialize_cli_embedding_pipeline
 from app.cli._embedding_runtime import shutdown_cli_embedding_pipeline
-from app.cli.migrate import mask_credentials
-from app.cli.migrate import parse_backend_url
 from app.embeddings.base import EmbeddingProvider
 from app.settings import get_settings
 
