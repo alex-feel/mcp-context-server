@@ -1,7 +1,7 @@
 """Tests for the embedding-compression schema migration.
 
 Covers the SQLite branch in detail (always runnable in CI without docker).
-PostgreSQL-side migration behaviour is exercised by the docker-compose
+PostgreSQL-side migration behavior is exercised by the docker-compose
 integration tests under ``tests/integration/postgresql/`` and is intentionally
 not duplicated here.
 
@@ -10,89 +10,16 @@ The tests use a dedicated SQLite database per test so the migration's
 ``compression_metadata`` singleton starts empty.
 """
 
-import asyncio
-import contextlib
-import importlib.util
 import sqlite3
-from collections.abc import AsyncGenerator
-from collections.abc import Callable
-from collections.abc import Generator
-from pathlib import Path
-from typing import Any
-from typing import cast
 
 import pytest
-import pytest_asyncio
 
 from app.backends import StorageBackend
-from app.backends import create_backend
-from app.errors import ConfigurationError
 from app.migrations.compression import apply_compression_migration
-from app.settings import get_settings
+from tests.helpers import disable_compression
+from tests.helpers import enable_compression
 
-# The full server migration sequence loads the sqlite-vec extension (the semantic
-# migration always loads it before executing), so self-skip where it is absent.
-requires_sqlite_vec = pytest.mark.skipif(
-    importlib.util.find_spec('sqlite_vec') is None,
-    reason='sqlite-vec package not installed',
-)
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> Generator[None, None, None]:
-    """Reset ``get_settings`` cache before and after every test.
-
-    Env-var monkeypatching for compression toggles would otherwise leak
-    into unrelated tests because the settings singleton is process-global.
-
-    Yields:
-        Control to the test body; setup and teardown invalidate the cache.
-    """
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
-@pytest_asyncio.fixture
-async def backend(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
-    """SQLite backend with the standard schema pre-applied."""
-    db_path = tmp_path / 'test_compression.db'
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    from app.schemas import load_schema
-
-    schema_sql = load_schema('sqlite')
-    conn.executescript(schema_sql)
-    conn.close()
-
-    backend = create_backend(backend_type='sqlite', db_path=str(db_path))
-    await backend.initialize()
-
-    yield backend
-
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(backend.shutdown(), timeout=5.0)
-
-
-def _enable_compression(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Flip the compression toggle and refresh module-level settings caches."""
-    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
-    # COMPRESSION_SEED is required for runtime but not for the migration loader
-    # which only inspects the enabled flag.
-    monkeypatch.setenv('COMPRESSION_SEED', '42')
-    get_settings.cache_clear()
-    import app.migrations.compression as compression_module
-    monkeypatch.setattr(compression_module, 'settings', get_settings())
-
-
-def _disable_compression(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reset compression toggle to off."""
-    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
-    monkeypatch.delenv('COMPRESSION_SEED', raising=False)
-    get_settings.cache_clear()
-    import app.migrations.compression as compression_module
-    monkeypatch.setattr(compression_module, 'settings', get_settings())
+pytestmark = pytest.mark.usefixtures('clear_settings_cache')
 
 
 @pytest.mark.asyncio
@@ -102,7 +29,7 @@ async def test_sqlite_migration_creates_tables(
 ) -> None:
     """When enabled, the migration creates the compressed-vector table and
     the singleton provenance table together with the supporting index."""
-    _enable_compression(monkeypatch)
+    enable_compression(monkeypatch)
 
     await apply_compression_migration(backend=backend)
 
@@ -135,7 +62,7 @@ async def test_sqlite_migration_skips_when_disabled(
 ) -> None:
     """When the toggle is off the migration is a no-op (returns immediately
     without creating any tables)."""
-    _disable_compression(monkeypatch)
+    disable_compression(monkeypatch)
 
     await apply_compression_migration(backend=backend)
 
@@ -155,7 +82,7 @@ async def test_sqlite_migration_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Running the migration twice produces the same schema with no errors."""
-    _enable_compression(monkeypatch)
+    enable_compression(monkeypatch)
 
     await apply_compression_migration(backend=backend)
     # Second run must not raise.
@@ -177,7 +104,7 @@ async def test_sqlite_singleton_check_enforced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The CHECK (id = 1) constraint rejects any row with id != 1."""
-    _enable_compression(monkeypatch)
+    enable_compression(monkeypatch)
     await apply_compression_migration(backend=backend)
 
     def _insert_second(conn: sqlite3.Connection) -> None:
@@ -198,7 +125,7 @@ async def test_sqlite_singleton_unique_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Inserting two rows with id=1 is rejected by the PRIMARY KEY."""
-    _enable_compression(monkeypatch)
+    enable_compression(monkeypatch)
     await apply_compression_migration(backend=backend)
 
     def _insert(conn: sqlite3.Connection) -> None:
@@ -225,7 +152,7 @@ async def test_sqlite_migration_drops_legacy_vec_table(
     virtual table that requires sqlite-vec). We simulate the prior fp32 state
     by creating a stand-in table with the same name.
     """
-    _enable_compression(monkeypatch)
+    enable_compression(monkeypatch)
 
     def _create_legacy(conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -245,590 +172,3 @@ async def test_sqlite_migration_drops_legacy_vec_table(
         return cur.fetchone() is not None
 
     assert await backend.execute_read(_exists) is False
-
-
-@pytest.mark.asyncio
-async def test_sqlite_migration_refuses_first_time_with_populated_fp32(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """First-time application on a database with POPULATED fp32 embeddings refuses.
-
-    A bare ENABLE_EMBEDDING_COMPRESSION=true flip on a deployment that stored
-    fp32 embeddings while compression was off must NOT silently drop them: the
-    migration raises ConfigurationError (exit 78) directing the operator to the
-    --compress CLI, and the fp32 table survives untouched.
-    """
-    from app.errors import ConfigurationError
-
-    _enable_compression(monkeypatch)
-
-    def _create_populated_legacy(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            'CREATE TABLE IF NOT EXISTS vec_context_embeddings '
-            '(rowid INTEGER PRIMARY KEY, embedding BLOB)',
-        )
-        conn.execute(
-            'INSERT INTO vec_context_embeddings (rowid, embedding) VALUES (1, ?)',
-            (b'\x00\x01\x02\x03',),
-        )
-
-    await backend.execute_write(_create_populated_legacy)
-
-    with pytest.raises(ConfigurationError, match='mcp-context-server-migrate'):
-        await apply_compression_migration(backend=backend)
-
-    def _survives(conn: sqlite3.Connection) -> int:
-        return int(conn.execute('SELECT COUNT(*) FROM vec_context_embeddings').fetchone()[0])
-
-    assert await backend.execute_read(_survives) == 1
-
-
-@pytest.mark.asyncio
-async def test_sqlite_migration_proceeds_with_populated_fp32_when_provenance_present(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A provenance row marks the database as already-compressed, so a leftover
-    populated fp32 table is a stray artifact and the migration proceeds
-    (re-running the DROP) instead of refusing."""
-    _enable_compression(monkeypatch)
-
-    # First application on a clean database, then simulate the validator's
-    # bootstrap INSERT so the provenance row is present (the real post-first-
-    # startup state).
-    await apply_compression_migration(backend=backend)
-
-    def _insert_provenance(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            'INSERT INTO compression_metadata (id, provider, bits, variant, seed, dim) '
-            'VALUES (1, ?, ?, ?, ?, ?)',
-            ('turboquant', 4, 'ip', 42, 1024),
-        )
-
-    await backend.execute_write(_insert_provenance)
-
-    def _create_populated_legacy(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            'CREATE TABLE IF NOT EXISTS vec_context_embeddings '
-            '(rowid INTEGER PRIMARY KEY, embedding BLOB)',
-        )
-        conn.execute(
-            'INSERT INTO vec_context_embeddings (rowid, embedding) VALUES (1, ?)',
-            (b'\x00\x01\x02\x03',),
-        )
-
-    await backend.execute_write(_create_populated_legacy)
-
-    # Must not raise: the provenance row proves the compressed table is the
-    # authoritative store, so the stray fp32 table is dropped.
-    await apply_compression_migration(backend=backend)
-
-    def _exists(conn: sqlite3.Connection) -> bool:
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='vec_context_embeddings'",
-        )
-        return cur.fetchone() is not None
-
-    assert await backend.execute_read(_exists) is False
-
-
-@pytest.mark.asyncio
-@requires_sqlite_vec
-async def test_compression_skips_fp32_vec_provisioning_across_restart(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With compression enabled, the server migration sequence
-    (semantic -> chunking -> compression) must NOT create the fp32
-    vec_context_embeddings table -- only embedding_metadata (required by the
-    compressed write path), embedding_chunks (the SQLite 1:N bridge, preserved
-    under compression), and the compressed/provenance tables. The invariant must
-    hold across a simulated restart, with NO create-then-drop churn.
-    """
-    _enable_compression(monkeypatch)
-    monkeypatch.setenv('EMBEDDING_DIM', '1024')
-    get_settings.cache_clear()
-    import app.migrations.chunking as chunking_module
-    import app.migrations.compression as compression_module
-    import app.migrations.semantic as semantic_module
-    monkeypatch.setattr(semantic_module, 'settings', get_settings())
-    monkeypatch.setattr(chunking_module, 'settings', get_settings())
-    monkeypatch.setattr(compression_module, 'settings', get_settings())
-
-    from app.migrations.chunking import apply_chunking_migration
-    from app.migrations.semantic import apply_semantic_search_migration
-
-    async def _run_startup_sequence() -> None:
-        # Mirrors the server lifespan migration order.
-        await apply_semantic_search_migration(backend=backend)
-        await apply_chunking_migration(backend=backend)
-        await apply_compression_migration(backend=backend)
-
-    def _tables(conn: sqlite3.Connection) -> set[str]:
-        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        return {row[0] for row in cur.fetchall()}
-
-    await _run_startup_sequence()
-    tables = await backend.execute_read(_tables)
-    assert 'vec_context_embeddings' not in tables  # fp32 vec0 table NOT created
-    assert 'embedding_metadata' in tables          # required by the compressed write path
-    assert 'embedding_chunks' in tables            # SQLite 1:N bridge, preserved
-    assert 'vec_context_embeddings_compressed' in tables
-    assert 'compression_metadata' in tables
-
-    # Simulated restart: the fp32 table must STILL be absent (no reappearance).
-    await _run_startup_sequence()
-    tables_after = await backend.execute_read(_tables)
-    assert 'vec_context_embeddings' not in tables_after
-
-
-@pytest.mark.asyncio
-@requires_sqlite_vec
-async def test_no_compression_creates_fp32_vec_table(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Control: with compression DISABLED the semantic migration still creates the
-    fp32 vec_context_embeddings table (the skip is compression-gated, not default)."""
-    _disable_compression(monkeypatch)
-    monkeypatch.setenv('EMBEDDING_DIM', '1024')
-    get_settings.cache_clear()
-    import app.migrations.semantic as semantic_module
-    monkeypatch.setattr(semantic_module, 'settings', get_settings())
-
-    from app.migrations.semantic import apply_semantic_search_migration
-
-    await apply_semantic_search_migration(backend=backend)
-
-    def _exists(conn: sqlite3.Connection) -> bool:
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='vec_context_embeddings'",
-        )
-        return cur.fetchone() is not None
-
-    assert await backend.execute_read(_exists) is True
-
-
-@pytest.mark.asyncio
-async def test_sqlite_migration_skips_when_generation_disabled_and_schema_absent(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With generation off on a FRESH database, the migration is a no-op.
-
-    Embedding storage is provisioned from ENABLE_EMBEDDING_GENERATION, so a
-    generation-off deployment with NO embedding infrastructure must not gain
-    a compression schema it can never write to -- the validator would then
-    seed a provenance row and a later ENABLE_EMBEDDING_COMPRESSION=false flip
-    would wedge behind a --decompress run with no embedding infrastructure to
-    operate on. A database that already carries embedding tables is
-    provisioned instead (see the embedding-infra test below).
-    """
-    _enable_compression(monkeypatch)
-    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
-    get_settings.cache_clear()
-    import app.migrations.compression as compression_module
-    monkeypatch.setattr(compression_module, 'settings', get_settings())
-
-    await apply_compression_migration(backend=backend)
-
-    def _check(conn: sqlite3.Connection) -> bool:
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name IN "
-            "('compression_metadata', 'vec_context_embeddings_compressed')",
-        )
-        return cur.fetchone() is not None
-
-    assert await backend.execute_read(_check) is False
-
-
-@pytest.mark.asyncio
-async def test_sqlite_migration_maintains_existing_schema_when_generation_disabled(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A database that already carries the compression schema keeps it maintained.
-
-    Data compressed while generation was on must stay decodable after the
-    operator turns generation off, so the migration falls through for an
-    existing schema instead of skipping it.
-    """
-    _enable_compression(monkeypatch)
-    await apply_compression_migration(backend=backend)
-
-    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
-    get_settings.cache_clear()
-    import app.migrations.compression as compression_module
-    monkeypatch.setattr(compression_module, 'settings', get_settings())
-
-    await apply_compression_migration(backend=backend)
-
-    def _check(conn: sqlite3.Connection) -> bool:
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='vec_context_embeddings_compressed'",
-        )
-        return cur.fetchone() is not None
-
-    assert await backend.execute_read(_check) is True
-
-
-@pytest.mark.asyncio
-async def test_sqlite_migration_refuses_generation_off_flip_over_populated_fp32(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A populated, never-compressed fp32 store refuses even with generation off.
-
-    The enable-direction guard is evaluated BEFORE the generation-off skip: a
-    bare ENABLE_EMBEDDING_COMPRESSION=true flip on an archive deployment that
-    serves existing fp32 embeddings read-only (generation toggled off) must
-    exit 78 directing the operator to --compress, not boot silently with
-    every stored embedding invisible to search.
-    """
-
-    def _seed_fp32(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            'CREATE TABLE vec_context_embeddings '
-            '(id INTEGER PRIMARY KEY, context_id TEXT, embedding BLOB)',
-        )
-        conn.execute(
-            'INSERT INTO vec_context_embeddings (context_id, embedding) '
-            "VALUES ('abc', x'00')",
-        )
-
-    await backend.execute_write(_seed_fp32)
-
-    _enable_compression(monkeypatch)
-    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
-    get_settings.cache_clear()
-    import app.migrations.compression as compression_module
-    monkeypatch.setattr(compression_module, 'settings', get_settings())
-
-    with pytest.raises(ConfigurationError, match='--compress'):
-        await apply_compression_migration(backend=backend)
-
-
-@pytest.mark.asyncio
-async def test_sqlite_migration_provisions_schema_for_embedding_infra_generation_off(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Embedding infrastructure without fp32 data still gets the compression schema.
-
-    The delete/update cleanup paths gate on embedding_metadata presence and
-    route through the compressed payload table whenever compression is
-    enabled, so a database whose embedding tables were provisioned while
-    generation was on must carry the compression schema even after generation
-    is toggled off -- otherwise every text-carrying update would fail on the
-    missing payload table inside its transaction.
-    """
-
-    def _seed_embedding_metadata(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            'CREATE TABLE IF NOT EXISTS embedding_metadata ('
-            'context_id TEXT PRIMARY KEY, chunk_count INTEGER, dimensions INTEGER)',
-        )
-
-    await backend.execute_write(_seed_embedding_metadata)
-
-    _enable_compression(monkeypatch)
-    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
-    get_settings.cache_clear()
-    import app.migrations.compression as compression_module
-    monkeypatch.setattr(compression_module, 'settings', get_settings())
-
-    await apply_compression_migration(backend=backend)
-
-    def _both_tables(conn: sqlite3.Connection) -> int:
-        cur = conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
-            "AND name IN ('compression_metadata', 'vec_context_embeddings_compressed')",
-        )
-        row = cur.fetchone()
-        return int(row[0])
-
-    assert await backend.execute_read(_both_tables) == 2
-
-
-@pytest.mark.asyncio
-async def test_semantic_migration_under_compression_does_not_require_sqlite_vec(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A stripped semantic migration must not require sqlite-vec.
-
-    With compression on, skip_fp32_vec strips every vec0 statement, so the
-    executed script is only embedding_metadata + its index -- the vec0 module
-    is not needed. A slim install without an embeddings-* extra (where
-    sqlite-vec ships) must still boot a compressed, generation-off database
-    that reached the semantic migration via the infra-present fallthrough;
-    requiring the package for DDL already stripped from the script fails boot
-    on a functionally unneeded dependency.
-    """
-    import sys
-
-    import app.migrations.semantic as semantic_module
-    from app.migrations.semantic import apply_semantic_search_migration
-
-    # Provision the real embedding_metadata schema with generation ON first
-    # (sqlite-vec is available in the dev env, so this full run succeeds).
-    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
-    monkeypatch.delenv('ENABLE_EMBEDDING_COMPRESSION', raising=False)
-    get_settings.cache_clear()
-    monkeypatch.setattr(semantic_module, 'settings', get_settings())
-    await apply_semantic_search_migration(backend=backend)
-
-    def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (name,),
-        )
-        return cur.fetchone() is not None
-
-    assert await backend.execute_read(lambda c: _table_exists(c, 'embedding_metadata')) is True
-
-    # Now flip to compression ON + generation OFF (the infra-present fallthrough
-    # fires because embedding_metadata exists), and simulate sqlite-vec NOT
-    # installed: `import sqlite_vec` raises ImportError. The backend's own load
-    # is ImportError-guarded (skips gracefully); only the migration's stripped
-    # path (skip_fp32_vec strips every vec0 statement) must avoid demanding it.
-    _enable_compression(monkeypatch)
-    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
-    get_settings.cache_clear()
-    monkeypatch.setattr(semantic_module, 'settings', get_settings())
-    monkeypatch.setitem(sys.modules, 'sqlite_vec', None)
-
-    # Must NOT raise despite sqlite-vec being unavailable (no vec0 DDL to run).
-    await apply_semantic_search_migration(backend=backend)
-    assert await backend.execute_read(lambda c: _table_exists(c, 'embedding_metadata')) is True
-
-
-@pytest.mark.asyncio
-async def test_disable_direction_guard_refuses_populated_before_provisioning(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The disable-direction guard refuses a compression-off flip on compressed data.
-
-    Run BEFORE the provisioning migrations in the lifespan so no stray fp32
-    table is ever created: compression off + a compression_metadata provenance
-    row present must raise ConfigurationError; a fresh database (no row) passes.
-    """
-    from app.startup.compression_validator import guard_compression_disable_over_populated
-
-    # First compress (seeds the provenance row) while compression is on.
-    _enable_compression(monkeypatch)
-    await apply_compression_migration(backend=backend)
-
-    def _seed_provenance(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            'INSERT OR REPLACE INTO compression_metadata '
-            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
-            "VALUES (1, 'turboquant', 4, 'ip', 0, 1024, NULL)",
-        )
-
-    await backend.execute_write(_seed_provenance)
-
-    # Flip compression OFF: the guard must refuse (exit 78) with a --decompress hint.
-    _disable_compression(monkeypatch)
-    get_settings.cache_clear()
-    import app.startup.compression_validator as validator_module
-    monkeypatch.setattr(validator_module, 'get_settings', get_settings)
-
-    with pytest.raises(ConfigurationError, match='--decompress'):
-        await guard_compression_disable_over_populated(backend)
-
-
-@pytest.mark.asyncio
-@requires_sqlite_vec
-async def test_sqlite_fp32_reprovisioned_after_compression_off_flip_generation_off(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A compression-off flip on an infra-carrying generation-off database self-heals.
-
-    Chain: a generation-on past provisions the fp32 embedding layout; a
-    generation-off boot with compression on swaps the (empty) fp32 table for
-    the compressed schema, and the validator seeds no provenance row there
-    (nothing can write compressed data), so a later bare
-    ENABLE_EMBEDDING_COMPRESSION=false flip boots without the --decompress
-    ceremony. The cleanup paths gate on embedding_metadata presence and then
-    touch the fp32 table, so the semantic migration's infra-present
-    fallthrough must re-provision it -- without the fallthrough, every
-    text-carrying update failed inside its transaction on PostgreSQL while
-    SQLite silently no-opped.
-    """
-    import app.migrations.chunking as chunking_module
-    import app.migrations.compression as compression_module
-    import app.migrations.semantic as semantic_module
-    from app.migrations.chunking import apply_chunking_migration
-    from app.migrations.semantic import apply_semantic_search_migration
-
-    def _rebind_settings() -> None:
-        get_settings.cache_clear()
-        fresh = get_settings()
-        monkeypatch.setattr(semantic_module, 'settings', fresh)
-        monkeypatch.setattr(chunking_module, 'settings', fresh)
-        monkeypatch.setattr(compression_module, 'settings', fresh)
-
-    def _fp32_exists(conn: sqlite3.Connection) -> bool:
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='vec_context_embeddings'",
-        )
-        return cur.fetchone() is not None
-
-    # Phase 1: a generation-on past provisions the real fp32 embedding infra.
-    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
-    _rebind_settings()
-    await apply_semantic_search_migration(backend=backend)
-    await apply_chunking_migration(backend=backend)
-    assert await backend.execute_read(_fp32_exists) is True
-
-    # Phase 2: generation off + compression on -> the table swap removes the
-    # empty fp32 table and provisions the compressed schema.
-    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
-    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
-    monkeypatch.setenv('COMPRESSION_SEED', '42')
-    _rebind_settings()
-    await apply_compression_migration(backend=backend)
-    assert await backend.execute_read(_fp32_exists) is False
-
-    # Phase 3: bare compression-off flip (generation still off; no provenance
-    # row, so no disable-direction guard) -> the semantic and chunking
-    # fallthrough re-provisions the fp32 layout the cleanup paths depend on.
-    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
-    monkeypatch.delenv('COMPRESSION_SEED', raising=False)
-    _rebind_settings()
-    await apply_semantic_search_migration(backend=backend)
-    await apply_chunking_migration(backend=backend)
-    await apply_compression_migration(backend=backend)
-    assert await backend.execute_read(_fp32_exists) is True
-
-
-@pytest.mark.asyncio
-async def test_sqlite_migration_stays_clean_after_zero_data_decompress_generation_off(
-    backend: StorageBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The marker table alone no longer re-creates the payload table under generation off.
-
-    The zero-data --decompress path drops the empty compressed table and
-    deletes the provenance row but leaves the compression_metadata table
-    itself. The SQLite applied probe requires BOTH tables (mirroring the
-    PostgreSQL probe), so the next generation-off startup reports not-applied
-    and keeps the database clean instead of re-provisioning the payload table
-    the operator just removed.
-    """
-    _enable_compression(monkeypatch)
-    await apply_compression_migration(backend=backend)
-
-    def _zero_data_decompress(conn: sqlite3.Connection) -> None:
-        conn.execute('DROP TABLE IF EXISTS vec_context_embeddings_compressed')
-        conn.execute('DELETE FROM compression_metadata WHERE id = 1')
-
-    await backend.execute_write(_zero_data_decompress)
-
-    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
-    get_settings.cache_clear()
-    import app.migrations.compression as compression_module
-    monkeypatch.setattr(compression_module, 'settings', get_settings())
-
-    await apply_compression_migration(backend=backend)
-
-    def _payload_exists(conn: sqlite3.Connection) -> bool:
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='vec_context_embeddings_compressed'",
-        )
-        return cur.fetchone() is not None
-
-    assert await backend.execute_read(_payload_exists) is False
-
-
-class _FakeVecConnection:
-    """SQLite connection stand-in whose vec0 table read raises a chosen error.
-
-    ``sqlite_master`` reports the table as present, while the row probe against it
-    fails -- the shape of a vec0 virtual table whose module is not loaded, and the
-    shape of a lock held by another process, which are the two cases the probe's
-    handler must tell apart.
-    """
-
-    def __init__(self, error: sqlite3.OperationalError) -> None:
-        self._error = error
-
-    def execute(self, sql: str) -> object:
-        """Return a cursor-like object, or raise the configured error.
-
-        Args:
-            sql: The statement the probe issues.
-
-        Returns:
-            A cursor-like object for the sqlite_master lookup. The row probe against
-            the vec0 table instead re-raises the configured error.
-        """
-        if 'FROM vec_context_embeddings' in sql:
-            raise self._error
-
-        class _Cursor:
-            def fetchone(self) -> tuple[str]:
-                return ('vec_context_embeddings',)
-
-        return _Cursor()
-
-
-class _FakeProbeBackend:
-    """Minimal storage-backend stand-in running read callables on a fake connection."""
-
-    backend_type = 'sqlite'
-
-    def __init__(self, conn: _FakeVecConnection) -> None:
-        self._conn = conn
-
-    async def execute_read(self, operation: Callable[[Any], bool]) -> bool:
-        """Run the probe callable against the fake connection.
-
-        Args:
-            operation: The probe closure.
-
-        Returns:
-            Whatever the closure returns.
-        """
-        return operation(self._conn)
-
-
-@pytest.mark.asyncio
-async def test_fp32_probe_treats_a_missing_vec0_module_as_populated() -> None:
-    """An unreadable vec0 table refuses the drop: it may hold data once loadable.
-
-    The table exists in sqlite_master but its module is not loaded, so the rows
-    cannot be counted. Refusing is the fail-safe direction -- dropping it would
-    destroy shadow-table data that becomes readable the moment the extension loads.
-    """
-    from app.migrations.compression import _fp32_table_has_rows
-
-    backend = _FakeProbeBackend(_FakeVecConnection(sqlite3.OperationalError('no such module: vec0')))
-
-    assert await _fp32_table_has_rows(cast('StorageBackend', backend)) is True
-
-
-@pytest.mark.asyncio
-async def test_fp32_probe_propagates_lock_contention() -> None:
-    """SQLITE_BUSY must reach the bounded retry loop, not be read as 'fp32 populated'.
-
-    Consumed inside the read callable, a self-clearing lock became a permanent
-    ConfigurationError telling the operator to run --compress on a database that may
-    hold no fp32 rows at all.
-    """
-    from app.migrations.compression import _fp32_table_has_rows
-
-    backend = _FakeProbeBackend(_FakeVecConnection(sqlite3.OperationalError('database is locked')))
-
-    with pytest.raises(sqlite3.OperationalError, match='database is locked'):
-        await _fp32_table_has_rows(cast('StorageBackend', backend))

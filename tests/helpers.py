@@ -244,3 +244,27 @@ def preserve_summary_state() -> Generator[None, None, None]:
         app.startup.set_summary_provider(original_summary_provider)
         app.startup.set_embedding_provider(original_embedding_provider)
         generation_module._reset_summary_model_semaphore()
+
+
+def enable_compression(monkeypatch: 'pytest.MonkeyPatch') -> None:
+    """Flip the compression toggle and refresh module-level settings caches."""
+    from app.settings import get_settings
+
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    # COMPRESSION_SEED is required for runtime but not for the migration loader
+    # which only inspects the enabled flag.
+    monkeypatch.setenv('COMPRESSION_SEED', '42')
+    get_settings.cache_clear()
+    import app.migrations.compression as compression_module
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+
+def disable_compression(monkeypatch: 'pytest.MonkeyPatch') -> None:
+    """Reset compression toggle to off."""
+    from app.settings import get_settings
+
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    monkeypatch.delenv('COMPRESSION_SEED', raising=False)
+    get_settings.cache_clear()
+    import app.migrations.compression as compression_module
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
