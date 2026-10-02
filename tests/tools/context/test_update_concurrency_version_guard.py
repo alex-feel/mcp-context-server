@@ -7,7 +7,7 @@ re-reads the current version, and retries, so the row ends in a single consisten
 state (exactly one of the two submitted texts) with the version column advanced by
 two successful commits -- never a torn/garbled state and never a duplicate row.
 
-Backend/repos setup mirrors ``tests/tools/test_generation_first.py``
+Backend/repos setup mirrors ``tests/tools/context/test_generation_first.py``
 (``setup_with_entry``): a real ``SQLiteBackend`` + ``RepositoryContainer`` built
 from ``load_schema('sqlite')`` with one pre-inserted entry.
 
@@ -20,7 +20,7 @@ FIRST-submitted call's summary resolves AFTER the second call has fully committe
 (``VersionConflictError``), re-reads version 1, and retries successfully. This is
 deterministic -- the event strictly orders the two commits -- so it is robust
 rather than flaky, while still driving the real two-concurrent-writer path the
-guard was built for (the strongest available formulation; the purely synthetic
+guard exists for (the strongest available formulation; the purely synthetic
 "bump the version out-of-band" variant is kept as a second, even-simpler test).
 """
 
@@ -394,10 +394,10 @@ class TestUpdateContextVersionGuard:
         The write can only succeed with a refreshed token: ``version`` is monotonic,
         so re-issuing the compare-and-set with the token that just failed matches
         zero rows by construction. Sleeping and re-entering the write with the
-        unchanged token therefore burned a whole transaction on a guaranteed
-        conflict -- and one of the five conflict slots -- for what was only a
-        connection blip. The retry now happens on the re-read, and the write is
-        re-entered exactly once, with the fresh version.
+        unchanged token would burn a whole transaction on a guaranteed conflict --
+        and one of the five conflict slots -- for what is only a connection blip.
+        The retry therefore happens on the re-read, and the write is re-entered
+        exactly once, with the fresh version.
         """
         _backend, repos, entry_id = setup_with_entry
 
