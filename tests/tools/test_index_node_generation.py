@@ -41,7 +41,7 @@ class _SlowProvider:
     """Summary provider whose calls take measurable time and track cancellation.
 
     ``active`` returns to zero only when every started call has settled, so a test
-    can prove the pass awaited the node summaries it cancelled instead of leaving
+    can prove the pass awaited the node summaries it canceled instead of leaving
     them running with a shared summary-model permit held.
     """
 
@@ -151,12 +151,13 @@ class TestNodeLayerActive:
     """node_layer_active() reports whether the per-node layer would ATTEMPT work
     (feature enabled AND a summary provider configured).
 
-    It gates the store-path node attempt and the dedup ``nodes_pending`` pre-check. NOTE:
-    it no longer gates the text-change clear-stale remap -- that remap is gated on
+    It gates the store-path node attempt and the dedup ``nodes_pending`` pre-check. It
+    does NOT gate the text-change clear-stale remap: that remap is gated on
     settings.index_tree.node_summaries_enabled (the SAME gate navigate_context reads), so a
-    text-change update clears stale rows even when the feature is on but the provider was
-    removed (see test_update_context / test_batch_summary). The tests below pin
-    node_layer_active()'s own definition.
+    text-change update clears stale rows even when the feature is on but no summary provider
+    is configured (see tests/tools/context/test_update_generation.py and
+    tests/tools/batch/test_update_summary.py). The tests below pin node_layer_active()'s
+    own definition.
     """
 
     def test_active_when_enabled_with_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -198,7 +199,7 @@ class TestLargeEntryWritePathOffloadNonBlocking:
     offloaded to a worker thread so a multi-megabyte store cannot pin the single
     event loop and starve concurrent MCP requests; a small entry stays inline to
     avoid a per-call thread hop. This mirrors the read-path discipline
-    (test_navigation_tools.py::TestLargeEntryOffloadNonBlocking) and the grep
+    (test_navigation_offload.py::TestLargeEntryOffloadNonBlocking) and the grep
     matcher (test_grep_matcher.py::test_large_literal_scan_is_offloaded_correct_and_non_blocking).
     """
 
@@ -415,7 +416,7 @@ class TestTotalWorkBounds:
 
         The node leg is contractually never-raise, so the sections summarized before
         the budget expired must come back as rows rather than being discarded with
-        the cancelled ones.
+        the canceled ones.
         """
         monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
         monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
