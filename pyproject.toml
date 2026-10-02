@@ -176,9 +176,9 @@ extend-include = ["tests/**/*.py"]
 # Ignore specific rules
 ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Per-file ignores:
-# - app/server.py: DOC201, DOC501 required - FastMCP tools use inline JSON structures instead of formal docstring sections.
-#   app/server.py: E402 required - config_logger() MUST be called BEFORE importing app.backends (which triggers
-#   backend module loading). This ensures logging is configured before any backend code runs.
+# - app/server.py: E402 required - the settings guard (the first get_settings() call, which exits with EX_CONFIG on
+#   invalid settings) and config_logger() MUST run BEFORE importing app.backends, app.repositories and app.startup,
+#   so settings are validated and logging is configured before any backend code runs.
 # - tests/conftest.py: E402 required - Windows event loop policy and LangSmith env vars MUST be set
 #   BEFORE importing app.server (which triggers httpx import). See conftest.py comments for details.
 # - app/instructions.py: E501, W293 required - DEFAULT_INSTRUCTIONS is a triple-quoted Markdown string
@@ -187,7 +187,7 @@ ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer l
 #   where long lines are intentional prompt formatting.
 # - tests/run_server.py: E402 required - sys.path setup MUST precede project imports
 #   (from tests.helpers) since run_server.py is executed as a subprocess.
-extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"], "tests/run_server.py" = ["E402"], "app/instructions.py" = ["E501", "W293"], "app/summary/instructions.py" = ["E501", "W293"] }
+extend-per-file-ignores = { "app/server.py" = ["E402"], "tests/conftest.py" = ["E402"], "tests/run_server.py" = ["E402"], "app/instructions.py" = ["E501", "W293"], "app/summary/instructions.py" = ["E501", "W293"] }
 # Enable rule groups
 select = [
     "FAST",  # FastAPI
