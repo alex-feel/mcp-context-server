@@ -4,7 +4,7 @@ Server initialization and lifecycle management for mcp-context-server.
 This package contains:
 - Database initialization (init_database)
 - Global state management (_backend, _repositories, _embedding_provider, _reranking_provider, _summary_provider)
-- Lazy initialization helpers (_ensure_backend, _ensure_repositories)
+- Lazy initialization helpers (ensure_backend, ensure_repositories)
 - Configuration constants (DB_PATH, MAX_IMAGE_SIZE_MB, MAX_TOTAL_SIZE_MB)
 - The server lifespan's startup phases, in submodules this package never imports
   (tool_registration imports app.tools, which imports this package):

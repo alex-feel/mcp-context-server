@@ -77,11 +77,10 @@ class TestConnectionStringBuilding:
     ) -> None:
         """A host already in RFC 3986 bracket form is left as-is (idempotent bracketing).
 
-        The colon-presence check alone also matches '[::1]', so wrapping again
-        produced '[[::1]]', which asyncpg rejects at DSN parse with a plain
+        The colon-presence check alone also matches '[::1]'; wrapping it again
+        would yield '[[::1]]', which asyncpg rejects at DSN parse with a plain
         ValueError that never names the bracket cause. The bracketed spelling is
-        a natural copy-paste from URI-style examples and connected fine before
-        automatic bracketing existed, so it must keep working.
+        a natural copy-paste from URI-style examples, so it must keep working.
         """
         conn_str = self._built_connection_string(monkeypatch, '[::1]')
         assert '@[::1]:' in conn_str

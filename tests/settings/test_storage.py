@@ -477,7 +477,7 @@ class TestPoolHardeningSettings:
 
         settings = StorageSettings()
 
-        # Verify default values match implementation guide specifications
+        # Idle connections close after 5 minutes; each connection is replaced after 10000 queries
         assert settings.postgresql_max_inactive_lifetime_s == 300.0
         assert settings.postgresql_max_queries == 10000
 

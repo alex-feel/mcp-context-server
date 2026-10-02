@@ -28,8 +28,9 @@ Both operations:
       probe-batch step.
 
 The CLI is single-backend: source and destination are the same database.
-For cross-backend migration users run the v2->v3 ``migrate.py`` first,
-then ``--compress`` on the target.
+For cross-backend migration users first run the integer-to-UUIDv7
+migration (``mcp-context-server-migrate --source-url ... --target-url
+...``, :mod:`app.cli.migrate_uuid`), then ``--compress`` on the target.
 
 Modules (the package itself binds no names):
     ``compress``, ``decompress``: the entry points, state checks and the

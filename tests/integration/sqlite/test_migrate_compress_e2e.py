@@ -325,11 +325,10 @@ def test_decompress_e2e_sqlite_execute(
     assert _table_exists_sqlite(db, 'vec_context_embeddings_compressed')
     assert not _table_exists_sqlite(db, 'vec_context_embeddings')
 
-    # Then decompress. Disable the compression toggle so the post-decompress
-    # validator does not reject the disabled state; the provider is
-    # reconstructed from the provenance row, not the env.
+    # Then decompress. run_decompress refuses to start while
+    # ENABLE_EMBEDDING_COMPRESSION is enabled; the provider is reconstructed
+    # from the provenance row, not the env.
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
-    monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
     get_settings.cache_clear()
     _reset_compression_cache()
 
@@ -344,11 +343,10 @@ def test_decompress_e2e_sqlite_execute(
 
     # Confirm the row count round-tripped: the chunking mapping in
     # ``embedding_chunks`` still has one entry per planted document. The
-    # actual embedding bytes live in the sqlite-vec virtual table whose
-    # vec0 module is only loaded when ENABLE_SEMANTIC_SEARCH is true in
-    # the same process that opens the connection -- a plain sqlite3
-    # connection here cannot decode the embedding column, so we limit
-    # the verification to the structural check.
+    # actual embedding bytes live in the sqlite-vec virtual table, and a
+    # plain sqlite3 connection has no vec0 module loaded, so it cannot
+    # decode the embedding column; the verification is limited to the
+    # structural check.
     conn = sqlite3.connect(str(db))
     try:
         count = conn.execute(

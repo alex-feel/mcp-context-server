@@ -63,7 +63,6 @@ def test_streaming_decompress_roundtrip_sqlite(
     assert count_compressed(db) == n_docs
 
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
-    monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
     get_settings.cache_clear()
     _reset_compression_cache()
 
@@ -168,7 +167,7 @@ def _seed_compressed_database(
                 cid, _ = await repos.context.store_with_deduplication(
                     owner_id='local',
                     visibility='private',
-                    thread_id='lineage-b',
+                    thread_id='server-compressed',
                     source='user',
                     content_type='text',
                     text_content=f'doc-{i}',
@@ -252,17 +251,16 @@ def test_streaming_decompress_recovers_server_compressed_sqlite(
     ``embedding_chunks`` bridge directly from the compressed rows, so every
     embedding is recovered.
     """
-    db = tmp_path / 'lineage_b.db'
+    db = tmp_path / 'server_compressed.db'
     n_docs = 12
     monkeypatch.setattr(storage, 'MIGRATION_BATCH_SIZE', 5)
     _seed_compressed_database(db, monkeypatch, n_docs=n_docs)
     assert count_compressed(db) == n_docs
 
-    # Reverse compression (abandon-compression flow): disable the toggle so the
-    # post-decompress validator does not reject the disabled state; the provider
-    # is reconstructed from the provenance row, not the env.
+    # Reverse compression (abandon-compression flow): run_decompress refuses to
+    # start while ENABLE_EMBEDDING_COMPRESSION is enabled; the provider is
+    # reconstructed from the provenance row, not the env.
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
-    monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
     get_settings.cache_clear()
     _reset_compression_cache()
 

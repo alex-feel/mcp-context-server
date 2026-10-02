@@ -256,9 +256,9 @@ def copy_embedding_chunks(
     only ``context_id`` is remapped.
     """
     # Probe both sides for the start_index/end_index boundary columns, mirroring
-    # copy_embedding_metadata's chunk_count guard. A pre-f36266c source schema
-    # (embedding_chunks created before the boundary columns and never upgraded
-    # in-place by a live server -- the CLI's "run on a backup" workflow bypasses
+    # copy_embedding_metadata's chunk_count guard. A source schema whose
+    # embedding_chunks table predates the boundary columns (and was never upgraded
+    # in place by a live server -- the CLI's "run on a backup" workflow bypasses
     # that backfill) lacks them; naming them unconditionally would raise
     # sqlite3.OperationalError and abort the whole migration. When the source
     # lacks them, default to 0 (the chunking migration's own backfill default).

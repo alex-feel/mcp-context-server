@@ -230,10 +230,10 @@ class TestInitializeErrorClassification:
         for a malformed DSN authority -- e.g. a double-bracketed host literal --
         before any network I/O. _ensure_pgvector_extension runs BEFORE pool
         creation on the compression-off generation-on path, so without a
-        dedicated ValueError clause its catch-all wrapped this permanent
+        dedicated ValueError clause its catch-all would wrap this permanent
         client-side misconfiguration as a retryable DependencyError (exit 69)
-        and supervisors restart-looped on it; initialize()'s own ValueError
-        clause never ran because its 'except DependencyError' re-raise wins
+        and supervisors would restart-loop on it; initialize()'s own ValueError
+        clause would not run because its 'except DependencyError' re-raise wins
         first.
         """
         from app.errors import ConfigurationError
