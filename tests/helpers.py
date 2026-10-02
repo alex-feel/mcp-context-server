@@ -217,3 +217,30 @@ def argument_errors(exc_info: 'pytest.ExceptionInfo[FastMCPValidationError]') ->
     cause = exc_info.value.__cause__
     assert isinstance(cause, PydanticValidationError), f'expected a pydantic ValidationError cause, got {cause!r}'
     return cause.errors()
+
+
+@contextmanager
+def preserve_summary_state() -> Generator[None, None, None]:
+    """Restore the summary and embedding providers and reset the summary-model semaphore around a block.
+
+    Captures both providers from ``app.startup`` and resets the summary-model
+    semaphore in ``app.tools._generation`` on entry; on exit it restores both
+    providers and resets the semaphore again, so a test that installs a provider
+    or holds the semaphore leaves no state behind.
+
+    Yields:
+        None.
+    """
+    import app.startup
+    import app.tools._generation as generation_module
+
+    original_summary_provider = app.startup.get_summary_provider()
+    original_embedding_provider = app.startup.get_embedding_provider()
+    generation_module._reset_summary_model_semaphore()
+
+    try:
+        yield
+    finally:
+        app.startup.set_summary_provider(original_summary_provider)
+        app.startup.set_embedding_provider(original_embedding_provider)
+        generation_module._reset_summary_model_semaphore()
