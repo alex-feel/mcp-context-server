@@ -16,7 +16,7 @@ import sys
 # CRITICAL: Windows Event Loop Policy MUST Be Set BEFORE Any Async-Related Imports
 # ============================================================================
 # When embeddings-ollama is installed, importing app.server triggers:
-#   app.server -> app.embeddings -> app.embeddings.retry -> httpx
+#   app.server -> app.startup -> app.embeddings -> app.embeddings.retry -> httpx
 # If LangSmith is also installed, it auto-instruments httpx at import time
 # using whatever event loop policy is active at that moment.
 #
@@ -590,7 +590,6 @@ def mock_server_dependencies(test_settings: AppSettings, temp_db_path: Path) -> 
         os.environ['STORAGE_BACKEND'] = 'sqlite'
 
         with (
-            patch('app.server.get_settings', return_value=test_settings),
             # CRITICAL: Patch factory.get_settings to prevent lazy backend creation from reading environment
             patch('app.backends.factory.get_settings', return_value=test_settings),
             patch('app.server.DB_PATH', temp_db_path),

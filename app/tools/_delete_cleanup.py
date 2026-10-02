@@ -9,7 +9,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from app.backends.sqlite_backend import is_sqlite_locked_error
+from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.settings import get_settings
 from app.tools._transactions import is_connection_error
 

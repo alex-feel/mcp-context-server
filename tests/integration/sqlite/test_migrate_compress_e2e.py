@@ -20,8 +20,8 @@ import numpy as np
 import pytest
 
 from app.backends import create_backend
-from app.cli.migrate_compression import run_compress
-from app.cli.migrate_compression import run_decompress
+from app.cli.migrate_compression.compress import run_compress
+from app.cli.migrate_compression.decompress import run_decompress
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
@@ -325,20 +325,12 @@ def test_decompress_e2e_sqlite_execute(
     assert _table_exists_sqlite(db, 'vec_context_embeddings_compressed')
     assert not _table_exists_sqlite(db, 'vec_context_embeddings')
 
-    # Then decompress. The fp32 vec table is a sqlite-vec virtual table,
-    # so we need ENABLE_SEMANTIC_SEARCH=true to ensure the backend loads
-    # the extension when re-opening the database.
+    # Then decompress. run_decompress refuses to start while
+    # ENABLE_EMBEDDING_COMPRESSION is enabled; the provider is reconstructed
+    # from the provenance row, not the env.
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
-    monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
     get_settings.cache_clear()
     _reset_compression_cache()
-    # Refresh the cached settings binding the SQLite backend reads at
-    # connection time so semantic_search.enabled becomes true for the
-    # new connection.
-    import app.backends.sqlite_backend as sqlite_backend_module
-    monkeypatch.setattr(
-        sqlite_backend_module, 'settings', get_settings(),
-    )
 
     rc = run_decompress(f'sqlite:///{db}', dry_run=False)
     assert rc == 0
@@ -351,11 +343,10 @@ def test_decompress_e2e_sqlite_execute(
 
     # Confirm the row count round-tripped: the chunking mapping in
     # ``embedding_chunks`` still has one entry per planted document. The
-    # actual embedding bytes live in the sqlite-vec virtual table whose
-    # vec0 module is only loaded when ENABLE_SEMANTIC_SEARCH is true in
-    # the same process that opens the connection -- a plain sqlite3
-    # connection here cannot decode the embedding column, so we limit
-    # the verification to the structural check.
+    # actual embedding bytes live in the sqlite-vec virtual table, and a
+    # plain sqlite3 connection has no vec0 module loaded, so it cannot
+    # decode the embedding column; the verification is limited to the
+    # structural check.
     conn = sqlite3.connect(str(db))
     try:
         count = conn.execute(

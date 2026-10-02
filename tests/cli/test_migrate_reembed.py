@@ -7,7 +7,6 @@ database lives in ``tests/integration/sqlite/test_migrate_reembed_e2e.py``.
 """
 
 import sqlite3
-from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,14 +15,6 @@ import pytest
 from app.cli.migrate import build_parser
 from app.cli.migrate import main as cli_main
 from app.settings import get_settings
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> Generator[None, None, None]:
-    """Reset the settings cache around every test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
 
 
 def _bootstrap_schema(path: Path, *, with_embedding_metadata: bool = True) -> None:
@@ -196,8 +187,8 @@ def test_dispatch_re_embed_standalone(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
 
     with (
-        patch('app.cli.migrate_compression.run_compress') as mock_compress,
-        patch('app.cli.migrate_compression.run_decompress') as mock_decompress,
+        patch('app.cli.migrate_compression.compress.run_compress') as mock_compress,
+        patch('app.cli.migrate_compression.decompress.run_decompress') as mock_decompress,
         patch('app.cli.migrate_reembed.run_reembed', return_value=0) as mock_reembed,
     ):
         rc = cli_main(['--source-url', 'sqlite:///fake.db', '--re-embed'])

@@ -1,0 +1,518 @@
+"""
+Tests that detect leaked SQLite connections through ResourceWarning.
+
+This module tests that all database connections are properly closed and
+that no resources are leaked during normal operations or error conditions.
+"""
+
+import asyncio
+import contextlib
+import gc
+import sqlite3
+import threading
+import time
+import warnings
+from collections.abc import Callable
+from functools import partial
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from app.backends import StorageBackend
+from app.backends.sqlite_backend import SQLiteBackend
+
+
+@pytest.fixture(scope='module', autouse=True)
+def cleanup_before_resource_tests():
+    """Ensure all database connections from previous tests are cleaned up.
+
+    This fixture runs once before ANY test in this module to ensure that
+    connections created by fixtures in other test modules are fully
+    garbage collected and closed.
+    """
+    # Aggressive synchronous cleanup to collect any lingering connections
+    gc.collect()
+    time.sleep(0.5)
+    gc.collect()
+    time.sleep(0.5)
+    gc.collect()
+    return
+    # No cleanup needed after - tests handle their own cleanup
+
+
+class TestResourceWarningDetection:
+    """Test suite to detect and verify ResourceWarning fixes."""
+
+    @pytest.fixture(autouse=True)
+    def enable_resource_warnings(self):
+        """Enable ResourceWarning detection for all tests in this class."""
+        warnings.simplefilter('error', ResourceWarning)
+        yield
+        warnings.simplefilter('default', ResourceWarning)
+
+    @pytest.fixture
+    def temp_db(self, tmp_path: Path) -> Path:
+        """Create a temporary database path."""
+        return tmp_path / 'test_resource.db'
+
+    @pytest.mark.asyncio
+    async def test_connection_manager_no_leaks_on_normal_shutdown(self, temp_db: Path) -> None:
+        """Test that normal shutdown doesn't leak connections."""
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        # Perform some operations
+        async with manager.get_connection(readonly=True) as conn:
+            conn.execute('SELECT 1')
+
+        await manager.execute_write(lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'))
+
+        # Shutdown should close all connections
+        await manager.shutdown()
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear manager reference to allow proper garbage collection
+        del manager
+
+        # Force garbage collection to detect any unclosed connections
+        gc.collect()
+
+        # If there are leaks, ResourceWarning will be raised
+
+    @pytest.mark.asyncio
+    async def test_connection_manager_no_leaks_on_error(self, temp_db: Path) -> None:
+        """Test that error conditions don't leak connections."""
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        # Simulate error during read
+        with contextlib.suppress(sqlite3.OperationalError):
+            async with manager.get_connection(readonly=True) as conn:
+                conn.execute('INVALID SQL')
+
+        # Simulate error during write
+        with contextlib.suppress(sqlite3.OperationalError):
+            await manager.execute_write(lambda conn: conn.execute('INVALID SQL'))
+
+        # Shutdown should still close all connections
+        await manager.shutdown()
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear manager reference to allow proper garbage collection
+        del manager
+
+        # Force garbage collection
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_connection_pool_health_check_closes_unhealthy(self, temp_db: Path) -> None:
+        """Test that health checks properly close unhealthy connections."""
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        # Create multiple reader connections
+        for _ in range(3):
+            async with manager.get_connection(readonly=True) as conn:
+                conn.execute('SELECT 1')
+
+        # Perform health check
+        await manager._perform_health_check()
+
+        # Shutdown and verify no leaks
+        await manager.shutdown()
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear manager reference to allow proper garbage collection
+        del manager
+
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_write_queue_cancellation_no_leaks(self, temp_db: Path) -> None:
+        """Test that cancelled write operations don't leak connections."""
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        # Start multiple write operations
+        write_tasks = []
+        for i in range(5):
+            task = asyncio.create_task(
+                manager.execute_write(lambda conn, idx=i: conn.execute(f'CREATE TABLE test_{idx} (id INTEGER)')),
+            )
+            write_tasks.append(task)
+
+        # Cancel some tasks
+        for task in write_tasks[2:]:
+            task.cancel()
+
+        # Wait for non-cancelled tasks
+        for task in write_tasks[:2]:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        # Shutdown and verify no leaks
+        await manager.shutdown()
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear manager reference to allow proper garbage collection
+        del manager
+
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_open_no_leaks(self, temp_db: Path) -> None:
+        """Test that circuit breaker failures don't leak connections."""
+        manager = SQLiteBackend(temp_db)
+
+        # Set circuit breaker to fail quickly
+        manager.circuit_breaker.failure_threshold = 2
+
+        await manager.initialize()
+
+        # Force circuit breaker to open by causing failures
+        for _ in range(3):
+            with contextlib.suppress(Exception):
+                await manager.execute_write(lambda conn: conn.execute('INVALID SQL'))
+
+        # Circuit should be open now
+        assert manager.circuit_breaker.is_open()
+
+        # Try operations with open circuit
+        with contextlib.suppress(RuntimeError):
+            async with manager.get_connection(readonly=True):
+                pass
+
+        # Shutdown and verify no leaks
+        await manager.shutdown()
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear manager reference to allow proper garbage collection
+        del manager
+
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_operations_no_leaks(self, temp_db: Path) -> None:
+        """Test that high concurrency doesn't leak connections."""
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        # Create schema
+        await manager.execute_write(
+            lambda conn: conn.execute('CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)'),
+        )
+
+        # Create operation functions with explicit manager parameter
+        async def read_op(mgr: StorageBackend, idx: int) -> None:
+            async with mgr.get_connection(readonly=True) as conn:
+                conn.execute('SELECT * FROM test WHERE id = ?', (idx,))
+
+        async def write_op(mgr: StorageBackend, idx: int) -> None:
+            await mgr.execute_write(
+                lambda conn: conn.execute('INSERT OR REPLACE INTO test (id, value) VALUES (?, ?)', (idx, f'value_{idx}')),
+            )
+
+        # Run many concurrent operations
+        tasks = []
+        for i in range(20):
+            tasks.extend([
+                asyncio.create_task(read_op(manager, i)),
+                asyncio.create_task(write_op(manager, i)),
+            ])
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Shutdown and verify no leaks
+        await manager.shutdown()
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear manager reference to allow proper garbage collection
+        del manager
+
+        gc.collect()
+
+    def test_temp_db_fixture_no_leaks(self, tmp_path: Path) -> None:
+        """Test that the temp_db fixture doesn't leak connections."""
+
+        # Create a database using the fixture logic
+        db_path = tmp_path / 'test_fixture.db'
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Initialize database with schema
+        conn = sqlite3.connect(str(db_path))
+        try:
+            from app.schemas import load_schema
+
+            schema_sql = load_schema('sqlite')
+            conn.executescript(schema_sql)
+            conn.commit()
+        finally:
+            # Always close the connection, even when the schema load fails
+            conn.close()
+
+        # Force garbage collection to detect leaks
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_connection_tracking(self, temp_db: Path) -> None:
+        """Test that all created connections are properly tracked and closed."""
+        manager = SQLiteBackend(temp_db)
+
+        # Add tracking to verify all connections are closed
+        created_connections: list[sqlite3.Connection] = []
+        original_create = manager._create_connection
+
+        def tracked_create_impl(
+            connections: list[sqlite3.Connection],
+            original_fn: Callable[[bool], sqlite3.Connection],
+            readonly: bool = False,
+        ) -> sqlite3.Connection:
+            conn = original_fn(readonly)
+            connections.append(conn)
+            return conn
+
+        tracked_create = partial(tracked_create_impl, created_connections, original_create)
+
+        # Use patch.object to avoid mypy method-assign error
+        with patch.object(manager, '_create_connection', tracked_create):
+            await manager.initialize()
+
+            # Perform various operations
+            async with manager.get_connection(readonly=True) as conn:
+                conn.execute('SELECT 1')
+
+            await manager.execute_write(lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'))
+
+            # Shutdown
+            await manager.shutdown()
+
+        # Verify all connections are closed
+        for conn in created_connections:
+            try:
+                conn.execute('SELECT 1')
+                pytest.fail(f'Connection {conn} was not closed')
+            except sqlite3.ProgrammingError:
+                # Expected - connection is closed
+                pass
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear references to allow proper garbage collection
+        del manager
+        del created_connections
+
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_background_task_cleanup(self, temp_db: Path) -> None:
+        """Test that background tasks are properly cleaned up."""
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        # Verify background tasks are running
+        assert manager._write_processor_task is not None
+        assert manager._health_check_task is not None
+        assert len(manager._background_tasks) >= 2
+
+        # Shutdown should cancel and wait for all tasks
+        await manager.shutdown()
+
+        # Verify all background tasks are cleaned up
+        assert len(manager._background_tasks) == 0
+
+        # Verify shutdown is complete
+        assert manager._shutdown_complete is not None
+        assert manager._shutdown_complete.is_set()
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear manager reference to allow proper garbage collection
+        del manager
+
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_write_queue_drainage_on_shutdown(self, temp_db: Path) -> None:
+        """Test that pending writes in queue are handled on shutdown."""
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        # Create schema
+        await manager.execute_write(
+            lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'),
+        )
+
+        # Add many writes to queue without waiting
+        write_futures = []
+        for i in range(10):
+            future = asyncio.create_task(
+                manager.execute_write(lambda conn, idx=i: conn.execute(f'INSERT INTO test VALUES ({idx})')),
+            )
+            write_futures.append(future)
+
+        # Immediately shutdown
+        await manager.shutdown()
+
+        # Some writes may have completed, others cancelled
+        # The important thing is no resource leaks
+        for future in write_futures:
+            with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+                await future
+
+        # Allow time for async cleanup to complete
+        await asyncio.sleep(0.1)
+
+        # Clear references to allow proper garbage collection
+        del manager
+        del write_futures
+
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_resolves_in_flight_write_with_real_result(self, temp_db: Path) -> None:
+        """A write executing in the executor during shutdown resolves with its real result.
+
+        task.cancel() cannot interrupt a write already running in the executor
+        thread (the write may still commit), so shutdown first lets the
+        processor finish the in-flight request; the caller awaiting
+        execute_write must receive the commit outcome, not hang past shutdown.
+        """
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        await manager.execute_write(
+            lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'),
+        )
+
+        started = threading.Event()
+
+        def slow_insert(conn: sqlite3.Connection) -> int:
+            started.set()
+            time.sleep(0.3)
+            conn.execute('INSERT INTO test VALUES (42)')
+            return 42
+
+        caller = asyncio.create_task(manager.execute_write(slow_insert))
+        # Wait until the write is genuinely executing in the executor thread.
+        for _ in range(200):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), 'write never reached the executor'
+
+        await manager.shutdown()
+
+        result = await asyncio.wait_for(caller, timeout=2.0)
+        assert result == 42
+
+        del manager
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_open_breaker_tolerates_caller_cancelled_future(self, temp_db: Path) -> None:
+        """The open-breaker branch survives a request whose future is already done.
+
+        A caller's task can be cancelled while its request sits queued (client
+        disconnect), leaving a cancelled -- done -- future in the queue. The
+        open-breaker branch resolves dequeued requests with set_exception,
+        which raises InvalidStateError on a done future; without the done()
+        guard that error escapes into the loop's broad handler as a spurious
+        processor error and skips the current-request bookkeeping reset. The
+        processor must instead skip the resolution and keep servicing.
+        """
+        from app.backends.sqlite_backend.write_queue import WriteRequest
+
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+        assert manager._write_queue is not None
+
+        cancelled_future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        cancelled_future.cancel()
+        with patch.object(manager.circuit_breaker, 'is_open', return_value=True):
+            manager._write_queue.put_nowait(
+                WriteRequest(
+                    operation=lambda conn: conn.execute('SELECT 1'),
+                    args=(),
+                    kwargs={},
+                    future=cancelled_future,
+                ),
+            )
+            # Let the processor dequeue and hit the open-breaker branch.
+            for _ in range(200):
+                if manager._write_queue.qsize() == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert manager._write_queue.qsize() == 0, 'processor never dequeued the request'
+            await asyncio.sleep(0.05)
+
+        processor = manager._write_processor_task
+        assert processor is not None
+        assert not processor.done(), 'processor must survive the done-future resolution'
+
+        # With the breaker closed again the queue must still service writes.
+        result = await manager.execute_write(lambda conn: conn.execute('SELECT 42').fetchone()[0])
+        assert result == 42
+
+        await manager.shutdown()
+        del manager
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_processor_resolves_in_flight_future(self, temp_db: Path) -> None:
+        """Direct processor cancellation mid-write terminally resolves the caller's future.
+
+        When the processor task is cancelled while a write runs in the
+        executor (bypassing the graceful shutdown path), the dequeued
+        request's future must still resolve so the execute_write caller
+        cannot hang forever; the queue drain never sees a dequeued request.
+        """
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        await manager.execute_write(
+            lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'),
+        )
+
+        started = threading.Event()
+
+        def slow_insert(conn: sqlite3.Connection) -> None:
+            started.set()
+            time.sleep(0.3)
+            conn.execute('INSERT INTO test VALUES (1)')
+
+        caller = asyncio.create_task(manager.execute_write(slow_insert))
+        for _ in range(200):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), 'write never reached the executor'
+
+        processor = manager._write_processor_task
+        assert processor is not None
+        processor.cancel()
+
+        done, _pending = await asyncio.wait({caller}, timeout=2.0)
+        assert caller in done, 'execute_write caller must not hang past processor cancellation'
+        assert caller.cancelled()
+
+        # Let the detached executor thread finish before closing connections.
+        await asyncio.sleep(0.4)
+        await manager.shutdown()
+
+        del manager
+        gc.collect()

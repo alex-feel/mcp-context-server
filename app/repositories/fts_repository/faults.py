@@ -8,7 +8,7 @@ query text or from a genuine database fault.
 
 import sqlite3
 
-from app.backends.sqlite_backend import is_sqlite_locked_error
+from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.errors import ControlFlowError
 
 # Primary SQLite result codes of the DATABASE-FAULT families: a problem with the database file,

@@ -9,11 +9,11 @@ from typing import cast
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.server
+import app.tools
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
-store_context = app.server.store_context
-update_context = app.server.update_context
+store_context = app.tools.store_context
+update_context = app.tools.update_context
 
 
 @pytest.mark.usefixtures('initialized_server')

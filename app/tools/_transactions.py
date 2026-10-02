@@ -17,7 +17,7 @@ from typing import cast
 import asyncpg
 from fastmcp.exceptions import ToolError
 
-from app.backends.sqlite_backend import is_sqlite_locked_error
+from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.errors import ControlFlowError
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -131,7 +131,7 @@ def is_connection_error(exc: Exception) -> bool:
     2. Statement / lock-wait timeouts: asyncpg.exceptions.QueryCanceledError
        (SQLSTATE 57014). PostgreSQL cancels the statement when it exceeds the
        connection's statement_timeout (set to ~0.9 * POSTGRESQL_COMMAND_TIMEOUT_S
-       in app.backends.postgresql_backend._setup_pool_connection). Retrying with the SAME ceiling
+       in app.backends.postgresql_backend.pool_callbacks.setup_pool_connection). Retrying with the SAME ceiling
        only helps a TRANSIENT lock-WAIT (the write was blocked behind a
        concurrent writer and the contention has since cleared); it does NOT
        help a write that is fundamentally slower than the ceiling -- for that

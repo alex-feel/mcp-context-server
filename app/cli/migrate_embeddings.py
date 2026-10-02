@@ -5,7 +5,7 @@ Implements the ``--embed-missing`` CLI flag of
 lack an embedding_metadata row and runs the live embedding pipeline
 against their ``text_content`` to fill the gap.
 
-Shape gamma (HYBRID):
+Modes:
     Standalone:
         Backfills against the existing storage layout. When
         ``ENABLE_EMBEDDING_COMPRESSION=true`` is set in the invocation
@@ -14,7 +14,7 @@ Shape gamma (HYBRID):
         the fp32 ``vec_context_embeddings`` table.
 
     Composed with ``--compress``:
-        The orchestrator in :mod:`app.cli.migrate` runs ``--compress``
+        The dispatcher in :mod:`app.cli.migrate` runs ``--compress``
         first (fp32 -> compressed), then dispatches to this module to
         backfill any missing entries directly into the compressed
         layout.
@@ -24,7 +24,6 @@ The CLI is single-backend: source is the database under operation;
 """
 
 import asyncio
-import contextlib
 import logging
 import sqlite3
 import sys
@@ -35,15 +34,15 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
-from app.backends import create_backend
+from app.cli._backend import make_backend
+from app.cli._backend import shutdown_backend
+from app.cli._database_url import mask_credentials
 from app.cli._embedding_introspect import dimension_conflict_error
 from app.cli._embedding_introspect import distinct_embedding_models
 from app.cli._embedding_introspect import embedding_metadata_table_exists
 from app.cli._embedding_runtime import EmbeddingPipelineUnavailableError
 from app.cli._embedding_runtime import initialize_cli_embedding_pipeline
 from app.cli._embedding_runtime import shutdown_cli_embedding_pipeline
-from app.cli.migrate import mask_credentials
-from app.cli.migrate import parse_backend_url
 from app.embeddings.base import EmbeddingProvider
 from app.settings import get_settings
 
@@ -65,34 +64,6 @@ def _print_warning(*, source_url: str, dry_run: bool) -> None:
         lines.append('DRY-RUN: provider is not called; only the count is reported')
     lines.append('=' * 60)
     print('\n'.join(lines), file=sys.stderr)
-
-
-def _make_backend(source_url: str) -> StorageBackend:
-    """Build a backend pointed at ``source_url``.
-
-    Mirrors :func:`app.cli.migrate_compression._make_backend`.
-
-    Args:
-        source_url: URL passed to ``--source-url``.
-
-    Returns:
-        Initialized :class:`StorageBackend` matching the URL scheme.
-    """
-    backend_kind, address = parse_backend_url(source_url)
-    if backend_kind == 'sqlite':
-        return create_backend(backend_type='sqlite', db_path=address)
-    return create_backend(
-        backend_type='postgresql', connection_string=address,
-    )
-
-
-async def _shutdown(backend: StorageBackend) -> None:
-    """Bounded shutdown.
-
-    Mirrors :func:`app.cli.migrate_compression._shutdown`.
-    """
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(backend.shutdown(), timeout=10.0)
 
 
 def run_embed_missing(source_url: str, *, dry_run: bool) -> int:
@@ -141,7 +112,7 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
         ``embedding_metadata`` table is absent from the source database.
     """
     masked = mask_credentials(source_url)
-    backend = _make_backend(source_url)
+    backend = make_backend(source_url)
     await backend.initialize()
     try:
         # Deferred imports: keep numpy / heavy provider machinery out of
@@ -260,7 +231,7 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
         finally:
             await shutdown_cli_embedding_pipeline(provider)
     finally:
-        await _shutdown(backend)
+        await shutdown_backend(backend)
 
 
 async def _embedding_consistency_error(

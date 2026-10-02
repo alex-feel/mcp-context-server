@@ -1,7 +1,8 @@
 """Tests for server utility functions.
 
-This module tests utility functions in app/server.py including
-text truncation and helper functions.
+This module tests server utility functions, among them text truncation
+(app/startup/validation.py) and the server version lookup (app/server.py),
+plus edge cases of the context tools in app/tools/.
 """
 
 from unittest.mock import AsyncMock
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.server import truncate_text
+from app.startup.validation import truncate_text
 
 
 class TestTruncateText:
@@ -206,7 +207,7 @@ class TestStoreContextEdgeCases:
         """Test that whitespace-only thread_id is rejected."""
         from fastmcp.exceptions import ToolError
 
-        from app.server import store_context
+        from app.tools import store_context
 
         with pytest.raises(ToolError, match='thread_id cannot be empty or whitespace'):
             await store_context(
@@ -221,7 +222,7 @@ class TestStoreContextEdgeCases:
         """Test that whitespace-only text is rejected."""
         from fastmcp.exceptions import ToolError
 
-        from app.server import store_context
+        from app.tools import store_context
 
         with pytest.raises(ToolError, match='text cannot be empty or whitespace'):
             await store_context(
@@ -236,7 +237,7 @@ class TestStoreContextEdgeCases:
         """Test that images without 'data' field are rejected."""
         from fastmcp.exceptions import ToolError
 
-        from app.server import store_context
+        from app.tools import store_context
 
         with pytest.raises(ToolError, match='missing required "data" field'):
             await store_context(
@@ -252,7 +253,7 @@ class TestStoreContextEdgeCases:
         """Test that images with empty 'data' field are rejected."""
         from fastmcp.exceptions import ToolError
 
-        from app.server import store_context
+        from app.tools import store_context
 
         with pytest.raises(ToolError, match='empty "data" field'):
             await store_context(
@@ -268,8 +269,8 @@ class TestStoreContextEdgeCases:
         """Test that missing mime_type defaults to image/png."""
         import base64
 
-        from app.server import get_context_by_ids
-        from app.server import store_context
+        from app.tools import get_context_by_ids
+        from app.tools import store_context
 
         image_data = base64.b64encode(b'test_image').decode('utf-8')
         result = await store_context(
@@ -299,7 +300,7 @@ class TestStoreContextEdgeCases:
 
         from fastmcp.exceptions import ToolError
 
-        from app.server import store_context
+        from app.tools import store_context
 
         # Mock the repository to return (None, False)
         with patch('app.tools.context.store.ensure_repositories') as mock_ensure:
@@ -324,8 +325,8 @@ class TestUpdateContextEdgeCases:
         """Test that update with no fields raises ToolError."""
         from fastmcp.exceptions import ToolError
 
-        from app.server import store_context
-        from app.server import update_context
+        from app.tools import store_context
+        from app.tools import update_context
 
         # First create a context
         result = await store_context(
@@ -345,8 +346,8 @@ class TestUpdateContextEdgeCases:
         """Test that update with whitespace-only text is rejected."""
         from fastmcp.exceptions import ToolError
 
-        from app.server import store_context
-        from app.server import update_context
+        from app.tools import store_context
+        from app.tools import update_context
 
         # First create a context
         result = await store_context(
@@ -366,7 +367,7 @@ class TestUpdateContextEdgeCases:
         """Test that update of nonexistent context raises ToolError."""
         from fastmcp.exceptions import ToolError
 
-        from app.server import update_context
+        from app.tools import update_context
 
         with pytest.raises(ToolError, match='not found'):
             await update_context(context_id='0190abcdef1234567890abcd000f423f', text='New text')
@@ -377,9 +378,9 @@ class TestUpdateContextEdgeCases:
         """Test that setting images to empty list removes all images."""
         import base64
 
-        from app.server import get_context_by_ids
-        from app.server import store_context
-        from app.server import update_context
+        from app.tools import get_context_by_ids
+        from app.tools import store_context
+        from app.tools import update_context
 
         image_data = base64.b64encode(b'test').decode('utf-8')
 
@@ -416,8 +417,8 @@ class TestUpdateContextEdgeCases:
 
         from fastmcp.exceptions import ToolError
 
-        from app.server import store_context
-        from app.server import update_context
+        from app.tools import store_context
+        from app.tools import update_context
 
         # Create a context
         result = await store_context(
@@ -444,7 +445,7 @@ class TestDeleteContextEdgeCases:
     @pytest.mark.usefixtures('initialized_server')
     async def test_delete_empty_thread(self) -> None:
         """Test deleting from nonexistent thread returns 0."""
-        from app.server import delete_context
+        from app.tools import delete_context
 
         result = await delete_context(thread_id='nonexistent_thread_xyz')
 
@@ -462,7 +463,7 @@ class TestSemanticSearchNotAvailable:
         from fastmcp.exceptions import ToolError
 
         import app.startup
-        from app.server import semantic_search_context
+        from app.tools import semantic_search_context
 
         # Store original
         original_service = app.startup._embedding_provider

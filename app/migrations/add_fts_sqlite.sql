@@ -1,7 +1,7 @@
 -- Full-Text Search migration: Add FTS5 support for SQLite
 -- This migration adds FTS5 virtual table for fast full-text search
 --
--- NOTE: Tokenizer is templated and replaced during migration (see server.py)
+-- NOTE: Tokenizer is templated and replaced during migration (see app/migrations/fts.py)
 -- {TOKENIZER} is replaced with:
 --   - 'porter unicode61' for English (enables stemming: "running" matches "run")
 --   - 'unicode61' for other languages (multilingual support, no stemming)

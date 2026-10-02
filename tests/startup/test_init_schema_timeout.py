@@ -111,7 +111,7 @@ async def test_provided_backend_schema_statements_carry_migration_timeout() -> N
         patch('app.startup.settings', _mock_settings()),
         patch('pathlib.Path.exists', return_value=True),
         patch('pathlib.Path.read_text', return_value=_FAKE_SCHEMA_SQL),
-        patch('app.backends.postgresql_backend.quote_pg_identifier', return_value='"public"'),
+        patch('app.backends.postgresql_backend.session.quote_pg_identifier', return_value='"public"'),
     ):
         await init_database(backend=backend)
 
@@ -131,8 +131,8 @@ async def test_temp_backend_schema_statements_carry_migration_timeout() -> None:
 
     ``init_database()`` with no backend argument creates a temporary backend for
     backward compatibility; that path has its own ``_init_schema_postgresql``
-    closure. This asserts the fix is applied there too, so a first-boot schema
-    statement is not cancelled client-side at the pool's shorter deadline.
+    closure. This asserts that path applies the same budget, so a first-boot
+    schema statement is not cancelled client-side at the pool's shorter deadline.
     """
     backend, conn = _make_pg_backend()
     backend.initialize = AsyncMock(return_value=None)
@@ -144,7 +144,7 @@ async def test_temp_backend_schema_statements_carry_migration_timeout() -> None:
         patch('app.startup.create_backend', return_value=backend),
         patch('pathlib.Path.exists', return_value=True),
         patch('pathlib.Path.read_text', return_value=_FAKE_SCHEMA_SQL),
-        patch('app.backends.postgresql_backend.quote_pg_identifier', return_value='"public"'),
+        patch('app.backends.postgresql_backend.session.quote_pg_identifier', return_value='"public"'),
     ):
         await init_database()
 

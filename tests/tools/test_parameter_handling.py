@@ -35,14 +35,14 @@ from pydantic import ValidationError as PydanticValidationError
 from pydantic.fields import FieldInfo
 from pydantic_core import ErrorDetails
 
-import app.server
+import app.tools
 from app.types import JsonValue
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
-store_context = app.server.store_context
-search_context = app.server.search_context
-get_context_by_ids = app.server.get_context_by_ids
-delete_context = app.server.delete_context
+store_context = app.tools.store_context
+search_context = app.tools.search_context
+get_context_by_ids = app.tools.get_context_by_ids
+delete_context = app.tools.delete_context
 
 # Type alias anchored to a usage site so ruff cannot strip the JsonValue import.
 _MetadataDict = dict[str, JsonValue]
@@ -1010,10 +1010,10 @@ class TestParameterInteractions:
 
 
 _SEARCH_TOOLS: list[Callable[..., object]] = [
-    app.server.search_context,
-    app.server.semantic_search_context,
-    app.server.fts_search_context,
-    app.server.hybrid_search_context,
+    app.tools.search_context,
+    app.tools.semantic_search_context,
+    app.tools.fts_search_context,
+    app.tools.hybrid_search_context,
 ]
 
 
@@ -1071,7 +1071,7 @@ class TestSearchOffsetUpperBound:
 
         from app.tools.search.limits import MAX_SEARCH_OFFSET
 
-        validated = Tool.from_function(app.server.search_context)
+        validated = Tool.from_function(app.tools.search_context)
         with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'offset': MAX_SEARCH_OFFSET + 1})
         errors = _argument_errors(exc_info)
@@ -1092,7 +1092,7 @@ class TestSearchOffsetUpperBound:
 
         from app.tools.search.limits import MAX_SEARCH_OFFSET
 
-        validated = Tool.from_function(app.server.search_context)
+        validated = Tool.from_function(app.tools.search_context)
         result = await validated.run({'thread_id': 'offset_bound_thread', 'offset': MAX_SEARCH_OFFSET})
         payload = result.structured_content
         assert payload is not None
@@ -1129,7 +1129,7 @@ class TestClampOverfetch:
 
 _TAGS_FILTER_TOOLS: list[Callable[..., object]] = [
     *_SEARCH_TOOLS,
-    app.server.grep_context,
+    app.tools.grep_context,
 ]
 
 
@@ -1175,7 +1175,7 @@ class TestTagsFilterUpperBound:
 
         from app.tools.search.limits import MAX_FILTER_TAGS
 
-        validated = Tool.from_function(app.server.search_context)
+        validated = Tool.from_function(app.tools.search_context)
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'tags': oversized})
@@ -1191,7 +1191,7 @@ class TestTagsFilterUpperBound:
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         ensure_repos = AsyncMock()
         with patch('app.tools.search.browse.ensure_repositories', ensure_repos):
-            result = await app.server.search_context(tags=oversized)
+            result = await app.tools.search_context(tags=oversized)
 
         assert result['results'] == []
         assert result['count'] == 0
@@ -1208,7 +1208,7 @@ class TestTagsFilterUpperBound:
         repos = MagicMock()
         repos.context.search_contexts = AsyncMock(return_value=([], {}))
         with patch('app.tools.search.browse.ensure_repositories', AsyncMock(return_value=repos)):
-            result = await app.server.search_context(tags=at_cap)
+            result = await app.tools.search_context(tags=at_cap)
 
         assert result['results'] == []
         assert result['count'] == 0
@@ -1224,7 +1224,7 @@ class TestTagsFilterUpperBound:
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock()
         with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
-            result = await app.server.grep_context(pattern='needle', tags=oversized)
+            result = await app.tools.grep_context(pattern='needle', tags=oversized)
 
         # GrepContextResultDict is total=False; widen for direct key assertions.
         payload = cast('dict[str, Any]', result)
@@ -1267,7 +1267,7 @@ class TestWritePathTagCaps:
         from app.models import MAX_TAG_LENGTH
         from app.models import MAX_TAGS_PER_ENTRY
 
-        annotation = self._tags_annotation(getattr(app.server, tool_name))
+        annotation = self._tags_annotation(getattr(app.tools, tool_name))
         outer_meta = [m for m in get_args(annotation)[1:] if isinstance(m, FieldInfo)]
         assert outer_meta, f'{tool_name} tags carries no FieldInfo'
         outer_caps = [c.max_length for c in outer_meta[0].metadata if isinstance(c, MaxLen)]
@@ -1295,7 +1295,7 @@ class TestWritePathTagCaps:
             patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Tag 0 is too long'),
         ):
-            await app.server.store_context(
+            await app.tools.store_context(
                 thread_id='tag-cap-thread',
                 source='user',
                 text='body',
@@ -1313,7 +1313,7 @@ class TestWritePathTagCaps:
             patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Too many tags'),
         ):
-            await app.server.store_context(
+            await app.tools.store_context(
                 thread_id='tag-cap-thread',
                 source='user',
                 text='body',
@@ -1331,7 +1331,7 @@ class TestWritePathTagCaps:
             patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='Tag 0 is too long'),
         ):
-            await app.server.update_context(
+            await app.tools.update_context(
                 context_id='0190abcdef1234567890abcdef123456',
                 tags=['t' * (MAX_TAG_LENGTH + 1)],
             )
@@ -1392,7 +1392,7 @@ class TestWritePathTagCaps:
         from app.models import MAX_TAGS_PER_ENTRY
 
         at_cap = [f'{i:03d}'.ljust(MAX_TAG_LENGTH, 'x') for i in range(MAX_TAGS_PER_ENTRY)]
-        result = await app.server.store_context(
+        result = await app.tools.store_context(
             thread_id='tag-cap-accepted',
             source='user',
             text='body at cap',
@@ -1456,7 +1456,7 @@ class TestMetadataFilterCapsUpperBound:
 
         from app.tools.search.limits import MAX_METADATA_FILTERS
 
-        validated = Tool.from_function(app.server.search_context)
+        validated = Tool.from_function(app.tools.search_context)
         oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
         with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'metadata_filters': oversized})
@@ -1471,7 +1471,7 @@ class TestMetadataFilterCapsUpperBound:
 
         from app.tools.search.limits import MAX_METADATA_KEYS
 
-        validated = Tool.from_function(app.server.search_context)
+        validated = Tool.from_function(app.tools.search_context)
         oversized = {f'key{i}': i for i in range(MAX_METADATA_KEYS + 1)}
         with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'metadata': oversized})
@@ -1487,7 +1487,7 @@ class TestMetadataFilterCapsUpperBound:
         oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
         ensure_repos = AsyncMock()
         with patch('app.tools.search.browse.ensure_repositories', ensure_repos):
-            result = await app.server.search_context(metadata_filters=oversized)
+            result = await app.tools.search_context(metadata_filters=oversized)
 
         assert result['results'] == []
         assert result['count'] == 0
@@ -1504,7 +1504,7 @@ class TestMetadataFilterCapsUpperBound:
         oversized: dict[str, str | int | float | bool] = {f'key{i}': i for i in range(MAX_METADATA_KEYS + 1)}
         ensure_repos = AsyncMock()
         with patch('app.tools.search.browse.ensure_repositories', ensure_repos):
-            result = await app.server.search_context(metadata=oversized)
+            result = await app.tools.search_context(metadata=oversized)
 
         assert result['results'] == []
         assert result['count'] == 0
@@ -1521,7 +1521,7 @@ class TestMetadataFilterCapsUpperBound:
         repos = MagicMock()
         repos.context.search_contexts = AsyncMock(return_value=([], {}))
         with patch('app.tools.search.browse.ensure_repositories', AsyncMock(return_value=repos)):
-            result = await app.server.search_context(metadata_filters=at_cap)
+            result = await app.tools.search_context(metadata_filters=at_cap)
 
         assert result['results'] == []
         assert result['count'] == 0
@@ -1537,7 +1537,7 @@ class TestMetadataFilterCapsUpperBound:
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock()
         with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
-            result = await app.server.grep_context(pattern='needle', metadata_filters=oversized)
+            result = await app.tools.grep_context(pattern='needle', metadata_filters=oversized)
 
         # GrepContextResultDict is total=False; widen for direct key assertions.
         payload = cast('dict[str, Any]', result)
@@ -1556,7 +1556,7 @@ class TestMetadataFilterCapsUpperBound:
 
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         with patch('app.tools.search.browse.ensure_repositories', AsyncMock()):
-            result = await app.server.search_context(tags=oversized, explain_query=True)
+            result = await app.tools.search_context(tags=oversized, explain_query=True)
 
         assert 'exceeds the maximum' in result['error']
         # query_plan is carried as an explicit null rather than omitted: the documented
@@ -1577,7 +1577,7 @@ class TestMetadataFilterCapsUpperBound:
 
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         with patch('app.tools.search.browse.ensure_repositories', AsyncMock()):
-            result = await app.server.search_context(tags=oversized, explain_query=False)
+            result = await app.tools.search_context(tags=oversized, explain_query=False)
 
         assert 'exceeds the maximum' in result['error']
         assert 'stats' not in result
@@ -1598,7 +1598,7 @@ class TestGrepPatternCap:
         """The pattern Field declares max_length=GREP_MAX_PATTERN_CHARS."""
         import app.tools.navigation as navigation_mod
 
-        hints = get_type_hints(app.server.grep_context, include_extras=True)
+        hints = get_type_hints(app.tools.grep_context, include_extras=True)
         field_info = next(
             meta for meta in get_args(hints['pattern'])[1:] if isinstance(meta, FieldInfo)
         )
@@ -1619,7 +1619,7 @@ class TestGrepPatternCap:
             patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)),
             patch('app.tools.navigation.compile_pattern', compile_spy),
         ):
-            result = await app.server.grep_context(pattern='x' * (cap + 1))
+            result = await app.tools.grep_context(pattern='x' * (cap + 1))
 
         payload = cast('dict[str, Any]', result)
         assert payload['results'] == []
@@ -1638,7 +1638,7 @@ class TestGrepPatternCap:
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock(return_value=([], {}))
         with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
-            result = await app.server.grep_context(pattern='x' * cap)
+            result = await app.tools.grep_context(pattern='x' * cap)
 
         payload = cast('dict[str, Any]', result)
         assert 'error' not in payload
@@ -1664,7 +1664,7 @@ class TestGrepPatternCap:
             patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)),
             patch('app.tools.navigation.asyncio.to_thread', side_effect=spy_to_thread),
         ):
-            result = await app.server.grep_context(pattern='nee.dle', is_regex=True)
+            result = await app.tools.grep_context(pattern='nee.dle', is_regex=True)
 
         payload = cast('dict[str, Any]', result)
         assert 'error' not in payload
@@ -1682,7 +1682,7 @@ class TestDeleteContextIdsCap:
 
     def test_context_ids_declares_max_length_cap(self) -> None:
         """The context_ids Field declares max_length=100 (parity with get_context_by_ids)."""
-        hints = get_type_hints(app.server.delete_context, include_extras=True)
+        hints = get_type_hints(app.tools.delete_context, include_extras=True)
         field_info = next(
             meta for meta in get_args(hints['context_ids'])[1:] if isinstance(meta, FieldInfo)
         )
@@ -1695,7 +1695,7 @@ class TestDeleteContextIdsCap:
         """A context_ids list above the cap is rejected by the wire-schema validation with a FastMCP ValidationError."""
         from fastmcp.tools import Tool
 
-        validated = Tool.from_function(app.server.delete_context)
+        validated = Tool.from_function(app.tools.delete_context)
         oversized = [f'{i:032x}' for i in range(101)]
         with pytest.raises(FastMCPValidationError) as exc_info:
             await validated.run({'context_ids': oversized})
@@ -1729,7 +1729,7 @@ class TestIndexedWriteValueUpperBound:
             patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='thread_id is too long'),
         ):
-            await app.server.store_context(
+            await app.tools.store_context(
                 thread_id='t' * (MAX_THREAD_ID_LENGTH + 1),
                 source='user',
                 text='body',
@@ -1740,7 +1740,7 @@ class TestIndexedWriteValueUpperBound:
         """The MCP schema carries maxLength so a client sees the bound up front."""
         from app.models import MAX_THREAD_ID_LENGTH
 
-        annotation = get_type_hints(app.server.store_context, include_extras=True)['thread_id']
+        annotation = get_type_hints(app.tools.store_context, include_extras=True)['thread_id']
         meta = [m for m in get_args(annotation)[1:] if isinstance(m, FieldInfo)]
         assert meta, 'store_context thread_id carries no FieldInfo'
         caps = [c.max_length for c in meta[0].metadata if isinstance(c, MaxLen)]
@@ -1756,7 +1756,7 @@ class TestIndexedWriteValueUpperBound:
             patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'status' is indexed"),
         ):
-            await app.server.store_context(
+            await app.tools.store_context(
                 thread_id='indexed-cap-thread',
                 source='user',
                 text='body',
@@ -1770,7 +1770,7 @@ class TestIndexedWriteValueUpperBound:
         """A non-indexed key is NOT capped: jsonb and the GIN index both accept it."""
         from app.models import MAX_INDEXED_METADATA_VALUE_LENGTH
 
-        result = await app.server.store_context(
+        result = await app.tools.store_context(
             thread_id='unindexed-cap-thread',
             source='user',
             text='body',
@@ -1788,7 +1788,7 @@ class TestIndexedWriteValueUpperBound:
             patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'project' is indexed"),
         ):
-            await app.server.update_context(
+            await app.tools.update_context(
                 context_id='0190abcdef1234567890abcdef123456',
                 metadata_patch={'project': 'p' * (MAX_INDEXED_METADATA_VALUE_LENGTH + 1)},
             )
@@ -1896,7 +1896,7 @@ class TestTypedIndexedMetadataCastCompatibility:
             patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'priority'"),
         ):
-            await app.server.store_context(
+            await app.tools.store_context(
                 thread_id='typed-index-thread',
                 source='user',
                 text='body',
@@ -1912,7 +1912,7 @@ class TestTypedIndexedMetadataCastCompatibility:
             patch('app.tools.context.store.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match='out of range'),
         ):
-            await app.server.store_context(
+            await app.tools.store_context(
                 thread_id='typed-index-thread',
                 source='user',
                 text='body',
@@ -1924,7 +1924,7 @@ class TestTypedIndexedMetadataCastCompatibility:
     @pytest.mark.usefixtures('initialized_server')
     async def test_store_context_accepts_castable_indexed_value(self) -> None:
         """A value the cast accepts still stores, including its string spelling."""
-        result = await app.server.store_context(
+        result = await app.tools.store_context(
             thread_id='typed-index-thread-ok',
             source='user',
             text='body',
@@ -1940,7 +1940,7 @@ class TestTypedIndexedMetadataCastCompatibility:
             patch('app.tools.context.update.ensure_repositories', ensure_repos),
             pytest.raises(ToolError, match="metadata field 'priority'"),
         ):
-            await app.server.update_context(
+            await app.tools.update_context(
                 context_id='0190abcdef1234567890abcdef123456',
                 metadata_patch={'priority': 'urgent'},
             )

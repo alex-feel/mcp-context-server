@@ -1,7 +1,7 @@
 """Tests for server error handling paths.
 
-This module tests specific error handling code paths in app/server.py
-to improve coverage of exception handling and edge cases.
+This module tests specific error handling code paths in the MCP tool functions
+in app/tools/ to improve coverage of exception handling and edge cases.
 """
 
 import base64
@@ -10,11 +10,11 @@ from typing import Any
 import pytest
 from fastmcp.exceptions import ToolError
 
-from app.server import delete_context
-from app.server import get_context_by_ids
-from app.server import search_context
-from app.server import store_context
-from app.server import update_context
+from app.tools import delete_context
+from app.tools import get_context_by_ids
+from app.tools import search_context
+from app.tools import store_context
+from app.tools import update_context
 
 
 class TestDeleteContextErrors:

@@ -13,10 +13,10 @@ from typing import Any
 from typing import TypedDict
 from typing import cast
 
-from app.settings import EmbeddingSettings
+from app.settings.embedding import EmbeddingSettings
 
 if TYPE_CHECKING:
-    from app.settings import SummarySettings
+    from app.settings.summary import SummarySettings
 
 logger = logging.getLogger(__name__)
 

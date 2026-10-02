@@ -1,8 +1,8 @@
 -- Semantic search migration for PostgreSQL: Add vector embeddings support
 -- This migration adds tables for semantic search using pgvector extension
 -- NOTE: This migration requires pgvector extension to be installed
--- NOTE: Dimension is templated and replaced during migration (see server.py)
--- NOTE: pgvector extension is created during backend initialization (postgresql_backend.py)
+-- NOTE: Dimension is templated and replaced during migration (see app/migrations/semantic.py)
+-- NOTE: pgvector extension is created during backend initialization (app/backends/postgresql_backend/provisioning.py)
 
 -- Table for vector embeddings using native vector type
 -- NOTE: This initial PRIMARY KEY on context_id is later restructured by

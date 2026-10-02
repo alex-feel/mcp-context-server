@@ -819,7 +819,7 @@ class TestTransactionExecutorOffload:
                 )
                 raise RuntimeError('body failure')
 
-        with patch('app.backends.sqlite_backend.run_in_executor_uninterruptible', _spy):
+        with patch('app.backends.sqlite_backend.transactions.run_in_executor_uninterruptible', _spy):
             # Success path -> commit routes through the drain.
             async with backend.begin_transaction() as txn:
                 await repos.context.store_with_deduplication(

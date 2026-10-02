@@ -17,7 +17,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
-from app.backends.postgresql_backend import quote_pg_identifier
+from app.backends.postgresql_backend.session import quote_pg_identifier
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
@@ -81,7 +81,7 @@ async def apply_semantic_search_migration(
         backend: Storage backend instance.
         force: When True, apply the migration regardless of
             ``settings.embedding.generation_enabled``. Used by the migration CLI
-            (``app.cli.migrate``) to create the fp32 vector layout on a target
+            (``app.cli.migrate_uuid.pg_target``) to create the fp32 vector layout on a target
             database while preserving the server's default behavior (gated on
             embedding generation with the infra-present fallthrough) for all
             other callers.

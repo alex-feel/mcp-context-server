@@ -20,7 +20,8 @@ This package contains all MCP tool functions, organized by domain:
 - _delete_cleanup.py: Entry deletion with the explicit embedding cleanup (not re-exported)
 - _responses.py: Store and update response message builders (not re-exported)
 
-The tool registration helpers and TOOL_ANNOTATIONS are defined here for use by server.py.
+The tool registration helpers and TOOL_ANNOTATIONS are defined here for use by
+app/startup/tool_registration.py.
 """
 
 import logging
@@ -30,7 +31,7 @@ from typing import Any
 
 from app.settings import get_settings
 
-# Tool functions exposed here for registration in app/server.py
+# Tool functions exposed here for registration in app/startup/tool_registration.py
 from app.tools.batch.delete import delete_context_batch
 from app.tools.batch.store import store_context_batch
 from app.tools.batch.update import update_context_batch

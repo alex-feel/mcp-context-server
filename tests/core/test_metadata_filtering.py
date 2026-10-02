@@ -12,8 +12,8 @@ from app.metadata_sql import is_safe_key
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.query_builder import MetadataQueryBuilder
-from app.server import search_context
-from app.server import store_context
+from app.tools import search_context
+from app.tools import store_context
 from app.types import JsonValue
 
 if TYPE_CHECKING:

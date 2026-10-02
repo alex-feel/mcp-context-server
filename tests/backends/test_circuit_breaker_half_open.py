@@ -12,18 +12,18 @@ Admission and outcome are different events, so they need different counters: a
 single counter advanced only by record_success() (and zeroed at the promotion
 threshold) is provably always below the gate, so the gate never closes.
 
-Each backend module defines its own CircuitBreaker and ConnectionState, so the
-cases are concrete per backend.
+Each backend package defines its own CircuitBreaker and ConnectionState (in its
+``resilience`` module), so the cases are concrete per backend.
 """
 
 import time
 
 import pytest
 
-from app.backends.postgresql_backend import CircuitBreaker as PgBreaker
-from app.backends.postgresql_backend import ConnectionState as PgState
-from app.backends.sqlite_backend import CircuitBreaker as SqBreaker
-from app.backends.sqlite_backend import ConnectionState as SqState
+from app.backends.postgresql_backend.resilience import CircuitBreaker as PgBreaker
+from app.backends.postgresql_backend.resilience import ConnectionState as PgState
+from app.backends.sqlite_backend.resilience import CircuitBreaker as SqBreaker
+from app.backends.sqlite_backend.resilience import ConnectionState as SqState
 
 
 def _tripped_sqlite_breaker(max_calls: int = 3, recovery_timeout: float = 10.0) -> SqBreaker:

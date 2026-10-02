@@ -390,7 +390,7 @@ async def test_hybrid_search_no_warning_on_success(caplog: pytest.LogCaptureFixt
 
 def test_embedding_max_concurrent_setting_default() -> None:
     """Test that EMBEDDING_MAX_CONCURRENT has correct default value."""
-    from app.settings import EmbeddingSettings
+    from app.settings.embedding import EmbeddingSettings
 
     settings = EmbeddingSettings()
     assert settings.max_concurrent == 3
@@ -400,7 +400,7 @@ def test_embedding_max_concurrent_setting_bounds() -> None:
     """Test that EMBEDDING_MAX_CONCURRENT enforces bounds."""
     from pydantic import ValidationError
 
-    from app.settings import EmbeddingSettings
+    from app.settings.embedding import EmbeddingSettings
 
     with pytest.raises(ValidationError):
         EmbeddingSettings.model_validate({'EMBEDDING_MAX_CONCURRENT': 0})

@@ -6,8 +6,8 @@ matching their TypedDict definitions.
 
 import pytest
 
-from app.server import search_context
-from app.server import store_context
+from app.tools import search_context
+from app.tools import store_context
 
 
 class TestSearchContextResponseStructure:

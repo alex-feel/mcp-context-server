@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.server
+import app.tools
 from app.repositories.context_repository.records import EntryProbe
 from app.types import MetadataDict
 
@@ -23,9 +23,9 @@ if TYPE_CHECKING:
 
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
-update_context = app.server.update_context
-get_context_by_ids = app.server.get_context_by_ids
-delete_context = app.server.delete_context
+update_context = app.tools.update_context
+get_context_by_ids = app.tools.get_context_by_ids
+delete_context = app.tools.delete_context
 
 
 def _settings_with_node_summaries(enabled: bool) -> 'AppSettings':

@@ -12,7 +12,7 @@ Backfill semantics (fail-closed): existing rows receive
 ``visibility='private'`` and ``owner_id=ACCESS_CONTROL_DEFAULT_PRINCIPAL`` via
 the ``ADD COLUMN ... NOT NULL DEFAULT`` literal -- a single statement per
 column, no separate UPDATE pass. The configured principal is re-validated
-against :data:`app.settings.SAFE_PRINCIPAL_ID_PATTERN` immediately before DDL
+against :data:`app.settings.auth.SAFE_PRINCIPAL_ID_PATTERN` immediately before DDL
 interpolation, so it cannot break out of the quoted literal. The lingering
 column default on upgraded databases is inert: the application always stamps
 ``owner_id`` explicitly on INSERT (fresh base schemas declare no default).
@@ -30,8 +30,8 @@ from app.errors import ConfigurationError
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
-from app.settings import SAFE_PRINCIPAL_ID_PATTERN
 from app.settings import get_settings
+from app.settings.auth import SAFE_PRINCIPAL_ID_PATTERN
 
 logger = logging.getLogger(__name__)
 settings = get_settings()

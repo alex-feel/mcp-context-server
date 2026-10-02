@@ -292,7 +292,7 @@ class ContextReadMixin(BaseRepository):
                 prefix + '%',
                 limit,
             )
-            # The pool's uuid->str codec (registered in _init_connection) already
+            # The pool's uuid->str codec (registered in init_pool_connection) already
             # decodes id to the 32-char hex the SQLite path returns.
             # normalize_id(str(...)) is idempotent defense-in-depth for
             # codec-less connections, so prefix resolution echoes a canonical

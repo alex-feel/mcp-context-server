@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.server import search_context
+from app.tools import search_context
 
 
 @pytest.mark.asyncio
@@ -99,7 +99,7 @@ class TestMetadataErrorHandling:
     async def test_case_sensitivity_flag_works(self) -> None:
         """Test that case_sensitive flag is properly handled."""
         # Store test data first
-        from app.server import store_context
+        from app.tools import store_context
 
         await store_context(
             thread_id='test_case',

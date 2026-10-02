@@ -142,7 +142,7 @@ class StatisticsRepository(BaseRepository):
             threads: list[ThreadInfoDict] = []
             for row in rows:
                 d = dict(row)
-                # The pool's uuid->str codec (registered in _init_connection)
+                # The pool's uuid->str codec (registered in init_pool_connection)
                 # already decodes uuid columns -- including array elements, so
                 # this array_agg pick too -- to the canonical 32-char lowercase
                 # hex the SQLite branch emits. normalize_id(str(...)) is

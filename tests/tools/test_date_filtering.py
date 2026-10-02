@@ -629,7 +629,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.search.truncation_length = 150
 
             # Import and get the actual function
-            import app.server
+            import app.tools
             semantic_search = app.tools.semantic_search_context
 
             result = await semantic_search(
@@ -669,7 +669,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
 
-            import app.server
+            import app.tools
             semantic_search = app.tools.semantic_search_context
 
             await semantic_search(
@@ -706,7 +706,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
 
-            import app.server
+            import app.tools
             semantic_search = app.tools.semantic_search_context
 
             await semantic_search(
@@ -732,7 +732,7 @@ class TestSemanticSearchDateFiltering:
         ):
             mock_settings.semantic_search.enabled = True
 
-            import app.server
+            import app.tools
             semantic_search = app.tools.semantic_search_context
 
             with pytest.raises(ToolError) as exc_info:
@@ -754,7 +754,7 @@ class TestSemanticSearchDateFiltering:
         ):
             mock_settings.semantic_search.enabled = True
 
-            import app.server
+            import app.tools
             semantic_search = app.tools.semantic_search_context
 
             with pytest.raises(ToolError) as exc_info:
@@ -789,7 +789,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
 
-            import app.server
+            import app.tools
             semantic_search = app.tools.semantic_search_context
 
             await semantic_search(
@@ -824,7 +824,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
 
-            import app.server
+            import app.tools
             semantic_search = app.tools.semantic_search_context
 
             await semantic_search(

@@ -25,12 +25,12 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.server
+import app.tools
 from app.repositories.context_repository.records import EntryProbe
 from app.types import MetadataDict
 
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time
-update_context = app.server.update_context
+update_context = app.tools.update_context
 
 
 @pytest.fixture

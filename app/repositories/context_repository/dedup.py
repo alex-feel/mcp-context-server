@@ -298,7 +298,7 @@ class ContextDedupMixin(BaseRepository):
                 rows_affected = int(result.split()[-1]) if result else 0
                 if rows_affected > 0:
                     logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                    # The pool's uuid->str codec (registered in _init_connection)
+                    # The pool's uuid->str codec (registered in init_pool_connection)
                     # already yields the canonical 32-char hex the MCP API contract
                     # requires (the SQLite branch's TEXT id is likewise hex);
                     # normalize_id(str(...)) is idempotent defense-in-depth for

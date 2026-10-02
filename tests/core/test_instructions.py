@@ -1,61 +1,6 @@
 """Tests for MCP server instructions support."""
 
-import os
-from collections.abc import Generator
-from contextlib import contextmanager
-
-
-@contextmanager
-def env_var(key: str, value: str | None) -> Generator[None, None, None]:
-    """Context manager for temporarily setting an environment variable."""
-    original = os.environ.get(key)
-    try:
-        if value is not None:
-            os.environ[key] = value
-        elif key in os.environ:
-            del os.environ[key]
-        yield
-    finally:
-        if original is not None:
-            os.environ[key] = original
-        elif key in os.environ:
-            del os.environ[key]
-
-
-class TestInstructionsSettings:
-    """Tests for InstructionsSettings in app/settings.py."""
-
-    def test_server_instructions_default_is_none(self) -> None:
-        """MCP_SERVER_INSTRUCTIONS should default to None (use DEFAULT_INSTRUCTIONS)."""
-        from app.settings import InstructionsSettings
-
-        settings = InstructionsSettings()
-        assert settings.server_instructions is None
-
-    def test_server_instructions_from_env(self) -> None:
-        """MCP_SERVER_INSTRUCTIONS env var should override default instructions."""
-        from app.settings import InstructionsSettings
-
-        custom_text = 'Custom server instructions for deployment.'
-        with env_var('MCP_SERVER_INSTRUCTIONS', custom_text):
-            settings = InstructionsSettings()
-            assert settings.server_instructions == custom_text
-
-    def test_server_instructions_empty_string_from_env(self) -> None:
-        """Empty MCP_SERVER_INSTRUCTIONS should be treated as empty string (disables instructions)."""
-        from app.settings import InstructionsSettings
-
-        with env_var('MCP_SERVER_INSTRUCTIONS', ''):
-            settings = InstructionsSettings()
-            assert settings.server_instructions == ''
-
-    def test_instructions_accessible_via_app_settings(self) -> None:
-        """InstructionsSettings should be accessible via AppSettings.instructions."""
-        from app.settings import AppSettings
-
-        settings = AppSettings()
-        assert hasattr(settings, 'instructions')
-        assert settings.instructions.server_instructions is None
+from tests.helpers import env_var
 
 
 class TestDefaultInstructions:
@@ -145,7 +90,7 @@ class TestInstructionsResolution:
         """When MCP_SERVER_INSTRUCTIONS is not set, should use DEFAULT_INSTRUCTIONS."""
         from app.instructions import DEFAULT_INSTRUCTIONS
         from app.instructions import resolve_instructions
-        from app.settings import InstructionsSettings
+        from app.settings.server import InstructionsSettings
 
         settings = InstructionsSettings()
         result = resolve_instructions(settings)
@@ -154,7 +99,7 @@ class TestInstructionsResolution:
     def test_resolve_instructions_returns_env_override(self) -> None:
         """When MCP_SERVER_INSTRUCTIONS is set, should use env var value."""
         from app.instructions import resolve_instructions
-        from app.settings import InstructionsSettings
+        from app.settings.server import InstructionsSettings
 
         custom = 'Custom instructions text.'
         with env_var('MCP_SERVER_INSTRUCTIONS', custom):
@@ -165,7 +110,7 @@ class TestInstructionsResolution:
     def test_resolve_instructions_empty_string_disables(self) -> None:
         """Empty MCP_SERVER_INSTRUCTIONS should return empty string (effectively disables)."""
         from app.instructions import resolve_instructions
-        from app.settings import InstructionsSettings
+        from app.settings.server import InstructionsSettings
 
         with env_var('MCP_SERVER_INSTRUCTIONS', ''):
             settings = InstructionsSettings()

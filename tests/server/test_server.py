@@ -18,19 +18,19 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-# Import the actual async functions from app.server, not the MCP-wrapped versions
-# The FunctionTool objects store the original functions in their 'fn' attribute
-import app.server
 import app.startup
 
-# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+# Import the actual async functions from app.tools, not the MCP-wrapped versions
+import app.tools
+
+# Get the actual async functions - @mcp.tool() does not wrap them at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
-store_context = app.server.store_context
-search_context = app.server.search_context
-get_context_by_ids = app.server.get_context_by_ids
-delete_context = app.server.delete_context
-list_threads = app.server.list_threads
-get_statistics = app.server.get_statistics
+store_context = app.tools.store_context
+search_context = app.tools.search_context
+get_context_by_ids = app.tools.get_context_by_ids
+delete_context = app.tools.delete_context
+list_threads = app.tools.list_threads
+get_statistics = app.tools.get_statistics
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -884,10 +884,7 @@ class TestGetStatistics:
         assert stats['unique_tags'] == 4  # python, testing, ai, image
 
     @pytest.mark.asyncio
-    async def test_statistics_database_size(
-        self,
-        temp_db_path: Path,
-    ) -> None:
+    async def test_statistics_database_size(self) -> None:
         """Test database size reporting."""
         # Add some data to ensure non-zero size
         for i in range(10):
@@ -897,8 +894,7 @@ class TestGetStatistics:
                 text=f'Entry {i}' * 100,  # Make it bigger
             )
 
-        with patch('app.server.DB_PATH', temp_db_path):
-            stats = await get_statistics()
+        stats = await get_statistics()
 
         assert 'database_size_mb' in stats
         # Database file should exist and be non-zero (or at least >= 0)

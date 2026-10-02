@@ -3,7 +3,7 @@
 
 -- Virtual table for vector embeddings (sqlite-vec)
 -- NOTE: This table requires sqlite-vec extension to be loaded
--- NOTE: Dimension is templated and replaced during migration (see server.py)
+-- NOTE: Dimension is templated and replaced during migration (see app/migrations/semantic.py)
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_context_embeddings USING vec0(
     embedding float[{EMBEDDING_DIM}]
 );

@@ -1,11 +1,10 @@
-"""Regression tests for the PG->PG embedding-copy fix (Phase 3, master plan 17220).
+"""Integration tests for the PG->PG embedding copy.
 
-Before the fix, ``run_migration_postgresql`` silently dropped
-``embedding_metadata`` and ``vec_context_embeddings`` rows because the
-copy logic was never wired in. This module exercises an integer-keyed
-v2 PostgreSQL source with seeded embeddings, runs the migration into a
-UUID-keyed v3 PostgreSQL target, and asserts that the embeddings are
-preserved.
+``run_migration_postgresql`` copies the ``embedding_metadata`` and
+``vec_context_embeddings`` rows along with the entries. This module exercises
+an integer-keyed v2 PostgreSQL source with seeded embeddings, runs the
+migration into a UUID-keyed v3 PostgreSQL target, and asserts that the
+embeddings are preserved.
 """
 
 from __future__ import annotations
@@ -20,8 +19,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.cli.migrate import MigrationOptions
-from app.cli.migrate import run_migration_postgresql
+from app.cli.migrate_uuid.postgresql_to_postgresql import run_migration_postgresql
+from app.cli.migrate_uuid.records import MigrationOptions
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
 
@@ -285,7 +284,7 @@ async def test_pg_pg_migration_copies_embedding_metadata(
     isolated_pg_v2_source_db: str,
     isolated_pg_v3_target_db: str,
 ) -> None:
-    """Embeddings copied from v2 source to v3 target (Finding 10 regression)."""
+    """Embeddings are copied from the v2 source to the v3 target."""
     ids = await _seed_source_with_embeddings(
         isolated_pg_v2_source_db, n_docs=3,
     )
@@ -466,9 +465,9 @@ async def test_pg_pg_migration_auto_inits_empty_target(
 ) -> None:
     """A bare (schema-less) target is auto-initialized and receives data + embeddings.
 
-    Regression guard for the manual-preinit trap: the CLI now mirrors the SQLite
-    path and creates the fp32 target schema itself. It MUST NOT create the
-    compressed layout (compression is a separate --compress step).
+    The CLI mirrors the SQLite path and creates the fp32 target schema itself,
+    so the operator never has to pre-initialize the target. It MUST NOT create
+    the compressed layout (compression is a separate --compress step).
     """
     await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
     db_name = 'mcp_pg_pg_v3_autoinit'
@@ -509,9 +508,9 @@ async def test_pg_pg_migration_source_without_embedding_metadata_table(
     """A v2 source that never enabled semantic search (no embedding_metadata TABLE) does not crash.
 
     Distinct from test_..._missing_embedding_metadata_gracefully, which keeps the
-    table but seeds zero rows. Here the table is ABSENT entirely; before the
-    guard, the unconditional ``SELECT ... FROM embedding_metadata`` crashed the
-    whole migration.
+    table but seeds zero rows. Here the table is ABSENT entirely; without the
+    guard, an unconditional ``SELECT ... FROM embedding_metadata`` would crash
+    the whole migration.
     """
     db_name = 'mcp_pg_pg_v2_no_em_table'
     src_url = await _make_isolated_db(pg_test_url, db_name)
@@ -619,10 +618,10 @@ async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
 ) -> None:
     """Dry-run against a bare (auto-init-able) target previews symmetric counts.
 
-    Regression for the dry-run reporting bug: the embedding counter (N) and the
-    vec counter (0) used to disagree, with a contradictory 'initialize the target
-    schema first' warning, even though a real run auto-initializes and copies
-    everything. The preview must be accurate and write nothing.
+    The embedding counter and the vec counter both report N, with no
+    contradictory 'initialize the target schema first' warning, because a real
+    run auto-initializes and copies everything. The preview must be accurate
+    and write nothing.
     """
     await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
     db_name = 'mcp_pg_pg_dryrun_empty'

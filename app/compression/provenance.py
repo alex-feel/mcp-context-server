@@ -190,8 +190,9 @@ async def insert_compression_metadata(
 
 # NOTE: there is intentionally no delete helper here. The --decompress CLI
 # clears the provenance row via an inline DELETE inside its single atomic
-# transaction (app/cli/migrate_compression.py) -- a standalone helper opening
-# its own write transaction could not participate in that atomicity.
+# transaction (app/cli/migrate_compression/decompress_execution.py and
+# decompress_empty.py) -- a standalone helper opening its own write transaction
+# could not participate in that atomicity.
 
 __all__ = [
     'insert_compression_metadata',

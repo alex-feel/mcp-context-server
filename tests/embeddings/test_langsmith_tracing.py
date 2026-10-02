@@ -10,8 +10,6 @@ Tests verify:
 """
 
 import os
-from collections.abc import Generator
-from contextlib import contextmanager
 from typing import Any
 from typing import cast
 from unittest.mock import MagicMock
@@ -19,22 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-
-@contextmanager
-def env_var(key: str, value: str | None) -> Generator[None, None, None]:
-    """Context manager for temporarily setting an environment variable."""
-    original = os.environ.get(key)
-    try:
-        if value is not None:
-            os.environ[key] = value
-        elif key in os.environ:
-            del os.environ[key]
-        yield
-    finally:
-        if original is not None:
-            os.environ[key] = original
-        elif key in os.environ:
-            del os.environ[key]
+from tests.helpers import env_var
 
 
 class TestTracedEmbeddingDecorator:

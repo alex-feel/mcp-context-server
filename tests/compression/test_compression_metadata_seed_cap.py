@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.compression.types import CompressionMetadata
-from app.settings import CompressionSettings
+from app.settings.embedding import CompressionSettings
 
 _UINT32_MAX = 4294967295
 

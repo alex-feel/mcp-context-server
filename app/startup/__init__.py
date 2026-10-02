@@ -4,26 +4,28 @@ Server initialization and lifecycle management for mcp-context-server.
 This package contains:
 - Database initialization (init_database)
 - Global state management (_backend, _repositories, _embedding_provider, _reranking_provider, _summary_provider)
-- Lazy initialization helpers (_ensure_backend, _ensure_repositories)
+- Lazy initialization helpers (ensure_backend, ensure_repositories)
 - Configuration constants (DB_PATH, MAX_IMAGE_SIZE_MB, MAX_TOTAL_SIZE_MB)
+- The server lifespan's startup phases, in submodules this package never imports
+  (tool_registration imports app.tools, which imports this package):
+  database_setup, providers, tool_registration
 
 Global State Architecture:
     The _backend, _repositories, _embedding_provider, _reranking_provider, and _summary_provider variables
     are module-level singletons that are initialized once during server lifespan and
-    accessed by MCP tool functions. Direct mutation is allowed from server.py's lifespan().
+    accessed by MCP tool functions. Direct mutation is allowed from the server lifespan
+    (app/server.py) and its provider phase (app/startup/providers.py).
 
 Usage:
-    # In server.py lifespan():
-    from app.startup import (
-        set_backend, set_repositories, set_embedding_provider, set_reranking_provider,
-        init_database, DB_PATH,
-    )
+    # In the server lifespan (app/server.py):
+    from app.startup import DB_PATH, set_backend, set_repositories
+    from app.startup.database_setup import prepare_database
 
     # Initialize
     backend = create_backend(backend_type=None, db_path=DB_PATH)
     await backend.initialize()  # Connection pool + Pgpool-II detection (no schema)
     set_backend(backend)
-    await init_database(backend=backend)  # Schema initialization (single source of truth)
+    await prepare_database(backend, settings)  # Schema (init_database) and migrations
     set_repositories(RepositoryContainer(backend))
 
     # In MCP tools (app/tools/*.py):
@@ -72,7 +74,7 @@ _summary_provider: SummaryProvider | None = None
 def set_backend(backend: StorageBackend | None) -> None:
     """Set the global backend instance.
 
-    Called from server.py lifespan() during startup/shutdown.
+    Called from the server lifespan (app/server.py) during startup/shutdown.
     """
     global _backend
     _backend = backend
@@ -81,7 +83,7 @@ def set_backend(backend: StorageBackend | None) -> None:
 def set_repositories(repos: RepositoryContainer | None) -> None:
     """Set the global repositories instance.
 
-    Called from server.py lifespan() during startup/shutdown.
+    Called from the server lifespan (app/server.py) during startup/shutdown.
     """
     global _repositories
     _repositories = repos
@@ -90,7 +92,8 @@ def set_repositories(repos: RepositoryContainer | None) -> None:
 def set_embedding_provider(provider: EmbeddingProvider | None) -> None:
     """Set the global embedding provider instance.
 
-    Called from server.py lifespan() during startup/shutdown.
+    Called from app.startup.providers during startup and from the server lifespan
+    (app/server.py) during shutdown.
     """
     global _embedding_provider
     _embedding_provider = provider
@@ -99,7 +102,8 @@ def set_embedding_provider(provider: EmbeddingProvider | None) -> None:
 def set_reranking_provider(provider: RerankingProvider | None) -> None:
     """Set the global reranking provider instance.
 
-    Called from server.py lifespan() during startup/shutdown.
+    Called from app.startup.providers during startup and from the server lifespan
+    (app/server.py) during shutdown.
     """
     global _reranking_provider
     _reranking_provider = provider
@@ -128,7 +132,8 @@ def get_reranking_provider() -> RerankingProvider | None:
 def set_chunking_service(service: ChunkingService | None) -> None:
     """Set the global chunking service instance.
 
-    Called from server.py lifespan() during startup/shutdown.
+    Called from app.startup.providers during startup and from the server lifespan
+    (app/server.py) during shutdown.
     """
     global _chunking_service
     _chunking_service = service
@@ -142,7 +147,8 @@ def get_chunking_service() -> ChunkingService | None:
 def set_summary_provider(provider: SummaryProvider | None) -> None:
     """Set the global summary provider instance.
 
-    Called from server.py lifespan() during startup/shutdown.
+    Called from app.startup.providers during startup and from the server lifespan
+    (app/server.py) during shutdown.
     """
     global _summary_provider
     _summary_provider = provider
@@ -206,7 +212,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
         # schema folds to lowercase at parse time and crashes boot with
         # 'schema "..." does not exist'.
         if backend_type == 'postgresql':
-            from app.backends.postgresql_backend import quote_pg_identifier
+            from app.backends.postgresql_backend.session import quote_pg_identifier
             schema_sql = schema_sql_template.replace(
                 '{SCHEMA}', quote_pg_identifier(settings.storage.postgresql_schema),
             )

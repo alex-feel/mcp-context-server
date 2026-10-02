@@ -10,7 +10,8 @@ gets a typed expression btree index (``idx_metadata_{field}`` over
 ``app/schemas/postgresql_schema.sql``) serves jsonb-containment queries.
 
 The server applies the metadata-index migration during lifespan startup
-(``app/server.py`` -> ``handle_metadata_indexes``) in the default
+(``prepare_database`` in ``app/startup/database_setup.py`` ->
+``handle_metadata_indexes``) in the default
 ``additive`` sync mode, which CREATES the scalar indexes named in
 ``METADATA_INDEXED_FIELDS``. These scalar expression indexes are NOT
 declared in ``app/schemas/postgresql_schema.sql``; the sync layer is their

@@ -6,10 +6,23 @@ Application modules are imported inside the helpers, so importing this
 module never loads the application or reads settings.
 """
 
+import importlib
+import os
+import pkgutil
+from collections.abc import Generator
+from contextlib import AbstractContextManager
+from contextlib import contextmanager
+from types import ModuleType
 from typing import TYPE_CHECKING
+from typing import Any
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 if TYPE_CHECKING:
+    import pytest
+
     from app.repositories.embedding_repository import EmbeddingRepository
+    from app.settings import AppSettings
 
 
 def is_ollama_model_available(
@@ -96,3 +109,90 @@ async def store_single_chunk_embedding(
 
     chunk = ChunkEmbedding(embedding=embedding, start_index=0, end_index=0)
     await repo.store_chunked(context_id, [chunk], model)
+
+
+@contextmanager
+def env_var(key: str, value: str | None) -> Generator[None, None, None]:
+    """Context manager for temporarily setting an environment variable."""
+    original = os.environ.get(key)
+    try:
+        if value is not None:
+            os.environ[key] = value
+        elif key in os.environ:
+            del os.environ[key]
+        yield
+    finally:
+        if original is not None:
+            os.environ[key] = original
+        elif key in os.environ:
+            del os.environ[key]
+
+
+@contextmanager
+def env_vars(**kwargs: str | None) -> Generator[None, None, None]:
+    """Context manager for temporarily setting multiple environment variables."""
+    originals = {key: os.environ.get(key) for key in kwargs}
+    try:
+        for key, value in kwargs.items():
+            if value is not None:
+                os.environ[key] = value
+            elif key in os.environ:
+                del os.environ[key]
+        yield
+    finally:
+        for key, original in originals.items():
+            if original is not None:
+                os.environ[key] = original
+            elif key in os.environ:
+                del os.environ[key]
+
+
+def rebind_package_settings(monkeypatch: 'pytest.MonkeyPatch', package: ModuleType, settings: 'AppSettings') -> None:
+    """Rebind the module-level ``settings`` of every submodule of a package that binds one.
+
+    Modules bind ``settings = get_settings()`` at import time, so clearing the
+    ``get_settings`` cache leaves those bindings on the old object. In a package
+    whose submodules each hold their own binding (the storage backends),
+    rebinding only some of them leaves the rest silently on stale values.
+
+    Args:
+        monkeypatch: Fixture that restores every binding after the test.
+        package: The imported package whose submodules are rebound.
+        settings: The settings object installed on every binding.
+    """
+    for info in pkgutil.iter_modules(package.__path__, f'{package.__name__}.'):
+        module = importlib.import_module(info.name)
+        if 'settings' in vars(module):
+            monkeypatch.setattr(module, 'settings', settings)
+
+
+def patch_database_setup_steps() -> AbstractContextManager[Any]:
+    """Neutralize the schema and migration steps that ``prepare_database`` runs.
+
+    Patches them in ``app.startup.database_setup`` with one ``patch.multiple``, so the
+    enclosing ``with (...)`` statement of a lifespan test stays under CPython's static
+    nested-block limit: each parenthesized context manager is a nested block. A step
+    missing here runs against the test's MagicMock backend and raises ``object MagicMock
+    can't be used in 'await'``. The compression migration and the compression provenance
+    validator are not patched.
+
+    Returns:
+        The ``patch.multiple`` context manager neutralizing those steps.
+    """
+    return patch.multiple(
+        'app.startup.database_setup',
+        init_database=AsyncMock(),
+        handle_metadata_indexes=AsyncMock(),
+        guard_compression_disable_over_populated=AsyncMock(),
+        apply_semantic_search_migration=AsyncMock(),
+        apply_jsonb_merge_patch_migration=AsyncMock(),
+        apply_function_search_path_migration=AsyncMock(),
+        apply_fts_migration=AsyncMock(),
+        apply_chunking_migration=AsyncMock(),
+        apply_index_tree_migration=AsyncMock(),
+        apply_summary_migration=AsyncMock(),
+        apply_content_hash_migration=AsyncMock(),
+        apply_version_migration=AsyncMock(),
+        apply_access_control_migration=AsyncMock(),
+        apply_tag_uniqueness_migration=AsyncMock(),
+    )

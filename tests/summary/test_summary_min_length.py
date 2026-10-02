@@ -23,13 +23,13 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-import app.server
+import app.tools
 from app.repositories.context_repository.records import EntryProbe
-from app.settings import SummarySettings
+from app.settings.summary import SummarySettings
 from app.startup import ensure_repositories
 
-store_context = app.server.store_context
-update_context = app.server.update_context
+store_context = app.tools.store_context
+update_context = app.tools.update_context
 
 
 class TestMinContentLengthSettings:

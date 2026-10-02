@@ -7,14 +7,13 @@ connection management, and tag storage/retrieval operations.
 
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from anyio import Path as AsyncPath
 
 from app.backends import StorageBackend
 from app.ids import generate_id
-from app.server import init_database
+from app.startup import init_database
 
 
 class TestDatabaseInitialization:
@@ -29,8 +28,7 @@ class TestDatabaseInitialization:
         backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
         await backend.initialize()
 
-        with patch('app.server.DB_PATH', temp_db_path):
-            await init_database(backend=backend)
+        await init_database(backend=backend)
 
         await backend.shutdown()
 

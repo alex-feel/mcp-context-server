@@ -174,7 +174,7 @@ if __name__ == '__main__':
     from app.server import main
 
     # Run the server's main function
-    # The server will use DB_PATH from environment via settings.py
+    # The server will use DB_PATH from environment via app.settings
     try:
         main()
     finally:
