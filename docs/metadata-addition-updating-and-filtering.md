@@ -1626,7 +1626,7 @@ Configure which metadata fields are indexed for faster filtering.
 - `array`: Array field (PostgreSQL GIN only, skipped in SQLite)
 - `object`: Nested object field (PostgreSQL GIN only, skipped in SQLite)
 
-**Type hints are enforced at the write boundary.** A field declared `integer`, `boolean`, or `float` is indexed through a SQL cast on PostgreSQL, so a value that cast cannot accept is REJECTED when it is stored -- on BOTH backends, and before any embedding or summary generation runs. Previously such a value stored fine on SQLite (whose index applies no cast) and aborted the PostgreSQL transaction after a full generation pass, with a raw driver error.
+**Type hints are enforced at the write boundary.** A field declared `integer`, `boolean`, or `float` is indexed through a SQL cast on PostgreSQL, so a value that cast cannot accept is REJECTED when it is stored -- on BOTH backends, and before any embedding or summary generation runs. Without this check, SQLite (whose index applies no cast) would store such a value, while PostgreSQL would abort the transaction with a raw driver error after a full generation pass.
 
 What counts as acceptable mirrors PostgreSQL's own input parsers applied to the text the index stores: `integer` accepts an optional sign and a decimal run, plus PostgreSQL 16's non-decimal literals (`0x10`, `0o17`, `0b101`) and `_` digit separators, and must fit the 32-bit `INTEGER` range; `boolean` accepts the usual `true`/`false`/`yes`/`no`/`on`/`off` spellings and their unambiguous prefixes; `float` accepts decimal and exponent forms plus `NaN`/`Infinity`. Only ASCII whitespace is trimmed, because that is all PostgreSQL trims. A list or object under a typed field is rejected outright -- there is no scalar for the cast to produce.
 
@@ -1697,7 +1697,10 @@ METADATA_INDEX_SYNC_MODE=auto
 
 ### Test Examples
 
-- [`tests/core/test_metadata_filtering.py`](../tests/core/test_metadata_filtering.py) - Comprehensive operator tests and integration examples
+- [`tests/core/test_query_builder.py`](../tests/core/test_query_builder.py) - Operator SQL generation, key validation and nested paths; type guards, numeric comparison, array_contains and SQL budgets are in the neighboring `test_query_builder_*.py` modules
+- [`tests/core/test_metadata_types.py`](../tests/core/test_metadata_types.py) - `MetadataFilter` value validation
+- [`tests/tools/search/test_browse_metadata_filters.py`](../tests/tools/search/test_browse_metadata_filters.py) - End-to-end `search_context` filtering across every operator
+- [`tests/tools/search/test_browse_array_contains.py`](../tests/tools/search/test_browse_array_contains.py) - End-to-end `array_contains` filtering
 - [`tests/tools/test_metadata_error_handling.py`](../tests/tools/test_metadata_error_handling.py) - Error handling and validation tests
 
 ### Performance Tuning
