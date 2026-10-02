@@ -7,7 +7,7 @@ dynamic dimension must pre-flight that dimension against the cap or crash
 mid-DDL. Three consumers share this module so the constraint cannot drift
 per-path: the settings validator (``AppSettings.validate_pgvector_dimension_limit``),
 the compression CLI's ``--decompress`` fp32 rebuild
-(``app.cli.migrate_compression.run_decompress``), and the migration CLI's
+(``app.cli.migrate_compression.decompress.run_decompress``), and the migration CLI's
 PostgreSQL target auto-init (``app.cli.migrate_uuid.pg_target.initialize_target_postgresql``).
 
 This module is intentionally dependency-free: it MUST NOT import

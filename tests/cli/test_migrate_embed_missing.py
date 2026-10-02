@@ -7,7 +7,6 @@ End-to-end coverage with real SQLite/PostgreSQL databases lives in
 """
 
 import sqlite3
-from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,14 +15,6 @@ import pytest
 from app.cli.migrate import build_parser
 from app.cli.migrate import main as cli_main
 from app.settings import get_settings
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> Generator[None, None, None]:
-    """Reset the settings cache around every test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
 
 
 def _bootstrap_schema(path: Path) -> None:
@@ -214,7 +205,7 @@ def test_dispatch_compress_then_embed_missing(monkeypatch: pytest.MonkeyPatch) -
         return 0
 
     with (
-        patch('app.cli.migrate_compression.run_compress', side_effect=_fake_compress),
+        patch('app.cli.migrate_compression.compress.run_compress', side_effect=_fake_compress),
         patch('app.cli.migrate_embeddings.run_embed_missing', side_effect=_fake_embed),
     ):
         rc = cli_main([
@@ -234,7 +225,7 @@ def test_dispatch_embed_missing_skipped_when_compress_fails(
     get_settings.cache_clear()
 
     with (
-        patch('app.cli.migrate_compression.run_compress', return_value=2) as mock_compress,
+        patch('app.cli.migrate_compression.compress.run_compress', return_value=2) as mock_compress,
         patch('app.cli.migrate_embeddings.run_embed_missing') as mock_embed,
     ):
         rc = cli_main([
@@ -255,8 +246,8 @@ def test_dispatch_embed_missing_standalone(
     get_settings.cache_clear()
 
     with (
-        patch('app.cli.migrate_compression.run_compress') as mock_compress,
-        patch('app.cli.migrate_compression.run_decompress') as mock_decompress,
+        patch('app.cli.migrate_compression.compress.run_compress') as mock_compress,
+        patch('app.cli.migrate_compression.decompress.run_decompress') as mock_decompress,
         patch('app.cli.migrate_embeddings.run_embed_missing', return_value=0) as mock_embed,
     ):
         rc = cli_main([

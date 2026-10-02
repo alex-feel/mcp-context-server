@@ -156,7 +156,7 @@ class TurboQuantProvider:
 
         Pins BLAS threads to 2 for the GEMM call so that concurrent
         encodes (bounded by ``COMPRESSION_MAX_CONCURRENT`` in production
-        and by CLI batch execution in :mod:`app.cli.migrate_compression`)
+        and by CLI batch execution in :mod:`app.cli.migrate_compression.compress_execution`)
         do not oversubscribe CPU on multi-core hosts. The
         ``with threadpool_limits(...)`` block is scoped to this method;
         upstream BLAS thread counts are restored on exit.

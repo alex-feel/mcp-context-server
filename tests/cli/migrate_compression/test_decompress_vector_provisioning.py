@@ -17,22 +17,11 @@ needs pgvector). These tests drive that decision with recording stubs so they ru
 in the fast unit gate without a live PostgreSQL server.
 """
 
-from collections.abc import Generator
-
 import pytest
 
-from app.cli import migrate_compression
-from app.cli.migrate_compression import _decompress_needs_vector
-from app.cli.migrate_compression import _make_backend
-from app.settings import get_settings
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> Generator[None, None, None]:
-    """Isolate each test from a settings singleton left by a sibling test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+from app.cli import _backend
+from app.cli.migrate_compression import decompress
+from app.cli.migrate_compression.decompress import _decompress_needs_vector
 
 
 class _FakeProbeConn:
@@ -214,43 +203,6 @@ async def test_decompress_needs_vector_true_when_rows_present(
     assert conn.closed is True
 
 
-def test_make_backend_forwards_provision_vector_for_postgresql(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``_make_backend`` threads ``provision_vector`` into the PostgreSQL factory."""
-    captured: dict[str, object] = {}
-
-    def _fake_create_backend(**kwargs: object) -> _StubBackend:
-        captured.update(kwargs)
-        return _StubBackend()
-
-    monkeypatch.setattr(migrate_compression, 'create_backend', _fake_create_backend)
-
-    _make_backend('postgresql://u:p@h:5432/db', provision_vector=False)
-
-    assert captured['backend_type'] == 'postgresql'
-    assert captured['connection_string'] == 'postgresql://u:p@h:5432/db'
-    assert captured['provision_vector'] is False
-
-
-def test_make_backend_ignores_provision_vector_for_sqlite(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SQLite construction never receives ``provision_vector`` (its vec load is unconditional)."""
-    captured: dict[str, object] = {}
-
-    def _fake_create_backend(**kwargs: object) -> _StubBackend:
-        captured.update(kwargs)
-        return _StubBackend()
-
-    monkeypatch.setattr(migrate_compression, 'create_backend', _fake_create_backend)
-
-    _make_backend('sqlite:///tmp/context.db', provision_vector=True)
-
-    assert captured['backend_type'] == 'sqlite'
-    assert 'provision_vector' not in captured
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('probe_result', 'expected'), [(False, False), (True, True)])
 async def test_decompress_async_provisions_vector_per_probe(
@@ -272,11 +224,11 @@ async def test_decompress_async_provisions_vector_per_probe(
         captured.update(kwargs)
         return _StubBackend()
 
-    monkeypatch.setattr(migrate_compression, '_decompress_needs_vector', _fake_probe)
-    monkeypatch.setattr(migrate_compression, 'create_backend', _fake_create_backend)
+    monkeypatch.setattr(decompress, '_decompress_needs_vector', _fake_probe)
+    monkeypatch.setattr(_backend, 'create_backend', _fake_create_backend)
 
     with pytest.raises(_StopInitializeError):
-        await migrate_compression._decompress_async(
+        await decompress._decompress_async(
             'postgresql://u:p@h:5432/db', dry_run=True,
         )
 

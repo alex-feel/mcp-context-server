@@ -34,7 +34,6 @@ The CLI is single-backend: source is the database under operation;
 """
 
 import asyncio
-import contextlib
 import logging
 import sqlite3
 import sys
@@ -45,9 +44,9 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
-from app.backends import create_backend
+from app.cli._backend import make_backend
+from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
-from app.cli._database_url import parse_backend_url
 from app.cli._embedding_introspect import dimension_conflict_error
 from app.cli._embedding_introspect import distinct_embedding_models
 from app.cli._embedding_introspect import embedding_metadata_table_exists
@@ -76,23 +75,6 @@ def _print_warning(*, source_url: str, dry_run: bool) -> None:
         lines.append('DRY-RUN: provider is not called; only the plan is reported')
     lines.append('=' * 60)
     print('\n'.join(lines), file=sys.stderr)
-
-
-def _make_backend(source_url: str) -> StorageBackend:
-    """Build a backend pointed at ``source_url``.
-
-    Mirrors :func:`app.cli.migrate_embeddings._make_backend`.
-
-    Args:
-        source_url: URL passed to ``--source-url``.
-
-    Returns:
-        Uninitialized :class:`StorageBackend` matching the URL scheme.
-    """
-    backend_kind, address = parse_backend_url(source_url)
-    if backend_kind == 'sqlite':
-        return create_backend(backend_type='sqlite', db_path=address)
-    return create_backend(backend_type='postgresql', connection_string=address)
 
 
 def run_reembed(source_url: str, *, dry_run: bool) -> int:
@@ -141,7 +123,7 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
         configuration error.
     """
     masked = mask_credentials(source_url)
-    backend = _make_backend(source_url)
+    backend = make_backend(source_url)
     await backend.initialize()
     try:
         from app.repositories import RepositoryContainer
@@ -262,16 +244,7 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
         finally:
             await shutdown_cli_embedding_pipeline(provider)
     finally:
-        await _shutdown(backend)
-
-
-async def _shutdown(backend: StorageBackend) -> None:
-    """Bounded backend shutdown.
-
-    Mirrors :func:`app.cli.migrate_embeddings._shutdown`.
-    """
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+        await shutdown_backend(backend)
 
 
 async def _find_all_entries(backend: StorageBackend) -> list[tuple[str, str]]:

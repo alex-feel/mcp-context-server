@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     # transient failure.
     try:
         if args.compress:
-            from app.cli.migrate_compression import run_compress
+            from app.cli.migrate_compression.compress import run_compress
             rc = run_compress(args.source_url, dry_run=args.dry_run)
             if rc != 0:
                 return rc
@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
                 return run_embed_missing(args.source_url, dry_run=args.dry_run)
             return 0
         if args.decompress:
-            from app.cli.migrate_compression import run_decompress
+            from app.cli.migrate_compression.decompress import run_decompress
             return run_decompress(args.source_url, dry_run=args.dry_run)
         if args.re_embed:
             from app.cli.migrate_reembed import run_reembed

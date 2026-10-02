@@ -71,3 +71,45 @@ class TestSettingsValidationExitCode:
         err = capsys.readouterr().err
         assert 'Configuration invalid' in err
         assert 'RETRY_MAX_RETRIES' in err or 'retry_max_retries' in err
+
+
+def test_build_parser_accepts_compress_flag() -> None:
+    """``--compress`` is parsed as a boolean toggle."""
+    parser = build_parser()
+    args = parser.parse_args([
+        '--source-url', 'sqlite:///fake.db',
+        '--compress',
+    ])
+    assert args.compress is True
+    assert args.decompress is False
+
+
+def test_build_parser_accepts_decompress_flag() -> None:
+    """``--decompress`` is parsed as a boolean toggle."""
+    parser = build_parser()
+    args = parser.parse_args([
+        '--source-url', 'sqlite:///fake.db',
+        '--decompress',
+    ])
+    assert args.decompress is True
+    assert args.compress is False
+
+
+def test_build_parser_rejects_both_flags() -> None:
+    """``--compress`` and ``--decompress`` are mutually exclusive."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            '--source-url', 'sqlite:///fake.db',
+            '--compress', '--decompress',
+        ])
+
+
+def test_build_parser_target_url_optional_when_compress() -> None:
+    """``--target-url`` is optional when --compress is set."""
+    parser = build_parser()
+    args = parser.parse_args([
+        '--source-url', 'sqlite:///fake.db',
+        '--compress',
+    ])
+    assert args.target_url is None
