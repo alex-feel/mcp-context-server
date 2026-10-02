@@ -24,9 +24,9 @@ from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
 from mcp.client.stdio import get_default_environment
 
-from tests.integration._harness import CLIENT_MODES
-from tests.integration._harness import ClientMode
 from tests.integration._harness import MCPServerIntegrationTest
+from tests.integration._harness.core import CLIENT_MODES
+from tests.integration._harness.core import ClientMode
 
 # Conditional skip marker for tests requiring sqlite-vec package
 requires_sqlite_vec = pytest.mark.skipif(

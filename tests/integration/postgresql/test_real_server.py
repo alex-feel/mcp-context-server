@@ -34,9 +34,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from tests.integration._harness import CLIENT_MODES
-from tests.integration._harness import ClientMode
 from tests.integration._harness import MCPServerIntegrationTest
+from tests.integration._harness.core import CLIENT_MODES
+from tests.integration._harness.core import ClientMode
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
