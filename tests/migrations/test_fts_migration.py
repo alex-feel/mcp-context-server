@@ -25,7 +25,15 @@ class TestApplyFtsMigration:
             'STORAGE_BACKEND': 'sqlite',
         }
 
-        with patch.dict(os.environ, env, clear=False):
+        # apply_fts_migration reads the module-level settings binding of app.migrations.fts,
+        # which the environment patch does not reach.
+        mock_settings = MagicMock()
+        mock_settings.fts.enabled = False
+
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch('app.migrations.fts.settings', mock_settings),
+        ):
             mock_backend = MagicMock()
             mock_backend.backend_type = 'sqlite'
             mock_repos = MagicMock()
@@ -36,6 +44,8 @@ class TestApplyFtsMigration:
 
             # No execute calls should be made
             mock_backend.execute_write.assert_not_called()
+            # The disabled check returns before the FTS availability probe
+            mock_repos.fts.is_available.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_initial_migration_sqlite(self, tmp_path: Path) -> None:
