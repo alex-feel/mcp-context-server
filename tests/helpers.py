@@ -18,8 +18,12 @@ from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
+from pydantic import ValidationError as PydanticValidationError
+
 if TYPE_CHECKING:
     import pytest
+    from fastmcp.exceptions import ValidationError as FastMCPValidationError
+    from pydantic_core import ErrorDetails
 
     from app.repositories.embedding_repository import EmbeddingRepository
     from app.settings import AppSettings
@@ -196,3 +200,20 @@ def patch_database_setup_steps() -> AbstractContextManager[Any]:
         apply_access_control_migration=AsyncMock(),
         apply_tag_uniqueness_migration=AsyncMock(),
     )
+
+
+def argument_errors(exc_info: 'pytest.ExceptionInfo[FastMCPValidationError]') -> 'list[ErrorDetails]':
+    """Return the pydantic error details behind a FastMCP argument-validation failure.
+
+    ``Tool.run`` reports a call whose arguments fail schema validation as
+    ``fastmcp.exceptions.ValidationError`` chained from the pydantic error.
+
+    Args:
+        exc_info: The captured FastMCP validation error.
+
+    Returns:
+        The error details of the pydantic ``ValidationError`` the FastMCP error was raised from.
+    """
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, PydanticValidationError), f'expected a pydantic ValidationError cause, got {cause!r}'
+    return cause.errors()
