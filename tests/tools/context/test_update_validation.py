@@ -1,6 +1,7 @@
 """Tests for update_context input validation and error handling: missing fields, unknown entries, image
 validation, repository failures, rollback, and context_id normalization."""
 
+import base64
 from unittest.mock import patch
 
 import pytest
@@ -274,3 +275,61 @@ class TestUpdateContext:
             assert result['success'] is True
             assert result['context_id'] == '0190abcdef1234567890abcd00000315'
             assert 'text_content' in result['updated_fields']
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestUpdateContextImageValidation:
+    """Empty data check and per-image index in update_context."""
+
+    @pytest.mark.asyncio
+    async def test_update_context_rejects_empty_image_data(self):
+        """update_context rejects images with empty data field."""
+        from app.tools.batch.store import store_context_batch
+        from app.tools.context.update import update_context
+
+        store_result = await store_context_batch(
+            entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
+        )
+        cid = store_result['results'][0]['context_id']
+        assert cid is not None
+
+        with pytest.raises(ToolError, match='Image 0 has empty "data" field'):
+            await update_context(context_id=cid, images=[{'data': ''}])
+
+    @pytest.mark.asyncio
+    async def test_update_context_rejects_whitespace_image_data(self):
+        """update_context rejects images with whitespace-only data."""
+        from app.tools.batch.store import store_context_batch
+        from app.tools.context.update import update_context
+
+        store_result = await store_context_batch(
+            entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
+        )
+        cid = store_result['results'][0]['context_id']
+        assert cid is not None
+
+        with pytest.raises(ToolError, match='Image 0 has empty "data" field'):
+            await update_context(context_id=cid, images=[{'data': '   '}])
+
+    @pytest.mark.asyncio
+    async def test_update_context_image_errors_include_index(self):
+        """Error messages include per-image index."""
+        from app.tools.batch.store import store_context_batch
+        from app.tools.context.update import update_context
+
+        store_result = await store_context_batch(
+            entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
+        )
+        cid = store_result['results'][0]['context_id']
+        assert cid is not None
+
+        valid_image = base64.b64encode(b'\x89PNG\r\n').decode()
+        with pytest.raises(ToolError, match='Image 1') as exc_info:
+            await update_context(
+                context_id=cid,
+                images=[
+                    {'data': valid_image},
+                    {'data': 'not-valid-base64!!!'},
+                ],
+            )
+        assert '1' in str(exc_info.value)
