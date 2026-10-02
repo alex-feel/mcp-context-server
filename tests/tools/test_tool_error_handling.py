@@ -17,17 +17,17 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.server
+import app.tools
 from app.repositories.context_repository.records import EntryProbe
 
 # Access the underlying functions directly - no longer wrapped by @mcp.tool() at import time
-store_context = app.server.store_context
-search_context = app.server.search_context
-get_context_by_ids = app.server.get_context_by_ids
-delete_context = app.server.delete_context
-update_context = app.server.update_context
-list_threads = app.server.list_threads
-get_statistics = app.server.get_statistics
+store_context = app.tools.store_context
+search_context = app.tools.search_context
+get_context_by_ids = app.tools.get_context_by_ids
+delete_context = app.tools.delete_context
+update_context = app.tools.update_context
+list_threads = app.tools.list_threads
+get_statistics = app.tools.get_statistics
 
 
 # --- Fixtures ---

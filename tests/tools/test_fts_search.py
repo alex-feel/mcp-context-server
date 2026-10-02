@@ -815,7 +815,7 @@ class TestFtsGracefulDegradation:
     def reset_migration_status(self) -> Generator[None, None, None]:
         """Reset FTS migration status before and after each test.
 
-        Uses the exported reset function from server.py to ensure clean state.
+        Uses the reset function exported by app.migrations to ensure clean state.
 
         Yields:
             None: Fixture provides no value, only cleanup behavior.
@@ -915,16 +915,9 @@ class TestFtsGracefulDegradation:
             records_count=1000,
         )
 
-        # Mock the global status and settings variable (NOT get_settings function)
-        with (
-            patch('app.migrations.fts._fts_migration_status', migration_status),
-            patch('app.server.settings') as mock_settings,
-        ):
-            mock_settings.fts.enabled = True
-            mock_settings.fts.language = 'english'
-
-            # Import after patching to get patched version
-            from app.server import fts_search_context
+        # Mock the global migration status
+        with patch('app.migrations.fts._fts_migration_status', migration_status):
+            from app.tools import fts_search_context
 
             # Call the tool function directly
             result = await fts_search_context(query='test query', limit=50)
@@ -964,14 +957,8 @@ class TestFtsGracefulDegradation:
             records_count=1000,
         )
 
-        with (
-            patch('app.migrations.fts._fts_migration_status', migration_status),
-            patch('app.server.settings') as mock_settings,
-        ):
-            mock_settings.fts.enabled = True
-            mock_settings.fts.language = 'english'
-
-            from app.server import fts_search_context
+        with patch('app.migrations.fts._fts_migration_status', migration_status):
+            from app.tools import fts_search_context
 
             result = await fts_search_context(query='test query', limit=50)
 
@@ -998,14 +985,8 @@ class TestFtsGracefulDegradation:
             records_count=500,
         )
 
-        with (
-            patch('app.migrations.fts._fts_migration_status', migration_status),
-            patch('app.server.settings') as mock_settings,
-        ):
-            mock_settings.fts.enabled = True
-            mock_settings.fts.language = 'german'
-
-            from app.server import fts_search_context
+        with patch('app.migrations.fts._fts_migration_status', migration_status):
+            from app.tools import fts_search_context
 
             result = await fts_search_context(query='test query', limit=50)
 
@@ -1015,7 +996,7 @@ class TestFtsGracefulDegradation:
 
 
 class TestResetFtsMigrationStatus:
-    """Tests for _reset_fts_migration_status()."""
+    """Tests for reset_fts_migration_status()."""
 
     def test_resets_to_default(self) -> None:
         """Test global status reset to defaults."""

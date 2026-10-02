@@ -23,7 +23,7 @@ import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
-import app.server
+import app.tools
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -523,7 +523,7 @@ class TestStoreContextBatchGenerationFirst:
             ),
             pytest.raises(ToolError, match='Generation failed at index 0'),
         ):
-            await app.server.store_context_batch(
+            await app.tools.store_context_batch(
                 entries=[
                     {'thread_id': 'bf-1', 'source': 'agent', 'text': 'Entry 1'},
                 ],
@@ -548,7 +548,7 @@ class TestStoreContextBatchGenerationFirst:
             ),
             pytest.raises(ToolError, match='Generation failed at index 0'),
         ):
-            await app.server.store_context_batch(
+            await app.tools.store_context_batch(
                 entries=[
                     {'thread_id': 'bf-2', 'source': 'agent', 'text': 'x' * 500},
                 ],
@@ -582,7 +582,7 @@ class TestStoreContextBatchGenerationFirst:
                 new=AsyncMock(side_effect=selective_summary),
             ),
         ):
-            result = await app.server.store_context_batch(
+            result = await app.tools.store_context_batch(
                 entries=[
                     {'thread_id': 'bf-3', 'source': 'agent', 'text': 'x' * 500},
                     {'thread_id': 'bf-3', 'source': 'agent', 'text': 'y' * 500},
@@ -614,7 +614,7 @@ class TestStoreContextBatchGenerationFirst:
                 new=AsyncMock(return_value='Batch summary'),
             ),
         ):
-            result = await app.server.store_context_batch(
+            result = await app.tools.store_context_batch(
                 entries=[
                     {'thread_id': 'bf-4', 'source': 'agent', 'text': 'x' * 500},
                     {'thread_id': 'bf-4', 'source': 'agent', 'text': 'y' * 500},
@@ -653,7 +653,7 @@ class TestUpdateContextBatchGenerationFirst:
             ),
             pytest.raises(ToolError, match='Generation failed for context 0190abcdef1234567890abcd00000001'),
         ):
-            await app.server.update_context_batch(
+            await app.tools.update_context_batch(
                 updates=[{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'Updated text'}],
                 atomic=True,
             )
@@ -676,7 +676,7 @@ class TestUpdateContextBatchGenerationFirst:
             ),
             pytest.raises(ToolError, match='Generation failed for context 0190abcdef1234567890abcd00000001'),
         ):
-            await app.server.update_context_batch(
+            await app.tools.update_context_batch(
                 updates=[{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500}],
                 atomic=True,
             )
@@ -707,7 +707,7 @@ class TestUpdateContextBatchGenerationFirst:
                 new=AsyncMock(side_effect=selective_summary),
             ),
         ):
-            result = await app.server.update_context_batch(
+            result = await app.tools.update_context_batch(
                 updates=[
                     {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
                     {'context_id': '0190abcdef1234567890abcd00000002', 'text': 'y' * 500},
@@ -734,7 +734,7 @@ class TestUpdateContextBatchGenerationFirst:
             patch('app.tools.batch.update.generate_embeddings_with_timeout', new=mock_gen_emb),
             patch('app.tools.batch.update.generate_summary_with_timeout', new=mock_gen_sum),
         ):
-            result = await app.server.update_context_batch(
+            result = await app.tools.update_context_batch(
                 updates=[{'context_id': '0190abcdef1234567890abcd00000001', 'metadata': {'key': 'value'}}],
                 atomic=True,
             )
@@ -759,7 +759,7 @@ class TestUpdateContextBatchGenerationFirst:
             patch('app.tools.batch.update.generate_summary_with_timeout', new=mock_gen_sum),
         ):
             # Text is short (< default min_content_length of 500)
-            result = await app.server.update_context_batch(
+            result = await app.tools.update_context_batch(
                 updates=[{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'Short text'}],
                 atomic=True,
             )

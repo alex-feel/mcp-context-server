@@ -1,7 +1,7 @@
 """Tests for server edge cases and error handling paths.
 
 This module tests edge cases, error handling, and less common code paths
-in app/server.py to improve coverage.
+in the MCP tool functions in app/tools/ to improve coverage.
 """
 
 import base64
@@ -9,12 +9,12 @@ from typing import Any
 
 import pytest
 
-from app.server import delete_context
-from app.server import get_context_by_ids
-from app.server import get_statistics
-from app.server import search_context
-from app.server import store_context
-from app.server import update_context
+from app.tools import delete_context
+from app.tools import get_context_by_ids
+from app.tools import get_statistics
+from app.tools import search_context
+from app.tools import store_context
+from app.tools import update_context
 from app.types import JsonValue
 
 # Type alias anchored to a usage site so ruff cannot strip the JsonValue import.

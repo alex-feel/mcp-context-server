@@ -643,6 +643,6 @@ Both FTS and semantic search should show as available for full hybrid functional
 ### Implementation Files
 
 - [`app/fusion.py`](../app/fusion.py) - RRF fusion algorithm implementation
-- [`app/server.py`](../app/server.py) - hybrid_search_context tool definition
+- [`app/tools/search/hybrid.py`](../app/tools/search/hybrid.py) - hybrid_search_context tool definition
 - [`app/settings/search.py`](../app/settings/search.py) - Search, hybrid and reranking settings
 - [`app/types.py`](../app/types.py) - TypedDict definitions for hybrid search

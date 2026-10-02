@@ -1,14 +1,15 @@
-"""Tests for the inline compression startup announcement.
+"""Tests for the compression startup announcement.
 
-``lifespan()`` in ``app/server.py`` emits an INFO-level announcement of the
-active compression configuration immediately after
+``prepare_database()`` in ``app/startup/database_setup.py``, which ``lifespan()``
+in ``app/server.py`` awaits, emits an INFO-level announcement of the active
+compression configuration immediately after
 ``validate_compression_provenance(backend=backend)``. The announcement
 mirrors the sibling feature announcements (embedding generation, reranking,
 chunking, summary) in style and depth: an operator-facing INFO line that
 surfaces the active configuration at a glance when ``LOG_LEVEL=INFO``.
 
-The announcement uses an f-string and lives inline in the lifespan body --
-no helper module.
+The announcement is logged by ``_announce_compression`` under the
+``app.startup.database_setup`` logger.
 
 These tests invoke ``lifespan`` directly with a real ``FastMCP`` instance
 and assert the expected INFO record appears. Other feature subsystems
@@ -119,7 +120,7 @@ async def test_compression_startup_log_enabled(
     isolated_db_path: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Lifespan emits the compression-enabled INFO log inline after the validator.
+    """Lifespan emits the compression-enabled INFO log after the validator.
 
     Asserts on the substring ``Embedding compression enabled with provider:
     turboquant`` plus the configured bits/variant/dim/seed/max_concurrent
@@ -179,13 +180,13 @@ async def test_compression_startup_log_enabled(
     finally:
         conn.close()
 
-    caplog.set_level(logging.INFO, logger='app.server')
+    caplog.set_level(logging.INFO, logger='app.startup.database_setup')
 
     await _run_lifespan_to_yield(monkeypatch)
 
     log_text = caplog.text
     assert 'Embedding compression enabled with provider: turboquant' in log_text, (
-        'Lifespan did not emit the inline INFO line announcing '
+        'Lifespan did not emit the INFO line announcing '
         f'compression configuration. caplog text:\n{log_text}'
     )
     # Assert the announcement carries the configured parameters so the
@@ -214,7 +215,7 @@ async def test_compression_startup_log_idle_when_generation_disabled(
     _baseline_disable_external_services(monkeypatch)
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
 
-    caplog.set_level(logging.INFO, logger='app.server')
+    caplog.set_level(logging.INFO, logger='app.startup.database_setup')
 
     await _run_lifespan_to_yield(monkeypatch)
 
@@ -237,7 +238,7 @@ async def test_compression_startup_log_disabled(
     _baseline_disable_external_services(monkeypatch)
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
 
-    caplog.set_level(logging.INFO, logger='app.server')
+    caplog.set_level(logging.INFO, logger='app.startup.database_setup')
 
     await _run_lifespan_to_yield(monkeypatch)
 
@@ -246,6 +247,6 @@ async def test_compression_startup_log_disabled(
         'Embedding compression disabled (ENABLE_EMBEDDING_COMPRESSION=false)'
         in log_text
     ), (
-        'Lifespan did not emit the inline INFO line announcing '
+        'Lifespan did not emit the INFO line announcing '
         f'compression disabled. caplog text:\n{log_text}'
     )

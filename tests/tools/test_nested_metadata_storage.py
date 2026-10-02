@@ -9,14 +9,13 @@ import math
 
 import pytest
 
-# Import the actual async functions from app.server, not the MCP-wrapped versions
-# The FunctionTool objects store the original functions in their 'fn' attribute
-import app.server
+# Import the actual async functions from app.tools, not the MCP-wrapped versions
+import app.tools
 from app.types import JsonValue
 
-# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
-store_context = app.server.store_context
-search_context = app.server.search_context
+# Get the actual async functions - @mcp.tool() does not wrap them at import time
+store_context = app.tools.store_context
+search_context = app.tools.search_context
 
 
 @pytest.mark.asyncio

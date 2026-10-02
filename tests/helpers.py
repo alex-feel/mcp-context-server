@@ -10,9 +10,13 @@ import importlib
 import os
 import pkgutil
 from collections.abc import Generator
+from contextlib import AbstractContextManager
 from contextlib import contextmanager
 from types import ModuleType
 from typing import TYPE_CHECKING
+from typing import Any
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 if TYPE_CHECKING:
     import pytest
@@ -160,3 +164,35 @@ def rebind_package_settings(monkeypatch: 'pytest.MonkeyPatch', package: ModuleTy
         module = importlib.import_module(info.name)
         if 'settings' in vars(module):
             monkeypatch.setattr(module, 'settings', settings)
+
+
+def patch_database_setup_steps() -> AbstractContextManager[Any]:
+    """Neutralize the schema and migration steps that ``prepare_database`` runs.
+
+    Patches them in ``app.startup.database_setup`` with one ``patch.multiple``, so the
+    enclosing ``with (...)`` statement of a lifespan test stays under CPython's static
+    nested-block limit: each parenthesized context manager is a nested block. A step
+    missing here runs against the test's MagicMock backend and raises ``object MagicMock
+    can't be used in 'await'``. The compression migration and the compression provenance
+    validator are not patched.
+
+    Returns:
+        The ``patch.multiple`` context manager neutralizing those steps.
+    """
+    return patch.multiple(
+        'app.startup.database_setup',
+        init_database=AsyncMock(),
+        handle_metadata_indexes=AsyncMock(),
+        guard_compression_disable_over_populated=AsyncMock(),
+        apply_semantic_search_migration=AsyncMock(),
+        apply_jsonb_merge_patch_migration=AsyncMock(),
+        apply_function_search_path_migration=AsyncMock(),
+        apply_fts_migration=AsyncMock(),
+        apply_chunking_migration=AsyncMock(),
+        apply_index_tree_migration=AsyncMock(),
+        apply_summary_migration=AsyncMock(),
+        apply_content_hash_migration=AsyncMock(),
+        apply_version_migration=AsyncMock(),
+        apply_access_control_migration=AsyncMock(),
+        apply_tag_uniqueness_migration=AsyncMock(),
+    )

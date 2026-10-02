@@ -1,6 +1,6 @@
 -- PostgreSQL Schema for MCP Context Server
 -- Converted from SQLite schema with PostgreSQL-specific optimizations
--- NOTE: Schema is templated and replaced during initialization (see server.py)
+-- NOTE: Schema is templated and replaced during initialization (see init_database in app/startup/__init__.py)
 
 -- Function to automatically update updated_at timestamp
 -- SET search_path for security (CVE-2018-1058 mitigation)

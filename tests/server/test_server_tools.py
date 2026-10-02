@@ -1,6 +1,6 @@
 """Tests for server MCP tool functions.
 
-This module tests the MCP tool handlers in app/server.py including
+This module tests the MCP tool functions in app/tools/ including
 list_threads, get_statistics, search_context, and delete_context.
 """
 
@@ -9,12 +9,12 @@ from typing import cast
 
 import pytest
 
-from app.server import delete_context
-from app.server import get_context_by_ids
-from app.server import get_statistics
-from app.server import list_threads
-from app.server import search_context
-from app.server import store_context
+from app.tools import delete_context
+from app.tools import get_context_by_ids
+from app.tools import get_statistics
+from app.tools import list_threads
+from app.tools import search_context
+from app.tools import store_context
 
 
 class TestListThreads:

@@ -15,16 +15,16 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.server
 import app.startup
+import app.tools
 from app.repositories.context_repository.records import DuplicateCandidate
 from app.repositories.context_repository.records import EntryProbe
 
 if TYPE_CHECKING:
     from app.settings import AppSettings
 
-store_context_batch = app.server.store_context_batch
-update_context_batch = app.server.update_context_batch
+store_context_batch = app.tools.store_context_batch
+update_context_batch = app.tools.update_context_batch
 
 
 def _settings_with_node_summaries(enabled: bool) -> 'AppSettings':

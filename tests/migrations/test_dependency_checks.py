@@ -1,9 +1,7 @@
 """Tests for provider dependency checking functions.
 
-This module tests dependency check functions in app/server.py that verify
-availability of embedding providers and vector storage backends.
-
-P1 Priority: These functions have NO test coverage but are called during startup.
+This module tests the dependency check functions in app/migrations/dependencies.py
+that verify availability of embedding providers and vector storage backends.
 """
 
 from typing import TYPE_CHECKING

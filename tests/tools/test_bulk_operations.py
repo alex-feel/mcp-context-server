@@ -17,19 +17,18 @@ from typing import Any
 import pytest
 from fastmcp.exceptions import ToolError
 
-# Import the actual async functions from app.server, not the MCP-wrapped versions
-# The FunctionTool objects store the original functions in their 'fn' attribute
-import app.server
+# Import the actual async functions from app.tools, not the MCP-wrapped versions
+import app.tools
 
 # Type alias anchored to a usage site so ruff cannot strip the Any import.
 _UpdateBatch = list[dict[str, Any]]
 
-# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+# Get the actual async functions - @mcp.tool() does not wrap them at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
-store_context = app.server.store_context
-store_context_batch = app.server.store_context_batch
-update_context_batch = app.server.update_context_batch
-delete_context_batch = app.server.delete_context_batch
+store_context = app.tools.store_context
+store_context_batch = app.tools.store_context_batch
+update_context_batch = app.tools.update_context_batch
+delete_context_batch = app.tools.delete_context_batch
 
 
 @pytest.mark.usefixtures('initialized_server')

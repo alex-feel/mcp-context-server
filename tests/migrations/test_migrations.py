@@ -1,9 +1,7 @@
 """Tests for database migration functions.
 
-This module tests migration functions in app/server.py that are critical
+This module tests the migration functions in app/migrations/ that are critical
 for proper database initialization during server startup.
-
-P0 Priority: These functions have ZERO test coverage but are critical paths.
 """
 
 import contextlib

@@ -1,6 +1,6 @@
 -- Full-Text Search migration for PostgreSQL: Add tsvector support
 -- This migration adds generated tsvector column and GIN index
--- NOTE: Language is templated and replaced during migration (see server.py)
+-- NOTE: Language is templated and replaced during migration (see app/migrations/fts.py)
 
 -- Add generated tsvector column for full-text search
 -- GENERATED ALWAYS AS ... STORED means:

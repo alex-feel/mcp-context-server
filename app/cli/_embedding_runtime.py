@@ -38,8 +38,8 @@ class EmbeddingPipelineUnavailableError(RuntimeError):
 async def initialize_cli_embedding_pipeline() -> EmbeddingProvider:
     """Create and register the embedding provider and chunking service.
 
-    Mirrors the embedding-generation block of the server lifespan
-    (``app/server.py``): create the provider via the configured
+    Mirrors the embedding provider initialization of the server lifespan
+    (``app/startup/providers.py``): create the provider via the configured
     ``EMBEDDING_PROVIDER`` factory, initialize it, verify availability, and
     register it via :func:`app.startup.set_embedding_provider`. When
     ``ENABLE_CHUNKING`` is true the chunking service is registered as well so
@@ -85,7 +85,7 @@ async def initialize_cli_embedding_pipeline() -> EmbeddingProvider:
 
     if settings.chunking.enabled:
         # Degrade gracefully exactly as the server lifespan does
-        # (app/server.py): a missing chunking dependency must NOT crash the
+        # (app/startup/providers.py): a missing chunking dependency must NOT crash the
         # CLI -- embedding falls back to single chunks. Without this guard the
         # ImportError would escape past callers that only catch
         # EmbeddingPipelineUnavailableError, contradicting this function's
