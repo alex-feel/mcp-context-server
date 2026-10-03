@@ -431,7 +431,7 @@ class TestFtsHyphenatedQueries:
             assert 'full-text' in results[0]['text_content']
             assert 'search' in results[0]['text_content']
 
-    def test_fts_no_hyphen_regression(self, hyphen_test_db: Path) -> None:
+    def test_fts_non_hyphenated_query(self, hyphen_test_db: Path) -> None:
         """Test that regular (non-hyphenated) queries work."""
         with sqlite3.connect(str(hyphen_test_db)) as conn:
             conn.row_factory = sqlite3.Row

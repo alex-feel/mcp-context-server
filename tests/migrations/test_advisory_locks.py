@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 
-class TestAdvisoryLockFix:
+class TestTransactionScopedAdvisoryLocks:
     """Tests verifying migration functions use transaction-scoped advisory locks.
 
     All PostgreSQL migration functions must use pg_advisory_xact_lock (transaction-scoped)

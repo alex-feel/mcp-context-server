@@ -158,7 +158,7 @@ class TestDeduplicationInterleaving:
         # Latest matches, no opposite-source entries at all -- dedup should work
         assert was_updated_c is True
 
-    async def test_chronological_ordering_preserved_after_fix(
+    async def test_chronological_ordering_preserved(
         self,
         repos: RepositoryContainer,
     ) -> None:

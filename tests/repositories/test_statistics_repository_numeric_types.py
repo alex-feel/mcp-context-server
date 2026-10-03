@@ -119,7 +119,7 @@ class TestToFloatHelper:
 
 
 @pytest.mark.asyncio
-class TestPostgresqlDecimalRegression:
+class TestPostgresqlDecimalAggregates:
     """PostgreSQL ``AVG()`` aggregates arrive as ``decimal.Decimal`` and leave as native floats.
 
     asyncpg maps PostgreSQL ``AVG()`` to ``decimal.Decimal``, which serializes to

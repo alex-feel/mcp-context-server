@@ -48,7 +48,7 @@ class TestQueryBuilderBackendDetection:
         assert '$1' in pg_clause
 
 
-class TestSqliteBooleanBackwardCompatibility:
+class TestSqliteBooleanIntegerStorage:
     """SQLite boolean filters compare JSON booleans as stored integers.
 
     SQLite stores JSON booleans as integers (0/1), unlike PostgreSQL's TEXT

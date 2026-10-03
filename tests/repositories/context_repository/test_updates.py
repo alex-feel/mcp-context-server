@@ -244,7 +244,7 @@ class TestContextRepositoryVersionCAS:
         assert version == 2
 
     @pytest.mark.asyncio
-    async def test_legacy_path_no_cas_no_version_bump(
+    async def test_unguarded_path_no_cas_no_version_bump(
         self, context_repo: ContextRepository, repos: RepositoryContainer,
     ) -> None:
         """expected_version=None runs the unguarded update: it succeeds with NO

@@ -386,7 +386,7 @@ class TestMultiRepositoryTransaction:
         assert len(entries) == initial_count  # Should be 0 if this was the only test
 
 
-class TestBackwardCompatibility:
+class TestRepositoryMethodsWithoutTransaction:
     """Every txn-aware repository write works when txn=None."""
 
     @pytest.mark.asyncio
@@ -395,7 +395,7 @@ class TestBackwardCompatibility:
         backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
         sample_image_data: dict[str, str],
     ) -> None:
-        """Comprehensive test that all modified methods work without txn parameter."""
+        """Call each txn-aware repository method with the txn argument omitted."""
         backend, repos = backend_with_repos
 
         # ContextRepository methods
