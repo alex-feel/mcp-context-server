@@ -174,6 +174,45 @@ class TestApplyFtsMigration:
             assert any('migration' in record.message.lower() for record in caplog.records)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
+    async def test_rebuild_estimate_counts_every_entry(self, backend_type: str) -> None:
+        """A tokenizer or language rebuild sizes its estimate from every entry, through the system scope."""
+        import app.migrations.fts as fts_module
+        from app.access_scope import SYSTEM_SCOPE
+
+        settings = MagicMock()
+        settings.fts.enabled = True
+        settings.fts.language = 'english'
+
+        fts_repo = MagicMock()
+        fts_repo.is_available = AsyncMock(return_value=True)
+        fts_repo.get_current_tokenizer = AsyncMock(return_value='unicode61')
+        fts_repo.get_desired_tokenizer = AsyncMock(return_value='porter unicode61')
+        fts_repo.get_current_language = AsyncMock(return_value='german')
+        fts_repo.get_statistics = AsyncMock(return_value={'total_entries': 42})
+        records_counted: list[int | None] = []
+
+        async def _migrate(_target: str) -> dict[str, object]:
+            records_counted.append(fts_module.get_fts_migration_status().records_count)
+            return {
+                'entries_migrated': 42, 'old_tokenizer': 'unicode61', 'new_tokenizer': 'porter unicode61',
+                'old_language': 'german', 'new_language': 'english',
+            }
+
+        fts_repo.migrate_tokenizer = AsyncMock(side_effect=_migrate)
+        fts_repo.migrate_language = AsyncMock(side_effect=_migrate)
+        repos = MagicMock()
+        repos.fts = fts_repo
+        backend = MagicMock()
+        backend.backend_type = backend_type
+
+        with patch.object(fts_module, 'settings', settings):
+            await fts_module.apply_fts_migration(backend=backend, repos=repos)
+
+        fts_repo.get_statistics.assert_awaited_once_with(scope=SYSTEM_SCOPE)
+        assert records_counted == [42]
+
+    @pytest.mark.asyncio
     async def test_tokenizer_migration_detection(self, tmp_path: Path) -> None:
         """Verify migration triggered when language setting changes."""
         db_path = tmp_path / 'test_fts_migrate.db'

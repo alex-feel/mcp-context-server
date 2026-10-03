@@ -26,7 +26,7 @@ class TestStatisticsRepository:
     @pytest.mark.asyncio
     async def test_get_thread_list_empty(self, stats_repo: StatisticsRepository) -> None:
         """Test getting thread list from empty database."""
-        result = await stats_repo.get_thread_list()
+        result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE)
 
         assert result == []
 
@@ -56,7 +56,7 @@ class TestStatisticsRepository:
 
         await stats_test_db.execute_write(_insert_data)
 
-        result = await stats_repo.get_thread_list()
+        result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE)
 
         assert len(result) == 2
         # Results should be ordered by last entry
@@ -109,7 +109,7 @@ class TestStatisticsRepository:
 
         await stats_test_db.execute_write(_insert_data)
 
-        result = await stats_repo.get_thread_list()
+        result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE)
 
         assert len(result) == 2
 
@@ -144,7 +144,7 @@ class TestStatisticsRepository:
         stats_repo: StatisticsRepository,
     ) -> None:
         """Test getting statistics from empty database."""
-        result = await stats_repo.get_database_statistics()
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
         assert result['total_entries'] == 0
         assert result['by_source'] == {}
@@ -195,168 +195,13 @@ class TestStatisticsRepository:
         # Insert image via repository
         await repos.images.store_images(ctx_id3, [{'data': 'iVBORw0KGgo=', 'mime_type': 'image/png'}])
 
-        result = await stats_repo.get_database_statistics()
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
         assert result['total_entries'] == 3
         assert result['by_source'] == {'user': 2, 'agent': 1}
         assert result['by_content_type'] == {'text': 2, 'multimodal': 1}
         assert result['total_images'] == 1
         assert result['unique_tags'] == 2  # 'important' and 'test'
-
-    @pytest.mark.asyncio
-    async def test_get_thread_statistics_empty_thread(
-        self,
-        stats_repo: StatisticsRepository,
-    ) -> None:
-        """Test getting thread statistics for nonexistent thread."""
-        result = await stats_repo.get_thread_statistics('nonexistent_thread')
-
-        assert result['thread_id'] == 'nonexistent_thread'
-        assert result['total_entries'] == 0
-
-    @pytest.mark.asyncio
-    async def test_get_thread_statistics_with_data(
-        self,
-        stats_test_db: StorageBackend,
-        stats_repo: StatisticsRepository,
-    ) -> None:
-        """Test getting thread statistics with data."""
-        # Use repository container for proper data insertion
-        repos = RepositoryContainer(stats_test_db)
-
-        # Thread 1: 2 entries, both sources, 1 multimodal
-        ctx_id1, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='thread1',
-            source='user',
-            content_type='text',
-            text_content='Test 1',
-        )
-        ctx_id2, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='thread1',
-            source='agent',
-            content_type='multimodal',
-            text_content='Test 2',
-        )
-
-        # Add tags via repository
-        await repos.tags.store_tags(ctx_id1, ['important'])
-        await repos.tags.store_tags(ctx_id2, ['test'])
-
-        # Add image via repository
-        await repos.images.store_images(ctx_id2, [{'data': 'iVBORw0KGgo=', 'mime_type': 'image/png'}])
-
-        result = await stats_repo.get_thread_statistics('thread1')
-
-        assert result['thread_id'] == 'thread1'
-        assert result['total_entries'] == 2
-        assert result['source_types'] == 2  # Both user and agent
-        assert result['text_count'] == 1
-        assert result['multimodal_count'] == 1
-        assert result['image_count'] == 1
-        assert set(result['tags']) == {'important', 'test'}
-        assert result['by_source'] == {'user': 1, 'agent': 1}
-
-    @pytest.mark.asyncio
-    async def test_get_tag_statistics_empty(
-        self,
-        stats_repo: StatisticsRepository,
-    ) -> None:
-        """Test getting tag statistics from empty database."""
-        result = await stats_repo.get_tag_statistics()
-
-        assert result['unique_tags'] == 0
-        assert result['total_tag_uses'] == 0
-        assert result['all_tags'] == []
-        assert result['top_10_tags'] == []
-
-    @pytest.mark.asyncio
-    async def test_get_tag_statistics_with_data(
-        self,
-        stats_test_db: StorageBackend,
-        stats_repo: StatisticsRepository,
-    ) -> None:
-        """Test getting tag statistics with data."""
-
-        def _insert_data(conn: sqlite3.Connection) -> None:
-            cursor = conn.cursor()
-            # Insert context entries
-            cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
-                "VALUES ('0190abcdef1234567890abcd00000004', 'thread1', 'user', 'text', 'Test 1', 'local')",
-            )
-            cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
-                "VALUES ('0190abcdef1234567890abcd00000005', 'thread1', 'agent', 'text', 'Test 2', 'local')",
-            )
-            cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
-                "VALUES ('0190abcdef1234567890abcd00000006', 'thread2', 'user', 'text', 'Test 3', 'local')",
-            )
-            # Tags: 'important' used 3 times, 'test' used 2 times, 'unique' used 1 time
-            id_a = '0190abcdef1234567890abcd00000004'
-            id_b = '0190abcdef1234567890abcd00000005'
-            id_c = '0190abcdef1234567890abcd00000006'
-            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_a, 'important'))
-            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_a, 'test'))
-            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_b, 'important'))
-            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_b, 'test'))
-            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_c, 'important'))
-            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_c, 'unique'))
-
-        await stats_test_db.execute_write(_insert_data)
-
-        result = await stats_repo.get_tag_statistics()
-
-        assert result['unique_tags'] == 3
-        assert result['total_tag_uses'] == 6
-
-        # Tags should be sorted by usage (descending)
-        all_tags = result['all_tags']
-        assert len(all_tags) == 3
-        assert all_tags[0]['tag'] == 'important'
-        assert all_tags[0]['count'] == 3
-        assert all_tags[1]['tag'] == 'test'
-        assert all_tags[1]['count'] == 2
-        assert all_tags[2]['tag'] == 'unique'
-        assert all_tags[2]['count'] == 1
-
-        # top_10_tags should be the same since we have less than 10
-        assert result['top_10_tags'] == all_tags
-
-    @pytest.mark.asyncio
-    async def test_get_tag_statistics_many_tags(
-        self,
-        stats_test_db: StorageBackend,
-        stats_repo: StatisticsRepository,
-    ) -> None:
-        """Test getting tag statistics with many tags."""
-
-        def _insert_data(conn: sqlite3.Connection) -> None:
-            cursor = conn.cursor()
-            # Insert context entry
-            cursor.execute(
-                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
-                "VALUES ('0190abcdef1234567890abcd00000007', 'thread1', 'user', 'text', 'Test', 'local')",
-            )
-            # Insert 15 tags to test top_10 filtering
-            entry_id = '0190abcdef1234567890abcd00000007'
-            for i in range(15):
-                cursor.execute(
-                    'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
-                    (entry_id, f'tag{i:02d}'),
-                )
-
-        await stats_test_db.execute_write(_insert_data)
-
-        result = await stats_repo.get_tag_statistics()
-
-        assert result['unique_tags'] == 15
-        assert len(result['all_tags']) == 15
-        assert len(result['top_10_tags']) == 10  # Only top 10
 
     @pytest.mark.asyncio
     async def test_get_database_statistics_with_path(
@@ -378,7 +223,7 @@ class TestStatisticsRepository:
 
         await stats_test_db.execute_write(_insert_data)
 
-        result = await stats_repo.get_database_statistics(db_path=db_path)
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE, db_path=db_path)
 
         assert 'database_size_mb' in result
         assert result['database_size_mb'] >= 0
@@ -389,7 +234,7 @@ class TestStatisticsRepository:
         stats_repo: StatisticsRepository,
     ) -> None:
         """Test summary statistics from empty database."""
-        result = await stats_repo.get_summary_statistics()
+        result = await stats_repo.get_summary_statistics(scope=LOCAL_SCOPE)
 
         assert result['summary_count'] == 0
         assert result['total_entries'] == 0
@@ -426,7 +271,7 @@ class TestStatisticsRepository:
 
         await stats_test_db.execute_write(_insert_data)
 
-        result = await stats_repo.get_summary_statistics()
+        result = await stats_repo.get_summary_statistics(scope=LOCAL_SCOPE)
 
         assert result['total_entries'] == 3
         assert result['summary_count'] == 2
@@ -467,7 +312,7 @@ class TestStatisticsRepository:
 
         await stats_test_db.execute_write(_insert_data)
 
-        result = await stats_repo.get_summary_statistics()
+        result = await stats_repo.get_summary_statistics(scope=LOCAL_SCOPE)
 
         assert result['total_entries'] == 3
         # Only 1 entry has a valid (non-empty) summary
@@ -501,7 +346,7 @@ class TestStatisticsRepository:
 
         await stats_test_db.execute_write(_insert_data)
 
-        result = await stats_repo.get_database_statistics()
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         assert result['total_entries'] == 3
 
     @pytest.mark.asyncio
@@ -523,12 +368,12 @@ class TestStatisticsRepository:
         )
         await repos.tags.store_tags(ctx_id, ['deleteme'])
 
-        stats_before = await stats_repo.get_database_statistics()
+        stats_before = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         assert stats_before['total_entries'] >= 1
 
         await repos.context.delete_by_ids([ctx_id], scope=LOCAL_SCOPE)
 
-        stats_after = await stats_repo.get_database_statistics()
+        stats_after = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         assert stats_after['total_entries'] == stats_before['total_entries'] - 1
 
 
@@ -569,28 +414,15 @@ class TestRepositoryContainerStatistics:
         await repo_container.tags.store_tags(context_id2, ['workflow', 'response'])
 
         # Get database statistics
-        stats = await repo_container.statistics.get_database_statistics()
+        stats = await repo_container.statistics.get_database_statistics(scope=LOCAL_SCOPE)
 
         assert stats['total_entries'] == 2
         assert stats['by_source'] == {'user': 1, 'agent': 1}
         assert stats['unique_tags'] == 3  # workflow, test, response
 
-        # Get thread statistics for specific thread
-        thread_stats = await repo_container.statistics.get_thread_statistics('workflow_thread')
-
-        assert thread_stats['thread_id'] == 'workflow_thread'
-        assert thread_stats['total_entries'] == 2
-        assert thread_stats['source_types'] == 2
-
         # Get thread list
-        thread_list = await repo_container.statistics.get_thread_list()
+        thread_list = await repo_container.statistics.get_thread_list(scope=LOCAL_SCOPE)
 
         assert len(thread_list) == 1
         assert thread_list[0]['thread_id'] == 'workflow_thread'
         assert thread_list[0]['entry_count'] == 2
-
-        # Get tag statistics
-        tag_stats = await repo_container.statistics.get_tag_statistics()
-
-        assert tag_stats['unique_tags'] == 3
-        assert tag_stats['total_tag_uses'] == 4

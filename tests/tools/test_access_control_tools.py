@@ -21,11 +21,10 @@ from fastmcp.exceptions import ToolError
 
 import app.startup
 from app.auth.principal import RequestPrincipal
-from app.repositories.grant_repository import GrantRepository
-from app.repositories.grant_repository import GrantRow
 from app.settings import get_settings
 from tests.helpers import as_principal
 from tests.helpers import insert_grant
+from tests.helpers import read_grants
 
 
 def _principal(
@@ -538,10 +537,10 @@ class TestAuthorGroupGrants:
 
         backend = app.startup.get_backend()
         assert backend is not None
-        grants = await GrantRepository(backend).get_grants_for_context(result['context_id'])
+        grants = await read_grants(backend, result['context_id'])
         assert grants == [
-            GrantRow('group', 'team-a', 'read', 'alice'),
-            GrantRow('group', 'team-b', 'read', 'alice'),
+            ('group', 'team-a', 'read', 'alice'),
+            ('group', 'team-b', 'read', 'alice'),
         ]
 
     @pytest.mark.asyncio
@@ -557,5 +556,5 @@ class TestAuthorGroupGrants:
 
         backend = app.startup.get_backend()
         assert backend is not None
-        grants = await GrantRepository(backend).get_grants_for_context(result['context_id'])
+        grants = await read_grants(backend, result['context_id'])
         assert grants == []

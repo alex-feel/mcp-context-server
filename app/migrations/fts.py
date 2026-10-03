@@ -19,6 +19,7 @@ from typing import cast
 
 import asyncpg
 
+from app.access_scope import SYSTEM_SCOPE
 from app.backends import StorageBackend
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
@@ -175,8 +176,8 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
                 'Starting migration...',
             )
 
-            # Get entry count for estimation
-            stats = await fts_repo.get_statistics()
+            # Count every entry for the estimate: the rebuild covers rows of every principal
+            stats = await fts_repo.get_statistics(scope=SYSTEM_SCOPE)
             records_count = stats.get('total_entries', 0)
             estimated_time = estimate_migration_time(records_count)
 
@@ -215,8 +216,8 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
                 'Starting migration...',
             )
 
-            # Get entry count for estimation
-            stats = await fts_repo.get_statistics()
+            # Count every entry for the estimate: the rebuild covers rows of every principal
+            stats = await fts_repo.get_statistics(scope=SYSTEM_SCOPE)
             records_count = stats.get('total_entries', 0)
             estimated_time = estimate_migration_time(records_count)
 

@@ -230,70 +230,13 @@ class TestEmbeddingRepository:
             )
 
         # Get statistics
-        stats = await embedding_repo.get_statistics()
+        stats = await embedding_repo.get_statistics(scope=LOCAL_SCOPE)
 
         assert stats['total_embeddings'] == 5
         assert stats['total_entries'] == 8
         assert 'coverage_percentage' in stats
         # Coverage should be 5/8 = 62.5%
         assert 60 <= stats['coverage_percentage'] <= 65
-
-    @requires_sqlite_vec
-    async def test_get_statistics_with_thread_filter(
-        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
-    ) -> None:
-        """Test getting statistics filtered by thread."""
-        from app.repositories import RepositoryContainer
-        from app.repositories.embedding_repository import EmbeddingRepository
-
-        backend = async_db_with_embeddings
-        repos = RepositoryContainer(backend)
-        embedding_repo = EmbeddingRepository(backend)
-
-        # Create entries in target thread with embeddings
-        for i in range(3):
-            context_id, _ = await repos.context.store_with_deduplication(
-                scope=LOCAL_SCOPE,
-                visibility='private',
-                thread_id='target-stats',
-                source='user',
-                content_type='text',
-                text_content=f'Target {i}',
-                metadata=None,
-            )
-            await store_single_chunk_embedding(embedding_repo, context_id, [0.1] * embedding_dim)
-
-        # Create entry in target thread without embedding
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='target-stats',
-            source='user',
-            content_type='text',
-            text_content='No embedding',
-            metadata=None,
-        )
-
-        # Create entries in other thread
-        for i in range(5):
-            context_id, _ = await repos.context.store_with_deduplication(
-                scope=LOCAL_SCOPE,
-                visibility='private',
-                thread_id='other-stats',
-                source='user',
-                content_type='text',
-                text_content=f'Other {i}',
-                metadata=None,
-            )
-            await store_single_chunk_embedding(embedding_repo, context_id, [0.2] * embedding_dim)
-
-        # Get statistics for target thread only
-        stats = await embedding_repo.get_statistics(thread_id='target-stats')
-
-        assert stats['total_embeddings'] == 3
-        assert stats['total_entries'] == 4
-        # Coverage should be 3/4 = 75%
-        assert stats['coverage_percentage'] == 75.0
 
     @requires_sqlite_vec
     async def test_search_empty_database(
@@ -325,7 +268,7 @@ class TestEmbeddingRepository:
         backend = async_db_with_embeddings
         embedding_repo = EmbeddingRepository(backend)
 
-        stats = await embedding_repo.get_statistics()
+        stats = await embedding_repo.get_statistics(scope=LOCAL_SCOPE)
 
         assert stats['total_embeddings'] == 0
         assert stats['total_entries'] == 0
@@ -453,7 +396,7 @@ async def test_get_statistics_with_compression_sqlite(
         ]
         await repo.store_chunked(cid, chunks, model='test-model')
 
-    stats = await repo.get_statistics()
+    stats = await repo.get_statistics(scope=LOCAL_SCOPE)
 
     assert stats['total_embeddings'] == n_entries, (
         f'expected {n_entries} entries with embeddings, got '

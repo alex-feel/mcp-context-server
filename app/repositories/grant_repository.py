@@ -13,7 +13,6 @@ import sqlite3
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 from typing import Any
-from typing import NamedTuple
 from typing import cast
 
 from app.backends.base import StorageBackend
@@ -28,19 +27,10 @@ else:
         import asyncpg
 
 
-class GrantRow(NamedTuple):
-    """One access grant on a context entry."""
-
-    principal_type: str
-    principal_id: str
-    permission: str
-    granted_by: str
-
-
 class GrantRepository(BaseRepository):
     """Repository for context-entry access grants.
 
-    Handles insertion and retrieval of grant rows. Grant insertion is
+    Handles insertion of grant rows. Grant insertion is
     idempotent: the unique index on (context_entry_id, principal_type,
     principal_id, permission) plus ``ON CONFLICT ... DO NOTHING`` makes a
     repeated grant a no-op rather than a duplicate or an error.
@@ -125,51 +115,3 @@ class GrantRepository(BaseRepository):
                 await _store_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
                 await self.backend.execute_write(cast(Any, _store_postgresql))
-
-    async def get_grants_for_context(self, context_id: str) -> list[GrantRow]:
-        """Get all grants for a specific context entry.
-
-        Args:
-            context_id: ID of the context entry.
-
-        Returns:
-            Grant rows ordered by (principal_type, principal_id, permission)
-            so the result is deterministic on both backends.
-        """
-        query = (
-            f'SELECT principal_type, principal_id, permission, granted_by '
-            f'FROM context_entry_grants WHERE context_entry_id = {self._placeholder(1)} '
-            f'ORDER BY principal_type, principal_id, permission'
-        )
-
-        if self.backend.backend_type == 'sqlite':
-
-            def _get_sqlite(conn: sqlite3.Connection) -> list[GrantRow]:
-                cursor = conn.cursor()
-                cursor.execute(query, (context_id,))
-                return [
-                    GrantRow(
-                        principal_type=row['principal_type'],
-                        principal_id=row['principal_id'],
-                        permission=row['permission'],
-                        granted_by=row['granted_by'],
-                    )
-                    for row in cursor.fetchall()
-                ]
-
-            return await self.backend.execute_read(_get_sqlite)
-
-        # postgresql
-        async def _get_postgresql(conn: 'asyncpg.Connection') -> list[GrantRow]:
-            rows = await conn.fetch(query, context_id)
-            return [
-                GrantRow(
-                    principal_type=row['principal_type'],
-                    principal_id=row['principal_id'],
-                    permission=row['permission'],
-                    granted_by=row['granted_by'],
-                )
-                for row in rows
-            ]
-
-        return await self.backend.execute_read(_get_postgresql)

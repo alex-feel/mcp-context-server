@@ -1,4 +1,4 @@
-"""Tests for the fields and formats returned by get_database_statistics and get_thread_statistics."""
+"""Tests for the fields and formats returned by get_database_statistics."""
 
 import sqlite3
 
@@ -19,11 +19,8 @@ class TestStatisticsBackendField:
         self,
         stats_repo: StatisticsRepository,
     ) -> None:
-        """Test get_database_statistics includes backend identifier.
-
-        Covers lines 157 and 207 in statistics_repository.py.
-        """
-        result = await stats_repo.get_database_statistics()
+        """Test get_database_statistics includes backend identifier."""
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
         # Should include backend field
         assert 'backend' in result
@@ -36,7 +33,7 @@ class TestStatisticsBackendField:
         stats_repo: StatisticsRepository,
     ) -> None:
         """Test get_database_statistics returns all expected fields."""
-        result = await stats_repo.get_database_statistics()
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
         expected_fields = [
             'total_entries',
@@ -83,7 +80,7 @@ class TestStatisticsBackendField:
             text_content='Single entry',
         )
 
-        result = await stats_repo.get_database_statistics()
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
         assert 'most_active_threads' in result
         assert len(result['most_active_threads']) == 2
@@ -112,7 +109,7 @@ class TestStatisticsBackendField:
         )
         await repos.tags.store_tags(ctx_id, ['python', 'testing'])
 
-        result = await stats_repo.get_database_statistics()
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
         assert 'top_tags' in result
         assert len(result['top_tags']) == 2
@@ -145,76 +142,7 @@ class TestStatisticsBackendField:
 
         await stats_test_db.execute_write(_insert_data)
 
-        result = await stats_repo.get_database_statistics()
+        result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         active = result['most_active_threads']
         assert len(active) >= 2
         assert active[0]['count'] >= active[1]['count']
-
-
-class TestThreadStatisticsDetails:
-    """Test detailed thread statistics fields."""
-
-    @pytest.mark.asyncio
-    async def test_thread_statistics_includes_timestamps(
-        self,
-        stats_test_db: StorageBackend,
-        stats_repo: StatisticsRepository,
-    ) -> None:
-        """Test that thread statistics include first/last entry timestamps."""
-        repos = RepositoryContainer(stats_test_db)
-
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='timestamp-thread',
-            source='user',
-            content_type='text',
-            text_content='First entry',
-        )
-
-        result = await stats_repo.get_thread_statistics('timestamp-thread')
-
-        assert 'first_entry' in result
-        assert 'last_entry' in result
-        # Both should be set and equal for a single entry
-        assert result['first_entry'] is not None
-        assert result['last_entry'] is not None
-
-    @pytest.mark.asyncio
-    async def test_thread_statistics_by_source_breakdown(
-        self,
-        stats_test_db: StorageBackend,
-        stats_repo: StatisticsRepository,
-    ) -> None:
-        """Test that thread statistics include source breakdown."""
-        repos = RepositoryContainer(stats_test_db)
-
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='source-breakdown-thread',
-            source='user',
-            content_type='text',
-            text_content='User entry 1',
-        )
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='source-breakdown-thread',
-            source='user',
-            content_type='text',
-            text_content='User entry 2',
-        )
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='source-breakdown-thread',
-            source='agent',
-            content_type='text',
-            text_content='Agent entry',
-        )
-
-        result = await stats_repo.get_thread_statistics('source-breakdown-thread')
-
-        assert 'by_source' in result
-        assert result['by_source'] == {'user': 2, 'agent': 1}

@@ -2,8 +2,11 @@
 Discovery operations for MCP tools.
 
 This module contains tools for discovering and analyzing stored context:
-- list_threads: List all threads with statistics
+- list_threads: List the threads holding an entry the caller may read, with statistics
 - get_statistics: Get database metrics and search availability
+
+Every figure derived from stored entries covers only the entries the caller may
+read; the size, connection and configuration figures describe the deployment.
 """
 
 import logging
@@ -13,6 +16,7 @@ from typing import cast
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.settings import get_settings
 from app.startup import DB_PATH
@@ -35,8 +39,11 @@ async def list_threads(
 ) -> ThreadListDict:
     """List threads with entry statistics. Use for thread discovery and overview.
 
-    Pagination is optional and backward-compatible: with no arguments ALL threads
-    are returned. Supply `limit` to bound the result and `offset` to skip rows.
+    Only threads holding an entry the caller may read are listed, and every
+    figure counts the caller's readable entries alone.
+
+    Pagination is optional: with no arguments every listed thread is returned.
+    Supply `limit` to bound the result and `offset` to skip rows.
     Threads are ordered by most-recent activity first (last_entry DESC, then by
     latest entry id DESC); pagination applies AFTER this ordering.
 
@@ -63,11 +70,10 @@ async def list_threads(
         ToolError: If listing threads fails.
     """
     try:
-        # Get repositories
         repos = await ensure_repositories()
+        scope = resolve_access_scope()
 
-        # Use statistics repository to get thread list (optionally paginated).
-        threads = await repos.statistics.get_thread_list(limit=limit, offset=offset)
+        threads = await repos.statistics.get_thread_list(scope=scope, limit=limit, offset=offset)
 
         return {
             'threads': threads,
@@ -84,6 +90,11 @@ async def get_statistics() -> StatisticsResponseDict:
     """Get server statistics for monitoring and debugging.
 
     Use for: capacity planning, debugging performance issues, verifying search status.
+
+    Entry, thread, image, tag, embedding, index, summary and node figures count
+    only the entries the caller may read. database_size_mb, embeddings_size_mb,
+    embeddings_size_estimated, connection_metrics and the configuration fields
+    describe the whole deployment and are the same for every caller.
 
     Returns:
         StatisticsResponseDict with total_entries (int), total_threads (int),
@@ -104,11 +115,10 @@ async def get_statistics() -> StatisticsResponseDict:
         ToolError: If retrieving statistics fails.
     """
     try:
-        # Get repositories
         repos = await ensure_repositories()
+        scope = resolve_access_scope()
 
-        # Use statistics repository to get database stats
-        stats = await repos.statistics.get_database_statistics(DB_PATH)
+        stats = await repos.statistics.get_database_statistics(DB_PATH, scope=scope)
 
         # Add embeddings storage size immediately after total database size.
         # Gated on embedding generation OR compression (NOT semantic_search.enabled),
@@ -133,7 +143,7 @@ async def get_statistics() -> StatisticsResponseDict:
         # Add semantic search metrics if available
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
-                embedding_stats = await repos.embeddings.get_statistics()
+                embedding_stats = await repos.embeddings.get_statistics(scope=scope)
                 logger.debug(f'Embedding repository stats: {embedding_stats}')
                 stats['semantic_search'] = {
                     'enabled': True,
@@ -162,7 +172,7 @@ async def get_statistics() -> StatisticsResponseDict:
         if settings.fts.enabled:
             fts_available = await repos.fts.is_available()
             if fts_available:
-                fts_stats = await repos.fts.get_statistics()
+                fts_stats = await repos.fts.get_statistics(scope=scope)
                 stats['fts'] = {
                     'enabled': True,
                     'available': True,
@@ -225,7 +235,7 @@ async def get_statistics() -> StatisticsResponseDict:
         summary_provider = get_summary_provider()
         if settings.summary.generation_enabled:
             if summary_provider is not None:
-                summary_stats = await repos.statistics.get_summary_statistics()
+                summary_stats = await repos.statistics.get_summary_statistics(scope=scope)
                 stats['summary'] = {
                     'enabled': True,
                     'available': True,
@@ -279,7 +289,7 @@ async def get_statistics() -> StatisticsResponseDict:
                     'enabled': False,
                     'available': False,
                 }
-        except Exception as e:  # pragma: no cover -- defensive fallback
+        except Exception as e:
             logger.warning(f'Failed to read compression metadata for statistics: {e}')
             stats['compression'] = {
                 'enabled': settings.compression.enabled,
@@ -288,12 +298,13 @@ async def get_statistics() -> StatisticsResponseDict:
             }
 
         # Add index_tree node-summary block. Gated on the per-node summary
-        # toggle; node_count is the total stored per-node summaries (0 when the
-        # table is absent, e.g. the feature was never enabled).
+        # toggle; node_count is the number of stored per-node summaries of the
+        # caller's readable entries (0 when the table is absent, e.g. the
+        # feature was never enabled).
         if settings.index_tree.node_summaries_enabled:
             try:
-                node_count = await repos.index_nodes.count_all_nodes()
-            except Exception as e:  # pragma: no cover -- defensive fallback
+                node_count = await repos.index_nodes.count_all_nodes(scope=scope)
+            except Exception as e:
                 logger.warning(f'Failed to read index_tree node count for statistics: {e}')
                 node_count = 0
             stats['index_tree'] = {

@@ -15,7 +15,6 @@ from typing import cast
 import pytest
 
 from app.backends import StorageBackend
-from app.ids import generate_id
 from app.repositories.tag_repository import TagRepository
 from tests.helpers import LOCAL_SCOPE
 
@@ -159,68 +158,6 @@ class TestTagRepository:
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert tags == []
-
-    async def test_get_tags_for_contexts_batch(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """Test getting tags for multiple contexts in batch."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        repos = RepositoryContainer(backend)
-
-        context_ids = []
-        for i in range(3):
-            context_id, _ = await repos.context.store_with_deduplication(
-                scope=LOCAL_SCOPE,
-                visibility='private',
-                thread_id=f'batch-tag-thread-{i}',
-                source='user',
-                content_type='text',
-                text_content=f'Batch entry {i}',
-                metadata=None,
-            )
-            context_ids.append(context_id)
-            # Store different tags for each context
-            await repos.tags.store_tags(context_id, [f'tag-{i}', 'common-tag'])
-
-        # Get all tags in batch
-        all_tags = await repos.tags.get_tags_for_contexts(context_ids)
-
-        assert len(all_tags) == 3
-        for i, ctx_id in enumerate(context_ids):
-            assert ctx_id in all_tags
-            assert f'tag-{i}' in all_tags[ctx_id]
-            assert 'common-tag' in all_tags[ctx_id]
-
-    async def test_get_tags_for_contexts_empty_list(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """Test getting tags for empty context list."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        repos = RepositoryContainer(backend)
-
-        result = await repos.tags.get_tags_for_contexts([])
-        assert result == {}
-
-    async def test_get_tags_for_contexts_nonexistent(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """Test getting tags for non-existent contexts."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        repos = RepositoryContainer(backend)
-
-        missing_id_a = generate_id()
-        missing_id_b = generate_id()
-        result = await repos.tags.get_tags_for_contexts([missing_id_a, missing_id_b])
-        assert missing_id_a in result
-        assert missing_id_b in result
-        assert result[missing_id_a] == []
-        assert result[missing_id_b] == []
 
     async def test_replace_tags_for_context(
         self, async_db_initialized: StorageBackend,
@@ -555,28 +492,6 @@ class TestTagDeduplicationWithinOneWrite:
         tags = await repos.tags.get_tags_for_context(context_id)
         assert tags == ['delta', 'gamma']
 
-    async def test_batch_reader_also_returns_one_row_per_label(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """The multi-context reader sees the same deduplicated rows."""
-        from app.repositories import RepositoryContainer
-
-        repos = RepositoryContainer(async_db_initialized)
-
-        context_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='dedup-batch-thread',
-            source='agent',
-            content_type='text',
-            text_content='Duplicate tags read in batch',
-            metadata=None,
-        )
-        await repos.tags.store_tags(context_id, ['shared', 'SHARED', 'unique'])
-
-        by_context = await repos.tags.get_tags_for_contexts([context_id])
-        assert by_context[context_id] == ['shared', 'unique']
-
     async def test_normalize_tags_preserves_first_seen_order(self) -> None:
         """Deduplication keeps the caller's ordering of the surviving labels."""
         assert TagRepository.normalize_tags(
@@ -589,7 +504,7 @@ class TestTagDeduplicationWithinOneWrite:
 
 
 class _OrderRecordingConnection:
-    """Async stub recording the SQL text the PostgreSQL tag readers emit."""
+    """Async stub recording the SQL text the PostgreSQL tag reader emits."""
 
     def __init__(self) -> None:
         self.queries: list[str] = []
@@ -609,7 +524,7 @@ class _OrderRecordingConnection:
 
 
 class _OrderRecordingBackend:
-    """Minimal backend stub selecting the PostgreSQL branch of every tag reader."""
+    """Minimal backend stub selecting the PostgreSQL branch of the tag reader."""
 
     backend_type = 'postgresql'
 
@@ -673,13 +588,3 @@ class TestTagOrderingIsByteWiseOnBothBackends:
 
         assert backend.connection.queries
         assert 'ORDER BY tag COLLATE "C"' in backend.connection.queries[0]
-
-    async def test_postgresql_batch_reader_forces_byte_collation(self) -> None:
-        """The multi-entry reader pins the same sort term."""
-        backend = _OrderRecordingBackend()
-        repo = TagRepository(cast(Any, backend))
-
-        await repo.get_tags_for_contexts(['0190abcdef1234567890abcdef123456'])
-
-        assert backend.connection.queries
-        assert 'ORDER BY context_entry_id, tag COLLATE "C"' in backend.connection.queries[0]

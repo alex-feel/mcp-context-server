@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app.access_scope import AccessMode
+from app.access_scope import Scope
+from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -21,9 +24,9 @@ class EmbeddingInventoryMixin(BaseRepository):
     """Read-only inventory of stored embeddings.
 
     Probes whether an entry has an embedding and whether the embedding tables
-    exist at all, reports embedding and chunk counts per database or thread, and
-    measures the storage size of the vector payload table the active compression
-    mode uses.
+    exist at all, reports embedding and chunk counts over the entries a scope may
+    read, and measures the storage size of the vector payload table the active
+    compression mode uses, which covers every entry.
     """
 
     async def exists(self, context_id: str, txn: 'TransactionContext | None' = None) -> bool:
@@ -99,126 +102,65 @@ class EmbeddingInventoryMixin(BaseRepository):
             return await _tables_exist_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(cast(Any, _tables_exist_postgresql))
 
-    async def get_statistics(self, thread_id: str | None = None) -> dict[str, Any]:
-        """Get embedding statistics including chunk information.
+    async def get_statistics(self, *, scope: Scope) -> dict[str, Any]:
+        """Get embedding statistics, chunk information included, over the entries the scope may read.
+
+        Every count applies the READ predicate: the entry total to ``context_entries``
+        and the embedding and chunk counts to the entry each embedding belongs to.
 
         The chunk-count source is ``embedding_metadata.chunk_count`` (summed)
         on BOTH backends, regardless of compression mode. This is the single
         source-of-truth populated by every write path (fp32 SQLite, fp32
         PostgreSQL, compressed SQLite, compressed PostgreSQL), so the
         reported chunk total stays correct whether compressed payloads or
-        fp32 vectors are stored on disk.
+        fp32 vectors are stored on disk. On PostgreSQL the compression
+        migration drops ``vec_context_embeddings``, so reading the count from
+        ``embedding_metadata`` is the only query that succeeds in both modes.
 
         Args:
-            thread_id: Optional filter by thread
+            scope: The caller's scope.
 
         Returns:
             Dictionary with statistics (count, coverage, chunk info, etc.)
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = self.backend.backend_type
+        entries = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries')
+        parents = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
+        readable_embeddings = f'embedding_metadata em JOIN context_entries ce ON em.context_id = ce.id{parents.where_clause()}'
+        total_sql = f'SELECT COUNT(*) FROM context_entries{entries.where_clause()}'
+        embeddings_sql = f'SELECT COUNT(*) FROM {readable_embeddings}'
+        chunks_sql = f'SELECT COALESCE(SUM(em.chunk_count), 0) FROM {readable_embeddings}'
 
-            def _get_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
-                if thread_id:
-                    query1 = f'SELECT COUNT(*) FROM context_entries WHERE thread_id = {self._placeholder(1)}'
-                    cursor = conn.execute(query1, (thread_id,))
-                else:
-                    cursor = conn.execute('SELECT COUNT(*) FROM context_entries')
-
-                total_entries = cursor.fetchone()[0]
-
-                if thread_id:
-                    query2 = f'''
-                        SELECT COUNT(*)
-                        FROM embedding_metadata em
-                        JOIN context_entries ce ON em.context_id = ce.id
-                        WHERE ce.thread_id = {self._placeholder(1)}
-                    '''
-                    cursor = conn.execute(query2, (thread_id,))
-                else:
-                    cursor = conn.execute('SELECT COUNT(*) FROM embedding_metadata')
-
-                embedding_count = cursor.fetchone()[0]
-
-                # Chunk total is the sum of embedding_metadata.chunk_count,
-                # the single source-of-truth populated by every write path
-                # (fp32 + compressed) so the value stays correct in every
-                # backend/compression-mode combination.
-                if thread_id:
-                    query3 = f'''
-                        SELECT COALESCE(SUM(em.chunk_count), 0)
-                        FROM embedding_metadata em
-                        JOIN context_entries ce ON em.context_id = ce.id
-                        WHERE ce.thread_id = {self._placeholder(1)}
-                    '''
-                    cursor = conn.execute(query3, (thread_id,))
-                else:
-                    cursor = conn.execute('SELECT COALESCE(SUM(chunk_count), 0) FROM embedding_metadata')
-
-                total_chunks = cursor.fetchone()[0]
-
-                coverage_percentage = (embedding_count / total_entries * 100) if total_entries > 0 else 0.0
-                average_chunks = round(total_chunks / embedding_count, 2) if embedding_count > 0 else 0.0
-
-                return {
-                    'total_embeddings': embedding_count,
-                    'total_entries': total_entries,
-                    'total_chunks': total_chunks,
-                    'average_chunks_per_entry': average_chunks,
-                    'coverage_percentage': round(coverage_percentage, 2),
-                    'backend': 'sqlite',
-                }
-
-            return await self.backend.execute_read(_get_stats_sqlite)
-
-        # postgresql
-        async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
-            if thread_id:
-                query1 = f'SELECT COUNT(*) FROM context_entries WHERE thread_id = {self._placeholder(1)}'
-                total_entries = await conn.fetchval(query1, thread_id)
-            else:
-                total_entries = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
-
-            if thread_id:
-                query2 = f'''
-                        SELECT COUNT(*)
-                        FROM embedding_metadata em
-                        JOIN context_entries ce ON em.context_id = ce.id
-                        WHERE ce.thread_id = {self._placeholder(1)}
-                    '''
-                embedding_count = await conn.fetchval(query2, thread_id)
-            else:
-                embedding_count = await conn.fetchval('SELECT COUNT(*) FROM embedding_metadata')
-
-            # Chunk total is the sum of embedding_metadata.chunk_count,
-            # the single source-of-truth populated by every write path
-            # (fp32 + compressed). On PostgreSQL the compression migration
-            # drops vec_context_embeddings, so reading the count from
-            # embedding_metadata is the only query that succeeds in both
-            # compression-enabled and compression-disabled deployments.
-            if thread_id:
-                query3 = f'''
-                        SELECT COALESCE(SUM(em.chunk_count), 0)
-                        FROM embedding_metadata em
-                        JOIN context_entries ce ON em.context_id = ce.id
-                        WHERE ce.thread_id = {self._placeholder(1)}
-                    '''
-                total_chunks = await conn.fetchval(query3, thread_id)
-            else:
-                total_chunks = await conn.fetchval(
-                    'SELECT COALESCE(SUM(chunk_count), 0) FROM embedding_metadata',
-                )
-
+        def _figures(total_entries: int, embedding_count: int, total_chunks: int) -> dict[str, Any]:
             coverage_percentage = (embedding_count / total_entries * 100) if total_entries > 0 else 0.0
             average_chunks = round(total_chunks / embedding_count, 2) if embedding_count > 0 else 0.0
-
             return {
                 'total_embeddings': embedding_count,
                 'total_entries': total_entries,
                 'total_chunks': total_chunks,
                 'average_chunks_per_entry': average_chunks,
                 'coverage_percentage': round(coverage_percentage, 2),
-                'backend': 'postgresql',
+                'backend': backend_type,
             }
+
+        if backend_type == 'sqlite':
+
+            def _get_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
+                return _figures(
+                    conn.execute(total_sql, entries.params).fetchone()[0],
+                    conn.execute(embeddings_sql, parents.params).fetchone()[0],
+                    conn.execute(chunks_sql, parents.params).fetchone()[0],
+                )
+
+            return await self.backend.execute_read(_get_stats_sqlite)
+
+        # postgresql
+        async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
+            return _figures(
+                await conn.fetchval(total_sql, *entries.params),
+                await conn.fetchval(embeddings_sql, *parents.params),
+                await conn.fetchval(chunks_sql, *parents.params),
+            )
 
         return await self.backend.execute_read(_get_stats_postgresql)
 

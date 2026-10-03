@@ -5,6 +5,9 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app.access_scope import AccessMode
+from app.access_scope import Scope
+from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
 from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
 
@@ -15,88 +18,61 @@ if TYPE_CHECKING:
 class FtsMaintenanceMixin(BaseRepository):
     """Availability, statistics and index maintenance for full-text search.
 
-    Reports whether the FTS index exists and how many entries it covers,
-    inspects the tokenizer or language the index was built with, and migrates
-    the SQLite FTS5 tokenizer or the PostgreSQL tsvector language when the
-    configured ``FTS_LANGUAGE`` changes.
+    Reports whether the FTS index exists and how many of the entries a scope may
+    read it covers, inspects the tokenizer or language the index was built with,
+    and migrates the SQLite FTS5 tokenizer or the PostgreSQL tsvector language
+    when the configured ``FTS_LANGUAGE`` changes.
     """
 
-    async def get_statistics(self, thread_id: str | None = None) -> dict[str, Any]:
-        """Get FTS index statistics.
+    async def get_statistics(self, *, scope: Scope) -> dict[str, Any]:
+        """Get FTS index statistics over the entries the scope may read.
+
+        Both counts apply the READ predicate. The system scope counts every entry; the
+        FTS migration uses it to size its rebuild estimate outside any request.
 
         Args:
-            thread_id: Optional filter by thread
+            scope: The caller's scope, or the system scope.
 
         Returns:
             Dictionary with statistics (entry count, index info)
         """
-        if self.backend.backend_type == 'sqlite':
+        predicate = build_access_predicate(
+            scope, mode=AccessMode.READ, backend_type=self.backend.backend_type, outer='context_entries',
+        )
+        total_sql = f'SELECT COUNT(*) FROM context_entries{predicate.where_clause()}'
 
-            def _get_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
-                # Count indexed entries
-                if thread_id:
-                    cursor = conn.execute(
-                        '''
-                        SELECT COUNT(*) FROM context_entries_fts fts
-                        JOIN context_entries ce ON ce.rowid_int = fts.rowid
-                        WHERE ce.thread_id = ?
-                        ''',
-                        (thread_id,),
-                    )
-                else:
-                    cursor = conn.execute('SELECT COUNT(*) FROM context_entries_fts')
-
-                indexed_count = cursor.fetchone()[0]
-
-                # Get total entries
-                if thread_id:
-                    cursor = conn.execute(
-                        'SELECT COUNT(*) FROM context_entries WHERE thread_id = ?',
-                        (thread_id,),
-                    )
-                else:
-                    cursor = conn.execute('SELECT COUNT(*) FROM context_entries')
-
-                total_count = cursor.fetchone()[0]
-
-                return {
-                    'total_entries': total_count,
-                    'indexed_entries': indexed_count,
-                    'coverage_percentage': round((indexed_count / total_count * 100) if total_count > 0 else 0.0, 2),
-                    'backend': 'sqlite',
-                    'engine': 'fts5',
-                }
-
-            return await self.backend.execute_read(_get_stats_sqlite)
-
-        # postgresql
-        async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
-            # Count entries with tsvector populated
-            if thread_id:
-                indexed_count = await conn.fetchval(
-                    '''
-                    SELECT COUNT(*) FROM context_entries
-                    WHERE thread_id = $1 AND text_search_vector IS NOT NULL
-                    ''',
-                    thread_id,
-                )
-                total_count = await conn.fetchval(
-                    'SELECT COUNT(*) FROM context_entries WHERE thread_id = $1',
-                    thread_id,
-                )
-            else:
-                indexed_count = await conn.fetchval(
-                    'SELECT COUNT(*) FROM context_entries WHERE text_search_vector IS NOT NULL',
-                )
-                total_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
-
+        def _figures(total_count: int, indexed_count: int, backend: str, engine: str) -> dict[str, Any]:
             return {
                 'total_entries': total_count,
                 'indexed_entries': indexed_count,
                 'coverage_percentage': round((indexed_count / total_count * 100) if total_count > 0 else 0.0, 2),
-                'backend': 'postgresql',
-                'engine': 'tsvector',
+                'backend': backend,
+                'engine': engine,
             }
+
+        if self.backend.backend_type == 'sqlite':
+            parents = build_access_predicate(scope, mode=AccessMode.READ, backend_type='sqlite', outer='ce')
+            indexed_sql = (
+                'SELECT COUNT(*) FROM context_entries_fts fts '
+                f'JOIN context_entries ce ON ce.rowid_int = fts.rowid{parents.where_clause()}'
+            )
+
+            def _get_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
+                indexed_count = conn.execute(indexed_sql, parents.params).fetchone()[0]
+                total_count = conn.execute(total_sql, predicate.params).fetchone()[0]
+                return _figures(total_count, indexed_count, 'sqlite', 'fts5')
+
+            return await self.backend.execute_read(_get_stats_sqlite)
+
+        # postgresql: an entry is indexed once its tsvector is populated
+        indexed_sql = (
+            f'SELECT COUNT(*) FROM context_entries WHERE text_search_vector IS NOT NULL{predicate.and_clause()}'
+        )
+
+        async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
+            indexed_count = await conn.fetchval(indexed_sql, *predicate.params)
+            total_count = await conn.fetchval(total_sql, *predicate.params)
+            return _figures(total_count, indexed_count, 'postgresql', 'tsvector')
 
         return await self.backend.execute_read(cast(Any, _get_stats_postgresql))
 

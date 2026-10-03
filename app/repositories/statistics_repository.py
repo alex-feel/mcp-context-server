@@ -16,6 +16,9 @@ from typing import cast
 
 from anyio import Path as AsyncPath
 
+from app.access_scope import AccessMode
+from app.access_scope import Scope
+from app.access_scope import build_access_predicate
 from app.backends.base import StorageBackend
 from app.ids import normalize_id
 from app.repositories._collation import byte_ordered_text
@@ -68,32 +71,41 @@ class StatisticsRepository(BaseRepository):
         """
         super().__init__(backend)
 
-    async def get_thread_list(self, limit: int | None = None, offset: int = 0) -> list[ThreadInfoDict]:
-        """Get list of threads with statistics, optionally paginated.
+    async def get_thread_list(
+        self, limit: int | None = None, offset: int = 0, *, scope: Scope,
+    ) -> list[ThreadInfoDict]:
+        """Get the threads holding an entry the scope may read, with statistics, optionally paginated.
 
-        When ``limit`` is None (the default) ALL threads are returned and no
-        LIMIT/OFFSET clause is emitted, preserving the historical unbounded
-        behavior. When ``limit`` is provided, the result is bounded to ``limit``
-        rows starting at ``offset``, applied AFTER the ORDER BY so pagination
-        walks the most-recently-active threads first.
+        The READ predicate filters rows before GROUP BY, so a thread whose entries the
+        scope cannot read is absent, and every figure -- entry count, source count,
+        multimodal count, first and last creation time and last id -- describes the
+        readable rows alone. Threads are ordered by their latest readable activity.
+
+        When ``limit`` is None (the default) every thread is returned and no
+        LIMIT/OFFSET clause is emitted. When ``limit`` is provided, the result is
+        bounded to ``limit`` rows starting at ``offset``, applied AFTER the ORDER BY
+        so pagination walks the most-recently-active threads first.
 
         Args:
             limit: Maximum number of threads to return. None returns all threads.
             offset: Number of leading threads to skip (only applied when ``limit``
                 is provided).
+            scope: The caller's scope.
 
         Returns:
             List of thread information dictionaries for the requested page.
         """
-        # Bind LIMIT/OFFSET only when a limit is requested. The placeholders are
-        # positions 1 and 2 because the GROUP BY listing queries carry no other
-        # bound parameters; _placeholder yields '?' on SQLite and '$1'/'$2' on
-        # PostgreSQL.
+        predicate = build_access_predicate(
+            scope, mode=AccessMode.READ, backend_type=self.backend.backend_type, outer='context_entries',
+        )
+        # LIMIT/OFFSET bind after the predicate, so their placeholders follow its binds.
         pagination_clause = ''
-        params: tuple[int, ...] = ()
+        params: list[Any] = list(predicate.params)
         if limit is not None:
-            pagination_clause = f'\n                    LIMIT {self._placeholder(1)} OFFSET {self._placeholder(2)}'
-            params = (limit, offset)
+            first = predicate.bind_count + 1
+            pagination_clause = f'\n                    LIMIT {self._placeholder(first)} OFFSET {self._placeholder(first + 1)}'
+            params.extend((limit, offset))
+        entry_filter = predicate.where_clause()
 
         if self.backend.backend_type == 'sqlite':
 
@@ -108,7 +120,7 @@ class StatisticsRepository(BaseRepository):
                         strftime('%Y-%m-%dT%H:%M:%SZ', MIN(created_at)) as first_entry,
                         strftime('%Y-%m-%dT%H:%M:%SZ', MAX(created_at)) as last_entry,
                         MAX(id) as last_id
-                    FROM context_entries
+                    FROM context_entries{entry_filter}
                     GROUP BY thread_id
                     ORDER BY MAX(created_at) DESC, MAX(id) DESC{pagination_clause}
                 ''', params)
@@ -134,7 +146,7 @@ class StatisticsRepository(BaseRepository):
                         to_char(MIN(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as first_entry,
                         to_char(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_entry,
                         (array_agg(id ORDER BY id DESC))[1] as last_id
-                    FROM context_entries
+                    FROM context_entries{entry_filter}
                     GROUP BY thread_id
                     ORDER BY MAX(created_at) DESC, (array_agg(id ORDER BY id DESC))[1] DESC{pagination_clause}
                 ''', *params)
@@ -156,73 +168,93 @@ class StatisticsRepository(BaseRepository):
 
         return await self.backend.execute_read(_list_threads_postgresql)
 
-    async def get_database_statistics(self, db_path: Path | None = None) -> dict[str, Any]:
-        """Get comprehensive database statistics.
+    async def get_database_statistics(self, db_path: Path | None = None, *, scope: Scope) -> dict[str, Any]:
+        """Get database statistics over the entries the scope may read.
+
+        Every figure derived from stored entries -- the totals, the source and content-type
+        breakdowns, the image, tag and thread counts and the two top-N lists -- counts only
+        the rows the READ predicate admits. Image and tag figures join their parent entry
+        and apply the predicate to it. The predicate filters rows before GROUP BY and LIMIT,
+        so each top-N list holds the scope's own top items. ``database_size_mb`` is the size
+        of the whole database, the same for every scope.
 
         Args:
-            db_path: Optional path to database file for size calculation
+            db_path: Path of the SQLite database file for the size figure; unused on PostgreSQL.
+            scope: The caller's scope.
 
         Returns:
-            Dictionary containing various database statistics
+            Dictionary containing the database statistics.
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = self.backend.backend_type
+        entries = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries')
+        parents = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
+        entry_filter = entries.where_clause()
+        parent_filter = parents.where_clause()
+
+        # The grouping key is the unique secondary sort key of each top-N list: without it
+        # a tie in `count` leaves the LIMIT window computed over an undefined ordering, so
+        # which rows make the top N flaps under unrelated writes (PostgreSQL MVCC rewrites
+        # heap order on every UPDATE). The byte-wise ordering makes that tiebreak decide
+        # the LIMIT window the same way on both backends, instead of by the locale.
+        thread_order = byte_ordered_text('thread_id', backend_type)
+        tag_order = byte_ordered_text('t.tag', backend_type)
+        total_sql = f'SELECT COUNT(*) AS count FROM context_entries{entry_filter}'
+        by_source_sql = f'SELECT source, COUNT(*) AS count FROM context_entries{entry_filter} GROUP BY source'
+        by_content_type_sql = (
+            f'SELECT content_type, COUNT(*) AS count FROM context_entries{entry_filter} GROUP BY content_type'
+        )
+        readable_images = f'image_attachments i JOIN context_entries ce ON ce.id = i.context_entry_id{parent_filter}'
+        readable_tags = f'tags t JOIN context_entries ce ON ce.id = t.context_entry_id{parent_filter}'
+        images_sql = f'SELECT COUNT(*) AS count FROM {readable_images}'
+        unique_tags_sql = f'SELECT COUNT(DISTINCT t.tag) AS count FROM {readable_tags}'
+        threads_sql = f'SELECT COUNT(DISTINCT thread_id) AS count FROM context_entries{entry_filter}'
+        average_sql = (
+            'SELECT AVG(entry_count) AS avg_entries FROM '
+            f'(SELECT thread_id, COUNT(*) AS entry_count FROM context_entries{entry_filter} GROUP BY thread_id) sub'
+        )
+        most_active_sql = (
+            f'SELECT thread_id, COUNT(*) AS count FROM context_entries{entry_filter} '
+            f'GROUP BY thread_id ORDER BY count DESC, {thread_order} ASC LIMIT 5'
+        )
+        top_tags_sql = (
+            f'SELECT t.tag AS tag, COUNT(*) AS count FROM {readable_tags} '
+            f'GROUP BY t.tag ORDER BY count DESC, {tag_order} ASC LIMIT 10'
+        )
+
+        if backend_type == 'sqlite':
 
             def _get_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
                 cursor = conn.cursor()
                 stats: dict[str, Any] = {}
 
-                cursor.execute('SELECT COUNT(*) as count FROM context_entries')
+                cursor.execute(total_sql, entries.params)
                 stats['total_entries'] = cursor.fetchone()['count']
 
-                cursor.execute('SELECT source, COUNT(*) as count FROM context_entries GROUP BY source')
-                by_source: dict[str, int] = {}
-                for row in cursor.fetchall():
-                    by_source[row['source']] = row['count']
-                stats['by_source'] = by_source
+                cursor.execute(by_source_sql, entries.params)
+                stats['by_source'] = {row['source']: row['count'] for row in cursor.fetchall()}
 
-                cursor.execute('SELECT content_type, COUNT(*) as count FROM context_entries GROUP BY content_type')
-                by_content_type: dict[str, int] = {}
-                for row in cursor.fetchall():
-                    by_content_type[row['content_type']] = row['count']
-                stats['by_content_type'] = by_content_type
+                cursor.execute(by_content_type_sql, entries.params)
+                stats['by_content_type'] = {row['content_type']: row['count'] for row in cursor.fetchall()}
 
-                cursor.execute('SELECT COUNT(*) as count FROM image_attachments')
+                cursor.execute(images_sql, parents.params)
                 stats['total_images'] = cursor.fetchone()['count']
 
-                cursor.execute('SELECT COUNT(DISTINCT tag) as count FROM tags')
+                cursor.execute(unique_tags_sql, parents.params)
                 stats['unique_tags'] = cursor.fetchone()['count']
 
-                cursor.execute('SELECT COUNT(DISTINCT thread_id) as count FROM context_entries')
+                cursor.execute(threads_sql, entries.params)
                 stats['total_threads'] = cursor.fetchone()['count']
 
-                cursor.execute('''
-                    SELECT AVG(entry_count) as avg_entries
-                    FROM (SELECT thread_id, COUNT(*) as entry_count FROM context_entries GROUP BY thread_id)
-                ''')
-                result = cursor.fetchone()
-                stats['avg_entries_per_thread'] = _to_float(result['avg_entries'])
+                cursor.execute(average_sql, entries.params)
+                stats['avg_entries_per_thread'] = _to_float(cursor.fetchone()['avg_entries'])
 
-                # The grouping key is the unique secondary sort key: without it a
-                # tie in `count` leaves the LIMIT window computed over an undefined
-                # ordering, so which rows make the top-N flaps under unrelated writes.
-                # It is byte-ordered so a tie at the LIMIT boundary admits the SAME
-                # rows the PostgreSQL branch admits.
-                thread_order = byte_ordered_text('thread_id', 'sqlite')
-                cursor.execute(f'''
-                    SELECT thread_id, COUNT(*) as count FROM context_entries
-                    GROUP BY thread_id ORDER BY count DESC, {thread_order} ASC LIMIT 5
-                ''')
-                most_active: list[dict[str, Any]] = [
+                cursor.execute(most_active_sql, entries.params)
+                stats['most_active_threads'] = [
                     {'thread_id': row['thread_id'], 'count': row['count']} for row in cursor.fetchall()
                 ]
-                stats['most_active_threads'] = most_active
 
-                tag_order = byte_ordered_text('tag', 'sqlite')
-                cursor.execute(
-                    f'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, {tag_order} ASC LIMIT 10',
-                )
-                top_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
-                stats['top_tags'] = top_tags
+                cursor.execute(top_tags_sql, parents.params)
+                stats['top_tags'] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
 
                 stats['backend'] = 'sqlite'
                 return stats
@@ -233,64 +265,30 @@ class StatisticsRepository(BaseRepository):
             async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
                 stats: dict[str, Any] = {}
 
-                row = await conn.fetchrow('SELECT COUNT(*) as count FROM context_entries')
-                stats['total_entries'] = row['count'] if row else 0
+                stats['total_entries'] = await conn.fetchval(total_sql, *entries.params)
 
-                rows = await conn.fetch('SELECT source, COUNT(*) as count FROM context_entries GROUP BY source')
-                by_source: dict[str, int] = {}
-                for row in rows:
-                    by_source[row['source']] = row['count']
-                stats['by_source'] = by_source
+                rows = await conn.fetch(by_source_sql, *entries.params)
+                stats['by_source'] = {row['source']: row['count'] for row in rows}
 
-                rows = await conn.fetch('SELECT content_type, COUNT(*) as count FROM context_entries GROUP BY content_type')
-                by_content_type: dict[str, int] = {}
-                for row in rows:
-                    by_content_type[row['content_type']] = row['count']
-                stats['by_content_type'] = by_content_type
+                rows = await conn.fetch(by_content_type_sql, *entries.params)
+                stats['by_content_type'] = {row['content_type']: row['count'] for row in rows}
 
-                row = await conn.fetchrow('SELECT COUNT(*) as count FROM image_attachments')
-                stats['total_images'] = row['count'] if row else 0
+                stats['total_images'] = await conn.fetchval(images_sql, *parents.params)
+                stats['unique_tags'] = await conn.fetchval(unique_tags_sql, *parents.params)
+                stats['total_threads'] = await conn.fetchval(threads_sql, *entries.params)
+                stats['avg_entries_per_thread'] = _to_float(await conn.fetchval(average_sql, *entries.params))
 
-                row = await conn.fetchrow('SELECT COUNT(DISTINCT tag) as count FROM tags')
-                stats['unique_tags'] = row['count'] if row else 0
+                rows = await conn.fetch(most_active_sql, *entries.params)
+                stats['most_active_threads'] = [{'thread_id': row['thread_id'], 'count': row['count']} for row in rows]
 
-                row = await conn.fetchrow('SELECT COUNT(DISTINCT thread_id) as count FROM context_entries')
-                stats['total_threads'] = row['count'] if row else 0
-
-                row = await conn.fetchrow('''
-                    SELECT AVG(entry_count) as avg_entries
-                    FROM (SELECT thread_id, COUNT(*) as entry_count FROM context_entries GROUP BY thread_id) sub
-                ''')
-                stats['avg_entries_per_thread'] = _to_float(row['avg_entries'] if row else None)
-
-                # The grouping key is the unique secondary sort key: without it a
-                # tie in `count` leaves the LIMIT window computed over an undefined
-                # ordering, and PostgreSQL MVCC rewrites heap order on every unrelated
-                # UPDATE, so which rows make the top-N flaps between calls. The explicit
-                # byte-wise collation makes that tiebreak decide the LIMIT window the
-                # SAME way SQLite's BINARY comparison does, instead of by the database
-                # locale -- otherwise identical data yields a different top-N SET here.
-                thread_order = byte_ordered_text('thread_id', 'postgresql')
-                rows = await conn.fetch(f'''
-                    SELECT thread_id, COUNT(*) as count FROM context_entries
-                    GROUP BY thread_id ORDER BY count DESC, {thread_order} ASC LIMIT 5
-                ''')
-                most_active: list[dict[str, Any]] = [{'thread_id': row['thread_id'], 'count': row['count']} for row in rows]
-                stats['most_active_threads'] = most_active
-
-                tag_order = byte_ordered_text('tag', 'postgresql')
-                rows = await conn.fetch(
-                    f'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, {tag_order} ASC LIMIT 10',
-                )
-                top_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
-                stats['top_tags'] = top_tags
+                rows = await conn.fetch(top_tags_sql, *parents.params)
+                stats['top_tags'] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
 
                 stats['backend'] = 'postgresql'
                 return stats
 
             stats = await self.backend.execute_read(_get_stats_postgresql)
 
-        backend_type = self.backend.backend_type
         if backend_type == 'sqlite':
             # SQLite size is the on-disk size of the database file. This excludes
             # the -wal/-shm sidecars, so the figure can transiently under-report
@@ -319,263 +317,47 @@ class StatisticsRepository(BaseRepository):
 
         return stats
 
-    async def get_thread_statistics(self, thread_id: str) -> dict[str, Any]:
-        """Get statistics for a specific thread.
+    async def get_summary_statistics(self, *, scope: Scope) -> dict[str, Any]:
+        """Get summary generation statistics over the entries the scope may read.
 
         Args:
-            thread_id: Thread identifier
-
-        Returns:
-            Dictionary containing thread-specific statistics
-        """
-        if self.backend.backend_type == 'sqlite':
-
-            def _get_thread_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
-                cursor = conn.cursor()
-                stats: dict[str, Any] = {'thread_id': thread_id}
-
-                query1 = f'''
-                    SELECT
-                        COUNT(*) as total_entries,
-                        COUNT(DISTINCT source) as source_types,
-                        SUM(CASE WHEN content_type = 'text' THEN 1 ELSE 0 END) as text_count,
-                        SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        strftime('%Y-%m-%dT%H:%M:%SZ', MIN(created_at)) as first_entry,
-                        strftime('%Y-%m-%dT%H:%M:%SZ', MAX(created_at)) as last_entry
-                    FROM context_entries
-                    WHERE thread_id = {self._placeholder(1)}
-                '''
-                cursor.execute(query1, (thread_id,))
-                row = cursor.fetchone()
-                if row:
-                    stats.update(dict(row))
-
-                query2 = f'''
-                    SELECT source, COUNT(*) as count
-                    FROM context_entries
-                    WHERE thread_id = {self._placeholder(1)}
-                    GROUP BY source
-                '''
-                cursor.execute(query2, (thread_id,))
-                by_source: dict[str, int] = {}
-                for row in cursor.fetchall():
-                    by_source[row['source']] = row['count']
-                stats['by_source'] = by_source
-
-                # GROUP BY rather than SELECT DISTINCT (same result set): PostgreSQL
-                # rejects an ORDER BY expression that is absent from a DISTINCT
-                # select list, and the collated sort term is such an expression.
-                # Both branches keep the same shape so the two cannot drift.
-                query3 = f'''
-                    SELECT t.tag
-                    FROM tags t
-                    JOIN context_entries c ON t.context_entry_id = c.id
-                    WHERE c.thread_id = {self._placeholder(1)}
-                    GROUP BY t.tag
-                    ORDER BY {byte_ordered_text('t.tag', 'sqlite')}
-                '''
-                cursor.execute(query3, (thread_id,))
-                tags: list[str] = [row['tag'] for row in cursor.fetchall()]
-                stats['tags'] = tags
-
-                query4 = f'''
-                    SELECT COUNT(*) as count
-                    FROM image_attachments i
-                    JOIN context_entries c ON i.context_entry_id = c.id
-                    WHERE c.thread_id = {self._placeholder(1)}
-                '''
-                cursor.execute(query4, (thread_id,))
-                stats['image_count'] = cursor.fetchone()['count']
-
-                return stats
-
-            return await self.backend.execute_read(_get_thread_stats_sqlite)
-
-        # postgresql
-
-        async def _get_thread_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
-            stats: dict[str, Any] = {'thread_id': thread_id}
-
-            query1 = f'''
-                    SELECT
-                        COUNT(*) as total_entries,
-                        COUNT(DISTINCT source) as source_types,
-                        SUM(CASE WHEN content_type = 'text' THEN 1 ELSE 0 END) as text_count,
-                        SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        to_char(MIN(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as first_entry,
-                        to_char(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_entry
-                    FROM context_entries
-                    WHERE thread_id = {self._placeholder(1)}
-                '''
-            row = await conn.fetchrow(query1, thread_id)
-            if row:
-                stats.update(dict(row))
-
-            query2 = f'''
-                    SELECT source, COUNT(*) as count
-                    FROM context_entries
-                    WHERE thread_id = {self._placeholder(1)}
-                    GROUP BY source
-                '''
-            rows = await conn.fetch(query2, thread_id)
-            by_source: dict[str, int] = {}
-            for row in rows:
-                by_source[row['source']] = row['count']
-            stats['by_source'] = by_source
-
-            # GROUP BY rather than SELECT DISTINCT (same result set): PostgreSQL
-            # rejects an ORDER BY expression that is absent from a DISTINCT select
-            # list, and the collated sort term is such an expression. The collation
-            # makes this public tag list serialize in the same order as SQLite's.
-            query3 = f'''
-                    SELECT t.tag
-                    FROM tags t
-                    JOIN context_entries c ON t.context_entry_id = c.id
-                    WHERE c.thread_id = {self._placeholder(1)}
-                    GROUP BY t.tag
-                    ORDER BY {byte_ordered_text('t.tag', 'postgresql')}
-                '''
-            rows = await conn.fetch(query3, thread_id)
-            tags: list[str] = [row['tag'] for row in rows]
-            stats['tags'] = tags
-
-            query4 = f'''
-                    SELECT COUNT(*) as count
-                    FROM image_attachments i
-                    JOIN context_entries c ON i.context_entry_id = c.id
-                    WHERE c.thread_id = {self._placeholder(1)}
-                '''
-            row = await conn.fetchrow(query4, thread_id)
-            stats['image_count'] = row['count'] if row else 0
-
-            return stats
-
-        return await self.backend.execute_read(_get_thread_stats_postgresql)
-
-    async def get_tag_statistics(self) -> dict[str, Any]:
-        """Get comprehensive tag usage statistics.
-
-        Returns:
-            Dictionary containing tag-related statistics
-        """
-        if self.backend.backend_type == 'sqlite':
-
-            def _get_tag_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
-                cursor = conn.cursor()
-                stats: dict[str, Any] = {}
-
-                cursor.execute('SELECT COUNT(*) as count FROM tags')
-                stats['total_tag_uses'] = cursor.fetchone()['count']
-
-                cursor.execute('SELECT COUNT(DISTINCT tag) as count FROM tags')
-                stats['unique_tags'] = cursor.fetchone()['count']
-
-                # `tag` is the unique secondary sort key: top_10_tags below slices the
-                # first ten rows, so a tie in `count` would otherwise decide the slice
-                # membership over an undefined ordering. Byte-ordered so the slice
-                # admits the same tags on both backends.
-                tag_order = byte_ordered_text('tag', 'sqlite')
-                cursor.execute(f'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, {tag_order} ASC')
-                all_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
-                stats['all_tags'] = all_tags
-                stats['top_10_tags'] = all_tags[:10] if all_tags else []
-
-                cursor.execute('''
-                    SELECT AVG(tag_count) as avg_tags
-                    FROM (SELECT context_entry_id, COUNT(*) as tag_count FROM tags GROUP BY context_entry_id)
-                ''')
-                result = cursor.fetchone()
-                stats['avg_tags_per_entry'] = _to_float(result['avg_tags'])
-
-                return stats
-
-            return await self.backend.execute_read(_get_tag_stats_sqlite)
-
-        # postgresql
-
-        async def _get_tag_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
-            stats: dict[str, Any] = {}
-
-            row = await conn.fetchrow('SELECT COUNT(*) as count FROM tags')
-            stats['total_tag_uses'] = row['count'] if row else 0
-
-            row = await conn.fetchrow('SELECT COUNT(DISTINCT tag) as count FROM tags')
-            stats['unique_tags'] = row['count'] if row else 0
-
-            # `tag` is the unique secondary sort key: top_10_tags below slices the
-            # first ten rows, so a tie in `count` would otherwise decide the slice
-            # membership over an undefined ordering. Byte-ordered so the slice admits
-            # the same tags SQLite's BINARY comparison admits, not the locale's.
-            tag_order = byte_ordered_text('tag', 'postgresql')
-            rows = await conn.fetch(
-                f'SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC, {tag_order} ASC',
-            )
-            all_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
-            stats['all_tags'] = all_tags
-            stats['top_10_tags'] = all_tags[:10] if all_tags else []
-
-            row = await conn.fetchrow('''
-                    SELECT AVG(tag_count) as avg_tags
-                    FROM (SELECT context_entry_id, COUNT(*) as tag_count FROM tags GROUP BY context_entry_id) sub
-                ''')
-            stats['avg_tags_per_entry'] = _to_float(row['avg_tags'] if row else None)
-
-            return stats
-
-        return await self.backend.execute_read(_get_tag_stats_postgresql)
-
-    async def get_summary_statistics(self) -> dict[str, Any]:
-        """Get summary generation statistics.
+            scope: The caller's scope.
 
         Returns:
             Dictionary with summary_count, total_entries, and coverage_percentage
         """
+        predicate = build_access_predicate(
+            scope, mode=AccessMode.READ, backend_type=self.backend.backend_type, outer='context_entries',
+        )
+        total_sql = f'SELECT COUNT(*) AS count FROM context_entries{predicate.where_clause()}'
+        summary_sql = (
+            "SELECT COUNT(*) AS count FROM context_entries WHERE summary IS NOT NULL AND summary != ''"
+            f'{predicate.and_clause()}'
+        )
+
+        def _figures(summary_count: int, total_entries: int) -> dict[str, Any]:
+            coverage_percentage = round(summary_count / total_entries * 100, 2) if total_entries > 0 else 0.0
+            return {
+                'summary_count': summary_count,
+                'total_entries': total_entries,
+                'coverage_percentage': coverage_percentage,
+            }
+
         if self.backend.backend_type == 'sqlite':
 
             def _get_summary_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
                 cursor = conn.cursor()
-
-                cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-                total_entries = cursor.fetchone()['count']
-
-                cursor.execute(
-                    "SELECT COUNT(*) as count FROM context_entries WHERE summary IS NOT NULL AND summary != ''",
-                )
-                summary_count = cursor.fetchone()['count']
-
-                coverage_percentage = (
-                    round(summary_count / total_entries * 100, 2)
-                    if total_entries > 0
-                    else 0.0
-                )
-
-                return {
-                    'summary_count': summary_count,
-                    'total_entries': total_entries,
-                    'coverage_percentage': coverage_percentage,
-                }
+                total_entries = cursor.execute(total_sql, predicate.params).fetchone()['count']
+                summary_count = cursor.execute(summary_sql, predicate.params).fetchone()['count']
+                return _figures(summary_count, total_entries)
 
             return await self.backend.execute_read(_get_summary_stats_sqlite)
 
         # postgresql
 
         async def _get_summary_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
-            total_entries = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
-
-            summary_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM context_entries WHERE summary IS NOT NULL AND summary != ''",
-            )
-
-            coverage_percentage = (
-                round(summary_count / total_entries * 100, 2)
-                if total_entries > 0
-                else 0.0
-            )
-
-            return {
-                'summary_count': summary_count,
-                'total_entries': total_entries,
-                'coverage_percentage': coverage_percentage,
-            }
+            total_entries = await conn.fetchval(total_sql, *predicate.params)
+            summary_count = await conn.fetchval(summary_sql, *predicate.params)
+            return _figures(summary_count, total_entries)
 
         return await self.backend.execute_read(_get_summary_stats_postgresql)

@@ -81,21 +81,6 @@ class TestMalformedStoredImageMetadata:
         assert images[0]['mime_type'] == 'image/png'
         assert 'metadata' not in images[0]
 
-    async def test_batch_reader_omits_unreadable_metadata(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """The multi-context reader degrades the same way."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        context_id = await self._seed_entry_with_raw_metadata(backend, '{"unclosed": ')
-        repos = RepositoryContainer(backend)
-
-        by_context = await repos.images.get_images_for_contexts([context_id])
-
-        assert len(by_context[context_id]) == 1
-        assert 'metadata' not in by_context[context_id][0]
-
     async def test_unreadable_metadata_does_not_charge_the_failure_counters(
         self, async_db_initialized: StorageBackend,
     ) -> None:
@@ -109,7 +94,6 @@ class TestMalformedStoredImageMetadata:
         before = backend.get_metrics()
         for _ in range(3):
             await repos.images.get_images_for_context(context_id)
-            await repos.images.get_images_for_contexts([context_id])
         after = backend.get_metrics()
 
         assert after['failed_queries'] == before['failed_queries']
@@ -274,24 +258,3 @@ class TestPerImageMetadataValueFidelity:
 
         images = await repos.images.get_images_for_context(context_id)
         assert images[0].get('metadata') == {}
-
-    async def test_batch_reader_returns_the_empty_value_too(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """Reading many contexts preserves the same value fidelity."""
-        from app.repositories import RepositoryContainer
-
-        repos = RepositoryContainer(async_db_initialized)
-        context_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='image-metadata-batch-thread',
-            source='user',
-            content_type='multimodal',
-            text_content='Empty per-image metadata read in batch',
-            metadata=None,
-        )
-        await repos.images.store_images(context_id, [self._image('')])
-
-        by_context = await repos.images.get_images_for_contexts([context_id])
-        assert by_context[context_id][0].get('metadata') == ''
