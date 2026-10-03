@@ -6,6 +6,8 @@ metadata breaks search/metadata_filters; a bare-string tags would otherwise be
 stored one character per tag). The same parity guard applies to images: a non-list
 images (or a list with a non-dict element) is rejected per entry instead of reaching
 the image normalizer and raising a raw AttributeError that aborts the whole batch.
+Image data checks also run per entry: empty or whitespace-only data is rejected,
+and a missing mime_type defaults to image/png on both batch write tools.
 
 The boundary-cap tests pin the 100-item ceiling on every client-supplied id list
 (get_context_by_ids context_ids; delete_context_batch context_ids and thread_ids),
@@ -233,6 +235,113 @@ class TestUpdateBatchImagesShapeValidation:
             )
         # The clear shape error, not a raw "'str' object has no attribute 'get'" AttributeError.
         assert 'has no attribute' not in str(exc_info.value)
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestBatchImageValidation:
+    """mime_type defaults and empty data checks in batch operations."""
+
+    @pytest.mark.asyncio
+    async def test_store_batch_rejects_empty_image_data(self):
+        """store_context_batch rejects entries with empty image data."""
+        from app.tools.batch.store import store_context_batch
+
+        # atomic=True raises ToolError on validation failure
+        with pytest.raises(ToolError, match='empty "data" field'):
+            await store_context_batch(
+                entries=[{
+                    'thread_id': 'test-thread',
+                    'source': 'user',
+                    'text': 'Test entry',
+                    'images': [{'data': '', 'mime_type': 'image/png'}],
+                }],
+                atomic=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_batch_rejects_empty_image_data(self):
+        """update_context_batch rejects entries with empty image data."""
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
+
+        # Create an entry first
+        store_result = await store_context_batch(
+            entries=[{
+                'thread_id': 'test-thread',
+                'source': 'user',
+                'text': 'Original text',
+            }],
+        )
+        context_id = store_result['results'][0]['context_id']
+
+        # atomic=True raises ToolError on validation failure
+        with pytest.raises(ToolError, match='empty "data" field'):
+            await update_context_batch(
+                updates=[{
+                    'context_id': context_id,
+                    'images': [{'data': '   '}],
+                }],
+                atomic=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_store_batch_defaults_mime_type(self):
+        """store_context_batch defaults mime_type to image/png."""
+        from app.tools.batch.store import store_context_batch
+        from app.tools.context.retrieve import get_context_by_ids
+
+        valid_image = base64.b64encode(b'\x89PNG\r\n\x1a\n').decode()
+        store_result = await store_context_batch(
+            entries=[{
+                'thread_id': 'test-mime',
+                'source': 'user',
+                'text': 'Test entry',
+                'images': [{'data': valid_image}],
+            }],
+        )
+        assert store_result['results'][0]['success'] is True
+        cid = store_result['results'][0]['context_id']
+        assert cid is not None
+
+        # get_context_by_ids returns list[ContextEntryDict]
+        entries = await get_context_by_ids(context_ids=[cid], include_images=True)
+        images = entries[0].get('images') or []
+        assert len(images) >= 1
+        assert images[0]['mime_type'] == 'image/png'
+
+    @pytest.mark.asyncio
+    async def test_update_batch_defaults_mime_type(self):
+        """update_context_batch defaults mime_type to image/png."""
+        from app.tools.batch.store import store_context_batch
+        from app.tools.batch.update import update_context_batch
+        from app.tools.context.retrieve import get_context_by_ids
+
+        # Create entry without images
+        store_result = await store_context_batch(
+            entries=[{
+                'thread_id': 'test-mime-upd',
+                'source': 'user',
+                'text': 'Original text',
+            }],
+        )
+        context_id = store_result['results'][0]['context_id']
+        assert context_id is not None
+
+        # Update with image lacking mime_type
+        valid_image = base64.b64encode(b'\x89PNG\r\n\x1a\n').decode()
+        update_result = await update_context_batch(
+            updates=[{
+                'context_id': context_id,
+                'images': [{'data': valid_image}],
+            }],
+        )
+        assert update_result['results'][0]['success'] is True
+
+        # get_context_by_ids returns list[ContextEntryDict]
+        entries = await get_context_by_ids(context_ids=[context_id], include_images=True)
+        images = entries[0].get('images') or []
+        assert len(images) >= 1
+        assert images[0]['mime_type'] == 'image/png'
 
 
 class TestIdListBoundaryCaps:

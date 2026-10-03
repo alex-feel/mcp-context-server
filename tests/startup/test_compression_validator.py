@@ -7,6 +7,9 @@ Covers the three classes of behavior in ``validate_compression_provenance``:
 - validation-mode env-vs-DB reconciliation (mismatches raise
   ``ConfigurationError`` with exit code 78).
 
+Also covers ``guard_compression_disable_over_populated``, which refuses a
+compression-off flip while a provenance row exists.
+
 Each test uses a fresh SQLite backend so the singleton row starts empty.
 """
 
@@ -26,6 +29,8 @@ from app.errors import ConfigurationError
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
 from app.startup.compression_validator import validate_compression_provenance
+from tests.helpers import disable_compression
+from tests.helpers import enable_compression
 
 
 @pytest.fixture(autouse=True)
@@ -596,3 +601,39 @@ async def test_generation_disabled_with_existing_row_still_validates(
 
     with pytest.raises(ConfigurationError, match='COMPRESSION_SEED'):
         await validate_compression_provenance(backend=backend)
+
+
+@pytest.mark.asyncio
+async def test_disable_direction_guard_refuses_populated_before_provisioning(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The disable-direction guard refuses a compression-off flip on compressed data.
+
+    Run BEFORE the provisioning migrations in the lifespan so no stray fp32
+    table is ever created: compression off + a compression_metadata provenance
+    row present must raise ConfigurationError; a fresh database (no row) passes.
+    """
+    from app.startup.compression_validator import guard_compression_disable_over_populated
+
+    # First compress (seeds the provenance row) while compression is on.
+    enable_compression(monkeypatch)
+    await apply_compression_migration(backend=backend)
+
+    def _seed_provenance(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            'INSERT OR REPLACE INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', 0, 1024, NULL)",
+        )
+
+    await backend.execute_write(_seed_provenance)
+
+    # Flip compression OFF: the guard must refuse (exit 78) with a --decompress hint.
+    disable_compression(monkeypatch)
+    get_settings.cache_clear()
+    import app.startup.compression_validator as validator_module
+    monkeypatch.setattr(validator_module, 'get_settings', get_settings)
+
+    with pytest.raises(ConfigurationError, match='--decompress'):
+        await guard_compression_disable_over_populated(backend)

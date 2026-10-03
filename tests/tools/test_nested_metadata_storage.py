@@ -1,21 +1,12 @@
-"""
-Test that nested JSON structures can be stored in metadata after the fix.
-
-This test verifies that the metadata type definition fix allows complex
-nested JSON structures to be stored and retrieved correctly.
-"""
+"""Nested JSON metadata round-trips through store_context and search_context and is filterable by nested path."""
 
 import math
 
 import pytest
 
-# Import the actual async functions from app.tools, not the MCP-wrapped versions
-import app.tools
+from app.tools import search_context
+from app.tools import store_context
 from app.types import JsonValue
-
-# Get the actual async functions - @mcp.tool() does not wrap them at import time
-store_context = app.tools.store_context
-search_context = app.tools.search_context
 
 
 @pytest.mark.asyncio
@@ -223,7 +214,7 @@ async def test_mixed_nested_structures() -> None:
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('initialized_server')
 async def test_backward_compatibility_flat_metadata() -> None:
-    """Test that flat metadata still works (backward compatibility)."""
+    """Test that flat (non-nested) metadata values come back from search_context after store_context."""
     flat_metadata: dict[str, JsonValue] = {
         'status': 'active',
         'priority': 8,
@@ -253,3 +244,198 @@ async def test_backward_compatibility_flat_metadata() -> None:
     assert retrieved_metadata['status'] == 'active'
     assert retrieved_metadata['priority'] == 8
     assert retrieved_metadata['completed'] is False
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures('initialized_server')
+class TestNestedJSONMetadata:
+    """Test nested JSON structures in metadata."""
+
+    @pytest.mark.asyncio
+    async def test_store_nested_objects(self) -> None:
+        """Test storing nested JSON objects in metadata."""
+        complex_metadata: dict[str, JsonValue] = {
+            'status': 'active',
+            'config': {
+                'database': {
+                    'connection': {
+                        'pool': {'size': 10, 'timeout': 30},
+                        'retry': {'max_attempts': 3, 'backoff': 2.5},
+                    },
+                },
+                'cache': {'enabled': True, 'ttl': 300},
+            },
+            'user': {'id': 123, 'name': 'Alice Johnson', 'preferences': {'theme': 'dark', 'language': 'en'}},
+        }
+
+        result = await store_context(
+            thread_id='test_nested_json',
+            source='agent',
+            text='Test nested metadata storage',
+            metadata=complex_metadata,
+        )
+
+        assert result['success'] is True
+        assert 'context_id' in result
+
+        # Retrieve and verify the metadata is preserved
+        search_result = await search_context(limit=50, thread_id='test_nested_json')
+        assert len(search_result['results']) == 1
+
+        stored_metadata = search_result['results'][0]['metadata']
+        assert stored_metadata['status'] == 'active'
+        assert stored_metadata['config']['database']['connection']['pool']['size'] == 10
+        assert stored_metadata['config']['database']['connection']['pool']['timeout'] == 30
+        assert stored_metadata['config']['database']['connection']['retry']['max_attempts'] == 3
+        assert stored_metadata['config']['database']['connection']['retry']['backoff'] == 2.5
+        assert stored_metadata['config']['cache']['enabled'] is True
+        assert stored_metadata['user']['preferences']['theme'] == 'dark'
+        assert stored_metadata['user']['preferences']['language'] == 'en'
+
+    @pytest.mark.asyncio
+    async def test_store_arrays_in_metadata(self) -> None:
+        """Test storing arrays in metadata."""
+        metadata_with_arrays: dict[str, JsonValue] = {
+            'tags': ['urgent', 'backend', 'production'],
+            'priority_levels': [1, 2, 3, 4, 5],
+            'mixed_array': ['string', 42, math.pi, True, None],
+            'nested_arrays': [[1, 2], [3, 4], [5, 6]],
+        }
+
+        result = await store_context(
+            thread_id='test_arrays',
+            source='agent',
+            text='Test array metadata',
+            metadata=metadata_with_arrays,
+        )
+
+        assert result['success'] is True
+
+        # Retrieve and verify arrays are preserved
+        search_result = await search_context(limit=50, thread_id='test_arrays')
+        stored_metadata = search_result['results'][0]['metadata']
+
+        assert stored_metadata['tags'] == ['urgent', 'backend', 'production']
+        assert stored_metadata['priority_levels'] == [1, 2, 3, 4, 5]
+        assert stored_metadata['mixed_array'] == ['string', 42, math.pi, True, None]
+        assert stored_metadata['nested_arrays'] == [[1, 2], [3, 4], [5, 6]]
+
+    @pytest.mark.asyncio
+    async def test_query_nested_paths(self) -> None:
+        """Test querying nested JSON paths."""
+        # Store multiple entries with nested metadata
+        await store_context(
+            thread_id='test_nested_paths',
+            source='agent',
+            text='Entry 1',
+            metadata={'user': {'preferences': {'theme': 'dark', 'notifications': {'email': True}}}},
+        )
+
+        await store_context(
+            thread_id='test_nested_paths',
+            source='agent',
+            text='Entry 2',
+            metadata={'user': {'preferences': {'theme': 'light', 'notifications': {'email': False}}}},
+        )
+
+        # Query using nested path
+        result = await search_context(
+            limit=50,
+            thread_id='test_nested_paths',
+            metadata={'user.preferences.theme': 'dark'},
+        )
+
+        assert len(result['results']) == 1
+        assert result['results'][0]['text_content'] == 'Entry 1'
+        assert result['results'][0]['metadata']['user']['preferences']['theme'] == 'dark'
+
+    @pytest.mark.asyncio
+    async def test_complex_nested_structure(self) -> None:
+        """Test very complex nested structure with multiple levels."""
+        complex_structure: dict[str, JsonValue] = {
+            'level1': {
+                'level2': {
+                    'level3': {
+                        'level4': {
+                            'value': 'deeply_nested',
+                            'number': 42,
+                            'array': [1, 2, 3],
+                            'object': {'key': 'value'},
+                        },
+                    },
+                },
+            },
+            'metrics': {
+                'cpu': 45.5,
+                'memory': 512,
+                'disk': {'used': 80.5, 'total': 100.0, 'partitions': ['/dev/sda1', '/dev/sda2']},
+            },
+            'features': {
+                'enabled': ['feature_a', 'feature_b', 'feature_c'],
+                'disabled': [],
+                'experimental': {'count': 3, 'names': ['exp_1', 'exp_2', 'exp_3']},
+            },
+        }
+
+        result = await store_context(
+            thread_id='test_complex',
+            source='agent',
+            text='Complex nested structure test',
+            metadata=complex_structure,
+        )
+
+        assert result['success'] is True
+
+        # Verify structure is preserved
+        search_result = await search_context(limit=50, thread_id='test_complex')
+        stored_metadata = search_result['results'][0]['metadata']
+
+        # Verify deep nesting
+        assert stored_metadata['level1']['level2']['level3']['level4']['value'] == 'deeply_nested'
+        assert stored_metadata['level1']['level2']['level3']['level4']['number'] == 42
+        assert stored_metadata['level1']['level2']['level3']['level4']['array'] == [1, 2, 3]
+        assert stored_metadata['level1']['level2']['level3']['level4']['object']['key'] == 'value'
+
+        # Verify metrics
+        assert stored_metadata['metrics']['cpu'] == 45.5
+        assert stored_metadata['metrics']['disk']['used'] == 80.5
+        assert stored_metadata['metrics']['disk']['partitions'] == ['/dev/sda1', '/dev/sda2']
+
+        # Verify features
+        assert stored_metadata['features']['enabled'] == ['feature_a', 'feature_b', 'feature_c']
+        assert stored_metadata['features']['disabled'] == []
+        assert stored_metadata['features']['experimental']['count'] == 3
+
+    @pytest.mark.asyncio
+    async def test_mixed_flat_and_nested(self) -> None:
+        """Test mixing flat and nested metadata structures."""
+        mixed_metadata: dict[str, JsonValue] = {
+            'simple_string': 'value',
+            'simple_int': 42,
+            'simple_bool': True,
+            'nested': {'level1': {'level2': 'deep_value'}},
+            'array': [1, 2, 3],
+        }
+
+        result = await store_context(
+            thread_id='test_mixed',
+            source='agent',
+            text='Mixed flat and nested',
+            metadata=mixed_metadata,
+        )
+
+        assert result['success'] is True
+
+        # Query using both flat and nested paths
+        search_result = await search_context(
+            limit=50, thread_id='test_mixed', metadata={'simple_string': 'value'},
+        )
+        assert len(search_result['results']) == 1
+
+        # Verify all types are preserved
+        stored_metadata = search_result['results'][0]['metadata']
+        assert stored_metadata['simple_string'] == 'value'
+        assert stored_metadata['simple_int'] == 42
+        assert stored_metadata['simple_bool'] is True
+        assert stored_metadata['nested']['level1']['level2'] == 'deep_value'
+        assert stored_metadata['array'] == [1, 2, 3]

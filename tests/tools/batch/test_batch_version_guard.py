@@ -1,20 +1,19 @@
-"""Regression tests for the optimistic-concurrency version guard in batch paths.
+"""Tests for the optimistic-concurrency version guard in batch paths.
 
-These exercise the version compare-and-swap (CAS) added to ``context_entries``
+These exercise the version compare-and-swap (CAS) on ``context_entries``
 against a REAL ``SQLiteBackend`` + ``RepositoryContainer`` (NOT mocked repos), so
-the CAS predicate runs in actual SQL the way it does in production. Three gaps an
-adversarial review flagged in the just-landed version guard are closed here:
+the CAS predicate runs in actual SQL the way it does in production. Three cases
+are covered:
 
-1. ``test_duplicate_context_id_*`` -- the regression that was fixed: two updates in
-   one ``update_context_batch`` targeting the SAME context_id (different text) must
-   BOTH apply (last wins) instead of the second colliding on a stale captured
-   version. The pre-fix code captured ``entry_versions`` ONCE per context_id and
-   reused it for the repeated id, so the second same-id update presented a stale
-   ``expected_version``, matched 0 rows, and raised ``VersionConflictError``
+1. ``test_duplicate_context_id_*`` -- two updates in one ``update_context_batch``
+   targeting the SAME context_id (different text) BOTH apply (last wins) instead of
+   the second colliding on a stale captured version. The batch advances a running
+   ``live_versions[context_id]`` after each committed same-id update. Reusing a
+   version captured ONCE per context_id would hand the second same-id update a stale
+   ``expected_version`` that matches 0 rows and raises ``VersionConflictError``
    (atomic: whole-batch abort with a misleading "concurrent modification" message;
-   non-atomic: a spurious per-entry failure). These tests therefore FAIL against
-   the pre-fix single-captured-version code and PASS now that the batch advances a
-   running ``live_versions[context_id]`` after each committed same-id update.
+   non-atomic: a spurious per-entry failure), so these tests fail whenever the
+   running version is not advanced.
 2. ``test_external_bump_*`` -- the guard fires against a genuine EXTERNAL concurrent
    writer: the row's version is advanced out-of-band BEFORE the batch's PHASE 4
    transaction, so the batch's pre-generation captured version is stale. Atomic
@@ -26,7 +25,7 @@ adversarial review flagged in the just-landed version guard are closed here:
    dedup-vs-update lost-update window).
 
 Backend/repos setup mirrors ``tests/tools/context/test_update_concurrency_version_guard.py``
-and ``tests/tools/test_generation_first.py``: a real ``SQLiteBackend`` +
+and ``tests/tools/context/test_generation_first.py``: a real ``SQLiteBackend`` +
 ``RepositoryContainer`` built from ``load_schema('sqlite')``. Embedding/summary
 providers are patched to ``None`` so generation does not run (no Ollama needed) and
 the updates apply as pure text/metadata writes through the real CAS path.
@@ -88,7 +87,7 @@ class TestBatchVersionGuard:
             row = cursor.fetchone()
             return str(row[0]), int(row[1])
 
-    # ---- Test 1: duplicate context_id in one batch (the fixed regression) ----
+    # ---- Test 1: duplicate context_id in one batch ----
 
     @pytest.mark.asyncio
     async def test_duplicate_context_id_atomic_both_apply_second_wins(
@@ -97,11 +96,11 @@ class TestBatchVersionGuard:
         """atomic=True: two updates for the SAME context_id (different text) BOTH
         apply; the batch succeeds and the persisted text is the SECOND update's.
 
-        Pre-fix this FAILED: the second same-id update reused the version captured
-        once for that id, matched 0 rows on the CAS, and raised
-        ``VersionConflictError`` -> the whole atomic batch aborted with a
-        "Concurrent modification" ToolError. The fix advances
-        ``live_versions[context_id]`` after each committed same-id update.
+        The batch advances ``live_versions[context_id]`` after each committed
+        same-id update. Reusing the version captured once for that id would make the
+        second same-id update match 0 rows on the CAS and raise
+        ``VersionConflictError`` -> the whole atomic batch would abort with a
+        "Concurrent modification" ToolError.
         """
         backend, repos, entry_id = setup_with_entry
 
@@ -136,9 +135,9 @@ class TestBatchVersionGuard:
         """atomic=False: two updates for the SAME context_id (different text) BOTH
         succeed (no spurious version-conflict failure); final text is the SECOND.
 
-        Pre-fix this FAILED: the second same-id update hit a spurious
-        ``VersionConflictError`` recorded as a per-entry failure. The fix persists a
-        running ``live_versions[context_id]`` across the sequential non-atomic loop.
+        The batch persists a running ``live_versions[context_id]`` across the
+        sequential non-atomic loop; without it the second same-id update would hit a
+        spurious ``VersionConflictError`` recorded as a per-entry failure.
 
         DISCRIMINATION (the running-version increment, not merely the self-heal):
         wrap ``check_entry_exists`` to count its invocations. For a CLEAN duplicate-id
@@ -153,7 +152,7 @@ class TestBatchVersionGuard:
         present the STALE captured version, hit a spurious ``VersionConflictError``,
         and trigger one extra self-heal re-read -- pushing the count to 3. Asserting
         the count is EXACTLY 2 (the up-front baseline, ZERO conflict re-reads) fails if
-        the increment is dropped, so the self-heal can no longer mask a dropped bump.
+        the increment is dropped, so the self-heal cannot mask a dropped bump.
         """
         backend, repos, entry_id = setup_with_entry
 
@@ -447,9 +446,9 @@ class TestBatchVersionGuard:
 
         ``version`` is monotonic, so re-entering the write with the token whose
         compare-and-set just failed matches zero rows by construction. Sleeping and
-        re-running the whole entry transaction with the unchanged token therefore
-        burned a guaranteed-doomed write and one of the five conflict slots on what
-        was only a connection blip. Mirrors the single-update path.
+        re-running the whole entry transaction with the unchanged token would burn a
+        guaranteed-doomed write and one of the five conflict slots on what is only a
+        connection blip. Mirrors the single-update path.
         """
         _backend, repos, entry_id = setup_with_entry
 

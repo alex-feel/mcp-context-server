@@ -58,17 +58,18 @@ uv run pytest
 uv run pytest --cov=app --cov-report=html
 
 # Run specific test file
-uv run pytest tests/server/test_server.py
+uv run pytest tests/tools/context/test_store.py
 
 # Run metadata filtering tests
-uv run pytest tests/core/test_metadata_filtering.py -v
+uv run pytest tests/core/test_query_builder.py tests/core/test_query_builder_type_guards.py tests/core/test_query_builder_numeric.py tests/core/test_query_builder_array_contains.py tests/core/test_query_builder_limits.py tests/core/test_metadata_types.py -v
+uv run pytest tests/tools/search/test_browse_metadata_filters.py tests/tools/search/test_browse_array_contains.py tests/tools/test_nested_metadata_storage.py -v
 uv run pytest tests/tools/test_metadata_error_handling.py -v
 
 # Run semantic search tests
-uv run pytest tests/tools/test_semantic_search_filters.py -v
+uv run pytest tests/repositories/embedding_repository tests/tools/search/test_semantic.py -v
 
 # Run date filtering tests
-uv run pytest tests/tools/test_date_filtering.py -v
+uv run pytest tests/startup/test_validation.py tests/tools/search/test_browse_date_filtering.py tests/tools/search/test_semantic_date_filtering.py tests/repositories/test_base.py tests/repositories/context_repository/test_search_sqlite_datetime.py -v
 
 # Run integration tests only
 uv run pytest -m integration

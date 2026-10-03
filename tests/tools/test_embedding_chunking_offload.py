@@ -11,8 +11,8 @@ starve every concurrent MCP request.
 The cost switch is the splitter's own fast path: at or below ``chunk_size``
 ``split_text`` returns one chunk immediately, and above it the recursive split runs
 in full. The offload gate therefore keys on ``chunk_size``, not on a large fixed
-character threshold that left exactly the expensive plain-text case inline.
-Mirrors the read-path (test_navigation_tools.py::TestLargeEntryOffloadNonBlocking),
+character threshold, which would leave exactly the expensive plain-text case inline.
+Mirrors the read-path (test_navigation_offload.py::TestLargeEntryOffloadNonBlocking),
 the index_tree node leg (test_index_node_generation.py::TestLargeEntryWritePathOffloadNonBlocking),
 and the grep matcher (test_grep_matcher.py).
 """

@@ -126,7 +126,8 @@ async def isolated_metadata_index_db(pg_test_url: str) -> AsyncIterator[str]:
 def _extract_content(result: object) -> dict[str, Any]:
     """Extract the structured payload from a FastMCP CallToolResult.
 
-    Mirrors the extraction logic in :mod:`tests.integration._harness`: search
+    Mirrors the extraction logic in
+    :meth:`tests.integration._harness.core.HarnessCore._extract_content`: search
     responses carry ``results`` + ``count`` directly, while ``store_context``
     returns a flat dict with ``success``.
 

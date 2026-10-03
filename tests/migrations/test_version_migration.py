@@ -11,7 +11,7 @@ PostgreSQL coverage: there is no PostgreSQL migration-test fixture in this suite
 (the content_hash / summary migration tests are SQLite-only too). The PostgreSQL
 branch of ``apply_version_migration`` (``ADD COLUMN IF NOT EXISTS ... BIGINT NOT
 NULL DEFAULT 0`` under the schema-init advisory lock) rides on the dual-backend
-real-server harness (``tests/integration/_harness.py``, run against PostgreSQL via
+real-server harness (``tests/integration/_harness/``, run against PostgreSQL via
 the ``@requires_docker_postgres`` entry point) plus the live deploy-stack
 integration, which exercise update_context / update_context_batch against a
 PostgreSQL backend whose schema includes ``version``. A dedicated PostgreSQL
