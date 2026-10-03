@@ -11,6 +11,7 @@ from fastmcp.exceptions import ToolError
 
 import app.tools
 from app.repositories.context_repository.records import EntryProbe
+from app.repositories.context_repository.records import IdAccess
 from tests.tools._tool_error_mocks import build_mock_repos
 from tests.tools._tool_error_mocks import patch_tool_repositories
 
@@ -250,16 +251,18 @@ class TestDeleteContextErrors:
     @pytest.mark.asyncio
     async def test_database_deletion_error(self, mock_server_dependencies):
         """Test that database deletion error raises ToolError."""
+        context_ids = [
+            '0190abcdef1234567890abcd00000001',
+            '0190abcdef1234567890abcd00000002',
+            '0190abcdef1234567890abcd00000003',
+        ]
+        mock_server_dependencies.context.probe_ids.return_value = dict.fromkeys(
+            context_ids, IdAccess(can_write=True, is_owner=True),
+        )
         mock_server_dependencies.context.delete_by_ids.side_effect = Exception('Deletion failed')
 
         with pytest.raises(ToolError, match='Failed to delete context: Deletion failed'):
-            await delete_context(
-                context_ids=[
-                    '0190abcdef1234567890abcd00000001',
-                    '0190abcdef1234567890abcd00000002',
-                    '0190abcdef1234567890abcd00000003',
-                ],
-            )
+            await delete_context(context_ids=context_ids)
 
 
 class TestSearchContextErrors:

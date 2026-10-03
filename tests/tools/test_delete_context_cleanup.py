@@ -18,6 +18,12 @@ Three properties are pinned here:
    writer while every other client stalls.
 3. Cleanup and the row delete share ONE transaction, so a failure between them
    can never leave entries stripped of their vectors while their rows survive.
+
+The chokepoint ``delete_entries_with_cleanup`` also decides which of the ids it is
+given the caller may delete: inside that transaction it probes them, cleans and
+deletes only the ones the caller owns, skips the ones the caller may not read, and,
+for a delete that names ids, refuses the whole request when a readable id is not
+the caller's.
 """
 
 import sqlite3
@@ -26,6 +32,7 @@ from collections.abc import Callable
 from collections.abc import Generator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -34,7 +41,13 @@ from fastmcp.exceptions import ToolError
 import app.tools._delete_cleanup as delete_cleanup_module
 import app.tools.batch.delete as batch_delete_module
 import app.tools.context.delete as context_delete_module
+from app.access_scope import AccessMode
+from app.repositories import RepositoryContainer
+from app.repositories.context_repository.records import IdAccess
 from app.settings import get_settings
+from app.tools._delete_cleanup import delete_entries_with_cleanup
+from app.tools._transactions import EntryNotAuthorizedError
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +77,17 @@ def fp32_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 VALID_ID = '0190abcdef1234567890abcdef123456'
+OWNED_ID = '0190abcdef1234567890abcdef000001'
+GRANTED_ID = '0190abcdef1234567890abcdef000002'
+HIDDEN_ID = '0190abcdef1234567890abcdef000003'
+
+OWNER_ACCESS = IdAccess(can_write=True, is_owner=True)
+GRANTEE_ACCESS = IdAccess(can_write=True, is_owner=False)
+
+
+async def _owned_access(context_ids: list[str], **_kwargs: object) -> dict[str, IdAccess]:
+    """Probe stand-in: the caller owns every requested entry."""
+    return dict.fromkeys(context_ids, OWNER_ACCESS)
 
 
 class _FakeTransaction:
@@ -107,8 +131,7 @@ class _FakeRepos:
         )
         self.context = SimpleNamespace(
             delete_by_ids=AsyncMock(return_value=1),
-            delete_by_thread=AsyncMock(return_value=0),
-            delete_contexts_batch=AsyncMock(return_value=(1, ['context_ids: 1 ids'])),
+            probe_ids=AsyncMock(side_effect=_owned_access),
             backend=_FakeBackend(backend_type),
             search_contexts=AsyncMock(return_value=([], None)),
             # The criteria query returns the SNAPSHOT of ids the combined
@@ -259,6 +282,8 @@ async def test_delete_context_cleanup_and_row_delete_share_one_transaction(
 
     assert len(fake.context.backend.transactions) == 1
     txn = fake.context.backend.transactions[0]
+    assert fake.context.probe_ids.await_args is not None
+    assert fake.context.probe_ids.await_args.kwargs['txn'] is txn
     assert fake.embeddings.delete_all_chunks_bulk.await_args is not None
     assert fake.embeddings.delete_all_chunks_bulk.await_args.kwargs['txn'] is txn
     assert fake.context.delete_by_ids.await_args is not None
@@ -384,7 +409,7 @@ async def test_delete_context_rejects_context_ids_and_thread_id_together(
         await context_delete_module.delete_context(context_ids=[VALID_ID], thread_id='thread-abc')
 
     fake.context.delete_by_ids.assert_not_awaited()
-    fake.context.delete_by_thread.assert_not_awaited()
+    fake.context.get_ids_matching_batch_criteria.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -454,3 +479,118 @@ async def test_batch_delete_cleanup_lock_contention_rolls_back_and_retries(
     assert fake.embeddings.delete_all_chunks_bulk.await_count == 2
     fake.context.delete_by_ids.assert_awaited_once()
     assert len(fake.context.backend.transactions) == 2
+
+
+def _probe_returning(access: dict[str, IdAccess]) -> AsyncMock:
+    """Return a probe stand-in reporting ``access`` for the ids it is asked about."""
+
+    async def _probe(context_ids: list[str], **_kwargs: object) -> dict[str, IdAccess]:
+        return {context_id: access[context_id] for context_id in context_ids if context_id in access}
+
+    return AsyncMock(side_effect=_probe)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_and_delete_receive_only_owned_ids(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """A thread or criteria delete cleans and deletes only the owned ids, skipping the rest silently."""
+    fake = make_fake_repos(tables_exist=True)
+    fake.context.probe_ids = _probe_returning({OWNED_ID: OWNER_ACCESS, GRANTED_ID: GRANTEE_ACCESS})
+
+    deleted = await delete_entries_with_cleanup(
+        cast(RepositoryContainer, fake), [OWNED_ID, GRANTED_ID, HIDDEN_ID], scope=LOCAL_SCOPE,
+        refuse_unauthorized=False,
+    )
+
+    assert deleted == 1
+    txn = fake.context.backend.transactions[0]
+    fake.context.probe_ids.assert_awaited_once_with([OWNED_ID, GRANTED_ID, HIDDEN_ID], scope=LOCAL_SCOPE, txn=txn)
+    fake.embeddings.delete_all_chunks_bulk.assert_awaited_once_with([OWNED_ID], txn=txn)
+    fake.context.delete_by_ids.assert_awaited_once_with([OWNED_ID], scope=LOCAL_SCOPE, txn=txn)
+
+
+@pytest.mark.asyncio
+async def test_readable_not_owned_id_refuses_before_any_write(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """A delete that names a readable entry the caller does not own refuses and deletes nothing."""
+    fake = make_fake_repos(tables_exist=True)
+    fake.context.probe_ids = _probe_returning({OWNED_ID: OWNER_ACCESS, GRANTED_ID: GRANTEE_ACCESS})
+
+    with pytest.raises(EntryNotAuthorizedError) as error:
+        await delete_entries_with_cleanup(
+            cast(RepositoryContainer, fake), [OWNED_ID, GRANTED_ID, HIDDEN_ID], scope=LOCAL_SCOPE,
+            refuse_unauthorized=True,
+        )
+
+    assert str(error.value) == f'Not authorized to delete context entries: {GRANTED_ID}'
+    fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
+    fake.context.delete_by_ids.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hidden_named_id_is_silently_skipped(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """A named id the caller may not read behaves like an absent one: no refusal, not counted."""
+    fake = make_fake_repos(tables_exist=True)
+    fake.context.probe_ids = _probe_returning({OWNED_ID: OWNER_ACCESS})
+
+    deleted = await delete_entries_with_cleanup(
+        cast(RepositoryContainer, fake), [OWNED_ID, HIDDEN_ID], scope=LOCAL_SCOPE, refuse_unauthorized=True,
+    )
+
+    assert deleted == 1
+    txn = fake.context.backend.transactions[0]
+    fake.context.delete_by_ids.assert_awaited_once_with([OWNED_ID], scope=LOCAL_SCOPE, txn=txn)
+
+
+@pytest.mark.asyncio
+async def test_nothing_deletable_issues_no_write(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """With no owned id among the requested ones, neither the cleanup nor the delete runs."""
+    fake = make_fake_repos(tables_exist=True)
+    fake.context.probe_ids = _probe_returning({GRANTED_ID: GRANTEE_ACCESS})
+
+    deleted = await delete_entries_with_cleanup(
+        cast(RepositoryContainer, fake), [GRANTED_ID, HIDDEN_ID], scope=LOCAL_SCOPE, refuse_unauthorized=False,
+    )
+
+    assert deleted == 0
+    fake.embeddings.delete_all_chunks_bulk.assert_not_awaited()
+    fake.context.delete_by_ids.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_context_by_ids_reports_the_refusal(
+    make_fake_repos: Callable[..., _FakeRepos],
+) -> None:
+    """delete_context by ids surfaces the refusal as the tool error and deletes nothing."""
+    fake = make_fake_repos(tables_exist=True)
+    fake.context.probe_ids = _probe_returning({VALID_ID: GRANTEE_ACCESS})
+
+    with pytest.raises(ToolError) as error:
+        await context_delete_module.delete_context(context_ids=[VALID_ID])
+
+    assert str(error.value) == f'Not authorized to delete context entries: {VALID_ID}'
+    fake.context.delete_by_ids.assert_not_awaited()
+
+
+@pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
+@pytest.mark.asyncio
+async def test_delete_context_by_thread_deletes_the_owned_snapshot(
+    make_fake_repos: Callable[..., _FakeRepos], backend_type: str,
+) -> None:
+    """On both backends a thread delete snapshots the caller's own ids and deletes exactly those."""
+    fake = make_fake_repos(tables_exist=True, backend_type=backend_type)
+
+    result = await context_delete_module.delete_context(thread_id='thread-abc')
+
+    assert result['deleted_count'] == 1
+    fake.context.get_ids_matching_batch_criteria.assert_awaited_once_with(
+        thread_ids=['thread-abc'], scope=LOCAL_SCOPE, mode=AccessMode.OWNER,
+    )
+    txn = fake.context.backend.transactions[0]
+    fake.context.delete_by_ids.assert_awaited_once_with([VALID_ID], scope=LOCAL_SCOPE, txn=txn)

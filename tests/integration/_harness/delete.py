@@ -71,7 +71,7 @@ class DeleteMixin(HarnessCore):
 
             delete_data = self._extract_content(delete_by_id)
 
-            if not delete_data.get('success'):
+            if not delete_data.get('success') or delete_data.get('deleted_count') != 1:
                 self.test_results.append((test_name, False, f'Failed to delete by ID: {delete_data}'))
                 return False
 
@@ -96,7 +96,8 @@ class DeleteMixin(HarnessCore):
 
             thread_delete_data = self._extract_content(delete_by_thread)
 
-            if not thread_delete_data.get('success'):
+            # The thread still holds the two entries the delete by id left in place.
+            if not thread_delete_data.get('success') or thread_delete_data.get('deleted_count') != 2:
                 self.test_results.append((test_name, False, f'Failed to delete by thread: {thread_delete_data}'))
                 return False
 
@@ -122,7 +123,7 @@ class DeleteMixin(HarnessCore):
             return False
 
     async def test_delete_context_nonexistent_id(self) -> bool:
-        """Test deleting non-existent context returns 0 deleted.
+        """Deleting an unknown id or an unknown thread succeeds with nothing deleted.
 
         Returns:
             bool: True if test passed.
@@ -130,23 +131,17 @@ class DeleteMixin(HarnessCore):
         test_name = 'Delete Context Nonexistent ID'
         assert self.client is not None
         try:
-            # Try to delete by non-existent thread ID
-            result = await self.client.call_tool(
-                'delete_context',
-                {
-                    'thread_id': 'nonexistent_thread_for_delete_xyz',
-                },
-            )
+            for arguments in (
+                {'context_ids': ['0190abcdef1234567890abcdef0fffff']},
+                {'thread_id': 'nonexistent_thread_for_delete_xyz'},
+            ):
+                data = self._extract_content(await self.client.call_tool('delete_context', arguments))
+                if not data.get('success') or data.get('deleted_count', -1) != 0:
+                    self.test_results.append((test_name, False, f'Unexpected result for {arguments}: {data}'))
+                    return False
 
-            data = self._extract_content(result)
-
-            # Should succeed with 0 deleted
-            if data.get('success') and data.get('deleted_count', -1) == 0:
-                self.test_results.append((test_name, True, 'Delete non-existent returned 0 deleted'))
-                return True
-
-            self.test_results.append((test_name, False, f'Unexpected result: {data}'))
-            return False
+            self.test_results.append((test_name, True, 'Unknown id and unknown thread each deleted nothing'))
+            return True
 
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
@@ -216,10 +211,10 @@ class DeleteMixin(HarnessCore):
     async def test_delete_removes_embedding_rows(self) -> bool:
         """Deleting entries takes their embedding rows with them, by id and by thread.
 
-        The by-ids delete runs the embedding cleanup and the row delete inside ONE
-        transaction, and the thread-wide delete constrains itself to exactly the cleaned
-        id snapshot -- while PostgreSQL carries no explicit per-entry cleanup at all and
-        relies entirely on the ON DELETE CASCADE from the embedding tables. The global
+        Both deletes run the embedding cleanup and the row delete inside ONE transaction,
+        and the thread-wide delete constrains itself to exactly the id snapshot it took --
+        while PostgreSQL carries no explicit per-entry cleanup at all and relies entirely
+        on the ON DELETE CASCADE from the embedding tables. The global
         embedding count in ``get_statistics`` is the observable that pins that reliance:
         it counts ``embedding_metadata`` rows WITHOUT joining ``context_entries``, so a
         cascade that stopped firing (or a delete that committed the row removal while its

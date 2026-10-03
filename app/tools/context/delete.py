@@ -6,11 +6,13 @@ from typing import Annotated
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.access_scope import AccessMode
 from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_ids
 from app.startup import ensure_repositories
 from app.tools._delete_cleanup import delete_entries_with_cleanup
+from app.tools._transactions import EntryNotAuthorizedError
 from app.tools._validation import reject_unstorable_input
 
 logger = logging.getLogger(__name__)
@@ -70,14 +72,15 @@ async def delete_context(
             )
 
         # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id before it
-        # reaches delete_by_thread's bind: on PostgreSQL asyncpg would raise a
+        # reaches the thread snapshot's bind: on PostgreSQL asyncpg would raise a
         # non-ControlFlowError that charges the circuit breaker, while SQLite would
         # bind it silently -- a cross-backend divergence on a client-controlled value.
         reject_unstorable_input(thread_id=thread_id)
 
         # Get repositories first; prefix resolution below needs the context repo.
         repos = await ensure_repositories()
-        # A prefix resolves over the entries the caller may read.
+        # A prefix resolves over the entries the caller may read, and only the
+        # entries the caller owns are deleted.
         scope = resolve_access_scope()
 
         # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
@@ -89,10 +92,12 @@ async def delete_context(
                 raise ToolError(f'Invalid context ID: {e}') from e
 
         deleted = 0
-        backend = repos.context.backend
 
         if context_ids:
-            # Embedding cleanup and the row delete run in ONE transaction so they
+            # The ids are named, so the caller already knows the entries it can read:
+            # one it may read but does not own refuses the whole call before anything
+            # is deleted, while an id it may not read counts as absent. The probe,
+            # the embedding cleanup and the row delete run in ONE transaction so they
             # commit or roll back together. Deleting the embeddings first closes
             # the orphaned-vector window (a SQLite vec0 row outliving its context
             # row); the transaction closes the complementary one -- a failure or
@@ -104,33 +109,28 @@ async def delete_context(
             # rolls the whole thing back and is retried inside the helper, so a
             # self-clearing SQLITE_BUSY neither fails the delete nor commits it with
             # the vectors left behind.
-            deleted = await delete_entries_with_cleanup(repos, context_ids)
+            deleted = await delete_entries_with_cleanup(repos, context_ids, scope=scope, refuse_unauthorized=True)
             logger.info(f'Deleted {deleted} context entries by IDs')
 
         elif thread_id:
-            # Delete a whole thread. On PostgreSQL the embedding rows cascade-delete with
-            # the context rows, so a single WHERE thread_id = ? delete is atomic and needs
-            # no explicit embedding cleanup.
-            #
-            # On SQLite the fp32 vec0 virtual embedding table has no FK CASCADE and is
-            # reached only through the embedding_chunks bridge; when a context row is
-            # deleted its bridge cascades away but the vec0 vectors it referenced orphan
-            # permanently unless cleaned first. A WHERE thread_id = ? delete re-evaluates
-            # the predicate independently of the pre-queried cleanup snapshot, so a store
-            # committing into the thread between the snapshot and the delete would be swept
-            # by the delete while its embeddings escaped the snapshot and orphaned.
-            # Constrain the delete to exactly the snapshot ids so the cleaned set and the
-            # deleted set are identical: an entry inserted after the snapshot is neither
-            # cleaned nor deleted (it simply survives the operation). delete_by_ids chunks
-            # the id list, so a very large thread is safe.
-            if backend.backend_type == 'sqlite':
-                thread_ids_to_delete = await repos.context.get_ids_matching_batch_criteria(
-                    thread_ids=[thread_id],
+            # Delete the caller's own entries of a thread, silently leaving every other
+            # entry in it. On both backends the delete covers exactly a snapshot of the
+            # thread's ids: on SQLite the fp32 vec0 virtual embedding table has no FK
+            # CASCADE and is reached only through the embedding_chunks bridge, so its
+            # vectors orphan permanently unless cleaned first, and a WHERE thread_id = ?
+            # delete would re-evaluate the predicate independently of the cleanup
+            # snapshot, sweeping a store committed into the thread in between while its
+            # embeddings escaped the cleanup. Constrained to the snapshot ids, the cleaned
+            # set and the deleted set are identical: an entry inserted after the snapshot
+            # is neither cleaned nor deleted (it simply survives the operation).
+            # delete_by_ids chunks the id list, so a very large thread is safe.
+            thread_ids_to_delete = await repos.context.get_ids_matching_batch_criteria(
+                thread_ids=[thread_id], scope=scope, mode=AccessMode.OWNER,
+            )
+            if thread_ids_to_delete:
+                deleted = await delete_entries_with_cleanup(
+                    repos, thread_ids_to_delete, scope=scope, refuse_unauthorized=False,
                 )
-                if thread_ids_to_delete:
-                    deleted = await delete_entries_with_cleanup(repos, thread_ids_to_delete)
-            else:
-                deleted = await repos.context.delete_by_thread(thread_id)
             logger.info(f'Deleted {deleted} entries from thread {thread_id}')
 
         return {
@@ -140,6 +140,8 @@ async def delete_context(
         }
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
+    except EntryNotAuthorizedError as e:
+        raise ToolError(format_exception_message(e)) from e
     except Exception as e:
         logger.error(f'Error deleting context: {e}')
         raise ToolError(f'Failed to delete context: {format_exception_message(e)}') from e

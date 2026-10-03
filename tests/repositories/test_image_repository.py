@@ -505,7 +505,7 @@ class TestImageRepository:
         count_before = await repos.images.count_images_for_context(context_id)
         assert count_before == 1
 
-        deleted = await repos.context.delete_by_ids([context_id])
+        deleted = await repos.context.delete_by_ids([context_id], scope=LOCAL_SCOPE)
         assert deleted == 1
 
         count_after = await repos.images.count_images_for_context(context_id)

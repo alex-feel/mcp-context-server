@@ -1,6 +1,7 @@
 """Tests for the ``delete_context`` tool."""
 
 import base64
+from typing import Literal
 from typing import get_args
 from typing import get_type_hints
 
@@ -10,8 +11,11 @@ from fastmcp.exceptions import ToolError
 from fastmcp.exceptions import ValidationError as FastMCPValidationError
 from pydantic.fields import FieldInfo
 
+import app.startup
 import app.tools
 from tests.helpers import argument_errors
+from tests.helpers import as_principal
+from tests.helpers import insert_grant
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -149,3 +153,80 @@ class TestDeleteContextIdsCap:
             await validated.run({'context_ids': oversized})
         errors = argument_errors(exc_info)
         assert any(err['type'] == 'too_long' for err in errors), errors
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestDeleteContextAccess:
+    """Deleting is owner-only: named ids refuse on a visible entry the caller does not own, a thread skips it."""
+
+    THREAD = 'delete-access'
+
+    @classmethod
+    async def _store_as(
+        cls, principal: str, text: str, *, visibility: Literal['private', 'public'] = 'private',
+    ) -> str:
+        """Store one entry in the shared thread as ``principal`` and return its id."""
+        with as_principal(principal):
+            stored = await store_context(thread_id=cls.THREAD, source='agent', text=text, visibility=visibility)
+        return str(stored['context_id'])
+
+    @staticmethod
+    async def _surviving(principal: str, context_ids: list[str]) -> list[str]:
+        """Return which of the ids ``principal`` still reads."""
+        with as_principal(principal):
+            rows = await get_context_by_ids(context_ids=context_ids)
+        return [str(row.get('id')) for row in rows]
+
+    @pytest.mark.asyncio
+    async def test_named_public_entry_of_another_principal_is_refused(self) -> None:
+        """Naming another principal's public entry refuses the call and deletes nothing it names."""
+        alice_public = await self._store_as('alice', 'alice public entry', visibility='public')
+        bob_own = await self._store_as('bob', 'bob entry named beside it')
+
+        with as_principal('bob'), pytest.raises(ToolError) as error:
+            await delete_context(context_ids=[bob_own, alice_public])
+
+        assert str(error.value) == f'Not authorized to delete context entries: {alice_public}'
+        assert await self._surviving('alice', [alice_public]) == [alice_public]
+        assert await self._surviving('bob', [bob_own]) == [bob_own]
+
+    @pytest.mark.asyncio
+    async def test_write_grantee_may_not_delete(self) -> None:
+        """A write grant lets its holder edit an entry, never delete it."""
+        alice_private = await self._store_as('alice', 'alice entry write-granted to bob')
+        backend = app.startup.get_backend()
+        assert backend is not None
+        await insert_grant(backend, alice_private, 'user', 'bob', 'write', 'alice')
+
+        with as_principal('bob'), pytest.raises(ToolError) as error:
+            await delete_context(context_ids=[alice_private])
+
+        assert str(error.value) == f'Not authorized to delete context entries: {alice_private}'
+        assert await self._surviving('alice', [alice_private]) == [alice_private]
+
+    @pytest.mark.asyncio
+    async def test_named_hidden_entry_is_not_counted(self) -> None:
+        """Naming another principal's private entry deletes nothing, exactly like an absent id."""
+        alice_private = await self._store_as('alice', 'alice private entry')
+
+        with as_principal('bob'):
+            result = await delete_context(context_ids=[alice_private])
+
+        assert result['deleted_count'] == 0
+        assert await self._surviving('alice', [alice_private]) == [alice_private]
+
+    @pytest.mark.asyncio
+    async def test_thread_delete_covers_only_own_entries(self) -> None:
+        """A thread delete removes the caller's entries and silently skips everyone else's."""
+        alice_public = await self._store_as('alice', 'alice public thread entry', visibility='public')
+        alice_private = await self._store_as('alice', 'alice private thread entry')
+        bob_own = await self._store_as('bob', 'bob thread entry')
+
+        with as_principal('bob'):
+            result = await delete_context(thread_id=self.THREAD)
+
+        assert result['deleted_count'] == 1
+        assert await self._surviving('bob', [bob_own]) == []
+        assert sorted(await self._surviving('alice', [alice_public, alice_private])) == sorted(
+            [alice_public, alice_private],
+        )

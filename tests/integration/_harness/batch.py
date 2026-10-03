@@ -250,6 +250,8 @@ class BatchMixin(HarnessCore):
         """Test bulk delete context operations.
 
         Tests deletion by various criteria: context_ids, thread_ids, and combined filters.
+        The criteria are AND-combined, so a named id another criterion excludes, or an
+        entry younger than ``older_than_days``, survives the call.
 
         Returns:
             bool: True if test passed.
@@ -375,11 +377,42 @@ class BatchMixin(HarnessCore):
             if len(remaining) != 1 or remaining[0].get('source') != 'agent':
                 self.test_results.append((test_name, False, 'Combined criteria did not filter correctly'))
                 return False
+            agent_survivor = remaining[0]['id']
+
+            # Test 4: the surviving entry was created moments ago, so an age bound of one
+            # day excludes it, and a named id whose source the call excludes is not deleted.
+            for arguments in (
+                {'thread_ids': [delete_combined_thread], 'older_than_days': 1},
+                {'context_ids': [agent_survivor], 'source': 'user'},
+            ):
+                excluded_data = self._extract_content(await self.client.call_tool('delete_context_batch', arguments))
+                if not excluded_data.get('success') or excluded_data.get('deleted_count') != 0:
+                    self.test_results.append(
+                        (test_name, False, f'Excluded entry deleted by {arguments}: {excluded_data}'),
+                    )
+                    return False
+            survivor_data = self._extract_content(
+                await self.client.call_tool('get_context_by_ids', {'context_ids': [agent_survivor]}),
+            )
+            if len(survivor_data.get('results', [])) != 1:
+                self.test_results.append((test_name, False, 'An entry the criteria exclude did not survive'))
+                return False
+
+            # Test 5: the named id with its own source deletes it.
+            delete_named_data = self._extract_content(await self.client.call_tool(
+                'delete_context_batch', {'context_ids': [agent_survivor], 'source': 'agent'},
+            ))
+            if not delete_named_data.get('success') or delete_named_data.get('deleted_count') != 1:
+                self.test_results.append(
+                    (test_name, False, f'Named id with matching source not deleted: {delete_named_data}'),
+                )
+                return False
 
             total_deleted = (
                 delete_by_ids_data.get('deleted_count', 0)
                 + delete_by_thread_data.get('deleted_count', 0)
                 + delete_combined_data.get('deleted_count', 0)
+                + delete_named_data.get('deleted_count', 0)
             )
             self.test_results.append((test_name, True, f'Deleted {total_deleted} entries with various criteria'))
             return True

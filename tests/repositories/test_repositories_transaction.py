@@ -99,7 +99,7 @@ class TestContextRepositoryTransaction:
 
         # Delete within transaction
         async with backend.begin_transaction() as txn:
-            deleted_count = await repos.context.delete_by_ids([context_id], txn=txn)
+            deleted_count = await repos.context.delete_by_ids([context_id], scope=LOCAL_SCOPE, txn=txn)
             assert deleted_count == 1
 
         # Verify deletion persisted
@@ -441,7 +441,7 @@ class TestRepositoryMethodsWithoutTransaction:
         assert len(images) == 1
 
         # Cleanup
-        await repos.context.delete_by_ids([context_id, mm_id])
+        await repos.context.delete_by_ids([context_id, mm_id], scope=LOCAL_SCOPE)
 
 
 class TestTxnAwareReadsUseTransactionConnection:

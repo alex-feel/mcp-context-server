@@ -1,14 +1,29 @@
-"""Tests for delete_context_batch embedding cleanup and snapshot-constrained deletion by thread and age criteria."""
+"""Tests for delete_context_batch: snapshot-constrained deletion, embedding cleanup and access.
+
+Every call snapshots the ids its criteria match and deletes exactly that snapshot through
+the shared delete chokepoint, on both backends. A call that names ids snapshots the rows
+the caller may read and refuses when one of them is not the caller's; a thread or criteria
+call snapshots only the caller's own rows and skips every other row silently.
+"""
 
 from contextlib import asynccontextmanager
+from typing import Literal
 from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from fastmcp.exceptions import ToolError
 
+from app.access_scope import AccessMode
+from app.repositories.context_repository.records import IdAccess
 from app.settings import get_settings
 from tests.helpers import LOCAL_SCOPE
+from tests.helpers import as_principal
+
+
+async def _owned_access(context_ids: list[str], **_kwargs: object) -> dict[str, IdAccess]:
+    """Probe stand-in: the caller owns every requested entry."""
+    return dict.fromkeys(context_ids, IdAccess(can_write=True, is_owner=True))
 
 
 class _FakeDeleteTransaction:
@@ -75,10 +90,10 @@ class TestBatchDeleteEmbeddingCleanup:
             mock_repos.context.get_ids_matching_batch_criteria = AsyncMock(
                 return_value=list(snapshot),
             )
+            mock_repos.context.probe_ids = AsyncMock(side_effect=_owned_access)
             mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=True)
             mock_repos.embeddings.delete_all_chunks_bulk = AsyncMock(return_value=0)
             mock_repos.context.delete_by_ids = AsyncMock(return_value=3)
-            mock_repos.context.delete_contexts_batch = AsyncMock()
 
             result = await delete_context_batch(thread_ids=['thread-abc'])
 
@@ -92,19 +107,20 @@ class TestBatchDeleteEmbeddingCleanup:
             txn = mock_backend.transactions[0]
             mock_repos.embeddings.delete_all_chunks_bulk.assert_awaited_once_with(snapshot, txn=txn)
 
-            # Verify get_ids_matching_batch_criteria was called with correct args.
+            # A thread delete names no ids, so it snapshots only the caller's own rows.
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
                 context_ids=None,
                 thread_ids=['thread-abc'],
                 source=None,
                 older_than_days=None,
+                scope=LOCAL_SCOPE,
+                mode=AccessMode.OWNER,
             )
 
             # The destructive step deletes EXACTLY the snapshot ids, on the SAME
             # transaction; it never re-runs the criteria, which would sweep rows
             # committed after the cleanup snapshot and orphan their vec0 embeddings.
-            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, txn=txn)
-            mock_repos.context.delete_contexts_batch.assert_not_called()
+            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_SCOPE, txn=txn)
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('fp32_cleanup_mode')
@@ -123,10 +139,10 @@ class TestBatchDeleteEmbeddingCleanup:
             mock_repos.context.get_ids_matching_batch_criteria = AsyncMock(
                 return_value=list(snapshot),
             )
+            mock_repos.context.probe_ids = AsyncMock(side_effect=_owned_access)
             mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=True)
             mock_repos.embeddings.delete_all_chunks_bulk = AsyncMock(return_value=0)
             mock_repos.context.delete_by_ids = AsyncMock(return_value=2)
-            mock_repos.context.delete_contexts_batch = AsyncMock()
 
             # older_than_days alone is refused (it would reach the whole database), so
             # the age criterion is combined with a source filter here.
@@ -150,18 +166,19 @@ class TestBatchDeleteEmbeddingCleanup:
                 thread_ids=None,
                 source='agent',
                 older_than_days=30,
+                scope=LOCAL_SCOPE,
+                mode=AccessMode.OWNER,
             )
             txn = mock_backend.transactions[0]
-            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, txn=txn)
-            mock_repos.context.delete_contexts_batch.assert_not_called()
+            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_SCOPE, txn=txn)
 
     @pytest.mark.asyncio
-    async def test_delete_batch_postgresql_uses_atomic_criteria_delete(self):
-        """On PostgreSQL the criteria delete stays a single atomic statement.
+    async def test_delete_batch_postgresql_deletes_the_snapshot_without_cleanup(self):
+        """On PostgreSQL the criteria delete takes the same snapshot path, with no explicit cleanup.
 
-        Embedding rows cascade-delete with the context rows inside the SAME
-        DELETE statement, so no snapshot or explicit cleanup is needed and the
-        tool must route to delete_contexts_batch, not the SQLite snapshot flow.
+        The embedding rows cascade-delete with the context rows inside the same
+        DELETE statement, so the chokepoint skips the cleanup; the snapshot, the
+        in-transaction probe and the id-constrained delete are the same as on SQLite.
         """
         from app.tools.batch.delete import delete_context_batch
 
@@ -169,16 +186,14 @@ class TestBatchDeleteEmbeddingCleanup:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
 
-            mock_backend = MagicMock()
-            mock_backend.backend_type = 'postgresql'
+            mock_backend = _FakeTransactionalBackend('postgresql')
             mock_repos.context.backend = mock_backend
 
-            mock_repos.context.get_ids_matching_batch_criteria = AsyncMock()
+            snapshot = ['id-1', 'id-2']
+            mock_repos.context.get_ids_matching_batch_criteria = AsyncMock(return_value=list(snapshot))
+            mock_repos.context.probe_ids = AsyncMock(side_effect=_owned_access)
             mock_repos.embeddings.embedding_tables_exist = AsyncMock()
-            mock_repos.context.delete_by_ids = AsyncMock()
-            mock_repos.context.delete_contexts_batch = AsyncMock(
-                return_value=(2, ['thread_ids: 1 threads']),
-            )
+            mock_repos.context.delete_by_ids = AsyncMock(return_value=2)
 
             result = await delete_context_batch(thread_ids=['thread-abc'])
 
@@ -186,15 +201,47 @@ class TestBatchDeleteEmbeddingCleanup:
             assert result['deleted_count'] == 2
             assert result['criteria_used'] == ['thread_ids: 1 threads']
 
-            mock_repos.context.delete_contexts_batch.assert_awaited_once_with(
+            mock_repos.context.get_ids_matching_batch_criteria.assert_awaited_once_with(
                 context_ids=None,
                 thread_ids=['thread-abc'],
                 source=None,
                 older_than_days=None,
+                scope=LOCAL_SCOPE,
+                mode=AccessMode.OWNER,
             )
-            mock_repos.context.get_ids_matching_batch_criteria.assert_not_called()
             mock_repos.embeddings.delete_all_chunks_bulk.assert_not_called()
-            mock_repos.context.delete_by_ids.assert_not_called()
+            txn = mock_backend.transactions[0]
+            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_SCOPE, txn=txn)
+
+    @pytest.mark.asyncio
+    async def test_delete_batch_with_context_ids_snapshots_readable_rows(self):
+        """A call that names ids snapshots in READ mode, so a visible row it may not delete is refused."""
+        from app.tools.batch.delete import delete_context_batch
+
+        named = '0190abcdef1234567890abcdef000010'
+        with patch('app.tools.batch.delete.ensure_repositories') as mock_repos_fn:
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+            mock_repos.context.backend = _FakeTransactionalBackend('sqlite')
+            mock_repos.context.get_ids_matching_batch_criteria = AsyncMock(return_value=[named])
+            mock_repos.context.probe_ids = AsyncMock(
+                return_value={named: IdAccess(can_write=True, is_owner=False)},
+            )
+            mock_repos.context.delete_by_ids = AsyncMock()
+
+            with pytest.raises(ToolError) as error:
+                await delete_context_batch(context_ids=[named], source='agent')
+
+            assert str(error.value) == f'Not authorized to delete context entries: {named}'
+            mock_repos.context.get_ids_matching_batch_criteria.assert_awaited_once_with(
+                context_ids=[named],
+                thread_ids=None,
+                source='agent',
+                older_than_days=None,
+                scope=LOCAL_SCOPE,
+                mode=AccessMode.READ,
+            )
+            mock_repos.context.delete_by_ids.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_batch_entry_inserted_after_snapshot_survives(self):
@@ -302,3 +349,76 @@ class TestBatchDeleteEmbeddingCleanup:
         assert result['success'] is True
         assert result['deleted_count'] == total
         assert await repos.context.get_by_ids(ids[:5] + ids[-5:], scope=LOCAL_SCOPE) == []
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestBatchDeleteAccess:
+    """Named ids refuse on a visible entry the caller does not own; thread and criteria calls skip it."""
+
+    THREAD = 'batch-del-access'
+
+    @classmethod
+    async def _store_as(
+        cls, principal: str, text: str, *, visibility: Literal['private', 'public'] = 'private',
+    ) -> str:
+        """Store one entry in the shared thread as ``principal`` and return its id."""
+        from app.tools.context.store import store_context
+
+        with as_principal(principal):
+            stored = await store_context(thread_id=cls.THREAD, source='agent', text=text, visibility=visibility)
+        return str(stored['context_id'])
+
+    @staticmethod
+    async def _surviving(principal: str, context_ids: list[str]) -> list[str]:
+        """Return which of the ids ``principal`` still reads."""
+        from app.tools.context.retrieve import get_context_by_ids
+
+        with as_principal(principal):
+            rows = await get_context_by_ids(context_ids=context_ids)
+        return [str(row.get('id')) for row in rows]
+
+    @pytest.mark.asyncio
+    async def test_named_public_entry_of_another_principal_is_refused(self) -> None:
+        """Naming another principal's public entry refuses the call, and nothing named is deleted."""
+        from app.tools.batch.delete import delete_context_batch
+
+        alice_public = await self._store_as('alice', 'alice public entry', visibility='public')
+        bob_own = await self._store_as('bob', 'bob entry named beside it')
+
+        with as_principal('bob'), pytest.raises(ToolError) as error:
+            await delete_context_batch(context_ids=[alice_public, bob_own])
+
+        assert str(error.value) == f'Not authorized to delete context entries: {alice_public}'
+        assert await self._surviving('alice', [alice_public]) == [alice_public]
+        assert await self._surviving('bob', [bob_own]) == [bob_own]
+
+    @pytest.mark.asyncio
+    async def test_named_hidden_entry_is_not_counted(self) -> None:
+        """Naming another principal's private entry deletes nothing, without an error."""
+        from app.tools.batch.delete import delete_context_batch
+
+        alice_private = await self._store_as('alice', 'alice private entry')
+
+        with as_principal('bob'):
+            result = await delete_context_batch(context_ids=[alice_private])
+
+        assert result['deleted_count'] == 0
+        assert await self._surviving('alice', [alice_private]) == [alice_private]
+
+    @pytest.mark.asyncio
+    async def test_thread_delete_covers_only_own_entries(self) -> None:
+        """A thread delete removes the caller's entries and skips the readable entries of others."""
+        from app.tools.batch.delete import delete_context_batch
+
+        alice_public = await self._store_as('alice', 'alice public thread entry', visibility='public')
+        alice_private = await self._store_as('alice', 'alice private thread entry')
+        bob_own = await self._store_as('bob', 'bob thread entry')
+
+        with as_principal('bob'):
+            result = await delete_context_batch(thread_ids=[self.THREAD])
+
+        assert result['deleted_count'] == 1
+        assert await self._surviving('bob', [bob_own]) == []
+        assert sorted(await self._surviving('alice', [alice_public, alice_private])) == sorted(
+            [alice_public, alice_private],
+        )

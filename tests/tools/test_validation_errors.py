@@ -17,6 +17,7 @@ from fastmcp.exceptions import ToolError
 import app.tools
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository.records import EntryProbe
+from app.repositories.context_repository.records import IdAccess
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 store_context = app.tools.store_context
@@ -26,6 +27,11 @@ delete_context = app.tools.delete_context
 update_context = app.tools.update_context
 list_threads = app.tools.list_threads
 get_statistics = app.tools.get_statistics
+
+
+async def _owned_access(context_ids: list[str], **_kwargs: object) -> dict[str, IdAccess]:
+    """Probe stand-in: the caller owns every requested entry."""
+    return dict.fromkeys(context_ids, IdAccess(can_write=True, is_owner=True))
 
 
 @pytest.fixture
@@ -61,7 +67,9 @@ def mock_repos():
     repos.context.search_contexts = AsyncMock(return_value=([], {}))
     repos.context.get_by_ids = AsyncMock(return_value=[])
     repos.context.delete_by_ids = AsyncMock(return_value=1)
-    repos.context.delete_by_thread = AsyncMock(return_value=1)
+    # Every delete snapshots or names ids the caller owns, then deletes them by id.
+    repos.context.get_ids_matching_batch_criteria = AsyncMock(return_value=['0190abcdef1234567890abcd00000001'])
+    repos.context.probe_ids = AsyncMock(side_effect=_owned_access)
 
     # Mock tags repository
     repos.tags = AsyncMock()

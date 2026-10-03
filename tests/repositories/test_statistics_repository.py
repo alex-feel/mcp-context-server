@@ -526,7 +526,7 @@ class TestStatisticsRepository:
         stats_before = await stats_repo.get_database_statistics()
         assert stats_before['total_entries'] >= 1
 
-        await repos.context.delete_by_ids([ctx_id])
+        await repos.context.delete_by_ids([ctx_id], scope=LOCAL_SCOPE)
 
         stats_after = await stats_repo.get_database_statistics()
         assert stats_after['total_entries'] == stats_before['total_entries'] - 1

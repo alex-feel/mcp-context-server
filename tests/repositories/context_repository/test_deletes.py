@@ -1,5 +1,13 @@
-"""Tests for ContextRepository deletes by id, by thread and by batch criteria."""
+"""Tests for ContextRepository deletes by id and the batch-delete id snapshot.
 
+Every delete names its rows by id: a thread or criteria delete first snapshots the
+matching ids with ``get_ids_matching_batch_criteria`` and then deletes exactly that
+snapshot with ``delete_by_ids``. The two-principal behavior of both methods is proven by
+cases X1 and X2 of the access-scope suite; these tests cover chunking, criteria semantics
+and the statements each backend receives.
+"""
+
+import uuid
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import cast
@@ -8,6 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
+from app.access_scope import AccessMode
+from app.access_scope import build_access_predicate
 from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -15,98 +25,24 @@ from app.repositories.context_repository import ContextRepository
 from tests.helpers import LOCAL_SCOPE
 
 
-class TestContextRepositoryDelete:
-    """Test delete operations in ContextRepository."""
+async def _store(repos: RepositoryContainer, thread_id: str, text: str, *, source: str = 'user') -> str:
+    """Store one private entry owned by the local principal and return its id."""
+    context_id, _ = await repos.context.store_with_deduplication(
+        scope=LOCAL_SCOPE,
+        visibility='private',
+        thread_id=thread_id,
+        source=source,
+        content_type='text',
+        text_content=text,
+    )
+    return context_id
+
+
+class TestDeleteByIds:
+    """Deleting entries by id."""
 
     @pytest.mark.asyncio
-    async def test_delete_by_thread_id(
-        self,
-        repos: RepositoryContainer,
-    ) -> None:
-        """Test deleting entries by thread_id."""
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='del_thread',
-            source='user',
-            content_type='text',
-            text_content='To delete',
-        )
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='keep_thread',
-            source='user',
-            content_type='text',
-            text_content='To keep',
-        )
-
-        deleted = await repos.context.delete_by_thread(thread_id='del_thread')
-
-        assert deleted == 1
-
-        # Verify deletion
-        rows, _ = await repos.context.search_contexts(thread_id='del_thread', scope=LOCAL_SCOPE)
-        assert len(rows) == 0
-
-        # Verify other thread kept
-        rows, _ = await repos.context.search_contexts(thread_id='keep_thread', scope=LOCAL_SCOPE)
-        assert len(rows) == 1
-
-    @pytest.mark.asyncio
-    async def test_delete_multiple_entries(
-        self,
-        repos: RepositoryContainer,
-    ) -> None:
-        """Test deleting multiple entries from same thread."""
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='multi_del_thread',
-            source='user',
-            content_type='text',
-            text_content='Message 1',
-        )
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='multi_del_thread',
-            source='agent',
-            content_type='text',
-            text_content='Message 2',
-        )
-        await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='multi_del_thread',
-            source='user',
-            content_type='text',
-            text_content='Message 3',
-        )
-
-        deleted = await repos.context.delete_by_thread(thread_id='multi_del_thread')
-
-        assert deleted == 3
-
-        # Verify all deleted
-        rows, _ = await repos.context.search_contexts(thread_id='multi_del_thread', scope=LOCAL_SCOPE)
-        assert len(rows) == 0
-
-    @pytest.mark.asyncio
-    async def test_delete_nonexistent_thread(
-        self,
-        repos: RepositoryContainer,
-    ) -> None:
-        """Test deleting from nonexistent thread returns 0."""
-        deleted = await repos.context.delete_by_thread(thread_id='nonexistent')
-
-        assert deleted == 0
-
-    @pytest.mark.asyncio
-    async def test_delete_by_ids_spans_multiple_chunks(
-        self,
-        repos: RepositoryContainer,
-    ) -> None:
+    async def test_delete_by_ids_spans_multiple_chunks(self, repos: RepositoryContainer) -> None:
         """delete_by_ids chunks an id list exceeding the per-statement bound-parameter limit.
 
         A very large id list (e.g. every entry in a large thread) would exceed a
@@ -116,26 +52,8 @@ class TestContextRepositoryDelete:
         of it: every real row must be deleted exactly once, the non-existent ids
         must contribute nothing to the count, and an unrelated entry stays intact.
         """
-        keep_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='chunk_keep_thread',
-            source='user',
-            content_type='text',
-            text_content='Keep me',
-        )
-
-        real_ids: list[str] = []
-        for i in range(5):
-            ctx_id, _ = await repos.context.store_with_deduplication(
-                scope=LOCAL_SCOPE,
-                visibility='private',
-                thread_id='chunk_del_thread',
-                source='user',
-                content_type='text',
-                text_content=f'Chunk delete entry {i}',
-            )
-            real_ids.append(ctx_id)
+        keep_id = await _store(repos, 'chunk_keep_thread', 'Keep me')
+        real_ids = [await _store(repos, 'chunk_del_thread', f'Chunk delete entry {i}') for i in range(5)]
 
         # Build an id list well past the 900-id chunk boundary out of non-existent
         # ids, then overwrite a few positions straddling that boundary with the
@@ -144,105 +62,146 @@ class TestContextRepositoryDelete:
         for pos, real_id in zip((0, 450, 899, 900, 1299), real_ids, strict=True):
             mixed[pos] = real_id
 
-        deleted = await repos.context.delete_by_ids(mixed)
+        deleted = await repos.context.delete_by_ids(mixed, scope=LOCAL_SCOPE)
 
         # Only the real rows are deleted; the non-existent ids match nothing.
         assert deleted == len(real_ids)
-
-        # All real rows are gone.
         assert await repos.context.get_by_ids(real_ids, scope=LOCAL_SCOPE) == []
-
-        # The unrelated entry is untouched.
         remaining = await repos.context.get_by_ids([keep_id], scope=LOCAL_SCOPE)
-        assert len(remaining) == 1
-        assert remaining[0]['id'] == keep_id
-
-
-class TestContextRepositoryBatchDelete:
-    """Test delete_contexts_batch method of ContextRepository."""
+        assert [row['id'] for row in remaining] == [keep_id]
 
     @pytest.mark.asyncio
-    async def test_delete_contexts_batch(
-        self, context_repo: ContextRepository, repos: RepositoryContainer,
-    ) -> None:
-        """Batch delete removes multiple entries."""
-        ids = []
-        for i in range(3):
-            ctx_id, _ = await repos.context.store_with_deduplication(
-                scope=LOCAL_SCOPE,
-                visibility='private',
-                thread_id='batch-del-thread',
-                source='user',
-                content_type='text',
-                text_content=f'Batch delete entry {i}',
-            )
-            ids.append(ctx_id)
+    async def test_delete_by_ids_of_an_empty_list_is_zero(self, repos: RepositoryContainer) -> None:
+        """No ids means no statement and nothing deleted."""
+        assert await repos.context.delete_by_ids([], scope=LOCAL_SCOPE) == 0
 
-        deleted_count, criteria = await context_repo.delete_contexts_batch(context_ids=ids)
-        assert deleted_count == 3
 
-        rows = await context_repo.get_by_ids(ids, scope=LOCAL_SCOPE)
+@pytest.mark.usefixtures('sqlite_999_variables')
+class TestDeleteByIdsUnderVariableCap:
+    """Each 900-id delete chunk plus its owner bind fits within 999 variables."""
+
+    @pytest.mark.asyncio
+    async def test_delete_by_ids_binds_1000_ids_with_scope(self, repos: RepositoryContainer) -> None:
+        """A 1,000-id delete under a scope binds without error and deletes every stored row."""
+        real_ids = [await _store(repos, 'capped_delete', f'Capped delete entry {i}') for i in range(3)]
+        ids = [generate_id() for _ in range(1000)]
+        for position, real_id in zip((0, 899, 999), real_ids, strict=True):
+            ids[position] = real_id
+
+        assert await repos.context.delete_by_ids(ids, scope=LOCAL_SCOPE) == len(real_ids)
+        assert await repos.context.get_by_ids(real_ids, scope=LOCAL_SCOPE) == []
+
+
+class TestThreadSnapshotDelete:
+    """A thread delete snapshots the thread's ids and deletes exactly that snapshot."""
+
+    @pytest.mark.asyncio
+    async def test_thread_snapshot_then_delete_keeps_other_threads(self, repos: RepositoryContainer) -> None:
+        """The snapshot of one thread deletes its entry and leaves another thread intact."""
+        await _store(repos, 'del_thread', 'To delete')
+        await _store(repos, 'keep_thread', 'To keep')
+
+        snapshot = await repos.context.get_ids_matching_batch_criteria(
+            thread_ids=['del_thread'], scope=LOCAL_SCOPE, mode=AccessMode.OWNER,
+        )
+        deleted = await repos.context.delete_by_ids(snapshot, scope=LOCAL_SCOPE)
+
+        assert deleted == 1
+        rows, _ = await repos.context.search_contexts(thread_id='del_thread', scope=LOCAL_SCOPE)
+        assert rows == []
+        rows, _ = await repos.context.search_contexts(thread_id='keep_thread', scope=LOCAL_SCOPE)
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_thread_snapshot_covers_every_entry_of_the_thread(self, repos: RepositoryContainer) -> None:
+        """Every entry of the thread, of either source, is in the snapshot and deleted."""
+        await _store(repos, 'multi_del_thread', 'Message 1')
+        await _store(repos, 'multi_del_thread', 'Message 2', source='agent')
+        await _store(repos, 'multi_del_thread', 'Message 3')
+
+        snapshot = await repos.context.get_ids_matching_batch_criteria(
+            thread_ids=['multi_del_thread'], scope=LOCAL_SCOPE, mode=AccessMode.OWNER,
+        )
+
+        assert len(snapshot) == 3
+        assert await repos.context.delete_by_ids(snapshot, scope=LOCAL_SCOPE) == 3
+        rows, _ = await repos.context.search_contexts(thread_id='multi_del_thread', scope=LOCAL_SCOPE)
         assert rows == []
 
     @pytest.mark.asyncio
-    async def test_delete_contexts_batch_partial_ids(
-        self, context_repo: ContextRepository, repos: RepositoryContainer,
-    ) -> None:
-        """Batch delete with mix of existing and nonexistent IDs."""
-        ctx_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='partial-del-thread',
-            source='user',
-            content_type='text',
-            text_content='Entry to delete partially',
+    async def test_snapshot_of_a_nonexistent_thread_is_empty(self, repos: RepositoryContainer) -> None:
+        """A thread without entries snapshots to nothing."""
+        snapshot = await repos.context.get_ids_matching_batch_criteria(
+            thread_ids=['nonexistent'], scope=LOCAL_SCOPE, mode=AccessMode.OWNER,
         )
-        deleted_count, _ = await context_repo.delete_contexts_batch(
-            context_ids=[ctx_id, generate_id(), generate_id()],
-        )
-        assert deleted_count == 1
+
+        assert snapshot == []
+
+
+class TestCriteriaSnapshotDelete:
+    """A criteria delete snapshots the ids its AND-combined criteria match and deletes exactly those."""
 
     @pytest.mark.asyncio
-    async def test_delete_contexts_batch_empty_list(
-        self, context_repo: ContextRepository,
-    ) -> None:
-        """Batch delete with empty list returns 0."""
-        deleted_count, _ = await context_repo.delete_contexts_batch(context_ids=[])
-        assert deleted_count == 0
+    async def test_snapshot_of_named_ids_then_delete(self, repos: RepositoryContainer) -> None:
+        """Named ids snapshot to themselves and are deleted together."""
+        ids = [await _store(repos, 'batch-del-thread', f'Batch delete entry {i}') for i in range(3)]
+
+        snapshot = await repos.context.get_ids_matching_batch_criteria(
+            context_ids=ids, scope=LOCAL_SCOPE, mode=AccessMode.READ,
+        )
+
+        assert sorted(snapshot) == sorted(ids)
+        assert await repos.context.delete_by_ids(snapshot, scope=LOCAL_SCOPE) == 3
+        assert await repos.context.get_by_ids(ids, scope=LOCAL_SCOPE) == []
 
     @pytest.mark.asyncio
-    async def test_delete_contexts_batch_criteria_not_duplicated_on_retry(
+    async def test_snapshot_of_named_ids_skips_absent_ids(self, repos: RepositoryContainer) -> None:
+        """Named ids no entry carries match nothing, so only the stored entry is deleted."""
+        context_id = await _store(repos, 'partial-del-thread', 'Entry to delete partially')
+
+        snapshot = await repos.context.get_ids_matching_batch_criteria(
+            context_ids=[context_id, generate_id(), generate_id()], scope=LOCAL_SCOPE, mode=AccessMode.READ,
+        )
+
+        assert snapshot == [context_id]
+        assert await repos.context.delete_by_ids(snapshot, scope=LOCAL_SCOPE) == 1
+
+    @pytest.mark.asyncio
+    async def test_snapshot_of_an_empty_id_list_is_empty(self, repos: RepositoryContainer) -> None:
+        """An empty id list is no criterion, and a call without criteria matches nothing."""
+        await _store(repos, 'empty-criteria-thread', 'Entry no empty criteria may reach')
+
+        for mode in (AccessMode.READ, AccessMode.OWNER):
+            assert await repos.context.get_ids_matching_batch_criteria(
+                context_ids=[], scope=LOCAL_SCOPE, mode=mode,
+            ) == []
+
+    @pytest.mark.asyncio
+    async def test_snapshot_ids_not_duplicated_when_the_read_is_retried(
         self, context_repo: ContextRepository, repos: RepositoryContainer,
     ) -> None:
-        """criteria_used must not accumulate duplicates if the write closure is retried.
+        """The snapshot must not accumulate duplicates if the read closure is retried.
 
-        criteria_used is built per closure invocation, so a transparent write
-        retry (which re-invokes the same closure) must not append the same
-        criteria strings twice into the returned list.
+        The matched ids are collected per closure invocation, so a transparent read
+        retry (which re-invokes the same closure) must not return any id twice.
         """
-        ctx_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='criteria-retry-thread',
-            source='user',
-            content_type='text',
-            text_content='Entry for criteria retry',
-        )
+        context_id = await _store(repos, 'criteria-retry-thread', 'Entry for criteria retry')
 
         backend = context_repo.backend
-        original_execute_write = backend.execute_write
+        original_execute_read = backend.execute_read
 
-        async def double_execute_write(fn, *args, **kwargs):
+        async def double_execute_read(fn, *args, **kwargs):
             # Simulate a transparent retry: invoke the same closure twice.
-            first = await original_execute_write(fn, *args, **kwargs)
-            await original_execute_write(fn, *args, **kwargs)
+            first = await original_execute_read(fn, *args, **kwargs)
+            await original_execute_read(fn, *args, **kwargs)
             return first
 
-        with patch.object(backend, 'execute_write', side_effect=double_execute_write):
-            _, criteria = await context_repo.delete_contexts_batch(context_ids=[ctx_id])
+        with patch.object(backend, 'execute_read', side_effect=double_execute_read):
+            snapshot = await context_repo.get_ids_matching_batch_criteria(
+                context_ids=[context_id], scope=LOCAL_SCOPE, mode=AccessMode.READ,
+            )
 
-        # Exactly one criteria entry despite the closure running twice.
-        assert criteria == ['context_ids: 1 IDs']
+        assert snapshot == [context_id]
 
     @pytest.mark.asyncio
     async def test_get_ids_matching_batch_criteria_spans_chunks_and_semantics(
@@ -256,33 +215,9 @@ class TestContextRepositoryBatchDelete:
         a row whose id is listed but whose thread is not (or whose source differs)
         must not match, exactly as with the single unchunked statement.
         """
-        matching_ids: list[str] = []
-        for i in range(2):
-            ctx_id, _ = await repos.context.store_with_deduplication(
-                scope=LOCAL_SCOPE,
-                visibility='private',
-                thread_id='crit-chunk-a',
-                source='user',
-                content_type='text',
-                text_content=f'Criteria chunk match {i}',
-            )
-            matching_ids.append(ctx_id)
-        agent_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='crit-chunk-a',
-            source='agent',
-            content_type='text',
-            text_content='Criteria chunk agent entry',
-        )
-        other_thread_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='crit-chunk-b',
-            source='user',
-            content_type='text',
-            text_content='Criteria chunk other-thread entry',
-        )
+        matching_ids = [await _store(repos, 'crit-chunk-a', f'Criteria chunk match {i}') for i in range(2)]
+        agent_id = await _store(repos, 'crit-chunk-a', 'Criteria chunk agent entry', source='agent')
+        other_thread_id = await _store(repos, 'crit-chunk-b', 'Criteria chunk other-thread entry')
 
         # Real ids straddle the 900-id chunk boundary inside a 33,000-id list.
         context_ids = [generate_id() for _ in range(33000)]
@@ -301,102 +236,78 @@ class TestContextRepositoryBatchDelete:
             context_ids=context_ids,
             thread_ids=thread_ids,
             source='user',
+            scope=LOCAL_SCOPE,
+            mode=AccessMode.READ,
         )
 
         assert sorted(matched) == sorted(matching_ids)
 
     @pytest.mark.asyncio
-    async def test_delete_contexts_batch_spans_chunks_and_semantics(
-        self, repos: RepositoryContainer,
-    ) -> None:
-        """The criteria delete chunks an oversized context_ids list and keeps AND semantics.
+    async def test_snapshot_then_delete_spans_chunks_and_semantics(self, repos: RepositoryContainer) -> None:
+        """A snapshot over an oversized context_ids list deletes exactly the AND-matched rows.
 
-        Mirrors the snapshot test on the destructive leg: one DELETE per chunk pair,
-        all within the closure's single write, deleting exactly the rows the
-        AND-combined criteria match and summing the per-statement rowcounts.
+        One SELECT per chunk pair builds the snapshot; the delete then removes exactly
+        the rows the criteria matched, summing the per-chunk rowcounts.
         """
-        user_ids: list[str] = []
-        for i in range(2):
-            ctx_id, _ = await repos.context.store_with_deduplication(
-                scope=LOCAL_SCOPE,
-                visibility='private',
-                thread_id='del-chunk-thread',
-                source='user',
-                content_type='text',
-                text_content=f'Delete chunk match {i}',
-            )
-            user_ids.append(ctx_id)
-        agent_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='del-chunk-thread',
-            source='agent',
-            content_type='text',
-            text_content='Delete chunk agent survivor',
-        )
-        unlisted_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='del-chunk-thread',
-            source='user',
-            content_type='text',
-            text_content='Delete chunk unlisted survivor',
-        )
+        user_ids = [await _store(repos, 'del-chunk-thread', f'Delete chunk match {i}') for i in range(2)]
+        agent_id = await _store(repos, 'del-chunk-thread', 'Delete chunk agent survivor', source='agent')
+        unlisted_id = await _store(repos, 'del-chunk-thread', 'Delete chunk unlisted survivor')
 
         context_ids = [generate_id() for _ in range(33000)]
         for pos, real_id in zip((0, 900, 32999), (*user_ids, agent_id), strict=True):
             context_ids[pos] = real_id
 
-        deleted_count, criteria = await repos.context.delete_contexts_batch(
-            context_ids=context_ids,
-            source='user',
+        snapshot = await repos.context.get_ids_matching_batch_criteria(
+            context_ids=context_ids, source='user', scope=LOCAL_SCOPE, mode=AccessMode.READ,
         )
+        deleted_count = await repos.context.delete_by_ids(snapshot, scope=LOCAL_SCOPE)
 
         assert deleted_count == 2
-        assert criteria == ['context_ids: 33000 IDs', 'source: user']
         # The listed agent entry (source mismatch) and the unlisted user entry survive.
         remaining = await repos.context.get_by_ids([*user_ids, agent_id, unlisted_id], scope=LOCAL_SCOPE)
         assert {row['id'] for row in remaining} == {agent_id, unlisted_id}
 
     @pytest.mark.asyncio
-    async def test_delete_contexts_batch_chunks_postgresql_statements(self) -> None:
-        """The PostgreSQL criteria delete issues one bounded statement per chunk pair.
+    async def test_postgresql_snapshot_binds_criteria_then_the_predicate_per_chunk(self) -> None:
+        """The PostgreSQL snapshot issues one bounded statement per chunk pair with every value bound.
 
-        Asserted against a recording stand-in connection (no live PostgreSQL):
-        1,300 ids plus a source filter must produce two DELETE statements of 901
-        and 401 bind parameters (900-id and 400-id chunks, each AND-combined with
-        source), with the reported count summing the per-statement results.
-        execute_write wraps the closure in one transaction on the real backend,
-        so the per-chunk statements stay atomic.
+        Asserted against a recording stand-in connection (no live PostgreSQL): 1,300
+        ids plus a source and an age filter produce two SELECT statements, a 900-id and
+        a 400-id chunk, each binding its ids, the source and the age as a day count,
+        followed by the three READ predicate binds numbered after them. The age never
+        appears as literal text, and the returned UUIDs come back as canonical ids.
         """
-        executed: list[tuple[str, int]] = []
+        executed: list[tuple[str, tuple[object, ...]]] = []
+        row_id = uuid.UUID(generate_id())
 
         class _RecordingConn:
-            async def execute(self, query: str, *params: object) -> str:
-                executed.append((query, len(params)))
-                return 'DELETE 1'
+            async def fetch(self, query: str, *params: object) -> list[dict[str, object]]:
+                executed.append((query, params))
+                return [{'id': row_id}]
 
         pg_backend = Mock()
         pg_backend.backend_type = 'postgresql'
 
-        async def _execute_write(
-            closure: Callable[[object], Awaitable[tuple[int, list[str]]]],
-            *,
-            validate_connection: bool = False,
-        ) -> tuple[int, list[str]]:
-            assert validate_connection is True
+        async def _execute_read(closure: Callable[[object], Awaitable[list[str]]]) -> list[str]:
             return await closure(_RecordingConn())
 
-        pg_backend.execute_write = _execute_write
+        pg_backend.execute_read = _execute_read
         repo_pg = ContextRepository(cast(StorageBackend, pg_backend))
 
         context_ids = [generate_id() for _ in range(1300)]
-        deleted_count, criteria = await repo_pg.delete_contexts_batch(
-            context_ids=context_ids,
-            source='user',
+        matched = await repo_pg.get_ids_matching_batch_criteria(
+            context_ids=context_ids, source='user', older_than_days=7, scope=LOCAL_SCOPE, mode=AccessMode.READ,
         )
 
-        assert [param_count for _query, param_count in executed] == [901, 401]
-        assert all('id IN (' in query and 'source = ' in query for query, _param_count in executed)
-        assert deleted_count == 2
-        assert criteria == ['context_ids: 1300 IDs', 'source: user']
+        assert [len(params) for _query, params in executed] == [905, 405]
+        for (query, params), chunk_size in zip(executed, (900, 400), strict=True):
+            predicate = build_access_predicate(
+                LOCAL_SCOPE, mode=AccessMode.READ, backend_type='postgresql', outer='context_entries',
+                start=chunk_size + 3,
+            )
+            assert query.endswith(f' AND {predicate.sql}')
+            assert f'source = ${chunk_size + 1}' in query
+            assert f"${chunk_size + 2}::integer * INTERVAL '1 day'" in query
+            assert '7 days' not in query
+            assert params[chunk_size:] == ('user', 7, *predicate.params)
+        assert matched == [row_id.hex, row_id.hex]

@@ -76,7 +76,9 @@ class TestStoreGroupReadGrants:
         grants_repo = GrantRepository(async_db_initialized)
         await grants_repo.store_group_read_grants(context_id, ['team-a'], granted_by='alice')
 
-        await ContextRepository(async_db_initialized).delete_by_ids([context_id])
+        await ContextRepository(async_db_initialized).delete_by_ids(
+            [context_id], scope=AccessScope('alice', frozenset()),
+        )
 
         def _count(conn: sqlite3.Connection) -> int:
             cursor = conn.execute(

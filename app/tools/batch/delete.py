@@ -8,12 +8,14 @@ from typing import cast
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.access_scope import AccessMode
 from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_ids
 from app.repositories.context_repository.helpers import describe_batch_delete_criteria
 from app.startup import ensure_repositories
 from app.tools._delete_cleanup import delete_entries_with_cleanup
+from app.tools._transactions import EntryNotAuthorizedError
 from app.tools._validation import reject_unstorable_input
 from app.types import BulkDeleteResponseDict
 
@@ -96,7 +98,8 @@ async def delete_context_batch(
         reject_unstorable_input(thread_ids=cast('object', thread_ids))
 
         repos = await ensure_repositories()
-        # A prefix resolves over the entries the caller may read.
+        # A prefix resolves over the entries the caller may read, and only the
+        # entries the caller owns are deleted.
         scope = resolve_access_scope()
 
         # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
@@ -107,59 +110,62 @@ async def delete_context_batch(
             except ValueError as e:
                 raise ToolError(f'Invalid context ID: {e}') from e
 
-        # On PostgreSQL the embedding rows cascade-delete with the context rows
-        # inside the SAME atomic DELETE statement (ON DELETE CASCADE on the
-        # surviving vec table for the active compression mode), so the
-        # criteria-based delete needs no snapshot and no explicit cleanup.
-        #
-        # On SQLite the fp32 vec0 virtual embedding table lacks FK CASCADE, so the
-        # embedding cleanup pre-queries the exact ids the COMBINED criteria match
-        # (combining context_ids with source/older_than_days never cleans an
-        # excluded, surviving entry). Re-running the criteria in the destructive
-        # statement would re-evaluate the predicate in a second transaction, so a
-        # store committing a matching entry between the cleanup snapshot and the
-        # delete would be swept while its embeddings escaped the snapshot and
-        # orphaned permanently. Delete EXACTLY the snapshot ids instead, so the
-        # cleaned set and the deleted set are identical: an entry inserted after
+        # A call that names ids snapshots every matching entry the caller may read,
+        # so a named entry the caller sees but does not own reaches the delete and
+        # refuses the whole call; without named ids the call is a thread or criteria
+        # delete, which snapshots only the caller's own entries and skips the rest.
+        # A named id the caller may not read is absent from either snapshot.
+        names_ids = bool(context_ids)
+        mode: Literal[AccessMode.READ, AccessMode.OWNER] = AccessMode.READ if names_ids else AccessMode.OWNER
+
+        # The snapshot holds the exact ids the COMBINED criteria match (combining
+        # context_ids with source/older_than_days never cleans an excluded,
+        # surviving entry), and the delete removes EXACTLY those ids, on both
+        # backends. On SQLite the fp32 vec0 virtual embedding table lacks FK CASCADE,
+        # so its vectors are cleaned explicitly for the snapshot ids; re-running the
+        # criteria in the destructive statement would re-evaluate the predicate in a
+        # second transaction, so a store committing a matching entry between the
+        # cleanup snapshot and the delete would be swept while its embeddings
+        # escaped the snapshot and orphaned permanently. Deleting the snapshot keeps
+        # the cleaned set and the deleted set identical: an entry inserted after
         # the snapshot is neither cleaned nor deleted (it simply survives the
         # operation). The single predicate evaluation also makes the
         # older_than_days age boundary race-free without a shared absolute cutoff.
-        # Mirrors delete_context's thread branch; delete_by_ids chunks the id
-        # list, so a criteria match of any size stays under the per-statement
-        # bound-parameter limit.
+        # delete_by_ids chunks the id list, so a criteria match of any size stays
+        # under the per-statement bound-parameter limit.
         #
-        # Cleanup and delete share ONE transaction (delete_entries_with_cleanup, the
-        # same helper delete_context uses, which also retries a transient lock
-        # collision) so a failure between them can never leave entries stripped of
-        # their vectors while their rows survive. The cleanup costs nothing at all
-        # whenever CASCADE already covers the embedding rows, and in the fp32 layout
-        # that still needs it, issues bounded multi-row statements instead of one
-        # write round trip per matched entry -- so a criteria-wide delete no longer
-        # holds the single SQLite writer for a scan proportional to the match count.
-        backend = repos.context.backend
-        if backend.backend_type == 'sqlite':
-            affected_ids = await repos.context.get_ids_matching_batch_criteria(
-                context_ids=context_ids,
-                thread_ids=thread_ids,
-                source=source,
-                older_than_days=older_than_days,
+        # Cleanup and delete share ONE transaction with the access probe
+        # (delete_entries_with_cleanup, the same helper delete_context uses, which
+        # also retries a transient lock collision) so a failure between them can
+        # never leave entries stripped of their vectors while their rows survive.
+        # The cleanup costs nothing at all on PostgreSQL and whenever CASCADE
+        # already covers the embedding rows, and in the fp32 layout that still needs
+        # it, issues bounded multi-row statements instead of one write round trip
+        # per matched entry.
+        affected_ids = await repos.context.get_ids_matching_batch_criteria(
+            context_ids=context_ids,
+            thread_ids=thread_ids,
+            source=source,
+            older_than_days=older_than_days,
+            scope=scope,
+            mode=mode,
+        )
+        if names_ids:
+            # Every snapshot id is a named id (the criteria are AND-combined); keep
+            # the caller's order so a refusal lists the ids as the caller named them.
+            named_order = {context_id: position for position, context_id in enumerate(context_ids or [])}
+            affected_ids.sort(key=named_order.__getitem__)
+        deleted_count = 0
+        if affected_ids:
+            deleted_count = await delete_entries_with_cleanup(
+                repos, affected_ids, scope=scope, refuse_unauthorized=names_ids,
             )
-            deleted_count = 0
-            if affected_ids:
-                deleted_count = await delete_entries_with_cleanup(repos, affected_ids)
-            criteria_used = describe_batch_delete_criteria(
-                context_ids=context_ids,
-                thread_ids=thread_ids,
-                source=source,
-                older_than_days=older_than_days,
-            )
-        else:
-            deleted_count, criteria_used = await repos.context.delete_contexts_batch(
-                context_ids=context_ids,
-                thread_ids=thread_ids,
-                source=source,
-                older_than_days=older_than_days,
-            )
+        criteria_used = describe_batch_delete_criteria(
+            context_ids=context_ids,
+            thread_ids=thread_ids,
+            source=source,
+            older_than_days=older_than_days,
+        )
 
         logger.info(f'Batch delete completed: {deleted_count} entries removed')
 
@@ -172,6 +178,8 @@ async def delete_context_batch(
 
     except ToolError:
         raise
+    except EntryNotAuthorizedError as e:
+        raise ToolError(format_exception_message(e)) from e
     except Exception as e:
         logger.error(f'Error in batch delete: {e}')
         raise ToolError(f'Batch delete failed: {format_exception_message(e)}') from e

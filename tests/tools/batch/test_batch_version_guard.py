@@ -560,7 +560,7 @@ class TestBatchVersionGuard:
             txn: TransactionContext,
             **_kwargs: object,
         ) -> tuple[list[str], bool]:
-            await repos_arg.context.delete_by_ids([entry_id], txn=txn)
+            await repos_arg.context.delete_by_ids([entry_id], scope=LOCAL_SCOPE, txn=txn)
             raise VersionConflictError(entry_id)
 
         with (

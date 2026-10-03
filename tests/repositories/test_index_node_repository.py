@@ -24,6 +24,7 @@ from app.repositories import RepositoryContainer
 from app.repositories.index_node_repository import IndexNodeRepository
 from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummary
+from tests.helpers import LOCAL_SCOPE
 
 _T = TypeVar('_T')
 
@@ -169,7 +170,7 @@ class TestCascadeDelete:
     ) -> None:
         _backend, repos, cid = repos_with_table
         await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'x')])
-        deleted = await repos.context.delete_by_ids([cid])
+        deleted = await repos.context.delete_by_ids([cid], scope=LOCAL_SCOPE)
         assert deleted == 1
         assert (await repos.index_nodes.get_nodes_for_context(cid)).by_node_id == {}
 
