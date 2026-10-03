@@ -83,7 +83,7 @@ class TestFieldValidation:
     @pytest.mark.asyncio
     async def test_context_id_positive(self, mock_server_dependencies):
         """Test that context_id must be positive."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
         # This would be caught by Field(gt=0) at FastMCP level
         # Testing our manual validation as fallback
         with pytest.raises(ToolError):
@@ -141,7 +141,7 @@ class TestErrorMessageConsistency:
     @pytest.mark.asyncio
     async def test_business_logic_errors_are_clear(self, mock_server_dependencies):
         """Test that business logic errors have clear messages."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(False, None, None, None, False)
 
         with pytest.raises(ToolError, match='Context entry with ID .* not found'):
             await update_context(
@@ -332,7 +332,7 @@ class TestJSONErrorConsistency:
         """
         # Set up mocks for successful database operations
         mock_server_dependencies.context.store_with_deduplication.return_value = (1, False)
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
 
         # Test cases that should raise ToolError for BUSINESS LOGIC
         test_cases = [
@@ -380,7 +380,7 @@ class TestJSONErrorConsistency:
         mock_server_dependencies.context.store_with_deduplication.return_value = (1, False)
 
         # Test update_context database error
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
         mock_server_dependencies.context.update_context_entry.side_effect = Exception('Update failed')
         with pytest.raises(ToolError, match='Failed to update context'):
             await update_context(context_id='0190abcdef1234567890abcd00000001', text='new text')

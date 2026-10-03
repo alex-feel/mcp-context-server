@@ -86,7 +86,7 @@ class TestNonAtomicBatchRetry:
         with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local', True))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(True, ['text']))
             mock_repos.images.count_images_for_context = AsyncMock(return_value=0)

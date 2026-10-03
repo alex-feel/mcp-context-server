@@ -304,7 +304,7 @@ def test_patch_metadata_runtime_quotes_mixed_case_schema(
             success, fields = await repos.context.patch_metadata(context_id, {'b': 2})
             result['success'] = success
             result['fields'] = fields
-            entries = await repos.context.get_by_ids([context_id])
+            entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
             result['metadata'] = entries[0]['metadata'] if entries else None
         finally:
             with contextlib.suppress(TimeoutError):

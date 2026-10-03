@@ -56,7 +56,7 @@ class TestDeduplicationInterleaving:
         assert id_c > id_a, 'New entry should have a higher id'
         assert was_updated is False, 'Should be an insertion, not an update'
         # Verify original entry still exists unchanged
-        entries = await repos.context.get_by_ids([id_a])
+        entries = await repos.context.get_by_ids([id_a], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == 'Proceed'
 

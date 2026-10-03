@@ -266,7 +266,7 @@ class TestStoreWithDeduplicationSummary:
         assert was_updated is False
 
         # Verify summary was stored
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['summary'] == 'Summary of test content'
 
@@ -288,7 +288,7 @@ class TestStoreWithDeduplicationSummary:
         assert len(context_id) == 32
         assert was_updated is False
 
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['summary'] is None
 
@@ -326,7 +326,7 @@ class TestStoreWithDeduplicationSummary:
         assert was_updated is True
 
         # Verify original summary is preserved via COALESCE
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert entries[0]['summary'] == 'Original summary'
 
     @pytest.mark.asyncio
@@ -362,7 +362,7 @@ class TestStoreWithDeduplicationSummary:
         assert dedup_id == context_id
         assert was_updated is True
 
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert entries[0]['summary'] == 'New summary'
 
 
@@ -396,7 +396,7 @@ class TestUpdateContextEntrySummary:
         assert success is True
         assert 'summary' in updated_fields
 
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert entries[0]['summary'] == 'Generated summary'
 
     @pytest.mark.asyncio
@@ -426,7 +426,7 @@ class TestUpdateContextEntrySummary:
         assert 'text_content' in updated_fields
         assert 'summary' in updated_fields
 
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert entries[0]['text_content'] == 'Updated content'
         assert entries[0]['summary'] == 'Updated summary'
 
@@ -458,5 +458,5 @@ class TestUpdateContextEntrySummary:
 
         assert success is True
 
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert entries[0]['summary'] == 'Existing summary'

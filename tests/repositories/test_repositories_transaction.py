@@ -47,7 +47,7 @@ class TestContextRepositoryTransaction:
         assert was_updated is False
 
         # Verify data was stored
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == 'Test content'
 
@@ -75,7 +75,7 @@ class TestContextRepositoryTransaction:
             assert was_updated is False
 
         # Transaction committed - verify data persisted
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == 'Transaction content'
 
@@ -103,7 +103,7 @@ class TestContextRepositoryTransaction:
             assert deleted_count == 1
 
         # Verify deletion persisted
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 0
 
     @pytest.mark.asyncio
@@ -135,7 +135,7 @@ class TestContextRepositoryTransaction:
             assert 'text_content' in updated_fields
 
         # Verify update persisted
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == 'Updated content'
 
@@ -307,7 +307,7 @@ class TestMultiRepositoryTransaction:
             await repos.tags.store_tags(context_id, ['atomic', 'test'], txn=txn)
 
         # Both should be committed
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -341,7 +341,7 @@ class TestMultiRepositoryTransaction:
             await repos.images.store_images(context_id, [sample_image_data], txn=txn)
 
         # All should be committed
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
         tags = await repos.tags.get_tags_for_context(context_id)

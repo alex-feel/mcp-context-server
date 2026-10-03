@@ -43,6 +43,7 @@ import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
+from app.access_scope import Scope
 from app.backends.base import TransactionContext
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
@@ -160,9 +161,9 @@ class TestBatchVersionGuard:
         real_check = repos.context.check_entry_exists
         check_calls = {'count': 0}
 
-        async def counting_check(context_id: str) -> EntryProbe:
+        async def counting_check(context_id: str, *, scope: Scope) -> EntryProbe:
             check_calls['count'] += 1
-            return await real_check(context_id)
+            return await real_check(context_id, scope=scope)
 
         with (
             patch('app.tools.batch.update.ensure_repositories', return_value=repos),
@@ -214,8 +215,8 @@ class TestBatchVersionGuard:
         real_check = repos.context.check_entry_exists
         bumped = {'done': False}
 
-        async def check_then_bump(context_id: str) -> EntryProbe:
-            result = await real_check(context_id)
+        async def check_then_bump(context_id: str, *, scope: Scope) -> EntryProbe:
+            result = await real_check(context_id, scope=scope)
             if not bumped['done'] and result[0]:
                 bumped['done'] = True
 
@@ -262,8 +263,8 @@ class TestBatchVersionGuard:
         real_check = repos.context.check_entry_exists
         bumped = {'done': False}
 
-        async def check_then_bump(context_id: str) -> EntryProbe:
-            result = await real_check(context_id)
+        async def check_then_bump(context_id: str, *, scope: Scope) -> EntryProbe:
+            result = await real_check(context_id, scope=scope)
             # Only bump on the very FIRST pre-generation capture (version 0), so the
             # retry's re-read sees the post-bump version and the CAS then matches.
             if not bumped['done'] and result[2] == 0:
@@ -407,11 +408,11 @@ class TestBatchVersionGuard:
         real_check = repos.context.check_entry_exists
         check_calls = {'count': 0}
 
-        async def vanish_on_reread(context_id: str) -> EntryProbe:
+        async def vanish_on_reread(context_id: str, *, scope: Scope) -> EntryProbe:
             check_calls['count'] += 1
             if check_calls['count'] == 1:
-                return await real_check(context_id)
-            return EntryProbe(False, None, None, None)
+                return await real_check(context_id, scope=scope)
+            return EntryProbe(False, None, None, None, False)
 
         with (
             patch('app.tools.batch.update.ensure_repositories', return_value=repos),
@@ -457,13 +458,13 @@ class TestBatchVersionGuard:
         check_calls = {'count': 0}
         versions_seen: list[int | None] = []
 
-        async def flaky_reread(context_id: str) -> EntryProbe:
+        async def flaky_reread(context_id: str, *, scope: Scope) -> EntryProbe:
             check_calls['count'] += 1
             if check_calls['count'] == 1:
-                return await real_check(context_id)  # PHASE 2 up-front capture
+                return await real_check(context_id, scope=scope)  # PHASE 2 up-front capture
             if check_calls['count'] == 2:
                 raise asyncpg.InterfaceError('connection recycled by the pooler')
-            return EntryProbe(True, 'agent', 3, 'local')
+            return EntryProbe(True, 'agent', 3, 'local', True)
 
         async def conflict_once(*_args: object, **kwargs: object) -> tuple[list[str], bool]:
             versions_seen.append(cast('int | None', kwargs.get('expected_version')))

@@ -150,10 +150,10 @@ class TestContextRepositoryDelete:
         assert deleted == len(real_ids)
 
         # All real rows are gone.
-        assert await repos.context.get_by_ids(real_ids) == []
+        assert await repos.context.get_by_ids(real_ids, scope=LOCAL_SCOPE) == []
 
         # The unrelated entry is untouched.
-        remaining = await repos.context.get_by_ids([keep_id])
+        remaining = await repos.context.get_by_ids([keep_id], scope=LOCAL_SCOPE)
         assert len(remaining) == 1
         assert remaining[0]['id'] == keep_id
 
@@ -181,7 +181,7 @@ class TestContextRepositoryBatchDelete:
         deleted_count, criteria = await context_repo.delete_contexts_batch(context_ids=ids)
         assert deleted_count == 3
 
-        rows = await context_repo.get_by_ids(ids)
+        rows = await context_repo.get_by_ids(ids, scope=LOCAL_SCOPE)
         assert rows == []
 
     @pytest.mark.asyncio
@@ -355,7 +355,7 @@ class TestContextRepositoryBatchDelete:
         assert deleted_count == 2
         assert criteria == ['context_ids: 33000 IDs', 'source: user']
         # The listed agent entry (source mismatch) and the unlisted user entry survive.
-        remaining = await repos.context.get_by_ids([*user_ids, agent_id, unlisted_id])
+        remaining = await repos.context.get_by_ids([*user_ids, agent_id, unlisted_id], scope=LOCAL_SCOPE)
         assert {row['id'] for row in remaining} == {agent_id, unlisted_id}
 
     @pytest.mark.asyncio

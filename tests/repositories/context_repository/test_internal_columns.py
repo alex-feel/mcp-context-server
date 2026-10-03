@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import LOCAL_SCOPE
+
 
 class TestInternalColumnsNotExposed:
     """Test that internal database columns are not exposed in API responses.
@@ -119,7 +121,7 @@ class TestInternalColumnsNotExposed:
             context_id = rows[0]['id']
 
             # Call get_by_ids
-            result_rows = await repo.get_by_ids([context_id])
+            result_rows = await repo.get_by_ids([context_id], scope=LOCAL_SCOPE)
 
             # Verify we got results
             assert len(result_rows) == 1

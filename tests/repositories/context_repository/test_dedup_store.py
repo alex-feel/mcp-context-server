@@ -77,7 +77,7 @@ class TestDeduplication:
         assert len(all_entries) == 1
 
         # Verify updated_at was actually updated
-        entries = await repos.context.get_by_ids([context_id1])
+        entries = await repos.context.get_by_ids([context_id1], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         entry = entries[0]
         assert entry['created_at'] != entry['updated_at']
@@ -506,7 +506,7 @@ class TestDeduplication:
         )
         assert was_updated is True
         assert context_id2 == context_id
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         stored_metadata = json.loads(entries[0]['metadata'])
         assert stored_metadata == {'key': 'updated', 'new_key': 'value'}
 
@@ -527,7 +527,7 @@ class TestDeduplication:
             metadata=None,
         )
         assert was_updated is True
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         stored_metadata = json.loads(entries[0]['metadata'])
         assert stored_metadata == {'key': 'original'}
 
@@ -546,7 +546,7 @@ class TestDeduplication:
             text_content='Test content', metadata=None,
         )
         assert was_updated is True
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert entries[0]['content_type'] == 'multimodal'
 
     async def test_updated_at_changes_during_dedup(self, repos: RepositoryContainer) -> None:
@@ -565,7 +565,7 @@ class TestDeduplication:
             text_content='Test content', metadata=None,
         )
         assert was_updated is True
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert entries[0]['created_at'] != entries[0]['updated_at']
 
     async def test_tags_replaced_not_accumulated_during_dedup(self, repos: RepositoryContainer) -> None:

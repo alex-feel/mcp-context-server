@@ -154,18 +154,24 @@ async def update_context(
 
         # Get repositories
         repos = await ensure_repositories()
+        # The caller's identity, resolved before anything that can reveal whether an
+        # entry exists: prefix resolution and the probe below see only the entries
+        # the caller may read, and the publish gate needs the caller's roles.
+        principal = resolve_effective_principal()
+        scope = principal.access_scope()
 
         # Boundary normalization: accept full hex (32 or 36 chars) or 8-31 char hex prefix
         try:
-            context_id = await resolve_or_normalize_id(context_id, repos.context)
+            context_id = await resolve_or_normalize_id(context_id, repos.context, scope=scope)
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
 
-        # Check if entry exists; capture source and the optimistic-concurrency
-        # version BEFORE generation so a concurrent writer that commits during
-        # our (slow) generation is caught by the conditional write below. The
-        # same probe returns the immutable owner_id backing the visibility gate.
-        probe = await repos.context.check_entry_exists(context_id)
+        # Check if entry exists for the caller; capture source and the
+        # optimistic-concurrency version BEFORE generation so a concurrent writer
+        # that commits during our (slow) generation is caught by the conditional
+        # write below. The same probe returns the immutable owner_id backing the
+        # visibility gate. An entry the caller may not read is not found.
+        probe = await repos.context.check_entry_exists(context_id, scope=scope)
         if not probe.exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
         entry_source = probe.source
@@ -176,7 +182,6 @@ async def update_context(
         # additionally require the configured publish role. owner_id is
         # immutable, so this pre-generation read cannot go stale.
         if visibility is not None:
-            principal = resolve_effective_principal()
             if probe.owner_id != principal.principal_id:
                 raise ToolError(
                     f'Only the owner may change the visibility of context {context_id}',
@@ -314,7 +319,7 @@ async def update_context(
                 # re-running the write transaction with the token whose compare-and-set
                 # just failed is doomed by construction (version is monotonic) and would
                 # burn a conflict slot on what was only a connection blip.
-                exists, current_version = await reread_entry_version(repos, context_id)
+                exists, current_version = await reread_entry_version(repos, context_id, scope=scope)
                 if not exists:
                     raise ToolError(f'Context entry with ID {context_id} not found') from None
                 expected_version = current_version

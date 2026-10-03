@@ -8,6 +8,7 @@ import json
 from typing import Any
 from typing import cast
 
+from app.access_scope import AccessScope
 from app.auth import RequestPrincipal
 from app.auth import visibility_denied_reason
 from app.ids import resolve_or_normalize_id
@@ -179,6 +180,8 @@ async def validate_update_entry(
     update: dict[str, Any],
     idx: int,
     context_repo: ContextRepository,
+    *,
+    scope: AccessScope,
 ) -> tuple[dict[str, Any] | None, str, str | None]:
     """Validate one update_context_batch entry against the single-entry contract.
 
@@ -193,6 +196,7 @@ async def validate_update_entry(
         update: The raw caller-supplied update dict.
         idx: The entry's index in the caller's list (recorded in the result).
         context_repo: Context repository used to resolve id prefixes.
+        scope: The caller's scope; an id prefix resolves over the entries it may read.
 
     Returns:
         ``(validated_update, context_id, None)`` on success, or
@@ -210,7 +214,7 @@ async def validate_update_entry(
 
     # Resolve to canonical 32-char hex (accept full or prefix)
     try:
-        context_id = await resolve_or_normalize_id(context_id_raw, context_repo)
+        context_id = await resolve_or_normalize_id(context_id_raw, context_repo, scope=scope)
     except ValueError as e:
         return None, context_id_raw, f'Invalid context_id: {e}'
 

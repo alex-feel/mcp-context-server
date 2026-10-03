@@ -42,7 +42,7 @@ class TestMetadataPatchValidation:
     @pytest.mark.asyncio
     async def test_context_not_found_error(self, mock_repositories):
         """Test error when context entry doesn't exist."""
-        mock_repositories.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
+        mock_repositories.context.check_entry_exists.return_value = EntryProbe(False, None, None, None, False)
 
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:

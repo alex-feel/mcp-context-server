@@ -190,6 +190,7 @@ async def reread_entry_version(
     repos: 'RepositoryContainer',
     context_id: str,
     *,
+    scope: AccessScope,
     max_retries: int = 2,
 ) -> tuple[bool, int | None]:
     """Re-read an entry's optimistic-concurrency version after a failed compare-and-set.
@@ -210,15 +211,17 @@ async def reread_entry_version(
     Args:
         repos: Repository container.
         context_id: ID (32-char canonical hex) of the entry whose version to refresh.
+        scope: The caller's scope; the entry is re-read as the caller.
         max_retries: Maximum transient-fault retries (exponential backoff).
 
     Returns:
-        ``(exists, version)``; ``version`` is None when the entry is gone.
+        ``(exists, version)``; ``version`` is None when the entry is gone or the
+        caller may no longer read it.
     """
     attempt = 0
     while True:
         try:
-            probe = await repos.context.check_entry_exists(context_id)
+            probe = await repos.context.check_entry_exists(context_id, scope=scope)
         except Exception as exc:
             if is_connection_error(exc) and attempt < max_retries:
                 delay = 0.5 * (2 ** attempt)

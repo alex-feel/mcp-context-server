@@ -157,7 +157,7 @@ class TestContextRepositoryVersionCAS:
             text_content='Initial version content',
         )
 
-        probe = await repos.context.check_entry_exists(ctx_id)
+        probe = await repos.context.check_entry_exists(ctx_id, scope=LOCAL_SCOPE)
         assert probe.exists is True
         assert probe.version == 0
 

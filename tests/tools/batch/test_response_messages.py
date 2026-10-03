@@ -295,7 +295,7 @@ class TestBatchMessageAccuracy:
     async def test_update_batch_short_text_no_summary_message(self) -> None:
         """Message omits 'summaries regenerated' when all entries skip summary due to min_content_length."""
         repos = create_mock_repositories()
-        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
+        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local', True))
         repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
 
         mock_summary = MagicMock()
@@ -325,7 +325,7 @@ class TestBatchMessageAccuracy:
     async def test_update_batch_no_text_change_no_regeneration_message(self) -> None:
         """Message omits generation info when only metadata is updated (no text changes)."""
         repos = create_mock_repositories()
-        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
+        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local', True))
         repos.context.update_context_entry = AsyncMock(return_value=(True, ['metadata']))
 
         mock_summary = MagicMock()

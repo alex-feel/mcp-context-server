@@ -38,7 +38,7 @@ def mock_repositories():
     # Mock context repository
     repos.context = Mock()
     repos.context.backend = mock_backend
-    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local', True))
     repos.context.entry_exists = AsyncMock(return_value=True)
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')

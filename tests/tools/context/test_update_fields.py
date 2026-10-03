@@ -8,6 +8,7 @@ import pytest
 
 import app.tools
 from app.types import MetadataDict
+from tests.helpers import LOCAL_SCOPE
 
 # Tools are plain async functions registered at server startup, so tests call them directly.
 update_context = app.tools.update_context
@@ -40,7 +41,7 @@ class TestUpdateContext:
 
             # Verify repository calls
             mock_repositories.context.check_entry_exists.assert_called_once_with(
-                '0190abcdef1234567890abcd0000007b',
+                '0190abcdef1234567890abcd0000007b', scope=LOCAL_SCOPE,
             )
             from unittest.mock import ANY
             mock_repositories.context.update_context_entry.assert_called_once_with(

@@ -9,6 +9,7 @@ from fastmcp.exceptions import ToolError
 
 import app.tools
 from app.repositories.context_repository.records import EntryProbe
+from tests.helpers import LOCAL_SCOPE
 
 # Tools are plain async functions registered at server startup, so tests call them directly.
 update_context = app.tools.update_context
@@ -34,7 +35,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_context_not_found_error(self, mock_repositories):
         """Test error when context entry doesn't exist."""
-        mock_repositories.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
+        mock_repositories.context.check_entry_exists.return_value = EntryProbe(False, None, None, None, False)
 
         with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
@@ -197,7 +198,7 @@ class TestUpdateContext:
             )
 
         assert result['context_id'] == canonical
-        mock_repositories.context.check_entry_exists.assert_awaited_once_with(canonical)
+        mock_repositories.context.check_entry_exists.assert_awaited_once_with(canonical, scope=LOCAL_SCOPE)
 
     @pytest.mark.asyncio
     async def test_transaction_rollback_simulation(self, mock_repositories):

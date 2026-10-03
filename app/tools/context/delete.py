@@ -6,6 +6,7 @@ from typing import Annotated
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_ids
 from app.startup import ensure_repositories
@@ -76,12 +77,14 @@ async def delete_context(
 
         # Get repositories first; prefix resolution below needs the context repo.
         repos = await ensure_repositories()
+        # A prefix resolves over the entries the caller may read.
+        scope = resolve_access_scope()
 
         # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
         # 8-31 char hex prefixes (uniform with get_context_by_ids/update_context).
         if context_ids:
             try:
-                context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
+                context_ids = await resolve_or_normalize_ids(context_ids, repos.context, scope=scope)
             except ValueError as e:
                 raise ToolError(f'Invalid context ID: {e}') from e
 

@@ -271,7 +271,7 @@ class TestContextRepositoryDeduplication:
         assert was_updated is True
         assert ctx_id2 == ctx_id1
 
-        rows = await context_repo.get_by_ids([ctx_id1])
+        rows = await context_repo.get_by_ids([ctx_id1], scope=LOCAL_SCOPE)
         assert rows[0]['summary'] == 'Existing summary'
 
     @pytest.mark.asyncio
@@ -319,7 +319,7 @@ class TestContextRepositoryDeduplication:
             text_content='Normalized summary test',
             summary='   ',
         )
-        rows = await context_repo.get_by_ids([ctx_id])
+        rows = await context_repo.get_by_ids([ctx_id], scope=LOCAL_SCOPE)
         assert rows[0]['summary'] is None
 
     @pytest.mark.asyncio

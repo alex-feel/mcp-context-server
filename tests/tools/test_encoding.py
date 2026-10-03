@@ -218,7 +218,7 @@ class TestUTF8Encoding:
         ]
 
         for text in unicode_texts:
-            self.mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
+            self.mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local', True))
             self.mock_repos.context.update_context_entry = AsyncMock(
                 return_value=(True, ['text_content']),
             )

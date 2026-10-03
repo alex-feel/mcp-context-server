@@ -4,8 +4,9 @@ Covers owner stamping through store_context / store_context_batch (default
 principal fallback, verified-principal stamping, and a new entry for text that
 matches another principal's entry), the publish gate on both
 store and update, the owner-only visibility change on update_context /
-update_context_batch, author-group grant stamping, and the invariant that
-owner_id is never a tool parameter.
+update_context_batch (reachable only for entries the caller may read; another
+principal's private entry is not found), author-group grant stamping, and the
+invariant that owner_id is never a tool parameter.
 """
 
 import inspect
@@ -22,6 +23,7 @@ from app.repositories.grant_repository import GrantRepository
 from app.repositories.grant_repository import GrantRow
 from app.settings import get_settings
 from tests.helpers import as_principal
+from tests.helpers import insert_grant
 
 
 def _principal(
@@ -218,73 +220,115 @@ class TestOwnerOnlyVisibilityChange:
         _, visibility = await _read_owner_visibility(result['context_id'])
         assert visibility == 'public'
 
-    @pytest.mark.asyncio
-    async def test_non_owner_visibility_change_rejected(self) -> None:
-        """A different principal cannot change visibility."""
+    @staticmethod
+    async def _store_alice_private(text: str, *, write_grant_to: str | None = None) -> str:
+        """Store a private entry as alice, optionally write-granted to another principal, and return its id."""
         from app.tools.context.store import store_context
-        from app.tools.context.update import update_context
 
-        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
-            result = await store_context(
-                thread_id='access-tools', source='agent', text='alice-only visibility',
-            )
-        with (
-            patch('app.tools.context.update.resolve_effective_principal', return_value=_principal('bob')),
-            pytest.raises(ToolError, match='Only the owner'),
-        ):
-            await update_context(context_id=result['context_id'], visibility='public')
+        with as_principal('alice'):
+            result = await store_context(thread_id='access-tools', source='agent', text=text)
+        context_id = result['context_id']
+        if write_grant_to is not None:
+            backend = app.startup.get_backend()
+            assert backend is not None
+            await insert_grant(backend, context_id, 'user', write_grant_to, 'write', 'alice')
+        return context_id
 
     @pytest.mark.asyncio
-    async def test_non_owner_text_update_still_allowed(self) -> None:
-        """A text-only update carries no visibility change and is not owner-gated
-        (read/write scoping arrives with read-path enforcement)."""
-        from app.tools.context.store import store_context
+    async def test_non_owner_visibility_change_on_private_entry_is_not_found(self) -> None:
+        """Another principal's private entry is not found, so its visibility gate is never reached."""
         from app.tools.context.update import update_context
 
-        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
-            result = await store_context(
-                thread_id='access-tools', source='agent', text='text update target',
-            )
-        with patch('app.tools.context.update.resolve_effective_principal', return_value=_principal('bob')):
-            updated = await update_context(context_id=result['context_id'], text='new body')
+        context_id = await self._store_alice_private('alice-only visibility')
+        with as_principal('bob'), pytest.raises(ToolError) as error:
+            await update_context(context_id=context_id, visibility='public')
+        assert str(error.value) == f'Context entry with ID {context_id} not found'
+
+    @pytest.mark.asyncio
+    async def test_write_grantee_visibility_change_rejected(self) -> None:
+        """A write grantee reads the entry but may not change its visibility."""
+        from app.tools.context.update import update_context
+
+        context_id = await self._store_alice_private('write-granted visibility', write_grant_to='bob')
+        with as_principal('bob'), pytest.raises(ToolError, match='Only the owner'):
+            await update_context(context_id=context_id, visibility='public')
+        _, visibility = await _read_owner_visibility(context_id)
+        assert visibility == 'private'
+
+    @pytest.mark.asyncio
+    async def test_non_owner_text_update_on_private_entry_is_not_found(self) -> None:
+        """Another principal's private entry is not found for a text update either."""
+        from app.tools.context.update import update_context
+
+        context_id = await self._store_alice_private('text update target')
+        with as_principal('bob'), pytest.raises(ToolError) as error:
+            await update_context(context_id=context_id, text='new body')
+        assert str(error.value) == f'Context entry with ID {context_id} not found'
+
+    @pytest.mark.asyncio
+    async def test_write_grantee_text_update_succeeds(self) -> None:
+        """A write grantee updates the text of an entry it does not own."""
+        from app.tools.context.update import update_context
+
+        context_id = await self._store_alice_private('write-granted text target', write_grant_to='bob')
+        with as_principal('bob'):
+            updated = await update_context(context_id=context_id, text='new body')
         assert 'text_content' in updated['updated_fields']
 
     @pytest.mark.asyncio
-    async def test_batch_non_owner_visibility_change_records_per_entry_error(self) -> None:
-        """Non-atomic batch: an unauthorized visibility change fails only that entry."""
+    async def test_batch_non_owner_update_of_private_entry_records_not_found(self) -> None:
+        """Non-atomic batch: another principal's private entry fails only that entry, as not found."""
         from app.tools.batch.update import update_context_batch
-        from app.tools.context.store import store_context
 
-        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
-            result = await store_context(
-                thread_id='access-tools', source='agent', text='batch visibility target',
-            )
-        with patch('app.tools.batch.update.resolve_effective_principal', return_value=_principal('bob')):
+        context_id = await self._store_alice_private('batch visibility target')
+        with as_principal('bob'):
             batch_result = await update_context_batch(
-                updates=[{'context_id': result['context_id'], 'visibility': 'public'}],
+                updates=[{'context_id': context_id, 'visibility': 'public'}],
+                atomic=False,
+            )
+        assert batch_result['failed'] == 1
+        assert batch_result['results'][0]['error'] == f'Context entry {context_id} not found'
+        _, visibility = await _read_owner_visibility(context_id)
+        assert visibility == 'private'
+
+    @pytest.mark.asyncio
+    async def test_batch_write_grantee_visibility_change_records_per_entry_error(self) -> None:
+        """Non-atomic batch: a write grantee's visibility change fails only that entry."""
+        from app.tools.batch.update import update_context_batch
+
+        context_id = await self._store_alice_private('batch write-granted visibility target', write_grant_to='bob')
+        with as_principal('bob'):
+            batch_result = await update_context_batch(
+                updates=[{'context_id': context_id, 'visibility': 'public'}],
                 atomic=False,
             )
         assert batch_result['failed'] == 1
         assert 'Only the owner' in (batch_result['results'][0]['error'] or '')
-        _, visibility = await _read_owner_visibility(result['context_id'])
+        _, visibility = await _read_owner_visibility(context_id)
         assert visibility == 'private'
 
     @pytest.mark.asyncio
-    async def test_atomic_batch_non_owner_visibility_change_aborts(self) -> None:
-        """Atomic batch: an unauthorized visibility change aborts the whole batch."""
+    async def test_atomic_batch_non_owner_update_of_private_entry_aborts_as_not_found(self) -> None:
+        """Atomic batch: another principal's private entry aborts the whole batch as not found."""
         from app.tools.batch.update import update_context_batch
-        from app.tools.context.store import store_context
 
-        with patch('app.tools.context.store.resolve_effective_principal', return_value=_principal('alice')):
-            result = await store_context(
-                thread_id='access-tools', source='agent', text='atomic batch visibility target',
-            )
-        with (
-            patch('app.tools.batch.update.resolve_effective_principal', return_value=_principal('bob')),
-            pytest.raises(ToolError, match='Only the owner'),
-        ):
+        context_id = await self._store_alice_private('atomic batch visibility target')
+        with as_principal('bob'), pytest.raises(ToolError) as error:
             await update_context_batch(
-                updates=[{'context_id': result['context_id'], 'visibility': 'public'}],
+                updates=[{'context_id': context_id, 'visibility': 'public'}],
+                atomic=True,
+            )
+        assert str(error.value) == f'Context entry {context_id} not found at index 0'
+
+    @pytest.mark.asyncio
+    async def test_atomic_batch_write_grantee_visibility_change_aborts(self) -> None:
+        """Atomic batch: a write grantee's visibility change aborts the whole batch."""
+        from app.tools.batch.update import update_context_batch
+
+        context_id = await self._store_alice_private('atomic write-granted visibility target', write_grant_to='bob')
+        with as_principal('bob'), pytest.raises(ToolError, match='Only the owner'):
+            await update_context_batch(
+                updates=[{'context_id': context_id, 'visibility': 'public'}],
                 atomic=True,
             )
 

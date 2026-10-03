@@ -11,10 +11,12 @@ from unittest.mock import patch
 import asyncpg
 import pytest
 
+from app.access_scope import AccessScope
 from app.repositories.context_repository.records import EntryProbe
 from app.tools._transactions import is_connection_error
 from app.tools._transactions import reread_entry_version
 from app.tools._transactions import transaction_heartbeat
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestTransactionHeartbeat:
@@ -151,10 +153,10 @@ class TestRereadEntryVersion:
         """A dropped connection during the refresh retries and yields the new version."""
         repos = MagicMock()
         repos.context.check_entry_exists = AsyncMock(
-            side_effect=[asyncpg.InterfaceError('connection recycled'), EntryProbe(True, 'agent', 7, 'local')],
+            side_effect=[asyncpg.InterfaceError('connection recycled'), EntryProbe(True, 'agent', 7, 'local', True)],
         )
         with patch('app.tools._transactions.asyncio.sleep', new_callable=AsyncMock):
-            exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456')
+            exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE)
         assert exists is True
         assert version == 7
         assert repos.context.check_entry_exists.await_count == 2
@@ -163,8 +165,8 @@ class TestRereadEntryVersion:
     async def test_missing_entry_is_reported_not_retried(self) -> None:
         """A deleted row is a clean answer, not a fault to retry."""
         repos = MagicMock()
-        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(False, None, None, None))
-        exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456')
+        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(False, None, None, None, False))
+        exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE)
         assert exists is False
         assert version is None
         assert repos.context.check_entry_exists.await_count == 1
@@ -180,7 +182,7 @@ class TestRereadEntryVersion:
             patch('app.tools._transactions.asyncio.sleep', new_callable=AsyncMock),
             pytest.raises(asyncpg.InterfaceError),
         ):
-            await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', max_retries=1)
+            await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE, max_retries=1)
         assert repos.context.check_entry_exists.await_count == 2
 
     @pytest.mark.asyncio
@@ -189,5 +191,15 @@ class TestRereadEntryVersion:
         repos = MagicMock()
         repos.context.check_entry_exists = AsyncMock(side_effect=ValueError('bad id'))
         with pytest.raises(ValueError, match='bad id'):
-            await reread_entry_version(repos, '0190abcdef1234567890abcdef123456')
+            await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE)
         assert repos.context.check_entry_exists.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_probe_runs_under_the_given_scope(self) -> None:
+        """The refresh probes the entry as the caller, so an entry it may no longer read reads as gone."""
+        bob = AccessScope('bob', frozenset())
+        repos = MagicMock()
+        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(False, None, None, None, False))
+        exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=bob)
+        assert (exists, version) == (False, None)
+        repos.context.check_entry_exists.assert_awaited_once_with('0190abcdef1234567890abcdef123456', scope=bob)

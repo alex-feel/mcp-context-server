@@ -8,6 +8,7 @@ from typing import cast
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_ids
 from app.repositories.base import canonical_timestamp
@@ -31,7 +32,8 @@ async def get_context_by_ids(
     Use this when you have specific context IDs from previous operations
     and need the complete, untruncated content.
 
-    Non-existent IDs are silently skipped; only found entries are returned.
+    Non-existent IDs and IDs of entries the caller may not read are silently
+    skipped alike; only the readable entries found are returned.
     Accepts at most 100 IDs per call (the same cap as the batch tools); an
     oversized list is rejected at the tool boundary as a validation error
     before any database work. Fetch larger sets in successive calls.
@@ -59,16 +61,19 @@ async def get_context_by_ids(
     try:
         # Get repositories first; prefix resolution below needs the context repo.
         repos = await ensure_repositories()
+        # Every read below runs as the caller, so an entry it may not read is
+        # skipped exactly like a missing one.
+        scope = resolve_access_scope()
 
         # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
         # 8-31 char hex prefixes (uniform with update_context/delete_context).
         try:
-            context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
+            context_ids = await resolve_or_normalize_ids(context_ids, repos.context, scope=scope)
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
 
-        # Fetch context entries using repository
-        rows = await repos.context.get_by_ids(context_ids)
+        # Fetch the readable entries; tags and images below are read only for these ids.
+        rows = await repos.context.get_by_ids(context_ids, scope=scope)
         entries: list[ContextEntryDict] = []
         include_summary = settings.retrieval.include_summary
 

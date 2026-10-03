@@ -20,6 +20,7 @@ import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
 import app.startup
+from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.ids import generate_id_with_timestamp
@@ -28,6 +29,8 @@ from app.tools.batch.delete import delete_context_batch
 from app.tools.context.delete import delete_context
 from app.tools.context.retrieve import get_context_by_ids
 from app.tools.context.update import update_context
+
+ALICE = AccessScope('alice', frozenset())
 
 
 @pytest_asyncio.fixture
@@ -146,13 +149,13 @@ class TestPrefixLookupAmbiguity:
         assert result['context_id'] == full_id
 
 
-def _insert_entry(conn: sqlite3.Connection, entry_id: str, text: str = 'x') -> None:
-    """Insert a single context entry directly for prefix-resolution tests."""
+def _insert_entry(conn: sqlite3.Connection, entry_id: str, text: str = 'x', owner: str = 'local') -> None:
+    """Insert a single private context entry directly for prefix-resolution tests."""
     conn.execute(
         '''INSERT INTO context_entries
            (id, thread_id, source, content_type, text_content, owner_id)
-           VALUES (?, ?, ?, ?, ?, 'local')''',
-        (entry_id, 't', 'user', 'text', text),
+           VALUES (?, ?, ?, ?, ?, ?)''',
+        (entry_id, 't', 'user', 'text', text, owner),
     )
 
 
@@ -242,3 +245,87 @@ class TestPrefixLookupUniformAcrossTools:
         assert result['success'] is True
         assert result['deleted_count'] == 1
         assert await get_context_by_ids(context_ids=[full_id]) == []
+
+
+class TestPrefixLookupScoping:
+    """Prefixes resolve over the entries the caller may read, in every id-accepting tool.
+
+    The default principal reads its own entries; an entry owned by another principal
+    and kept private is invisible to it, so it never makes a prefix ambiguous and a
+    prefix matching only such entries matches nothing.
+    """
+
+    @staticmethod
+    async def _insert_pair(backend: StorageBackend) -> tuple[str, str]:
+        """Insert an entry of the default principal and a hidden sibling sharing its 8-char prefix."""
+        visible_id = generate_id_with_timestamp(datetime(2024, 1, 1, tzinfo=UTC))
+        hidden_id = visible_id[:8] + 'b' * 24
+        await backend.execute_write(lambda conn: _insert_entry(conn, visible_id, 'visible'))
+        await backend.execute_write(lambda conn: _insert_entry(conn, hidden_id, 'hidden', owner='alice'))
+        return visible_id, hidden_id
+
+    @pytest.mark.asyncio
+    async def test_hidden_sibling_leaves_the_prefix_unique_in_get_context_by_ids(
+        self,
+        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+    ) -> None:
+        """A sibling the caller may not read does not make the prefix ambiguous."""
+        backend, _repos = backend_with_repos
+        visible_id, _hidden_id = await self._insert_pair(backend)
+
+        entries = await get_context_by_ids(context_ids=[visible_id[:8]])
+
+        assert [entry.get('id') for entry in entries] == [visible_id]
+
+    @pytest.mark.asyncio
+    async def test_hidden_sibling_leaves_the_prefix_unique_in_update(
+        self,
+        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+    ) -> None:
+        """update_context resolves the prefix to the one readable entry."""
+        backend, _repos = backend_with_repos
+        visible_id, _hidden_id = await self._insert_pair(backend)
+
+        result = await update_context(context_id=visible_id[:8], text='updated')
+
+        assert result['context_id'] == visible_id
+
+    @pytest.mark.asyncio
+    async def test_prefix_of_only_hidden_entries_matches_nothing_in_update(
+        self,
+        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+    ) -> None:
+        """update_context reports no match for a prefix only a hidden entry carries."""
+        backend, _repos = backend_with_repos
+        _visible_id, hidden_id = await self._insert_pair(backend)
+
+        with pytest.raises(ToolError, match=f"No context entry matches prefix '{hidden_id[:12]}'"):
+            await update_context(context_id=hidden_id[:12], text='ignored')
+
+    @pytest.mark.asyncio
+    async def test_prefix_of_only_hidden_entries_matches_nothing_in_delete_context(
+        self,
+        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+    ) -> None:
+        """delete_context reports no match for a hidden-only prefix and deletes nothing."""
+        backend, repos = backend_with_repos
+        _visible_id, hidden_id = await self._insert_pair(backend)
+
+        with pytest.raises(ToolError, match=f"No context entry matches prefix '{hidden_id[:12]}'"):
+            await delete_context(context_ids=[hidden_id[:12]])
+
+        assert [row['id'] for row in await repos.context.get_by_ids([hidden_id], scope=ALICE)] == [hidden_id]
+
+    @pytest.mark.asyncio
+    async def test_prefix_of_only_hidden_entries_matches_nothing_in_delete_context_batch(
+        self,
+        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+    ) -> None:
+        """delete_context_batch reports no match for a hidden-only prefix and deletes nothing."""
+        backend, repos = backend_with_repos
+        _visible_id, hidden_id = await self._insert_pair(backend)
+
+        with pytest.raises(ToolError, match=f"No context entry matches prefix '{hidden_id[:12]}'"):
+            await delete_context_batch(context_ids=[hidden_id[:12]])
+
+        assert [row['id'] for row in await repos.context.get_by_ids([hidden_id], scope=ALICE)] == [hidden_id]

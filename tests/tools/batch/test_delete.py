@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 
 
 class _FakeDeleteTransaction:
@@ -300,4 +301,4 @@ class TestBatchDeleteEmbeddingCleanup:
 
         assert result['success'] is True
         assert result['deleted_count'] == total
-        assert await repos.context.get_by_ids(ids[:5] + ids[-5:]) == []
+        assert await repos.context.get_by_ids(ids[:5] + ids[-5:], scope=LOCAL_SCOPE) == []

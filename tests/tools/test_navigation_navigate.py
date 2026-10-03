@@ -3,6 +3,7 @@ stored per-node summaries.
 """
 
 import sqlite3
+from unittest.mock import AsyncMock
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +14,7 @@ from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummaries
 from app.startup import ensure_repositories
+from tests.helpers import as_principal
 from tests.tools._navigation import navigate_as_dict
 from tests.tools._navigation import store_entry
 
@@ -46,6 +48,49 @@ class TestNavigateContext:
         assert nav_backend is not None
         with pytest.raises(ToolError):
             await navigate_as_dict(context_id='0' * 32)
+
+
+class TestNavigateContextScoping:
+    """navigate_context outlines only entries the caller may read."""
+
+    @pytest.mark.asyncio
+    async def test_unreadable_entry_fails_like_a_missing_one(self, nav_backend: StorageBackend) -> None:
+        """Another principal's private entry yields the same not-found error as an absent id."""
+        hidden_id = await store_entry(nav_backend, '# Alice\nprivate\n', owner='alice')
+        absent_id = '0' * 32
+
+        with pytest.raises(ToolError) as hidden:
+            await navigate_as_dict(context_id=hidden_id)
+        with pytest.raises(ToolError) as absent:
+            await navigate_as_dict(context_id=absent_id)
+
+        assert str(hidden.value) == f'Context entry not found: {hidden_id}'
+        assert str(absent.value) == f'Context entry not found: {absent_id}'
+
+    @pytest.mark.asyncio
+    async def test_no_node_read_for_an_unreadable_entry(self, nav_backend: StorageBackend) -> None:
+        """With node summaries requested, an unreadable entry never reaches the node-summary read."""
+        await apply_index_tree_migration(nav_backend, force=True)
+        repos = await ensure_repositories()
+        hidden_id = await store_entry(nav_backend, '# Alice\nprivate\n', owner='alice')
+
+        with (
+            patch.object(repos.index_nodes, 'get_nodes_for_context', AsyncMock()) as nodes_spy,
+            pytest.raises(ToolError, match='Context entry not found'),
+        ):
+            await navigate_as_dict(context_id=hidden_id, include_node_summaries=True)
+
+        nodes_spy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_owner_outlines_their_private_entry(self, nav_backend: StorageBackend) -> None:
+        """The owner of a private entry gets its outline."""
+        cid = await store_entry(nav_backend, '# Alice\nprivate\n', owner='alice')
+
+        with as_principal('alice'):
+            result = await navigate_as_dict(context_id=cid)
+
+        assert result['root']['children'][0]['title'] == 'Alice'
 
 
 class TestNavigateNodeSummaries:

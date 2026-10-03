@@ -4,8 +4,8 @@ Covers store_with_deduplication (the caller's principal and the visibility
 stamped on INSERT, never touched by a deduplication UPDATE, which only the
 owner's retransmit reaches), update_context_entry (visibility rides the dynamic
 SET list and the compare-and-set), and the check_entry_exists probe's owner_id
-field -- all against a real temp SQLite database built from the full base
-schema.
+and can_write fields -- all against a real temp SQLite database built from the
+full base schema.
 """
 
 import sqlite3
@@ -15,8 +15,10 @@ import pytest
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.repositories.context_repository import ContextRepository
+from tests.helpers import insert_grant
 
 ALICE = AccessScope('alice', frozenset())
+BOB = AccessScope('bob', frozenset())
 MALLORY = AccessScope('mallory', frozenset())
 
 
@@ -144,7 +146,7 @@ class TestUpdateVisibility:
             scope=ALICE,
             visibility='private',
         )
-        probe = await repo.check_entry_exists(context_id)
+        probe = await repo.check_entry_exists(context_id, scope=ALICE)
         assert probe.version is not None
 
         success, fields = await repo.update_context_entry(
@@ -178,30 +180,66 @@ class TestUpdateVisibility:
         assert (owner, visibility) == ('alice', 'public')
 
 
+async def _store_alice_private(repo: ContextRepository, text: str) -> str:
+    """Store a private entry owned by alice and return its id."""
+    context_id, _ = await repo.store_with_deduplication(
+        thread_id='probe-thread',
+        source='user',
+        content_type='text',
+        text_content=text,
+        scope=ALICE,
+        visibility='private',
+    )
+    return context_id
+
+
 class TestEntryProbeOwner:
-    """check_entry_exists surfaces the stamped owner."""
+    """check_entry_exists surfaces the stamped owner and whether the caller may modify the entry."""
 
     @pytest.mark.asyncio
     async def test_probe_returns_owner_id(self, async_db_initialized: StorageBackend) -> None:
-        """The probe carries the owner backing the owner-only visibility check."""
+        """The owner's probe carries the owner backing the owner-only visibility check and write access."""
         repo = ContextRepository(async_db_initialized)
-        context_id, _ = await repo.store_with_deduplication(
-            thread_id='probe-thread',
-            source='user',
-            content_type='text',
-            text_content='probe target',
-            scope=ALICE,
-            visibility='private',
-        )
+        context_id = await _store_alice_private(repo, 'probe target')
 
-        probe = await repo.check_entry_exists(context_id)
+        probe = await repo.check_entry_exists(context_id, scope=ALICE)
         assert probe.exists is True
         assert probe.source == 'user'
         assert probe.owner_id == 'alice'
+        assert probe.can_write is True
 
     @pytest.mark.asyncio
     async def test_probe_missing_entry_is_all_none(self, async_db_initialized: StorageBackend) -> None:
-        """A missing entry probes as (False, None, None, None)."""
+        """A missing entry probes as (False, None, None, None, False)."""
         repo = ContextRepository(async_db_initialized)
-        probe = await repo.check_entry_exists('0' * 32)
-        assert probe == (False, None, None, None)
+        probe = await repo.check_entry_exists('0' * 32, scope=ALICE)
+        assert probe == (False, None, None, None, False)
+
+    @pytest.mark.asyncio
+    async def test_unreadable_entry_probes_like_a_missing_one(self, async_db_initialized: StorageBackend) -> None:
+        """Another principal's private entry reveals neither its existence nor its owner."""
+        repo = ContextRepository(async_db_initialized)
+        context_id = await _store_alice_private(repo, 'hidden probe target')
+
+        probe = await repo.check_entry_exists(context_id, scope=BOB)
+        assert probe == (False, None, None, None, False)
+
+    @pytest.mark.asyncio
+    async def test_read_grantee_reads_but_cannot_write(self, async_db_initialized: StorageBackend) -> None:
+        """A read grant makes the entry exist for the grantee without write access."""
+        repo = ContextRepository(async_db_initialized)
+        context_id = await _store_alice_private(repo, 'read-granted probe target')
+        await insert_grant(async_db_initialized, context_id, 'user', 'bob', 'read', 'alice')
+
+        probe = await repo.check_entry_exists(context_id, scope=BOB)
+        assert probe == (True, 'user', 0, 'alice', False)
+
+    @pytest.mark.asyncio
+    async def test_write_grantee_reads_and_writes(self, async_db_initialized: StorageBackend) -> None:
+        """A write grant makes the entry exist for the grantee with write access, still owned by alice."""
+        repo = ContextRepository(async_db_initialized)
+        context_id = await _store_alice_private(repo, 'write-granted probe target')
+        await insert_grant(async_db_initialized, context_id, 'user', 'bob', 'write', 'alice')
+
+        probe = await repo.check_entry_exists(context_id, scope=BOB)
+        assert probe == (True, 'user', 0, 'alice', True)

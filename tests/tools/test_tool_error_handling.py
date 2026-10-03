@@ -194,7 +194,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_context_not_found(self, mock_server_dependencies):
         """Test that updating non-existent context raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(False, None, None, None, False)
 
         with pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd000003e7 not found'):
             await update_context(
@@ -205,7 +205,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_update_failure(self, mock_server_dependencies):
         """A no-such-row update (repository reports no matching row) surfaces a clean not-found error."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
         mock_server_dependencies.context.update_context_entry.return_value = (False, [])
 
         with pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd00000001 not found'):
@@ -217,7 +217,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_invalid_image_format(self, mock_server_dependencies):
         """Test that invalid image data raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
@@ -228,7 +228,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_invalid_base64_in_update(self, mock_server_dependencies):
         """Test that invalid base64 in update raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(

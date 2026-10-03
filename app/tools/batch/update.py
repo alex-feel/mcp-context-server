@@ -13,7 +13,6 @@ from typing import cast
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from app.auth import RequestPrincipal
 from app.auth import resolve_effective_principal
 from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
@@ -133,6 +132,11 @@ async def update_context_batch(
     """
     try:
         repos = await ensure_repositories()
+        # The caller's identity, resolved once before anything that can reveal whether
+        # an entry exists: id resolution and the existence probes below see only the
+        # entries the caller may read, and the publish gate needs the caller's roles.
+        principal = resolve_effective_principal()
+        scope = principal.access_scope()
 
         # === PHASE 1: Validate all updates before processing ===
         validated_updates: list[dict[str, Any]] = []
@@ -140,7 +144,7 @@ async def update_context_batch(
 
         for idx, update in enumerate(updates):
             validated_update, entry_context_id, entry_validation_error = await validate_update_entry(
-                update, idx, repos.context,
+                update, idx, repos.context, scope=scope,
             )
             if entry_validation_error is not None:
                 validation_errors.append((idx, entry_context_id, entry_validation_error))
@@ -188,15 +192,13 @@ async def update_context_batch(
         # passed to execute_update_in_transaction as the compare-and-set guard so a
         # concurrent writer that commits during generation is detected.
         entry_versions: dict[str, int] = {}
-        # Resolved lazily: only a batch that actually changes visibility needs
-        # the caller identity.
-        principal: RequestPrincipal | None = None
 
         for update in validated_updates:
             original_idx = update['index']
             context_id = update['context_id']
 
-            probe = await repos.context.check_entry_exists(context_id)
+            # An entry the caller may not read is not found.
+            probe = await repos.context.check_entry_exists(context_id, scope=scope)
             if not probe.exists:
                 if atomic:
                     raise ToolError(f'Context entry {context_id} not found at index {original_idx}')
@@ -213,8 +215,6 @@ async def update_context_batch(
             visibility_change = update.get('visibility')
             if visibility_change is None:
                 continue
-            if principal is None:
-                principal = resolve_effective_principal()
             auth_error: str | None = None
             if probe.owner_id != principal.principal_id:
                 auth_error = f'Only the owner may change the visibility of context {context_id}'
@@ -671,7 +671,7 @@ async def update_context_batch(
                         # was only a connection blip. Only an exhausted refresh records
                         # a per-entry failure.
                         try:
-                            exists, current_version = await reread_entry_version(repos, context_id)
+                            exists, current_version = await reread_entry_version(repos, context_id, scope=scope)
                         except Exception as reread_error:
                             logger.error(f'Failed to update entry at index {original_idx}: {reread_error}')
                             results.append(BulkUpdateResultItemDict(

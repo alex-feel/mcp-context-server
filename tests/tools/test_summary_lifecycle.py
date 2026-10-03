@@ -47,7 +47,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(123, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local', True))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -224,7 +224,7 @@ class TestSummaryIntegration:
                 text=updated_text,
             )
 
-        rows = await repos.context.get_by_ids([context_id])
+        rows = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert rows[0]['text_content'] == updated_text
         assert rows[0]['summary'] == 'Updated summary'
         assert '(summary regenerated)' in result['message']
@@ -257,7 +257,7 @@ class TestSummaryIntegration:
                 metadata={'status': 'new'},
             )
 
-        rows = await repos.context.get_by_ids([context_id])
+        rows = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert rows[0]['summary'] == 'Existing summary'
         assert '(summary regenerated)' not in result['message']
         mock_provider.summarize.assert_not_called()
@@ -338,7 +338,7 @@ class TestSummaryIntegration:
             )
 
         repos = await ensure_repositories()
-        rows = await repos.context.get_by_ids([first_result['context_id']])
+        rows = await repos.context.get_by_ids([first_result['context_id']], scope=LOCAL_SCOPE)
         assert first_result['context_id'] == second_result['context_id']
         assert rows[0]['summary'] == 'Original summary'
         assert '(summary preserved)' in second_result['message']
@@ -402,5 +402,5 @@ class TestSummaryIntegration:
         assert '(summary generated)' in second_result['message']
         mock_provider2.summarize.assert_awaited_once_with(dedup_text, 'agent')
 
-        rows = await repos.context.get_by_ids([context_id])
+        rows = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert rows[0]['summary'] == 'Summary for missing case'

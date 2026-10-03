@@ -42,7 +42,7 @@ def create_mock_repositories() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.store_with_deduplication = AsyncMock(return_value=(100, False))
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local', True))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.update_content_type = AsyncMock(return_value=True)

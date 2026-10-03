@@ -57,7 +57,7 @@ class TestGhostReferencesNotRewritten:
             thread_id='t', source='user', content_type='text',
             text_content=GHOST_TEXT, metadata=None,
         )
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == GHOST_TEXT
 
@@ -80,7 +80,7 @@ class TestGhostReferencesNotRewritten:
                 txn=txn,
             )
         assert success
-        entries = await repos.context.get_by_ids([original_id])
+        entries = await repos.context.get_by_ids([original_id], scope=LOCAL_SCOPE)
         assert entries[0]['text_content'] == GHOST_TEXT
 
     @pytest.mark.asyncio
@@ -101,6 +101,6 @@ class TestGhostReferencesNotRewritten:
 
         await repos.context.backend.execute_write(_insert)
 
-        entries = await repos.context.get_by_ids([new_id])
+        entries = await repos.context.get_by_ids([new_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['summary'] == GHOST_TEXT
