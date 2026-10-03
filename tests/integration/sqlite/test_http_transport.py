@@ -33,9 +33,9 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
 
-from tests.integration._harness import CLIENT_MODES
-from tests.integration._harness import ERA_PROTOCOL_VERSIONS
-from tests.integration._harness import ClientMode
+from tests.integration._harness.core import CLIENT_MODES
+from tests.integration._harness.core import ERA_PROTOCOL_VERSIONS
+from tests.integration._harness.core import ClientMode
 
 # The HTTP transport mode the project exposes. main() registers /health and
 # wires auth for every non-stdio transport; 'http' maps to FastMCP's

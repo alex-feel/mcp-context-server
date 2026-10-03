@@ -16,8 +16,8 @@ fixture (``@requires_docker_postgres``, skipped cleanly without Docker).
 The isolated-database construction (admin asyncpg connection that drops/creates
 a per-test database, then a ``PostgreSQLBackend`` built via
 :func:`app.backends.create_backend` and ``await backend.initialize()``) follows
-the pattern established by the neighboring PostgreSQL integration tests
-(``test_cross_backend_tags_images.py``, ``test_migrations_non_default_schema.py``).
+the neighboring PostgreSQL integration tests (``test_cross_backend_tags_images.py``,
+the ``non_default_schema/`` package).
 The table lives in the default ``public`` schema, so the migration's bare
 ``ALTER TABLE context_entries`` resolves there via the operator's implicit
 ``search_path`` without any search_path patching.
