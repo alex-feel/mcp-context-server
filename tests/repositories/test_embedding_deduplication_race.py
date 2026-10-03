@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from app.backends import StorageBackend
+from tests.helpers import LOCAL_SCOPE
 
 # Conditional skip marker for tests requiring sqlite-vec package
 requires_sqlite_vec = pytest.mark.skipif(
@@ -115,7 +116,7 @@ class TestStoreContextEmbeddingDeduplication:
 
         # Pre-create entry WITHOUT embeddings via direct repository call
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-no-embed',
             source='agent',
@@ -273,7 +274,7 @@ class TestBatchStoreEmbeddingDeduplication:
 
         # Pre-create entry WITH embeddings via direct repository calls
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='batch-non-atomic',
             source='agent',
@@ -331,7 +332,7 @@ class TestEmbeddingRepositoryUpsert:
 
         # Create context entry
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-upsert',
             source='agent',
@@ -363,7 +364,7 @@ class TestEmbeddingRepositoryUpsert:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-upsert',
             source='agent',
@@ -396,7 +397,7 @@ class TestEmbeddingRepositoryUpsert:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-upsert-meta',
             source='agent',
@@ -449,7 +450,7 @@ class TestEmbeddingRepositoryUpsert:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-chunk-change',
             source='agent',
@@ -528,7 +529,7 @@ class TestEmbeddingExistsMethod:
 
         # Create entry without embeddings
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-exists',
             source='agent',
@@ -552,7 +553,7 @@ class TestEmbeddingExistsMethod:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-exists',
             source='agent',

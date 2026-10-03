@@ -12,6 +12,7 @@ from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestContextRepositoryDelete:
@@ -24,7 +25,7 @@ class TestContextRepositoryDelete:
     ) -> None:
         """Test deleting entries by thread_id."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='del_thread',
             source='user',
@@ -32,7 +33,7 @@ class TestContextRepositoryDelete:
             text_content='To delete',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='keep_thread',
             source='user',
@@ -59,7 +60,7 @@ class TestContextRepositoryDelete:
     ) -> None:
         """Test deleting multiple entries from same thread."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='multi_del_thread',
             source='user',
@@ -67,7 +68,7 @@ class TestContextRepositoryDelete:
             text_content='Message 1',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='multi_del_thread',
             source='agent',
@@ -75,7 +76,7 @@ class TestContextRepositoryDelete:
             text_content='Message 2',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='multi_del_thread',
             source='user',
@@ -116,7 +117,7 @@ class TestContextRepositoryDelete:
         must contribute nothing to the count, and an unrelated entry stays intact.
         """
         keep_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='chunk_keep_thread',
             source='user',
@@ -127,7 +128,7 @@ class TestContextRepositoryDelete:
         real_ids: list[str] = []
         for i in range(5):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='chunk_del_thread',
                 source='user',
@@ -168,7 +169,7 @@ class TestContextRepositoryBatchDelete:
         ids = []
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='batch-del-thread',
                 source='user',
@@ -189,7 +190,7 @@ class TestContextRepositoryBatchDelete:
     ) -> None:
         """Batch delete with mix of existing and nonexistent IDs."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='partial-del-thread',
             source='user',
@@ -220,7 +221,7 @@ class TestContextRepositoryBatchDelete:
         criteria strings twice into the returned list.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='criteria-retry-thread',
             source='user',
@@ -258,7 +259,7 @@ class TestContextRepositoryBatchDelete:
         matching_ids: list[str] = []
         for i in range(2):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='crit-chunk-a',
                 source='user',
@@ -267,7 +268,7 @@ class TestContextRepositoryBatchDelete:
             )
             matching_ids.append(ctx_id)
         agent_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='crit-chunk-a',
             source='agent',
@@ -275,7 +276,7 @@ class TestContextRepositoryBatchDelete:
             text_content='Criteria chunk agent entry',
         )
         other_thread_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='crit-chunk-b',
             source='user',
@@ -317,7 +318,7 @@ class TestContextRepositoryBatchDelete:
         user_ids: list[str] = []
         for i in range(2):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='del-chunk-thread',
                 source='user',
@@ -326,7 +327,7 @@ class TestContextRepositoryBatchDelete:
             )
             user_ids.append(ctx_id)
         agent_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='del-chunk-thread',
             source='agent',
@@ -334,7 +335,7 @@ class TestContextRepositoryBatchDelete:
             text_content='Delete chunk agent survivor',
         )
         unlisted_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='del-chunk-thread',
             source='user',

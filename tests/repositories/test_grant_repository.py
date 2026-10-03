@@ -10,6 +10,7 @@ import sqlite3
 
 import pytest
 
+from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.repositories.context_repository import ContextRepository
 from app.repositories.grant_repository import GrantRepository
@@ -23,7 +24,7 @@ async def _store_entry(backend: StorageBackend, thread_id: str = 'grant-thread')
         source='agent',
         content_type='text',
         text_content=f'grant test entry for {thread_id}',
-        owner_id='alice',
+        scope=AccessScope('alice', frozenset()),
         visibility='private',
     )
     return context_id

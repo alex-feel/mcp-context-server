@@ -19,6 +19,7 @@ from app.backends import create_backend
 from app.ids import generate_id
 from app.migrations.summary import apply_summary_migration
 from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestApplySummaryMigration:
@@ -253,7 +254,7 @@ class TestStoreWithDeduplicationSummary:
 
         repos = await ensure_repositories()
         context_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-summary-store',
             source='agent',
@@ -277,7 +278,7 @@ class TestStoreWithDeduplicationSummary:
 
         repos = await ensure_repositories()
         context_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-summary-none',
             source='user',
@@ -301,7 +302,7 @@ class TestStoreWithDeduplicationSummary:
 
         # Store entry with summary
         context_id, _was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-summary-dedup',
             source='agent',
@@ -312,7 +313,7 @@ class TestStoreWithDeduplicationSummary:
 
         # Store same text (triggers dedup) without summary
         dedup_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-summary-dedup',
             source='agent',
@@ -338,7 +339,7 @@ class TestStoreWithDeduplicationSummary:
 
         # Store entry with summary
         context_id, _was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-summary-dedup-update',
             source='agent',
@@ -349,7 +350,7 @@ class TestStoreWithDeduplicationSummary:
 
         # Store same text with new summary
         dedup_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-summary-dedup-update',
             source='agent',
@@ -378,7 +379,7 @@ class TestUpdateContextEntrySummary:
 
         # Store entry without summary
         context_id, _was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-update-summary',
             source='user',
@@ -407,7 +408,7 @@ class TestUpdateContextEntrySummary:
         repos = await ensure_repositories()
 
         context_id, _was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-update-both',
             source='agent',
@@ -439,7 +440,7 @@ class TestUpdateContextEntrySummary:
 
         # Store with summary
         context_id, _was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-preserve-summary',
             source='user',

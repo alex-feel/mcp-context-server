@@ -4,6 +4,7 @@ import pytest
 
 from app.backends import StorageBackend
 from tests.conftest import requires_semantic_search
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import store_single_chunk_embedding
 
 
@@ -30,7 +31,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with different status metadata
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='metadata-test-thread',
                 source='agent',
@@ -42,7 +43,7 @@ class TestSemanticSearchMetadataFiltering:
 
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='metadata-test-thread',
                 source='agent',
@@ -84,7 +85,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with different priority values
         for priority in [1, 3, 5, 7, 9]:
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='priority-test-thread',
                 source='user',
@@ -128,7 +129,7 @@ class TestSemanticSearchMetadataFiltering:
         task_names = ['refactor_auth', 'refactor_database', 'implement_api', 'fix_bug']
         for i, name in enumerate(task_names):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='taskname-test-thread',
                 source='agent',
@@ -170,7 +171,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries - some with 'important' flag, some without
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='exists-test-thread',
                 source='user',
@@ -182,7 +183,7 @@ class TestSemanticSearchMetadataFiltering:
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='exists-test-thread',
                 source='user',
@@ -224,7 +225,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=agent and status=completed
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='combined-filter-thread',
                 source='agent',
@@ -237,7 +238,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=user and status=completed
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='combined-filter-thread',
                 source='user',
@@ -250,7 +251,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=agent and status=pending
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='combined-filter-thread',
                 source='agent',
@@ -297,7 +298,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create test entries
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='invalid-filter-test-thread',
                 source='user',
@@ -342,7 +343,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with status=active
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='no-match-thread',
                 source='agent',
@@ -382,7 +383,7 @@ class TestSemanticSearchMetadataFiltering:
         categories = ['backend', 'frontend', 'devops', 'testing', 'docs']
         for i, category in enumerate(categories):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='in-operator-thread',
                 source='user',
@@ -429,7 +430,7 @@ class TestSemanticSearchMetadataFiltering:
         priorities = [1, 3, 5, 7, 9]
         for i, priority in enumerate(priorities):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='in-operator-int-thread',
                 source='agent',
@@ -475,7 +476,7 @@ class TestSemanticSearchMetadataFiltering:
         priorities = [1, 2, 3, 4, 5]
         for i, priority in enumerate(priorities):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='not-in-operator-int-thread',
                 source='user',
@@ -517,7 +518,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create test entries with various metadata
         for i in range(4):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='none-filter-thread',
                 source='agent',

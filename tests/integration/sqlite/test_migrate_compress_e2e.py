@@ -25,6 +25,7 @@ from app.cli.migrate_compression.decompress import run_decompress
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 
 DIM = 1024
 
@@ -122,7 +123,7 @@ def _seed_fp32_database(
                 vec /= np.linalg.norm(vec)
                 planted.append(vec)
                 cid, _ = await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='compress-e2e',
                     source='user',

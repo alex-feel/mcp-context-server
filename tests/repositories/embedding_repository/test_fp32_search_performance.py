@@ -4,6 +4,7 @@ import pytest
 
 from app.backends import StorageBackend
 from tests.conftest import requires_semantic_search
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import store_single_chunk_embedding
 
 
@@ -30,7 +31,7 @@ class TestSemanticSearchPerformance:
         # Create 50 entries in target thread
         for i in range(50):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='target-thread',
                 source='user',
@@ -43,7 +44,7 @@ class TestSemanticSearchPerformance:
         # Create 100 entries in other threads
         for i in range(100):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'other-thread-{i}',
                 source='user',
@@ -85,7 +86,7 @@ class TestSemanticSearchPerformance:
         # Create 200 entries in target thread
         for i in range(200):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='medium-thread',
                 source='user',

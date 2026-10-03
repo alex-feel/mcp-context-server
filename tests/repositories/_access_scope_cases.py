@@ -4,9 +4,9 @@ The SQLite entry point (``tests/repositories/test_access_scope_seams.py``) and t
 PostgreSQL entry point (``tests/integration/postgresql/test_access_scope_seams_postgresql.py``)
 share everything here:
 
-- The case registry: :class:`AccessCase` and :data:`CASES`, one entry per seam case
-  (unfiltered, filtered or another variant), each naming the database layout it runs on
-  (``fp32`` or ``compressed``, built by :mod:`tests.repositories._access_scope_layouts`).
+- The case type :class:`AccessCase`, one per seam case (unfiltered, filtered or another
+  variant), each naming the database layout it runs on (``fp32`` or ``compressed``, built
+  by :mod:`tests.repositories._access_scope_layouts`), and the runner :func:`run_case`.
 - The seed: :data:`SEED_ROWS`, eight entries owned by alice and bob covering every
   visibility and grant arrangement the access model distinguishes, written by
   :func:`seed_access_rows` through the repositories, with grants through the raw-SQL
@@ -16,10 +16,13 @@ share everything here:
 
 Adding a case: write an invoker that calls the seam as the given scope on the seeded
 database and returns a comparable observable, translating entry ids to labels with
-:meth:`ScopedDb.labels_of`; give the observable each scope name must produce; append the
-:class:`AccessCase` to :data:`CASES`. Every (case, scope) pair runs as its own test on its
-own freshly seeded database, under the test id ``<case id>[-<variant>][-filtered]-<scope>``,
-so ``pytest -k S1`` selects every variant and scope of case S1 on both backends.
+:meth:`ScopedDb.labels_of`; give the observable each scope name must produce; add the
+:class:`AccessCase` to its seam group's module (``_access_scope_cases_<group>.py``), whose
+cases :mod:`tests.repositories._access_scope_registry` collects into ``CASES``. Group
+modules import from this module and never the other way round. Every (case, scope) pair
+runs as its own test on its own freshly seeded database, under the test id
+``<case id>[-<variant>][-filtered]-<scope>``, so ``pytest -k S1`` selects every variant and
+scope of case S1 on both backends.
 
 Rows beyond the seed (page-fill rows that out-rank the visible ones, hidden threads or tags
 with higher counts, a second turn in a thread) come from the case's ``setup`` hook, which
@@ -271,6 +274,7 @@ class ScopedDb:
         thread_id: str = SEED_THREAD,
         source: Source = SEED_SOURCE,
         text: str | None = None,
+        summary: str | None = None,
         tags: Sequence[str] | None = None,
         metadata: Mapping[str, object] | None = None,
         angle: float | None = None,
@@ -287,6 +291,7 @@ class ScopedDb:
             thread_id: Thread of the entry.
             source: Source of the entry.
             text: Entry text; defaults to :func:`seed_text` of the label.
+            summary: Stored summary; none by default.
             tags: Tags; default ``seed`` and ``owner-<owner>``.
             metadata: Metadata; default ``author`` (the owner), ``label`` and ``corpus: seed``.
             angle: Store one embedding at this angle from :data:`QUERY_VECTOR`; no embedding when None.
@@ -309,9 +314,10 @@ class ScopedDb:
             source=source,
             content_type='multimodal' if image else 'text',
             text_content=body,
-            owner_id=owner,
+            scope=AccessScope(owner, frozenset()),
             visibility=visibility,
             metadata=json.dumps(entry_metadata),
+            summary=summary,
         )
         if merged:
             raise ValueError(f'entry {label!r} merged into the latest entry of its thread and source')
@@ -459,10 +465,6 @@ class AccessCase:
         """The case part of the test id: the case id, the variant and ``filtered`` when set."""
         parts = (self.case_id, self.variant, 'filtered' if self.filtered else '')
         return '-'.join(part for part in parts if part)
-
-
-# The registered cases, each proving one seam for every scope it names.
-CASES: tuple[AccessCase, ...] = ()
 
 
 def case_params(

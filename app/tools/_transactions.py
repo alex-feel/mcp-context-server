@@ -17,6 +17,7 @@ from typing import cast
 import asyncpg
 from fastmcp.exceptions import ToolError
 
+from app.access_scope import AccessScope
 from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.errors import ControlFlowError
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -246,7 +247,7 @@ async def execute_store_in_transaction(
     source: str,
     content_type: str,
     text_content: str,
-    owner_id: str,
+    scope: AccessScope,
     visibility: str,
     author_group_grants: 'Collection[str]' = (),
     metadata_str: str | None,
@@ -264,8 +265,8 @@ async def execute_store_in_transaction(
     """Execute all store operations within an existing transaction.
 
     Performs deduplication-aware storage of a single context entry:
-    1. Store entry with deduplication (store_with_deduplication), stamping
-       owner_id/visibility on a fresh INSERT
+    1. Store entry with deduplication (store_with_deduplication) under the
+       caller's scope, stamping owner_id/visibility on a fresh INSERT
     2. Store author-group read grants on a fresh INSERT (when configured)
     3. Store/replace tags based on dedup outcome
     4. Store/replace images based on dedup outcome
@@ -279,8 +280,12 @@ async def execute_store_in_transaction(
         source: 'user' or 'agent'.
         content_type: 'text' or 'multimodal'.
         text_content: The text content to store.
-        owner_id: Server-resolved effective principal stamped as the row owner
-            on a fresh INSERT (never caller-supplied at the tool boundary).
+        scope: The caller's scope, built from the server-resolved effective
+            principal (never caller-supplied at the tool boundary).
+            Deduplication considers only entries it may read and merges only
+            into an entry its principal owns; a fresh INSERT is owned by its
+            principal, which is also recorded as the grantor of author-group
+            grants.
         visibility: Validated visibility value stamped on a fresh INSERT. A
             deduplication UPDATE leaves the existing row's owner_id and
             visibility untouched.
@@ -348,7 +353,7 @@ async def execute_store_in_transaction(
         source=source,
         content_type=content_type,
         text_content=text_content,
-        owner_id=owner_id,
+        scope=scope,
         visibility=visibility,
         metadata=metadata_str,
         summary=summary,
@@ -394,7 +399,7 @@ async def execute_store_in_transaction(
         await repos.grants.store_group_read_grants(
             context_id,
             author_group_grants,
-            granted_by=owner_id,
+            granted_by=scope.principal_id,
             txn=txn,
         )
 

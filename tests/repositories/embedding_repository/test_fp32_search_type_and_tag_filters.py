@@ -4,6 +4,7 @@ import pytest
 
 from app.backends import StorageBackend
 from tests.conftest import requires_semantic_search
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import store_single_chunk_embedding
 
 
@@ -27,7 +28,7 @@ class TestSemanticSearchContentTypeFilter:
 
         # Create text entry
         text_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='content-type-test',
             source='user',
@@ -39,7 +40,7 @@ class TestSemanticSearchContentTypeFilter:
 
         # Create multimodal entry
         multi_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='content-type-test',
             source='user',
@@ -76,7 +77,7 @@ class TestSemanticSearchContentTypeFilter:
         # Create text entries
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='content-type-multimodal-test',
                 source='agent',
@@ -88,7 +89,7 @@ class TestSemanticSearchContentTypeFilter:
 
         # Create multimodal entry
         multi_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='content-type-multimodal-test',
             source='agent',
@@ -124,7 +125,7 @@ class TestSemanticSearchContentTypeFilter:
 
         # Create mixed entries
         text_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='content-type-none-test',
             source='user',
@@ -135,7 +136,7 @@ class TestSemanticSearchContentTypeFilter:
         await store_single_chunk_embedding(embedding_repo, text_id, [0.1] * embedding_dim)
 
         multi_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='content-type-none-test',
             source='user',
@@ -178,7 +179,7 @@ class TestSemanticSearchTagsFilter:
 
         # Create entries with different tags
         id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='tags-test',
             source='user',
@@ -190,7 +191,7 @@ class TestSemanticSearchTagsFilter:
         await store_single_chunk_embedding(embedding_repo, id1, [0.1] * embedding_dim)
 
         id2, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='tags-test',
             source='user',
@@ -202,7 +203,7 @@ class TestSemanticSearchTagsFilter:
         await store_single_chunk_embedding(embedding_repo, id2, [0.2] * embedding_dim)
 
         id3, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='tags-test',
             source='user',
@@ -243,7 +244,7 @@ class TestSemanticSearchTagsFilter:
         # Create entries with various tags
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='single-tag-test',
                 source='agent',
@@ -281,7 +282,7 @@ class TestSemanticSearchTagsFilter:
         # Create entries
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='empty-tags-test',
                 source='user',
@@ -319,7 +320,7 @@ class TestSemanticSearchTagsFilter:
         # Create entries
         for i in range(4):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='none-tags-test',
                 source='agent',
@@ -355,7 +356,7 @@ class TestSemanticSearchTagsFilter:
 
         # Create target entry: in target thread, user source, python tag
         target_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='combined-tags-thread',
             source='user',
@@ -368,7 +369,7 @@ class TestSemanticSearchTagsFilter:
 
         # Create non-matching: wrong source
         wrong_source_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='combined-tags-thread',
             source='agent',  # Different source
@@ -381,7 +382,7 @@ class TestSemanticSearchTagsFilter:
 
         # Create non-matching: wrong tag
         wrong_tag_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='combined-tags-thread',
             source='user',

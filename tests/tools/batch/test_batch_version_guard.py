@@ -51,6 +51,7 @@ from app.repositories.context_repository.records import EntryProbe
 from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
 from app.tools.batch.update import update_context_batch
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -320,7 +321,7 @@ class TestBatchVersionGuard:
 
         # Same thread_id/source/text as the inserted row -> dedup UPDATE path.
         context_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='batch-guard-thread',
             source='agent',

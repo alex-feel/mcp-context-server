@@ -13,6 +13,7 @@ from app.backends.base import TransactionContext
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestContextRepositoryGetById:
@@ -25,7 +26,7 @@ class TestContextRepositoryGetById:
     ) -> None:
         """Test getting single entry by ID."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='get_thread',
             source='user',
@@ -47,7 +48,7 @@ class TestContextRepositoryGetById:
         ids = []
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='multi_get',
                 source='user',
@@ -89,7 +90,7 @@ class TestContextRepositoryGetById:
     ) -> None:
         """Test getting mix of existing and nonexistent IDs."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='partial_get',
             source='user',
@@ -121,7 +122,7 @@ class TestContextRepositoryGetById:
         real_ids: list[str] = []
         for i in range(5):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='chunk_get_thread',
                 source='user',
@@ -160,7 +161,7 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test checking if entry exists."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='exists_thread',
             source='user',
@@ -188,7 +189,7 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """entry_exists returns True for a stored id and False for an absent one."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='entry_exists_thread',
             source='user',
@@ -243,7 +244,7 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test getting content type by ID."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='type_thread',
             source='user',
@@ -272,7 +273,7 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test updating content type."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='update_type',
             source='user',

@@ -136,11 +136,12 @@ async def store_context(
             raise ToolError('text cannot be empty or whitespace')
 
         # Resolve the effective principal (the verified jwt principal, or the
-        # configured default principal) and the visibility to stamp, then
-        # enforce the publish gate on the EFFECTIVE value: a caller-omitted
-        # visibility that defaults to 'public' is still a publish and still
-        # needs the role.
+        # configured default principal), the scope deduplication reads, merges
+        # and stamps under, and the visibility to stamp, then enforce the
+        # publish gate on the EFFECTIVE value: a caller-omitted visibility that
+        # defaults to 'public' is still a publish and still needs the role.
         principal = resolve_effective_principal()
+        scope = principal.access_scope()
         effective_visibility: str = (
             visibility if visibility is not None else settings.access_control.default_visibility
         )
@@ -213,6 +214,7 @@ async def store_context(
                 thread_id=thread_id,
                 source=source,
                 text_content=text,
+                scope=scope,
             )
             if duplicate_candidate is not None:
                 likely_duplicate_id = duplicate_candidate.context_id
@@ -292,7 +294,7 @@ async def store_context(
                         source=source,
                         content_type=content_type,
                         text_content=text,
-                        owner_id=principal.principal_id,
+                        scope=scope,
                         visibility=effective_visibility,
                         author_group_grants=author_group_grants,
                         metadata_str=metadata_str,

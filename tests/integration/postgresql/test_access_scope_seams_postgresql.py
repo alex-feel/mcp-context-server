@@ -13,7 +13,6 @@ import pytest
 import pytest_asyncio
 
 from app.access_scope import AccessMode
-from tests.repositories._access_scope_cases import CASES
 from tests.repositories._access_scope_cases import READABLE
 from tests.repositories._access_scope_cases import SCOPES
 from tests.repositories._access_scope_cases import AccessCase
@@ -25,6 +24,7 @@ from tests.repositories._access_scope_cases import observe_predicate_visibility
 from tests.repositories._access_scope_cases import run_case
 from tests.repositories._access_scope_layouts import assert_seeded_layout
 from tests.repositories._access_scope_layouts import postgresql_scoped_db
+from tests.repositories._access_scope_registry import CASES
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 

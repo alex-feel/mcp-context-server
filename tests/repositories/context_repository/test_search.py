@@ -11,6 +11,7 @@ import pytest
 from app.backends.base import StorageBackend
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestContextRepositorySearch:
@@ -32,7 +33,7 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching by thread_id."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread_a',
             source='user',
@@ -40,7 +41,7 @@ class TestContextRepositorySearch:
             text_content='Message A',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread_b',
             source='user',
@@ -61,7 +62,7 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching by source."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='source_thread',
             source='user',
@@ -69,7 +70,7 @@ class TestContextRepositorySearch:
             text_content='User message',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='source_thread',
             source='agent',
@@ -90,7 +91,7 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching by content_type."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='type_thread',
             source='user',
@@ -98,7 +99,7 @@ class TestContextRepositorySearch:
             text_content='Text only',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='type_thread',
             source='user',
@@ -118,7 +119,7 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching by tags."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='tag_thread',
             source='user',
@@ -126,7 +127,7 @@ class TestContextRepositorySearch:
             text_content='Tagged 1',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='tag_thread',
             source='user',
@@ -150,7 +151,7 @@ class TestContextRepositorySearch:
         """Test searching with limit parameter."""
         for i in range(10):
             await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='limit_thread',
                 source='user',
@@ -173,7 +174,7 @@ class TestContextRepositorySearch:
         """Test searching with offset parameter."""
         for i in range(10):
             await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='offset_thread',
                 source='user',
@@ -196,7 +197,7 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching with simple metadata filter."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='meta_thread',
             source='user',
@@ -205,7 +206,7 @@ class TestContextRepositorySearch:
             metadata=json.dumps({'priority': 1}),
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='meta_thread',
             source='user',
@@ -231,7 +232,7 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching with explain_query=True."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='explain_thread',
             source='user',
@@ -255,7 +256,7 @@ class TestContextRepositorySearch:
     ) -> None:
         """Test searching with multiple filters combined."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='combo_thread',
             source='user',
@@ -263,7 +264,7 @@ class TestContextRepositorySearch:
             text_content='User text',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='combo_thread',
             source='agent',
@@ -271,7 +272,7 @@ class TestContextRepositorySearch:
             text_content='Agent text',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='other_thread',
             source='user',
@@ -303,7 +304,7 @@ class TestContextRepositorySearch:
         identical arguments.
         """
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='count_thread',
             source='agent',
@@ -333,7 +334,7 @@ class TestContextRepositorySearch:
     ) -> None:
         """An unfiltered browse still reports zero applied filters."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='no_filter_thread',
             source='user',

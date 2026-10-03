@@ -4,6 +4,7 @@ import pytest
 
 from app.backends import StorageBackend
 from tests.conftest import requires_semantic_search
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import store_single_chunk_embedding
 
 
@@ -32,7 +33,7 @@ class TestSemanticSearchDateFiltering:
         # Create test entries - all will have current timestamp
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='date-filter-thread',
                 source='user',
@@ -81,7 +82,7 @@ class TestSemanticSearchDateFiltering:
         # Create test entries
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='end-date-thread',
                 source='agent',
@@ -130,7 +131,7 @@ class TestSemanticSearchDateFiltering:
         # Create test entries
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='range-thread',
                 source='user',
@@ -183,7 +184,7 @@ class TestSemanticSearchDateFiltering:
         # Create entries in different threads
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='target-date-thread',
                 source='user',
@@ -195,7 +196,7 @@ class TestSemanticSearchDateFiltering:
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='other-date-thread',
                 source='user',
@@ -240,7 +241,7 @@ class TestSemanticSearchDateFiltering:
         # Create entries with different sources
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='mixed-source-thread',
                 source='user',
@@ -252,7 +253,7 @@ class TestSemanticSearchDateFiltering:
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='mixed-source-thread',
                 source='agent',
@@ -293,7 +294,7 @@ class TestSemanticSearchDateFiltering:
         # Create test entries
         for i in range(4):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='no-date-filter-thread',
                 source='user',

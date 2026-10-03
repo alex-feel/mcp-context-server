@@ -91,9 +91,11 @@ async def store_context_batch(
         repos = await ensure_repositories()
 
         # Resolve the effective principal ONCE for the whole batch (one request,
-        # one caller identity) plus the author-group grant policy; the publish
-        # gate is then enforced per entry on each entry's EFFECTIVE visibility.
+        # one caller identity), the scope every entry deduplicates and stamps
+        # under, and the author-group grant policy; the publish gate is then
+        # enforced per entry on each entry's EFFECTIVE visibility.
         principal = resolve_effective_principal()
+        scope = principal.access_scope()
         author_group_grants: frozenset[str] = (
             principal.groups
             if settings.access_control.default_group_grants == 'author_groups'
@@ -187,6 +189,7 @@ async def store_context_batch(
                     thread_id=entry['thread_id'],
                     source=entry['source'],
                     text_content=text_content,
+                    scope=scope,
                 )
                 if duplicate_candidate is not None:
                     likely_duplicate_id = duplicate_candidate.context_id
@@ -434,7 +437,7 @@ async def store_context_batch(
                                     source=entry['source'],
                                     content_type=entry['content_type'],
                                     text_content=entry['text_content'],
-                                    owner_id=principal.principal_id,
+                                    scope=scope,
                                     visibility=entry['visibility'],
                                     author_group_grants=author_group_grants,
                                     metadata_str=entry['metadata'],
@@ -578,7 +581,7 @@ async def store_context_batch(
                                     source=entry['source'],
                                     content_type=entry['content_type'],
                                     text_content=entry['text_content'],
-                                    owner_id=principal.principal_id,
+                                    scope=scope,
                                     visibility=entry['visibility'],
                                     author_group_grants=author_group_grants,
                                     metadata_str=entry['metadata'],

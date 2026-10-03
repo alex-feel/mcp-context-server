@@ -17,6 +17,7 @@ import pytest
 from app.backends import StorageBackend
 from app.ids import generate_id
 from app.repositories.tag_repository import TagRepository
+from tests.helpers import LOCAL_SCOPE
 
 T = TypeVar('T')
 
@@ -34,7 +35,7 @@ class TestTagRepository:
 
         # Create a context entry
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -63,7 +64,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='case-thread',
             source='user',
@@ -93,7 +94,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='whitespace-thread',
             source='user',
@@ -120,7 +121,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='empty-tag-thread',
             source='user',
@@ -147,7 +148,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='no-tags-thread',
             source='user',
@@ -171,7 +172,7 @@ class TestTagRepository:
         context_ids = []
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'batch-tag-thread-{i}',
                 source='user',
@@ -231,7 +232,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='replace-tag-thread',
             source='user',
@@ -267,7 +268,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='empty-replace-tag-thread',
             source='user',
@@ -296,7 +297,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='sorted-tag-thread',
             source='user',
@@ -323,7 +324,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='special-char-thread',
             source='user',
@@ -355,7 +356,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='unicode-tag-thread',
             source='user',
@@ -388,7 +389,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dup-tag-thread',
             source='user',
@@ -412,7 +413,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='m2m-thread',
             source='user',
@@ -420,7 +421,7 @@ class TestTagRepository:
             text_content='First entry',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='m2m-thread',
             source='agent',
@@ -451,7 +452,7 @@ class TestTagRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='replace-norm-thread',
             source='user',
@@ -493,7 +494,7 @@ class TestTagDeduplicationWithinOneWrite:
         repos = RepositoryContainer(async_db_initialized)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup-store-thread',
             source='user',
@@ -516,7 +517,7 @@ class TestTagDeduplicationWithinOneWrite:
         repos = RepositoryContainer(async_db_initialized)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup-case-thread',
             source='user',
@@ -539,7 +540,7 @@ class TestTagDeduplicationWithinOneWrite:
         repos = RepositoryContainer(async_db_initialized)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup-replace-thread',
             source='user',
@@ -563,7 +564,7 @@ class TestTagDeduplicationWithinOneWrite:
         repos = RepositoryContainer(async_db_initialized)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup-batch-thread',
             source='agent',
@@ -649,7 +650,7 @@ class TestTagOrderingIsByteWiseOnBothBackends:
         repos = RepositoryContainer(async_db_initialized)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='tag-order-thread',
             source='user',

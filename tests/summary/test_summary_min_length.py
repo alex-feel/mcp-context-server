@@ -27,6 +27,7 @@ import app.tools
 from app.repositories.context_repository.records import EntryProbe
 from app.settings.summary import SummarySettings
 from app.startup import ensure_repositories
+from tests.helpers import LOCAL_SCOPE
 
 store_context = app.tools.store_context
 update_context = app.tools.update_context
@@ -403,7 +404,7 @@ class TestClearSummaryRepository:
 
         # First, store an entry with a summary
         entry_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-clear-summary',
             source='agent',
@@ -436,7 +437,7 @@ class TestClearSummaryRepository:
         repos = await ensure_repositories()
 
         entry_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-clear-precedence',
             source='agent',
@@ -464,7 +465,7 @@ class TestClearSummaryRepository:
         repos = await ensure_repositories()
 
         entry_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-preserve-summary',
             source='agent',
@@ -504,7 +505,7 @@ class TestDedupPreservesExistingSummary:
 
         # First, store an entry with a summary (simulates pre-threshold entry)
         entry_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-dedup-preserve',
             source='agent',
@@ -521,7 +522,7 @@ class TestDedupPreservesExistingSummary:
         # Now store the same text again as a duplicate, with summary=None
         # (simulating what happens when min_content_length skips generation)
         updated_id, was_dedup = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-dedup-preserve',
             source='agent',

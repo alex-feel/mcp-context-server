@@ -12,6 +12,7 @@ import pytest
 
 from app.backends import StorageBackend
 from app.ids import generate_id
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.mark.asyncio
@@ -27,7 +28,7 @@ class TestImageRepository:
 
         # Create a context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -64,7 +65,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='multi-img-thread',
             source='user',
@@ -110,7 +111,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='validation-thread',
             source='user',
@@ -136,7 +137,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='invalid-base64-thread',
             source='user',
@@ -162,7 +163,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='no-data-thread',
             source='user',
@@ -201,7 +202,7 @@ class TestImageRepository:
         context_ids = []
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'batch-thread-{i}',
                 source='user',
@@ -273,7 +274,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='count-thread',
             source='user',
@@ -318,7 +319,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='replace-thread',
             source='user',
@@ -371,7 +372,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='empty-replace-thread',
             source='user',
@@ -408,7 +409,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='metadata-thread',
             source='user',
@@ -450,7 +451,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='position-thread',
             source='user',
@@ -488,7 +489,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cascade-thread',
             source='user',
@@ -520,7 +521,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='large-img-thread',
             source='user',
@@ -552,7 +553,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='default-mime-thread',
             source='user',

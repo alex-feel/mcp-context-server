@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.helpers import LOCAL_SCOPE
+
 if TYPE_CHECKING:
     from app.backends import StorageBackend
     from app.repositories import RepositoryContainer
@@ -31,7 +33,7 @@ class TestContextRepositoryTransaction:
         backend, repos = backend_with_repos
 
         context_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -59,7 +61,7 @@ class TestContextRepositoryTransaction:
 
         async with backend.begin_transaction() as txn:
             context_id, was_updated = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='test-thread',
                 source='agent',
@@ -87,7 +89,7 @@ class TestContextRepositoryTransaction:
 
         # First create an entry
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -114,7 +116,7 @@ class TestContextRepositoryTransaction:
 
         # First create an entry
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -151,7 +153,7 @@ class TestTagRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -176,7 +178,7 @@ class TestTagRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -202,7 +204,7 @@ class TestTagRepositoryTransaction:
 
         # Create context with initial tags
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -234,7 +236,7 @@ class TestImageRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -261,7 +263,7 @@ class TestImageRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -292,7 +294,7 @@ class TestMultiRepositoryTransaction:
         async with backend.begin_transaction() as txn:
             # Store context
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='atomic-test',
                 source='agent',
@@ -323,7 +325,7 @@ class TestMultiRepositoryTransaction:
         async with backend.begin_transaction() as txn:
             # Store context
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='multimodal-atomic',
                 source='user',
@@ -363,7 +365,7 @@ class TestMultiRepositoryTransaction:
             async with backend.begin_transaction() as txn:
                 # Store context - this should succeed
                 context_id, _ = await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='rollback-test',
                     source='user',
@@ -400,7 +402,7 @@ class TestRepositoryMethodsWithoutTransaction:
 
         # ContextRepository methods
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='compat-test',
             source='user',
@@ -423,7 +425,7 @@ class TestRepositoryMethodsWithoutTransaction:
 
         # ImageRepository methods (create multimodal entry for images)
         mm_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='compat-test',
             source='user',
@@ -478,7 +480,7 @@ class TestTxnAwareReadsUseTransactionConnection:
         await backend.execute_write(_create_embedding_metadata)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='conc-1', source='user', content_type='text',
             text_content='txn read target', metadata=None,
@@ -506,7 +508,7 @@ class TestTxnAwareReadsUseTransactionConnection:
         # Omitting txn uses the pooled-read path.
         backend, repos = backend_with_repos
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='conc-1b', source='user', content_type='text',
             text_content='pool read target', metadata=None,

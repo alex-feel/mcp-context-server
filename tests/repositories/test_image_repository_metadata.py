@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.backends import StorageBackend
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.mark.asyncio
@@ -44,7 +45,7 @@ class TestMalformedStoredImageMetadata:
 
         repos = RepositoryContainer(backend)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='malformed-image-metadata-thread',
             source='agent',
@@ -181,7 +182,7 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='image-metadata-fidelity-thread',
             source='user',
@@ -204,7 +205,7 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='image-metadata-replace-thread',
             source='user',
@@ -227,7 +228,7 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='image-metadata-absent-thread',
             source='user',
@@ -255,7 +256,7 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='image-metadata-single-writer-thread',
             source='user',
@@ -282,7 +283,7 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='image-metadata-batch-thread',
             source='user',

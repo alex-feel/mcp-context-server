@@ -28,6 +28,7 @@ from app.embeddings.base import EmbeddingProvider
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 
 DIM = 1024
 
@@ -57,10 +58,10 @@ class _FakeEmbeddingProvider:
     def __init__(self, dim: int = DIM) -> None:
         self._dim = dim
 
-    async def initialize(self) -> None:  # pragma: no cover - trivial
+    async def initialize(self) -> None:
         return None
 
-    async def shutdown(self) -> None:  # pragma: no cover - trivial
+    async def shutdown(self) -> None:
         return None
 
     async def embed_query(self, text: str) -> list[float]:
@@ -73,7 +74,7 @@ class _FakeEmbeddingProvider:
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [await self.embed_query(t) for t in texts]
 
-    async def is_available(self) -> bool:  # pragma: no cover - trivial
+    async def is_available(self) -> bool:
         return True
 
     def get_dimension(self) -> int:
@@ -159,7 +160,7 @@ def _seed_fp32(
                 vec = rng.standard_normal(DIM).astype(np.float32)
                 vec /= np.linalg.norm(vec)
                 cid, _ = await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='reembed-e2e',
                     source='user',
@@ -199,7 +200,7 @@ def _seed_fp32(
             missing: list[str] = []
             for i in range(n_missing):
                 cid, _ = await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='reembed-e2e',
                     source='user',

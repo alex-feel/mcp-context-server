@@ -20,6 +20,7 @@ from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import store_single_chunk_embedding
 
 # Conditional skip marker for tests requiring sqlite-vec package
@@ -48,7 +49,7 @@ class TestEmbeddingRepository:
         # Create multiple entries with embeddings
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'thread-{i}',
                 source='user',
@@ -93,7 +94,7 @@ class TestEmbeddingRepository:
         # Create entries in different threads
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='target-thread',
                 source='user',
@@ -105,7 +106,7 @@ class TestEmbeddingRepository:
 
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'other-{i}',
                 source='user',
@@ -141,7 +142,7 @@ class TestEmbeddingRepository:
         # Create entries with different sources
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'user-thread-{i}',
                 source='user',
@@ -153,7 +154,7 @@ class TestEmbeddingRepository:
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'agent-thread-{i}',
                 source='agent',
@@ -203,7 +204,7 @@ class TestEmbeddingRepository:
         # Create entries with embeddings
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='stats-thread',
                 source='user',
@@ -216,7 +217,7 @@ class TestEmbeddingRepository:
         # Create entries without embeddings
         for i in range(3):
             await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='no-embedding-thread',
                 source='user',
@@ -249,7 +250,7 @@ class TestEmbeddingRepository:
         # Create entries in target thread with embeddings
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='target-stats',
                 source='user',
@@ -261,7 +262,7 @@ class TestEmbeddingRepository:
 
         # Create entry in target thread without embedding
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='target-stats',
             source='user',
@@ -273,7 +274,7 @@ class TestEmbeddingRepository:
         # Create entries in other thread
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='other-stats',
                 source='user',
@@ -434,7 +435,7 @@ async def test_get_statistics_with_compression_sqlite(
     chunks_per_entry = 3
     for i in range(n_entries):
         cid, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='compressed-stats',
             source='user',
@@ -492,7 +493,7 @@ class TestBulkChunkCleanup:
         stored_ids: list[str] = []
         for index in range(4):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='bulk-cleanup-thread',
                 source='user',
@@ -575,7 +576,7 @@ class TestBulkChunkCleanup:
         stored_ids: list[str] = []
         for index in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='bulk-chunking-thread',
                 source='user',

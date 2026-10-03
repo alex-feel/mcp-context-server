@@ -19,7 +19,6 @@ from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.backends.base import StorageBackend
 from tests.conftest import requires_sqlite_vec
-from tests.repositories._access_scope_cases import CASES
 from tests.repositories._access_scope_cases import READABLE
 from tests.repositories._access_scope_cases import SCOPES
 from tests.repositories._access_scope_cases import AccessCase
@@ -34,6 +33,7 @@ from tests.repositories._access_scope_layouts import SQLITE_TEST_VARIABLE_LIMIT
 from tests.repositories._access_scope_layouts import assert_seeded_layout
 from tests.repositories._access_scope_layouts import limit_sqlite_variables
 from tests.repositories._access_scope_layouts import sqlite_scoped_db
+from tests.repositories._access_scope_registry import CASES
 
 
 @pytest_asyncio.fixture

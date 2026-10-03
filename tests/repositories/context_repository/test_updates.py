@@ -8,6 +8,7 @@ import pytest
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestContextRepositoryPatchMetadata:
@@ -19,7 +20,7 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching adds a new key to existing metadata."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='patch-add-thread',
             source='user',
@@ -43,7 +44,7 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching updates an existing key's value."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='patch-update-thread',
             source='user',
@@ -64,7 +65,7 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching with null value deletes the key (RFC 7396)."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='patch-delete-thread',
             source='user',
@@ -95,7 +96,7 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Empty patch is a no-op for data but updates timestamp."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='patch-empty-thread',
             source='user',
@@ -148,7 +149,7 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """A freshly inserted entry starts at version 0 (schema DEFAULT 0)."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-init-thread',
             source='user',
@@ -169,7 +170,7 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """update with expected_version=0 succeeds and bumps version to 1."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-success-thread',
             source='user',
@@ -197,7 +198,7 @@ class TestContextRepositoryVersionCAS:
         from app.repositories.context_repository.records import VersionConflictError
 
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-stale-thread',
             source='user',
@@ -224,7 +225,7 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """Re-reading the current version (1) and retrying CAS succeeds, bumping to 2."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-current-thread',
             source='user',
@@ -251,7 +252,7 @@ class TestContextRepositoryVersionCAS:
         CAS predicate and does NOT bump the version column.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-legacy-thread',
             source='user',

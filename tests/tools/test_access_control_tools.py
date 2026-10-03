@@ -1,7 +1,8 @@
 """Tests for access-control behavior at the MCP tool boundary.
 
 Covers owner stamping through store_context / store_context_batch (default
-principal fallback and verified-principal stamping), the publish gate on both
+principal fallback, verified-principal stamping, and a new entry for text that
+matches another principal's entry), the publish gate on both
 store and update, the owner-only visibility change on update_context /
 update_context_batch, author-group grant stamping, and the invariant that
 owner_id is never a tool parameter.
@@ -20,6 +21,7 @@ from app.auth.principal import RequestPrincipal
 from app.repositories.grant_repository import GrantRepository
 from app.repositories.grant_repository import GrantRow
 from app.settings import get_settings
+from tests.helpers import as_principal
 
 
 def _principal(
@@ -89,6 +91,23 @@ class TestOwnerStamping:
         assert cid is not None
         owner, _ = await _read_owner_visibility(cid)
         assert owner == 'alice'
+
+    @pytest.mark.asyncio
+    async def test_identical_text_of_another_principal_is_a_new_entry(self) -> None:
+        """Text matching another principal's readable latest entry is stored as the sender's own
+        entry, never merged into the other principal's entry, which stays unchanged."""
+        from app.tools.context.store import store_context
+
+        with as_principal('alice'):
+            alice = await store_context(
+                thread_id='access-dedup', source='agent', text='shared wording', visibility='public',
+            )
+        with as_principal('bob'):
+            bob = await store_context(thread_id='access-dedup', source='agent', text='shared wording')
+
+        assert bob['context_id'] != alice['context_id']
+        assert await _read_owner_visibility(bob['context_id']) == ('bob', 'private')
+        assert await _read_owner_visibility(alice['context_id']) == ('alice', 'public')
 
     def test_owner_id_is_never_a_tool_parameter(self) -> None:
         """No write tool exposes owner_id in its signature (wire schema source)."""

@@ -30,6 +30,7 @@ from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 
 DIM = 256
 SEED = 42
@@ -156,7 +157,7 @@ async def _seed_random_corpus(
         v = rng.standard_normal(DIM).astype(np.float32)
         v /= np.linalg.norm(v)
         cid, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t-batched',
             source='user',

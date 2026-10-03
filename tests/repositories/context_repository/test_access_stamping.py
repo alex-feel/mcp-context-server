@@ -1,18 +1,23 @@
 """Tests for access-control stamping at the repository write paths.
 
-Covers store_with_deduplication (owner_id/visibility stamped on INSERT, never
-touched by a deduplication UPDATE), update_context_entry (visibility rides the
-dynamic SET list and the compare-and-set), and the check_entry_exists probe's
-owner_id field -- all against a real temp SQLite database built from the full
-base schema.
+Covers store_with_deduplication (the caller's principal and the visibility
+stamped on INSERT, never touched by a deduplication UPDATE, which only the
+owner's retransmit reaches), update_context_entry (visibility rides the dynamic
+SET list and the compare-and-set), and the check_entry_exists probe's owner_id
+field -- all against a real temp SQLite database built from the full base
+schema.
 """
 
 import sqlite3
 
 import pytest
 
+from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.repositories.context_repository import ContextRepository
+
+ALICE = AccessScope('alice', frozenset())
+MALLORY = AccessScope('mallory', frozenset())
 
 
 async def _read_access_columns(backend: StorageBackend, context_id: str) -> tuple[str, str, int]:
@@ -40,7 +45,7 @@ class TestStoreStamping:
             source='agent',
             content_type='text',
             text_content='stamped entry',
-            owner_id='alice',
+            scope=ALICE,
             visibility='public',
         )
         assert was_updated is False
@@ -48,18 +53,16 @@ class TestStoreStamping:
         assert (owner, visibility) == ('alice', 'public')
 
     @pytest.mark.asyncio
-    async def test_dedup_update_never_changes_owner_or_visibility(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """A deduplication UPDATE leaves the stored owner and visibility untouched,
-        whatever values the retransmit carries."""
+    async def test_owner_retransmit_keeps_owner_and_visibility(self, async_db_initialized: StorageBackend) -> None:
+        """The owner's retransmit updates the row and leaves its owner and visibility
+        untouched, whatever visibility the retransmit carries."""
         repo = ContextRepository(async_db_initialized)
         context_id, _ = await repo.store_with_deduplication(
             thread_id='stamp-thread',
             source='agent',
             content_type='text',
             text_content='dedup-preserved entry',
-            owner_id='alice',
+            scope=ALICE,
             visibility='private',
         )
 
@@ -68,13 +71,41 @@ class TestStoreStamping:
             source='agent',
             content_type='text',
             text_content='dedup-preserved entry',
-            owner_id='mallory',
+            scope=ALICE,
             visibility='public',
         )
         assert was_updated is True
         assert dedup_id == context_id
-        owner, visibility, _ = await _read_access_columns(async_db_initialized, context_id)
-        assert (owner, visibility) == ('alice', 'private')
+        owner, visibility, version = await _read_access_columns(async_db_initialized, context_id)
+        assert (owner, visibility, version) == ('alice', 'private', 1)
+
+    @pytest.mark.asyncio
+    async def test_foreign_identical_text_inserts_a_row_of_its_own(self, async_db_initialized: StorageBackend) -> None:
+        """Another principal's identical text never merges into a row it can read but does
+        not own: it lands as a new row owned by that principal, and the owner's row stays
+        unchanged."""
+        repo = ContextRepository(async_db_initialized)
+        context_id, _ = await repo.store_with_deduplication(
+            thread_id='stamp-thread',
+            source='agent',
+            content_type='text',
+            text_content='dedup-preserved entry',
+            scope=ALICE,
+            visibility='public',
+        )
+
+        mallory_id, was_updated = await repo.store_with_deduplication(
+            thread_id='stamp-thread',
+            source='agent',
+            content_type='text',
+            text_content='dedup-preserved entry',
+            scope=MALLORY,
+            visibility='private',
+        )
+        assert was_updated is False
+        assert mallory_id != context_id
+        assert await _read_access_columns(async_db_initialized, mallory_id) == ('mallory', 'private', 0)
+        assert await _read_access_columns(async_db_initialized, context_id) == ('alice', 'public', 0)
 
 
 class TestUpdateVisibility:
@@ -89,7 +120,7 @@ class TestUpdateVisibility:
             source='agent',
             content_type='text',
             text_content='visibility update target',
-            owner_id='alice',
+            scope=ALICE,
             visibility='private',
         )
 
@@ -110,7 +141,7 @@ class TestUpdateVisibility:
             source='agent',
             content_type='text',
             text_content='cas visibility target',
-            owner_id='alice',
+            scope=ALICE,
             visibility='private',
         )
         probe = await repo.check_entry_exists(context_id)
@@ -136,7 +167,7 @@ class TestUpdateVisibility:
             source='agent',
             content_type='text',
             text_content='text-only update target',
-            owner_id='alice',
+            scope=ALICE,
             visibility='public',
         )
 
@@ -159,7 +190,7 @@ class TestEntryProbeOwner:
             source='user',
             content_type='text',
             text_content='probe target',
-            owner_id='alice',
+            scope=ALICE,
             visibility='private',
         )
 

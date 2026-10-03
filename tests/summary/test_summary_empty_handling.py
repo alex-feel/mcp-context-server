@@ -19,22 +19,8 @@ import pytest
 
 from app.ids import generate_id
 from app.repositories.context_repository import ContextRepository
-
-_CREATE_TABLE_SQL = '''
-    CREATE TABLE context_entries (
-        id TEXT PRIMARY KEY,
-        thread_id TEXT NOT NULL,
-        source TEXT NOT NULL,
-        content_type TEXT NOT NULL DEFAULT 'text',
-        text_content TEXT NOT NULL,
-        metadata TEXT,
-        summary TEXT,
-        content_hash TEXT,
-        version INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-'''
+from app.schemas import load_schema
+from tests.helpers import LOCAL_SCOPE
 
 
 def _make_sqlite_write_backend(db_path: str) -> MagicMock:
@@ -135,15 +121,18 @@ class TestStoreWithDeduplicationEmptySummary:
         """
         db_path = str(tmp_path / 'test.db')
 
-        # Create database and table with initial entry
+        # Create the base schema with an initial entry owned by the caller
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         existing_id = generate_id()
-        conn.execute(_CREATE_TABLE_SQL)
+        conn.executescript(load_schema('sqlite'))
         conn.execute(
-            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
-            'VALUES (?, ?, ?, ?, ?, ?)',
-            (existing_id, 'test-thread', 'agent', 'text', 'Some text content', 'Valid existing summary'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary, owner_id) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (
+                existing_id, 'test-thread', 'agent', 'text', 'Some text content', 'Valid existing summary',
+                LOCAL_SCOPE.principal_id,
+            ),
         )
         conn.commit()
         conn.close()
@@ -153,7 +142,7 @@ class TestStoreWithDeduplicationEmptySummary:
 
         # Call store_with_deduplication with empty summary (duplicate text)
         context_id, was_updated = await repo.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='agent',

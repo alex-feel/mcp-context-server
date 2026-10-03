@@ -17,6 +17,7 @@ import pytest_asyncio
 from app.backends import create_backend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from tests.helpers import LOCAL_SCOPE
 
 GHOST_TEXT = (
     'See entries 8944 and 9044, plus 14226 in the broader context. '
@@ -51,7 +52,7 @@ class TestGhostReferencesNotRewritten:
     ) -> None:
         """``store_with_deduplication`` does not rewrite any substring in text_content."""
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content=GHOST_TEXT, metadata=None,
@@ -67,7 +68,7 @@ class TestGhostReferencesNotRewritten:
     ) -> None:
         """``update_context_entry`` writes text_content verbatim without rewriting."""
         original_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='Old content', metadata=None,

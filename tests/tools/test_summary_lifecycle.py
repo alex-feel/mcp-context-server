@@ -20,6 +20,7 @@ import app.tools._generation as generation_module
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.startup import ensure_repositories
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import preserve_summary_state
 
 store_context = app.tools.store_context
@@ -177,7 +178,7 @@ class TestSummaryStoreWithMocks:
             source='agent',
             content_type='text',
             text_content=long_text,
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             metadata=None,
             summary='Generated summary',
@@ -196,7 +197,7 @@ class TestSummaryIntegration:
         """Regenerate and store a new summary when text changes."""
         repos = await ensure_repositories()
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='update-summary-thread',
             source='agent',
@@ -234,7 +235,7 @@ class TestSummaryIntegration:
         """Leave an existing summary unchanged when only metadata is updated."""
         repos = await ensure_repositories()
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='metadata-preserve-thread',
             source='agent',
@@ -267,7 +268,7 @@ class TestSummaryIntegration:
         repos = await ensure_repositories()
         long_text = 'A' * 400
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='search-summary-thread',
             source='agent',
@@ -293,7 +294,7 @@ class TestSummaryIntegration:
         repos = await ensure_repositories()
         long_text = 'B' * 400
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='search-fallback-thread',
             source='agent',

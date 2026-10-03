@@ -11,6 +11,7 @@ from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.statistics_repository import StatisticsRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest_asyncio.fixture
@@ -163,7 +164,7 @@ class TestStatisticsRepository:
 
         # Insert context entries via repository
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread1',
             source='user',
@@ -171,7 +172,7 @@ class TestStatisticsRepository:
             text_content='Test 1',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread1',
             source='agent',
@@ -179,7 +180,7 @@ class TestStatisticsRepository:
             text_content='Test 2',
         )
         ctx_id3, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread1',
             source='user',
@@ -225,7 +226,7 @@ class TestStatisticsRepository:
 
         # Thread 1: 2 entries, both sources, 1 multimodal
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread1',
             source='user',
@@ -233,7 +234,7 @@ class TestStatisticsRepository:
             text_content='Test 1',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread1',
             source='agent',
@@ -513,7 +514,7 @@ class TestStatisticsRepository:
         repos = RepositoryContainer(stats_test_db)
 
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='del-stats-thread',
             source='user',
@@ -542,7 +543,7 @@ class TestRepositoryContainerStatistics:
         """Test a full statistics workflow with all repository operations."""
         # Store some context entries
         context_id1, _ = await repo_container.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='workflow_thread',
             source='user',
@@ -553,7 +554,7 @@ class TestRepositoryContainerStatistics:
         assert context_id1 is not None
 
         context_id2, _ = await repo_container.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='workflow_thread',
             source='agent',

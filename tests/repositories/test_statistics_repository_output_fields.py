@@ -8,6 +8,7 @@ from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.statistics_repository import StatisticsRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestStatisticsBackendField:
@@ -65,7 +66,7 @@ class TestStatisticsBackendField:
 
         for i in range(3):
             await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='active-thread',
                 source='user',
@@ -74,7 +75,7 @@ class TestStatisticsBackendField:
             )
 
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='less-active-thread',
             source='user',
@@ -102,7 +103,7 @@ class TestStatisticsBackendField:
         repos = RepositoryContainer(stats_test_db)
 
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='tags-thread',
             source='user',
@@ -163,7 +164,7 @@ class TestThreadStatisticsDetails:
         repos = RepositoryContainer(stats_test_db)
 
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='timestamp-thread',
             source='user',
@@ -189,7 +190,7 @@ class TestThreadStatisticsDetails:
         repos = RepositoryContainer(stats_test_db)
 
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='source-breakdown-thread',
             source='user',
@@ -197,7 +198,7 @@ class TestThreadStatisticsDetails:
             text_content='User entry 1',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='source-breakdown-thread',
             source='user',
@@ -205,7 +206,7 @@ class TestThreadStatisticsDetails:
             text_content='User entry 2',
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='source-breakdown-thread',
             source='agent',

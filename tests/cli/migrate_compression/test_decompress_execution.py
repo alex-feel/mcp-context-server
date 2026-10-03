@@ -45,6 +45,7 @@ from tests.cli.migrate_compression._sqlite_db import count_provenance
 from tests.cli.migrate_compression._sqlite_db import enable_compression
 from tests.cli.migrate_compression._sqlite_db import seed_fp32_database
 from tests.cli.migrate_compression._sqlite_db import table_exists
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.mark.integration
@@ -165,7 +166,7 @@ def _seed_compressed_database(
                 vec = rng.standard_normal(DIM).astype(np.float32)
                 vec /= np.linalg.norm(vec)
                 cid, _ = await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='server-compressed',
                     source='user',
