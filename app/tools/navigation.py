@@ -265,6 +265,9 @@ async def grep_context(
     """
     try:
         repos = await ensure_repositories()
+        # The scan runs as the caller: entries it may not read are never scanned and
+        # never count toward the scan cap or the truncated flag.
+        scope = resolve_access_scope()
 
         # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id or a tag before
         # it reaches the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
@@ -334,6 +337,7 @@ async def grep_context(
             metadata_filters=metadata_filters,
             max_entries_scanned=max_entries_scanned,
             aggregate_bytes_budget=grep_settings.aggregate_bytes_budget,
+            scope=scope,
         )
 
         scan_validation_errors = scan_stats.get('validation_errors')

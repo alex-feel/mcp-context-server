@@ -126,7 +126,7 @@ class TestTransactionExecutorOffload:
             await _cancelled_mid_transaction()
 
         # The partial write was rolled back...
-        results, _stats = await repos.context.search_contexts(thread_id='cancel-1')
+        results, _stats = await repos.context.search_contexts(thread_id='cancel-1', scope=LOCAL_SCOPE)
         assert results == []
         # ...the breaker stayed closed, and the writer connection is clean:
         # a follow-up write commits normally.
@@ -200,7 +200,7 @@ class TestTransactionExecutorOffload:
             text_content='post-cancel commit', metadata=None,
         )
         assert await repos.context.get_content_type(context_id) == 'text'
-        results, _stats = await repos.context.search_contexts(thread_id='zombie-1')
+        results, _stats = await repos.context.search_contexts(thread_id='zombie-1', scope=LOCAL_SCOPE)
         assert results == []
 
     @pytest.mark.asyncio

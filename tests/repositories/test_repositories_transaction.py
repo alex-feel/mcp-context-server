@@ -384,7 +384,7 @@ class TestMultiRepositoryTransaction:
             pass  # Expected error
 
         # Verify nothing was committed - search for the content
-        entries, _ = await repos.context.search_contexts(thread_id='rollback-test')
+        entries, _ = await repos.context.search_contexts(thread_id='rollback-test', scope=LOCAL_SCOPE)
         assert len(entries) == initial_count  # Should be 0 if this was the only test
 
 

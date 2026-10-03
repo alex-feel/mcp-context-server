@@ -46,11 +46,11 @@ class TestContextRepositoryDelete:
         assert deleted == 1
 
         # Verify deletion
-        rows, _ = await repos.context.search_contexts(thread_id='del_thread')
+        rows, _ = await repos.context.search_contexts(thread_id='del_thread', scope=LOCAL_SCOPE)
         assert len(rows) == 0
 
         # Verify other thread kept
-        rows, _ = await repos.context.search_contexts(thread_id='keep_thread')
+        rows, _ = await repos.context.search_contexts(thread_id='keep_thread', scope=LOCAL_SCOPE)
         assert len(rows) == 1
 
     @pytest.mark.asyncio
@@ -89,7 +89,7 @@ class TestContextRepositoryDelete:
         assert deleted == 3
 
         # Verify all deleted
-        rows, _ = await repos.context.search_contexts(thread_id='multi_del_thread')
+        rows, _ = await repos.context.search_contexts(thread_id='multi_del_thread', scope=LOCAL_SCOPE)
         assert len(rows) == 0
 
     @pytest.mark.asyncio

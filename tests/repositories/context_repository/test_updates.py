@@ -32,7 +32,7 @@ class TestContextRepositoryPatchMetadata:
         assert success is True
         assert 'metadata' in fields
 
-        rows, _ = await context_repo.search_contexts(thread_id='patch-add-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='patch-add-thread', scope=LOCAL_SCOPE)
         assert len(rows) == 1
         meta = json.loads(rows[0]['metadata'])
         assert meta['existing'] == 'value'
@@ -55,7 +55,7 @@ class TestContextRepositoryPatchMetadata:
         success, fields = await context_repo.patch_metadata(ctx_id, {'status': 'done'})
         assert success is True
 
-        rows, _ = await context_repo.search_contexts(thread_id='patch-update-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='patch-update-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert meta['status'] == 'done'
 
@@ -76,7 +76,7 @@ class TestContextRepositoryPatchMetadata:
         success, _ = await context_repo.patch_metadata(ctx_id, {'remove': None})
         assert success is True
 
-        rows, _ = await context_repo.search_contexts(thread_id='patch-delete-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='patch-delete-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert 'keep' in meta
         assert 'remove' not in meta
@@ -108,7 +108,7 @@ class TestContextRepositoryPatchMetadata:
         assert success is True
         assert 'metadata' in fields
 
-        rows, _ = await context_repo.search_contexts(thread_id='patch-empty-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='patch-empty-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert meta['unchanged'] == 'value'
 

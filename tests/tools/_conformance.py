@@ -78,6 +78,7 @@ async def count_entries_in_thread(thread_id: str) -> int:
     repos = await ensure_repositories()
     rows, _ = await repos.context.search_contexts(
         thread_id=thread_id, limit=10000, offset=0, explain_query=False,
+        scope=LOCAL_SCOPE,
     )
     return len(rows)
 

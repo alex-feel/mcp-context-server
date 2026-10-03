@@ -181,5 +181,5 @@ class TestDeduplicationInterleaving:
         for i in range(1, len(ids)):
             assert ids[i] > ids[i - 1], f'ids not monotonically increasing: {ids}'
         # Verify all entries exist
-        entries, _ = await repos.context.search_contexts(thread_id='t1', limit=1000)
+        entries, _ = await repos.context.search_contexts(thread_id='t1', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries) == 5

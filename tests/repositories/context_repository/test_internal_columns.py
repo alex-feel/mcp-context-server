@@ -68,7 +68,7 @@ class TestInternalColumnsNotExposed:
             repo = ContextRepository(backend)
 
             # Call search_contexts
-            rows, _stats = await repo.search_contexts(thread_id='test-thread')
+            rows, _stats = await repo.search_contexts(thread_id='test-thread', scope=LOCAL_SCOPE)
 
             # Verify we got results
             assert len(rows) == 1
@@ -116,7 +116,7 @@ class TestInternalColumnsNotExposed:
             repo = ContextRepository(backend)
 
             # First get the ID of the test entry
-            rows, _stats = await repo.search_contexts(thread_id='test-thread')
+            rows, _stats = await repo.search_contexts(thread_id='test-thread', scope=LOCAL_SCOPE)
             assert len(rows) == 1
             context_id = rows[0]['id']
 

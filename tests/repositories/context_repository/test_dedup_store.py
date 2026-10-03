@@ -73,6 +73,7 @@ class TestDeduplication:
             metadata_filters=None,
             limit=1000,
             offset=0,
+            scope=LOCAL_SCOPE,
         )
         assert len(all_entries) == 1
 
@@ -148,8 +149,8 @@ class TestDeduplication:
         assert was_updated4 is False  # Should be insertion
 
         # Verify we have 4 entries - search across all threads
-        entries_thread1, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
-        entries_thread2, _ = await repos.context.search_contexts(thread_id='different-thread', limit=1000)
+        entries_thread1, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000, scope=LOCAL_SCOPE)
+        entries_thread2, _ = await repos.context.search_contexts(thread_id='different-thread', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries_thread1) == 3  # 2 user + 1 agent
         assert len(entries_thread2) == 1  # 1 agent
         # Total: 4 entries
@@ -219,7 +220,7 @@ class TestDeduplication:
         assert was_updated5 is True  # Should be update
 
         # Verify we have 4 unique entries
-        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries) == 4
 
     async def test_return_values_correct(
@@ -322,7 +323,7 @@ class TestDeduplication:
         assert was_updated3 is True
 
         # Verify only one entry exists
-        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
     async def test_content_type_does_not_affect_dedup(
@@ -358,7 +359,7 @@ class TestDeduplication:
         assert was_updated2 is True
 
         # Verify only one entry
-        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
     async def test_rapid_successive_duplicates(
@@ -387,7 +388,7 @@ class TestDeduplication:
             assert results[i][1] is True  # Updates
 
         # Verify only one entry exists
-        entries, _ = await repos.context.search_contexts(thread_id='rapid-thread', limit=1000)
+        entries, _ = await repos.context.search_contexts(thread_id='rapid-thread', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
     async def test_empty_text_content_dedup(self, repos: RepositoryContainer) -> None:
@@ -434,7 +435,7 @@ class TestDeduplication:
         assert was_updated3 is False
 
         # Verify we have 2 entries
-        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries) == 2
 
     async def test_long_text_content_dedup(self, repos: RepositoryContainer) -> None:
@@ -485,7 +486,7 @@ class TestDeduplication:
         assert was_updated3 is False
 
         # Verify we have 2 entries
-        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries) == 2
 
     async def test_metadata_updated_during_dedup(self, repos: RepositoryContainer) -> None:

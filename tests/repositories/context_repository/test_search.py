@@ -1,6 +1,7 @@
 """Tests for ContextRepository.search_contexts filters, pagination and query stats."""
 
 import json
+import re
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import cast
@@ -8,6 +9,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from app.access_scope import SYSTEM_SCOPE
+from app.access_scope import AccessScope
 from app.backends.base import StorageBackend
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -20,7 +23,7 @@ class TestContextRepositorySearch:
     @pytest.mark.asyncio
     async def test_search_empty_database(self, context_repo: ContextRepository) -> None:
         """Test searching empty database returns empty results."""
-        rows, stats = await context_repo.search_contexts()
+        rows, stats = await context_repo.search_contexts(scope=LOCAL_SCOPE)
 
         assert rows == []
         assert 'execution_time_ms' in stats
@@ -49,7 +52,7 @@ class TestContextRepositorySearch:
             text_content='Message B',
         )
 
-        rows, stats = await context_repo.search_contexts(thread_id='thread_a')
+        rows, stats = await context_repo.search_contexts(thread_id='thread_a', scope=LOCAL_SCOPE)
 
         assert len(rows) == 1
         assert rows[0]['thread_id'] == 'thread_a'
@@ -78,7 +81,7 @@ class TestContextRepositorySearch:
             text_content='Agent message',
         )
 
-        rows, stats = await context_repo.search_contexts(source='agent')
+        rows, stats = await context_repo.search_contexts(source='agent', scope=LOCAL_SCOPE)
 
         assert len(rows) == 1
         assert rows[0]['source'] == 'agent'
@@ -107,7 +110,7 @@ class TestContextRepositorySearch:
             text_content='With image',
         )
 
-        rows, stats = await context_repo.search_contexts(content_type='multimodal')
+        rows, stats = await context_repo.search_contexts(content_type='multimodal', scope=LOCAL_SCOPE)
 
         assert len(rows) == 1
         assert rows[0]['content_type'] == 'multimodal'
@@ -138,7 +141,7 @@ class TestContextRepositorySearch:
         await repos.tags.store_tags(ctx_id1, ['important', 'review'])
         await repos.tags.store_tags(ctx_id2, ['other'])
 
-        rows, stats = await repos.context.search_contexts(tags=['important'])
+        rows, stats = await repos.context.search_contexts(tags=['important'], scope=LOCAL_SCOPE)
 
         assert len(rows) == 1
         assert rows[0]['id'] == ctx_id1
@@ -162,6 +165,7 @@ class TestContextRepositorySearch:
         rows, stats = await repos.context.search_contexts(
             thread_id='limit_thread',
             limit=5,
+            scope=LOCAL_SCOPE,
         )
 
         assert len(rows) == 5
@@ -186,6 +190,7 @@ class TestContextRepositorySearch:
             thread_id='offset_thread',
             limit=3,
             offset=5,
+            scope=LOCAL_SCOPE,
         )
 
         assert len(rows) == 3
@@ -218,6 +223,7 @@ class TestContextRepositorySearch:
         rows, stats = await repos.context.search_contexts(
             thread_id='meta_thread',
             metadata={'priority': 1},
+            scope=LOCAL_SCOPE,
         )
 
         assert len(rows) == 1
@@ -243,6 +249,7 @@ class TestContextRepositorySearch:
         rows, stats = await repos.context.search_contexts(
             thread_id='explain_thread',
             explain_query=True,
+            scope=LOCAL_SCOPE,
         )
 
         assert len(rows) == 1
@@ -284,6 +291,7 @@ class TestContextRepositorySearch:
             thread_id='combo_thread',
             source='user',
             content_type='text',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(rows) == 1
@@ -322,6 +330,7 @@ class TestContextRepositorySearch:
             metadata={'project': 'p'},
             start_date='2020-01-01',
             end_date='2999-01-01',
+            scope=LOCAL_SCOPE,
         )
 
         # thread_id + source + content_type + tags + start_date + end_date + one metadata key.
@@ -342,7 +351,7 @@ class TestContextRepositorySearch:
             text_content='entry',
         )
 
-        _rows, stats = await repos.context.search_contexts()
+        _rows, stats = await repos.context.search_contexts(scope=LOCAL_SCOPE)
 
         assert stats['filters_applied'] == 0
 
@@ -360,6 +369,7 @@ class TestContextRepositorySearch:
         """
         rows, stats = await context_repo.search_contexts(
             metadata_filters=[{'key': 'status', 'operator': 'not_a_real_operator', 'value': 'x'}],
+            scope=LOCAL_SCOPE,
         )
 
         assert rows == []
@@ -391,8 +401,122 @@ class TestContextRepositorySearch:
 
         rows, stats = await repo_pg.search_contexts(
             metadata_filters=[{'key': 'status', 'operator': 'not_a_real_operator', 'value': 'x'}],
+            scope=LOCAL_SCOPE,
         )
 
         assert rows == []
         assert stats['error'] == 'Metadata filter validation failed'
         assert stats['backend'] == 'postgresql'
+
+
+def _recording_postgresql_repo(rows: list[object]) -> tuple[ContextRepository, list[tuple[str, tuple[object, ...]]]]:
+    """Build a PostgreSQL repository whose connection records every fetched statement with its arguments.
+
+    Args:
+        rows: The rows every ``fetch`` returns.
+
+    Returns:
+        The repository and the list the recorded ``(statement, arguments)`` pairs are appended to.
+    """
+    statements: list[tuple[str, tuple[object, ...]]] = []
+
+    class _RecordingConnection:
+        async def fetch(self, query: str, *args: object) -> list[object]:
+            statements.append((query, args))
+            return rows
+
+    pg_backend = Mock()
+    pg_backend.backend_type = 'postgresql'
+
+    async def _execute_read(closure: Callable[[object], Awaitable[object]]) -> object:
+        return await closure(_RecordingConnection())
+
+    pg_backend.execute_read = _execute_read
+    return ContextRepository(cast(StorageBackend, pg_backend)), statements
+
+
+def _bound(query: str, args: tuple[object, ...], pattern: str) -> object:
+    """Return the argument bound to the single ``$n`` placeholder that ``pattern`` captures."""
+    match = re.search(pattern, query)
+    assert match is not None, f'{pattern!r} not in {query!r}'
+    return args[int(match.group(1)) - 1]
+
+
+class TestSearchContextsScope:
+    """search_contexts applies the caller's read scope after every client filter."""
+
+    @pytest.mark.asyncio
+    async def test_filters_applied_does_not_count_the_scope(self, repos: RepositoryContainer) -> None:
+        """The same client filters report the same count whatever scope runs them."""
+        await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE, visibility='private', thread_id='scope_count', source='agent',
+            content_type='text', text_content='scoped count entry', metadata=json.dumps({'project': 'p'}),
+        )
+        counts: list[int] = []
+        for scope in (LOCAL_SCOPE, AccessScope('bob', frozenset({'team-x'})), SYSTEM_SCOPE):
+            _rows, stats = await repos.context.search_contexts(
+                thread_id='scope_count', source='agent', metadata={'project': 'p'}, scope=scope,
+            )
+            counts.append(stats['filters_applied'])
+
+        assert counts == [3, 3, 3]
+
+    @pytest.mark.asyncio
+    async def test_postgresql_placeholders_continue_after_every_filter(self) -> None:
+        """On PostgreSQL the predicate binds after the filters and before LIMIT and OFFSET, numbered contiguously."""
+        repo, statements = _recording_postgresql_repo([])
+
+        await repo.search_contexts(
+            thread_id='t', source='agent', tags=['x', 'y'], metadata={'author': 'alice'},
+            metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 3}],
+            scope=AccessScope('bob', frozenset({'team-x'})), limit=5, offset=2,
+        )
+
+        [(query, args)] = statements
+        assert sorted({int(number) for number in re.findall(r'\$(\d+)', query)}) == list(range(1, len(args) + 1))
+        assert query.index('FROM tags') < query.index('context_entries.owner_id')
+        assert _bound(query, args, r'context_entries\.owner_id = \$(\d+)') == 'bob'
+        assert _bound(query, args, r"principal_type = 'user' AND g\.principal_id = \$(\d+)") == 'bob'
+        assert _bound(query, args, r'= ANY\(\$(\d+)::text\[\]\)') == ['team-x']
+        assert _bound(query, args, r'LIMIT \$(\d+)') == 5
+        assert _bound(query, args, r'OFFSET \$(\d+)') == 2
+
+    @pytest.mark.asyncio
+    async def test_system_scope_adds_no_condition(self) -> None:
+        """The system scope's empty predicate leaves the statement and its binds as the filters build them."""
+        repo, statements = _recording_postgresql_repo([])
+
+        await repo.search_contexts(thread_id='t', scope=SYSTEM_SCOPE, limit=5, offset=0)
+
+        [(query, args)] = statements
+        assert 'owner_id' not in query
+        assert args == ('t', 5, 0)
+
+    @pytest.mark.asyncio
+    async def test_invalid_filter_short_circuits_before_the_scope(self) -> None:
+        """A validation error returns before any statement runs, whatever the scope."""
+        repo, statements = _recording_postgresql_repo([])
+
+        rows, stats = await repo.search_contexts(
+            metadata_filters=[{'key': 'status', 'operator': 'not_a_real_operator', 'value': 'x'}],
+            scope=AccessScope('bob', frozenset()),
+        )
+
+        assert rows == []
+        assert stats['error'] == 'Metadata filter validation failed'
+        assert statements == []
+
+    @pytest.mark.asyncio
+    async def test_sqlite_explain_runs_with_the_scope(self, repos: RepositoryContainer) -> None:
+        """explain_query returns a plan for the scoped statement on SQLite."""
+        await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE, visibility='private', thread_id='scope_explain', source='agent',
+            content_type='text', text_content='scoped explain entry',
+        )
+
+        rows, stats = await repos.context.search_contexts(
+            thread_id='scope_explain', explain_query=True, scope=AccessScope('bob', frozenset({'team-x'})),
+        )
+
+        assert rows == []
+        assert 'context_entries' in stats['query_plan']

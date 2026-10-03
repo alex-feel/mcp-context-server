@@ -30,6 +30,7 @@ from app.repositories.base import BaseRepository
 from app.repositories.embedding_repository.records import MetadataFilterValidationError
 from app.repositories.fts_repository.faults import FtsValidationError
 from tests.conftest import requires_sqlite_vec
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest_asyncio.fixture
@@ -91,7 +92,7 @@ class TestContextRepositoryTagValidation:
         backend_and_repos: tuple[StorageBackend, RepositoryContainer],
     ) -> None:
         _backend, repos = backend_and_repos
-        rows, stats = await repos.context.search_contexts(thread_id='t', tags=['   '])
+        rows, stats = await repos.context.search_contexts(thread_id='t', tags=['   '], scope=LOCAL_SCOPE)
         assert rows == []
         assert stats.get('validation_errors')
 
@@ -101,7 +102,7 @@ class TestContextRepositoryTagValidation:
         backend_and_repos: tuple[StorageBackend, RepositoryContainer],
     ) -> None:
         _backend, repos = backend_and_repos
-        rows, stats = await repos.context.search_contexts(thread_id='t', tags=None)
+        rows, stats = await repos.context.search_contexts(thread_id='t', tags=None, scope=LOCAL_SCOPE)
         assert stats.get('validation_errors') is None
         assert len(rows) == 2
 
@@ -112,7 +113,7 @@ class TestContextRepositoryTagValidation:
     ) -> None:
         # tags=[] never enters the `if tags:` branch: it means "no tag filter".
         _backend, repos = backend_and_repos
-        rows, stats = await repos.context.search_contexts(thread_id='t', tags=[])
+        rows, stats = await repos.context.search_contexts(thread_id='t', tags=[], scope=LOCAL_SCOPE)
         assert stats.get('validation_errors') is None
         assert len(rows) == 2
 
@@ -124,6 +125,7 @@ class TestContextRepositoryTagValidation:
         _backend, repos = backend_and_repos
         rows, stats = await repos.context.grep_scan_text_contents(
             ascii_literal='needle', thread_id='t', tags=['   '],
+            scope=LOCAL_SCOPE,
         )
         assert rows == []
         assert stats.get('validation_errors')
@@ -136,6 +138,7 @@ class TestContextRepositoryTagValidation:
         _backend, repos = backend_and_repos
         rows, stats = await repos.context.grep_scan_text_contents(
             ascii_literal='needle', thread_id='t', tags=None,
+            scope=LOCAL_SCOPE,
         )
         assert stats.get('validation_errors') is None
         assert len(rows) == 2

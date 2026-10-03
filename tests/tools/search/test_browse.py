@@ -3,11 +3,16 @@
 import base64
 import sqlite3
 from pathlib import Path
+from typing import Literal
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 import pytest
 
 import app.startup
 import app.tools
+from app.access_scope import AccessScope
+from tests.helpers import as_principal
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -368,3 +373,70 @@ class TestSearchContext:
         assert len(results['results']) == 1
         assert results['results'][0]['text_content'] == ''
         assert results['results'][0]['is_text_content_truncated'] is False
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestSearchContextScoping:
+    """search_context returns only the entries the caller may read."""
+
+    @staticmethod
+    async def _store_as(principal_id: str, text: str, visibility: Literal['private', 'public']) -> str:
+        """Store one entry in the scoped thread as the principal and return its id."""
+        with as_principal(principal_id):
+            result = await store_context(
+                thread_id='scoped-browse', source='agent', text=text, visibility=visibility, metadata={'project': 'p'},
+            )
+        return result['context_id']
+
+    @pytest.mark.asyncio
+    async def test_unreadable_entries_are_absent(self) -> None:
+        """Bob finds alice's public entry and nothing of her private one; the count matches."""
+        await self._store_as('alice', 'alice private browse target', 'private')
+        public_id = await self._store_as('alice', 'alice public browse target', 'public')
+
+        with as_principal('bob'):
+            results = await search_context(thread_id='scoped-browse', limit=50)
+
+        assert [entry['id'] for entry in results['results']] == [public_id]
+        assert results['count'] == 1
+
+    @pytest.mark.asyncio
+    async def test_owner_finds_their_private_entry(self) -> None:
+        """The owner finds both of their entries, newest first."""
+        private_id = await self._store_as('alice', 'alice private browse own', 'private')
+        public_id = await self._store_as('alice', 'alice public browse own', 'public')
+
+        with as_principal('alice'):
+            results = await search_context(thread_id='scoped-browse', limit=50)
+
+        assert [entry['id'] for entry in results['results']] == [public_id, private_id]
+
+    @pytest.mark.asyncio
+    async def test_scope_reaches_the_repository(self) -> None:
+        """The caller's principal and groups reach search_contexts as its scope."""
+        repos = await app.startup.ensure_repositories()
+
+        with (
+            as_principal('bob', groups=['team-x']),
+            patch.object(repos.context, 'search_contexts', AsyncMock(return_value=([], {}))) as spy,
+        ):
+            await search_context(thread_id='scoped-browse', limit=10)
+
+        assert spy.await_args is not None
+        assert spy.await_args.kwargs['scope'] == AccessScope('bob', frozenset({'team-x'}))
+
+    @pytest.mark.asyncio
+    async def test_filters_applied_is_the_same_for_every_caller(self) -> None:
+        """The explain stats count the client filters only, whoever runs them."""
+        await self._store_as('alice', 'alice private browse stats', 'private')
+
+        filters_applied: dict[str, int] = {}
+        for principal_id in ('alice', 'bob'):
+            with as_principal(principal_id):
+                results = await search_context(
+                    thread_id='scoped-browse', source='agent', metadata={'project': 'p'}, explain_query=True, limit=10,
+                )
+            filters_applied[principal_id] = results['stats']['filters_applied']
+            assert results['stats']['query_plan']
+
+        assert filters_applied == {'alice': 3, 'bob': 3}

@@ -209,7 +209,7 @@ class TestContextRepositoryDeduplication:
         assert was_updated2 is True
         assert ctx_id2 == ctx_id1
 
-        rows, _ = await context_repo.search_contexts(thread_id='coalesce-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='coalesce-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert meta['key'] == 'updated'
 
@@ -240,7 +240,7 @@ class TestContextRepositoryDeduplication:
         assert was_updated is True
         assert ctx_id2 == ctx_id1
 
-        rows, _ = await context_repo.search_contexts(thread_id='preserve-meta-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='preserve-meta-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert meta['preserved'] == 'yes'
 
