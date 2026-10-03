@@ -29,7 +29,7 @@ from app.tools._transactions import EmbeddingsReconcileRequiredError
 
 
 def _make_mock_txn() -> tuple[MagicMock, object]:
-    """Create a mock transaction context manager (mirrors test_batch_bug_fixes)."""
+    """Create a mock transaction context manager."""
     mock_txn = MagicMock()
     mock_txn.connection = MagicMock()
     mock_txn.backend_type = 'sqlite'
@@ -284,12 +284,12 @@ class TestStoreBatchReconcile:
         """Identical (text, source) entries share ONE summary regeneration.
 
         The atomic reconcile's embedding block computes the regenerated
-        embedding once and broadcasts it to every matching entry, but the
-        summary block used to call the model INSIDE the per-entry loop --
-        issuing redundant, sequential, identical LLM round-trips when several
-        diverged entries share the same text AND source. The prompt varies
-        only by source for a fixed text, so one call per distinct source
-        must be broadcast to all matching entries.
+        embedding once and broadcasts it to every matching entry, and the
+        summary block does the same: calling the model INSIDE the per-entry
+        loop would issue redundant, sequential, identical LLM round-trips when
+        several diverged entries share the same text AND source. The prompt
+        varies only by source for a fixed text, so one call per distinct
+        source must be broadcast to all matching entries.
         """
         from app.tools.batch.store import store_context_batch
 
@@ -516,10 +516,10 @@ class TestStoreBatchReconcile:
 
 
 class TestSemanticDistanceContractWording:
-    """Guards the variant-aware semantic_distance contract (Bug 2 regression)."""
+    """Guards the variant-aware semantic_distance contract wording."""
 
     def test_search_tool_drops_fixed_threshold_heuristic(self) -> None:
-        """The misleading fixed-band heuristic is gone; variant wording is present."""
+        """Search tools carry no fixed-band heuristic, and semantic and hybrid state the variant-aware distance."""
         paths = sorted(Path('app/tools/search').glob('*.py'))
         assert paths
         for path in paths:
@@ -528,7 +528,7 @@ class TestSemanticDistanceContractWording:
             assert 'negated inner product' in Path('app/tools/search', name).read_text(encoding='utf-8'), name
 
     def test_types_describe_variant_aware_distance(self) -> None:
-        """TypedDicts no longer assert an unconditional L2 Euclidean distance."""
+        """TypedDicts do not assert an unconditional L2 Euclidean distance."""
         content = Path('app/types.py').read_text(encoding='utf-8')
         assert 'negated inner product' in content
         assert 'L2 Euclidean distance (LOWER = better)' not in content
