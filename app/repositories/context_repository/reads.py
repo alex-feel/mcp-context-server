@@ -44,8 +44,9 @@ class ContextReadMixin(BaseRepository):
 
     Fetches entries by id in bounded chunks, probes an entry's existence, source,
     version, owner and write access for the update paths, probes the write and
-    owner access of many entries at once, reads an entry's content type, and
-    resolves an id prefix to the matching full ids.
+    owner access of many entries at once, confirms and reads the content type of
+    an entry the caller may modify, and resolves an id prefix to the matching
+    full ids.
     """
 
     async def get_by_ids(self, context_ids: list[str], *, scope: Scope) -> list[Any]:
@@ -271,45 +272,65 @@ class ContextReadMixin(BaseRepository):
             return await _probe_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_probe_postgresql)
 
-    async def entry_exists(self, context_id: str, txn: 'TransactionContext | None' = None) -> bool:
-        """Return whether a context entry exists, optionally on a transaction connection.
+    async def entry_exists(
+        self,
+        context_id: str,
+        *,
+        scope: Scope,
+        txn: 'TransactionContext | None' = None,
+    ) -> bool:
+        """Return whether the scope may modify a context entry, optionally on a transaction connection.
 
-        A lightweight companion to check_entry_exists for callers that need only
-        presence (not source/version) and must run inside an open transaction.
+        The write gate of the update paths: a lightweight companion to
+        check_entry_exists for callers that need only presence under the WRITE
+        predicate and must run inside an open transaction.
         execute_update_in_transaction uses it to confirm the parent row before a
         tags-only or images-only update, whose child writes would otherwise
         violate the foreign key against a missing parent (charging the circuit
-        breaker) or orphan the rows.
+        breaker), orphan the rows, or modify an entry the caller may not modify;
+        the atomic batch update uses it to tell a lost write from a version
+        conflict. An entry the scope may not modify returns False exactly like a
+        missing one.
 
         When invoked inside a transaction on PostgreSQL, the presence check locks
-        the parent row with FOR KEY SHARE so a concurrent DELETE blocks until this
-        update transaction commits: without the lock the row can be deleted in the
-        window between this check and the subsequent child tag/image writes, whose
-        foreign key then fails -- a non-ControlFlowError that charges the circuit
-        breaker. FOR KEY SHARE permits concurrent non-key updates while blocking
-        row deletion, which is exactly the parent-presence guarantee the child
-        writes need. Outside a transaction the lock would release at statement end
-        and serve no purpose, so it is applied only on the transaction path.
+        the parent row with FOR KEY SHARE OF context_entries so a concurrent DELETE
+        blocks until this update transaction commits: without the lock the row can
+        be deleted in the window between this check and the subsequent child
+        tag/image writes, whose foreign key then fails -- a non-ControlFlowError
+        that charges the circuit breaker. FOR KEY SHARE permits concurrent non-key
+        updates while blocking row deletion, which is exactly the parent-presence
+        guarantee the child writes need; naming context_entries confines the lock
+        to that parent row. Outside a transaction the lock
+        would release at statement end and serve no purpose, so it is applied only
+        on the transaction path.
 
         Args:
             context_id: ID of the context entry.
+            scope: The caller's scope; only an entry it may modify counts as present.
             txn: Optional transaction context. When provided the read runs on the
                 transaction's own connection instead of acquiring a second pooled
                 connection, avoiding a nested pool acquire while a transaction
                 connection is already held (PostgreSQL pool-starvation hazard).
 
         Returns:
-            True if the entry exists, False otherwise.
+            True if the entry exists and the scope may modify it, False otherwise.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
+        # The id binds first, the WRITE predicate next.
+        write = build_access_predicate(
+            scope, mode=AccessMode.WRITE, backend_type=backend_type, outer='context_entries', start=2,
+        )
+        lock_clause = ' FOR KEY SHARE OF context_entries' if txn is not None and backend_type == 'postgresql' else ''
+        query = (
+            f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)}{write.and_clause()} LIMIT 1{lock_clause}'
+        )
+        params: list[object] = [context_id, *write.params]
+
         if backend_type == 'sqlite':
 
             def _entry_exists_sqlite(conn: sqlite3.Connection) -> bool:
                 cursor = conn.cursor()
-                cursor.execute(
-                    f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
-                    (context_id,),
-                )
+                cursor.execute(query, tuple(params))
                 return cursor.fetchone() is not None
 
             if txn is not None:
@@ -317,41 +338,48 @@ class ContextReadMixin(BaseRepository):
             return await self.backend.execute_read(_entry_exists_sqlite)
 
         # PostgreSQL
-        lock_clause = ' FOR KEY SHARE' if txn is not None else ''
-
         async def _entry_exists_postgresql(conn: 'asyncpg.Connection') -> bool:
-            row = await conn.fetchrow(
-                f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1{lock_clause}',
-                context_id,
-            )
+            row = await conn.fetchrow(query, *params)
             return row is not None
 
         if txn is not None:
             return await _entry_exists_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_entry_exists_postgresql)
 
-    async def get_content_type(self, context_id: str, txn: 'TransactionContext | None' = None) -> str | None:
-        """Get the content type of a context entry.
+    async def get_content_type(
+        self,
+        context_id: str,
+        *,
+        scope: Scope,
+        txn: 'TransactionContext | None' = None,
+    ) -> str | None:
+        """Get the content type of a context entry the scope may modify.
 
         Args:
             context_id: ID of the context entry
+            scope: The caller's scope; an entry it may not modify reads as missing.
             txn: Optional transaction context. When provided the read runs on the
                 transaction's own connection instead of acquiring a second pooled
                 connection, avoiding a nested pool acquire while a transaction
                 connection is already held (PostgreSQL pool-starvation hazard).
 
         Returns:
-            Content type ('text' or 'multimodal') or None if entry doesn't exist
+            Content type ('text' or 'multimodal'), or None if the entry does not
+            exist or the scope may not modify it
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
+        # The id binds first, the WRITE predicate next.
+        write = build_access_predicate(
+            scope, mode=AccessMode.WRITE, backend_type=backend_type, outer='context_entries', start=2,
+        )
+        query = f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}{write.and_clause()}'
+        params: list[object] = [context_id, *write.params]
+
         if backend_type == 'sqlite':
 
             def _get_content_type_sqlite(conn: sqlite3.Connection) -> str | None:
                 cursor = conn.cursor()
-                cursor.execute(
-                    f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}',
-                    (context_id,),
-                )
+                cursor.execute(query, tuple(params))
                 row = cursor.fetchone()
                 return row['content_type'] if row else None
 
@@ -361,10 +389,7 @@ class ContextReadMixin(BaseRepository):
 
         # PostgreSQL
         async def _get_content_type_postgresql(conn: 'asyncpg.Connection') -> str | None:
-            row = await conn.fetchrow(
-                f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}',
-                context_id,
-            )
+            row = await conn.fetchrow(query, *params)
             return row['content_type'] if row else None
 
         if txn is not None:

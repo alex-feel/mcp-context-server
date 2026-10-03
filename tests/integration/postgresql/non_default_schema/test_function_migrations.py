@@ -301,7 +301,7 @@ def test_patch_metadata_runtime_quotes_mixed_case_schema(
             )
             # An unquoted call would raise SQLSTATE 3F000/42883 (mixedcaseschema.jsonb_merge_patch
             # does not exist); the quoted call resolves to the "MixedCaseSchema" object.
-            success, fields = await repos.context.patch_metadata(context_id, {'b': 2})
+            success, fields = await repos.context.patch_metadata(context_id, {'b': 2}, scope=LOCAL_SCOPE)
             result['success'] = success
             result['fields'] = fields
             entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)

@@ -25,6 +25,7 @@ from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
 from app.tools._generation import run_generation
 from app.tools._responses import build_update_response_message
+from app.tools._transactions import EntryNotAuthorizedError
 from app.tools._transactions import EntryNotFoundError
 from app.tools._transactions import execute_update_in_transaction
 from app.tools._transactions import is_connection_error
@@ -170,10 +171,14 @@ async def update_context(
         # optimistic-concurrency version BEFORE generation so a concurrent writer
         # that commits during our (slow) generation is caught by the conditional
         # write below. The same probe returns the immutable owner_id backing the
-        # visibility gate. An entry the caller may not read is not found.
+        # visibility gate and whether the caller may modify the entry. An entry the
+        # caller may not read is not found; one it may read but not modify is
+        # refused here, before any generation is spent on it.
         probe = await repos.context.check_entry_exists(context_id, scope=scope)
         if not probe.exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
+        if not probe.can_write:
+            raise ToolError(str(EntryNotAuthorizedError([context_id], action='modify')))
         entry_source = probe.source
         expected_version = probe.version
         assert entry_source is not None  # guaranteed by exists=True
@@ -284,6 +289,7 @@ async def update_context(
                     updated_fields, _ = await execute_update_in_transaction(
                         repos, txn,
                         context_id=context_id,
+                        scope=scope,
                         text=text,
                         metadata=metadata,
                         metadata_patch=metadata_patch,
@@ -319,10 +325,14 @@ async def update_context(
                 # re-running the write transaction with the token whose compare-and-set
                 # just failed is doomed by construction (version is monotonic) and would
                 # burn a conflict slot on what was only a connection blip.
-                exists, current_version = await reread_entry_version(repos, context_id, scope=scope)
-                if not exists:
+                current = await reread_entry_version(repos, context_id, scope=scope)
+                if not current.exists:
                     raise ToolError(f'Context entry with ID {context_id} not found') from None
-                expected_version = current_version
+                if not current.can_write:
+                    # The caller may still read the entry but lost write access during
+                    # generation; no retry can succeed.
+                    raise ToolError(str(EntryNotAuthorizedError([context_id], action='modify'))) from None
+                expected_version = current.version
                 logger.info(
                     'Version conflict updating context %s; retrying (%d/%d)',
                     context_id, version_conflicts, max_version_conflicts,
@@ -331,10 +341,11 @@ async def update_context(
 
             except EntryNotFoundError:
                 # The entry was deleted concurrently between the pre-generation
-                # existence check and this transaction (or the id is stale). Surface
-                # a clean not-found error; EntryNotFoundError is a ControlFlowError,
-                # so the failed write never charged the circuit breaker, and it is
-                # terminal -- no retry can resurrect a deleted row.
+                # existence check and this transaction, the caller lost access to it,
+                # or the id is stale. Surface a clean not-found error;
+                # EntryNotFoundError is a ControlFlowError, so the failed write never
+                # charged the circuit breaker, and it is terminal -- no retry can
+                # resurrect a deleted row.
                 raise ToolError(f'Context entry with ID {context_id} not found') from None
 
             except ToolError:

@@ -10,6 +10,7 @@ from tests.repositories._access_scope_cases import AccessCase
 from tests.repositories._access_scope_cases_dedup import DEDUP_CASES
 from tests.repositories._access_scope_cases_reads import READ_CASES
 from tests.repositories._access_scope_cases_search import SEARCH_CASES
+from tests.repositories._access_scope_cases_updates import UPDATE_CASES
 
 # The registered cases, each proving one seam for every scope it names.
-CASES: tuple[AccessCase, ...] = (*DEDUP_CASES, *READ_CASES, *SEARCH_CASES)
+CASES: tuple[AccessCase, ...] = (*DEDUP_CASES, *READ_CASES, *SEARCH_CASES, *UPDATE_CASES)

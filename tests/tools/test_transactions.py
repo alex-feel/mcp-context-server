@@ -156,9 +156,8 @@ class TestRereadEntryVersion:
             side_effect=[asyncpg.InterfaceError('connection recycled'), EntryProbe(True, 'agent', 7, 'local', True)],
         )
         with patch('app.tools._transactions.asyncio.sleep', new_callable=AsyncMock):
-            exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE)
-        assert exists is True
-        assert version == 7
+            probe = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE)
+        assert probe == EntryProbe(True, 'agent', 7, 'local', True)
         assert repos.context.check_entry_exists.await_count == 2
 
     @pytest.mark.asyncio
@@ -166,9 +165,9 @@ class TestRereadEntryVersion:
         """A deleted row is a clean answer, not a fault to retry."""
         repos = MagicMock()
         repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(False, None, None, None, False))
-        exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE)
-        assert exists is False
-        assert version is None
+        probe = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE)
+        assert probe.exists is False
+        assert probe.version is None
         assert repos.context.check_entry_exists.await_count == 1
 
     @pytest.mark.asyncio
@@ -195,11 +194,19 @@ class TestRereadEntryVersion:
         assert repos.context.check_entry_exists.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_readable_entry_without_write_access_is_reported(self) -> None:
+        """The refresh returns the whole probe, so the caller sees an entry it may read but no longer modify."""
+        repos = MagicMock()
+        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 4, 'alice', False))
+        probe = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=LOCAL_SCOPE)
+        assert (probe.exists, probe.version, probe.can_write) == (True, 4, False)
+
+    @pytest.mark.asyncio
     async def test_probe_runs_under_the_given_scope(self) -> None:
         """The refresh probes the entry as the caller, so an entry it may no longer read reads as gone."""
         bob = AccessScope('bob', frozenset())
         repos = MagicMock()
         repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(False, None, None, None, False))
-        exists, version = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=bob)
-        assert (exists, version) == (False, None)
+        probe = await reread_entry_version(repos, '0190abcdef1234567890abcdef123456', scope=bob)
+        assert (probe.exists, probe.version) == (False, None)
         repos.context.check_entry_exists.assert_awaited_once_with('0190abcdef1234567890abcdef123456', scope=bob)

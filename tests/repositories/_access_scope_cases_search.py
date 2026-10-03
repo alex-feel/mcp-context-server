@@ -17,19 +17,18 @@ the readable rows alone, and ``filters_applied`` counts the client filters only.
   entry cap and hidden rows beyond the cap never flag the scan as truncated.
 """
 
-from collections.abc import Callable
 from collections.abc import Mapping
 from typing import Any
 
 from app.access_scope import Scope
 from tests.repositories._access_scope_cases import READABLE
-from tests.repositories._access_scope_cases import SCOPES
 from tests.repositories._access_scope_cases import SEED_KEYWORD
 from tests.repositories._access_scope_cases import SEED_LABELS
 from tests.repositories._access_scope_cases import SEED_SOURCE
 from tests.repositories._access_scope_cases import SEED_THREAD
 from tests.repositories._access_scope_cases import AccessCase
 from tests.repositories._access_scope_cases import ScopedDb
+from tests.repositories._access_scope_cases import per_scope
 
 type BrowseObservable = tuple[tuple[str, ...], int]
 type BrowsePages = tuple[tuple[str, ...], tuple[str, ...], int]
@@ -66,11 +65,6 @@ _FILTER_COUNT = 5
 # rows to every other scope.
 _ADVERSARIAL_METADATA: Mapping[str, Any] = {'author': 'alice'}
 _ADVERSARIAL_METADATA_FILTERS: list[dict[str, Any]] = [{'key': 'author', 'operator': 'eq', 'value': 'alice'}]
-
-
-def _per_scope[T](build: Callable[[str], T]) -> dict[str, T]:
-    """Return ``build(scope_name)`` for every scope name, the system scope included."""
-    return {scope_name: build(scope_name) for scope_name in SCOPES}
 
 
 def _newest_first(scope_name: str, *, with_fill: bool = False, author: str | None = None) -> tuple[str, ...]:
@@ -235,36 +229,36 @@ def _expected_capped_scan(scope_name: str) -> ScanObservable:
 
 
 SEARCH_CASES: tuple[AccessCase, ...] = (
-    AccessCase('S1', _browse_unfiltered, _per_scope(lambda name: (_newest_first(name), 0))),
+    AccessCase('S1', _browse_unfiltered, per_scope(lambda name: (_newest_first(name), 0))),
     AccessCase(
-        'S1', _browse_filtered, _per_scope(lambda name: (_newest_first(name), _FILTER_COUNT)),
+        'S1', _browse_filtered, per_scope(lambda name: (_newest_first(name), _FILTER_COUNT)),
         filtered=True, setup=_add_filter_decoys,
     ),
     AccessCase(
-        'S1', _browse_adversarial, _per_scope(lambda name: (_newest_first(name, author='alice'), 1)),
+        'S1', _browse_adversarial, per_scope(lambda name: (_newest_first(name, author='alice'), 1)),
         filtered=True, variant='adversarial',
     ),
-    AccessCase('S1', _browse_explained, _per_scope(lambda name: (_newest_first(name), True)), variant='explain'),
+    AccessCase('S1', _browse_explained, per_scope(lambda name: (_newest_first(name), True)), variant='explain'),
     AccessCase(
-        'S1', _browse_pages_unfiltered, _per_scope(lambda name: _expected_pages(name, 0)),
+        'S1', _browse_pages_unfiltered, per_scope(lambda name: _expected_pages(name, 0)),
         variant='page-fill', setup=_add_fill_rows,
     ),
     AccessCase(
-        'S1', _browse_pages_filtered, _per_scope(lambda name: _expected_pages(name, _FILTER_COUNT)),
+        'S1', _browse_pages_filtered, per_scope(lambda name: _expected_pages(name, _FILTER_COUNT)),
         filtered=True, variant='page-fill', setup=_add_fill_and_filter_decoys,
     ),
-    AccessCase('S2', _scan_unfiltered, _per_scope(lambda name: _expected_scan(_newest_first(name)))),
+    AccessCase('S2', _scan_unfiltered, per_scope(lambda name: _expected_scan(_newest_first(name)))),
     AccessCase(
-        'S2', _scan_filtered, _per_scope(lambda name: _expected_scan(_newest_first(name))),
+        'S2', _scan_filtered, per_scope(lambda name: _expected_scan(_newest_first(name))),
         filtered=True, setup=_add_scan_decoys,
     ),
     AccessCase(
-        'S2', _scan_adversarial, _per_scope(lambda name: _expected_scan(_newest_first(name, author='alice'))),
+        'S2', _scan_adversarial, per_scope(lambda name: _expected_scan(_newest_first(name, author='alice'))),
         filtered=True, variant='adversarial',
     ),
-    AccessCase('S2', _scan_capped, _per_scope(_expected_capped_scan), variant='page-fill', setup=_add_fill_rows),
+    AccessCase('S2', _scan_capped, per_scope(_expected_capped_scan), variant='page-fill', setup=_add_fill_rows),
     AccessCase(
-        'S2', _scan_capped_filtered, _per_scope(_expected_capped_scan),
+        'S2', _scan_capped_filtered, per_scope(_expected_capped_scan),
         filtered=True, variant='page-fill', setup=_add_fill_and_scan_decoys,
     ),
 )

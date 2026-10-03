@@ -87,7 +87,7 @@ class TestTransactionExecutorOffload:
 
         assert '_store_sqlite' in calls
         assert '_store_tags_sqlite' in calls
-        assert await repos.context.get_content_type(context_id) == 'text'
+        assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
 
     @pytest.mark.asyncio
     async def test_begin_transaction_rolls_back_on_cancellation(
@@ -136,7 +136,7 @@ class TestTransactionExecutorOffload:
             thread_id='cancel-2', source='user', content_type='text',
             text_content='post-cancel write', metadata=None,
         )
-        assert await repos.context.get_content_type(context_id) == 'text'
+        assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
 
     @pytest.mark.asyncio
     async def test_cancellation_mid_closure_drains_before_rollback(
@@ -199,7 +199,7 @@ class TestTransactionExecutorOffload:
             thread_id='zombie-2', source='user', content_type='text',
             text_content='post-cancel commit', metadata=None,
         )
-        assert await repos.context.get_content_type(context_id) == 'text'
+        assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
         results, _stats = await repos.context.search_contexts(thread_id='zombie-1', scope=LOCAL_SCOPE)
         assert results == []
 

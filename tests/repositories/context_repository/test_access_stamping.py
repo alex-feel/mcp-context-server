@@ -126,7 +126,7 @@ class TestUpdateVisibility:
             visibility='private',
         )
 
-        success, fields = await repo.update_context_entry(context_id, visibility='public')
+        success, fields = await repo.update_context_entry(context_id, visibility='public', scope=ALICE)
         assert success is True
         assert fields == ['visibility']
         _, visibility, _ = await _read_access_columns(async_db_initialized, context_id)
@@ -153,6 +153,7 @@ class TestUpdateVisibility:
             context_id,
             visibility='public',
             expected_version=probe.version,
+            scope=ALICE,
         )
         assert success is True
         assert fields == ['visibility']
@@ -173,7 +174,7 @@ class TestUpdateVisibility:
             visibility='public',
         )
 
-        success, fields = await repo.update_context_entry(context_id, text_content='new text')
+        success, fields = await repo.update_context_entry(context_id, text_content='new text', scope=ALICE)
         assert success is True
         assert 'visibility' not in fields
         owner, visibility, _ = await _read_access_columns(async_db_initialized, context_id)

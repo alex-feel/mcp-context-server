@@ -213,6 +213,18 @@ def seed_text(label: str) -> str:
     return f'# {label}\n\nSeeded entry {label} of the access scope cases. It mentions the {SEED_KEYWORD} keyword.\n'
 
 
+def per_scope[T](build: Callable[[str], T]) -> dict[str, T]:
+    """Return the expectation of every scope a case runs as, the system scope included.
+
+    Args:
+        build: Builds the expected observable for one scope name.
+
+    Returns:
+        ``build(scope_name)`` keyed by every scope name in :data:`SCOPES`.
+    """
+    return {scope_name: build(scope_name) for scope_name in SCOPES}
+
+
 def in_seed_order(labels: Iterable[str]) -> tuple[str, ...]:
     """Sort labels by their position in :data:`SEED_ROWS`, with labels added by cases last by name.
 

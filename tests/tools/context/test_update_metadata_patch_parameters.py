@@ -9,6 +9,7 @@ from fastmcp.exceptions import ToolError
 import app.tools
 from app.repositories.context_repository.records import EntryProbe
 from app.types import MetadataDict
+from tests.helpers import LOCAL_SCOPE
 
 # Tools are plain async functions registered at server startup, so tests call them directly.
 update_context = app.tools.update_context
@@ -173,6 +174,7 @@ class TestMetadataPatchIntegration:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00000064',
                 patch={'status': 'updated'},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -307,5 +309,6 @@ class TestMetadataPatchIntegration:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00000320',
                 patch={},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )

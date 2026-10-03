@@ -5,13 +5,15 @@ principal fallback, verified-principal stamping, and a new entry for text that
 matches another principal's entry), the publish gate on both
 store and update, the owner-only visibility change on update_context /
 update_context_batch (reachable only for entries the caller may read; another
-principal's private entry is not found), author-group grant stamping, and the
+principal's private entry is not found), the not-authorized denial for an entry
+the caller may read but not modify, author-group grant stamping, and the
 invariant that owner_id is never a tool parameter.
 """
 
 import inspect
 import sqlite3
 from typing import get_args
+from unittest.mock import AsyncMock
 from unittest.mock import patch
 
 import pytest
@@ -45,6 +47,18 @@ async def _read_owner_visibility(context_id: str) -> tuple[str, str]:
         row = cursor.fetchone()
         assert row is not None
         return row[0], row[1]
+
+    return await backend.execute_read(_read)
+
+
+async def _read_text(context_id: str) -> str:
+    backend = app.startup.get_backend()
+    assert backend is not None
+
+    def _read(conn: sqlite3.Connection) -> str:
+        row = conn.execute('SELECT text_content FROM context_entries WHERE id = ?', (context_id,)).fetchone()
+        assert row is not None
+        return str(row[0])
 
     return await backend.execute_read(_read)
 
@@ -221,17 +235,21 @@ class TestOwnerOnlyVisibilityChange:
         assert visibility == 'public'
 
     @staticmethod
-    async def _store_alice_private(text: str, *, write_grant_to: str | None = None) -> str:
-        """Store a private entry as alice, optionally write-granted to another principal, and return its id."""
+    async def _store_alice_private(
+        text: str, *, write_grant_to: str | None = None, read_grant_to: str | None = None,
+    ) -> str:
+        """Store a private entry as alice, optionally granted to other principals, and return its id."""
         from app.tools.context.store import store_context
 
         with as_principal('alice'):
             result = await store_context(thread_id='access-tools', source='agent', text=text)
         context_id = result['context_id']
+        backend = app.startup.get_backend()
+        assert backend is not None
         if write_grant_to is not None:
-            backend = app.startup.get_backend()
-            assert backend is not None
             await insert_grant(backend, context_id, 'user', write_grant_to, 'write', 'alice')
+        if read_grant_to is not None:
+            await insert_grant(backend, context_id, 'user', read_grant_to, 'read', 'alice')
         return context_id
 
     @pytest.mark.asyncio
@@ -274,6 +292,78 @@ class TestOwnerOnlyVisibilityChange:
         with as_principal('bob'):
             updated = await update_context(context_id=context_id, text='new body')
         assert 'text_content' in updated['updated_fields']
+
+    @pytest.mark.asyncio
+    async def test_read_grantee_text_update_is_not_authorized(self) -> None:
+        """A read grantee sees the entry but may not modify it, and the denial comes before any generation."""
+        from app.tools.context.update import update_context
+
+        context_id = await self._store_alice_private('read-granted text target', read_grant_to='bob')
+        with (
+            as_principal('bob'),
+            patch('app.tools.context.update.run_generation', new_callable=AsyncMock) as generation,
+            pytest.raises(ToolError) as error,
+        ):
+            await update_context(context_id=context_id, text='new body')
+        assert str(error.value) == f'Not authorized to modify context entry with ID {context_id}'
+        generation.assert_not_awaited()
+        assert await _read_text(context_id) == 'read-granted text target'
+
+    @pytest.mark.asyncio
+    async def test_read_grantee_visibility_change_is_not_authorized(self) -> None:
+        """The write check runs before the owner-only visibility check, so a read grantee is not authorized."""
+        from app.tools.context.update import update_context
+
+        context_id = await self._store_alice_private('read-granted visibility target', read_grant_to='bob')
+        with as_principal('bob'), pytest.raises(ToolError) as error:
+            await update_context(context_id=context_id, visibility='public')
+        assert str(error.value) == f'Not authorized to modify context entry with ID {context_id}'
+        _, visibility = await _read_owner_visibility(context_id)
+        assert visibility == 'private'
+
+    @pytest.mark.asyncio
+    async def test_public_entry_update_by_non_owner_is_not_authorized(self) -> None:
+        """Everyone reads a public entry, but only its owner and its write grantees modify it."""
+        from app.tools.context.store import store_context
+        from app.tools.context.update import update_context
+
+        with as_principal('alice'):
+            stored = await store_context(
+                thread_id='access-tools', source='agent', text='public patch target', visibility='public',
+            )
+        context_id = stored['context_id']
+        with as_principal('bob'), pytest.raises(ToolError) as error:
+            await update_context(context_id=context_id, metadata_patch={'reviewed': True})
+        assert str(error.value) == f'Not authorized to modify context entry with ID {context_id}'
+
+    @pytest.mark.asyncio
+    async def test_batch_read_grantee_update_records_not_authorized(self) -> None:
+        """Non-atomic batch: a read grantee's update fails only that entry, as not authorized."""
+        from app.tools.batch.update import update_context_batch
+
+        context_id = await self._store_alice_private('batch read-granted target', read_grant_to='bob')
+        with as_principal('bob'):
+            batch_result = await update_context_batch(
+                updates=[{'context_id': context_id, 'text': 'new body'}],
+                atomic=False,
+            )
+        assert batch_result['failed'] == 1
+        assert batch_result['results'][0]['error'] == f'Not authorized to modify context entry {context_id}'
+        assert await _read_text(context_id) == 'batch read-granted target'
+
+    @pytest.mark.asyncio
+    async def test_atomic_batch_read_grantee_update_aborts_as_not_authorized(self) -> None:
+        """Atomic batch: a read grantee's update aborts the whole batch, naming the entry and its index."""
+        from app.tools.batch.update import update_context_batch
+
+        context_id = await self._store_alice_private('atomic batch read-granted target', read_grant_to='bob')
+        with as_principal('bob'), pytest.raises(ToolError) as error:
+            await update_context_batch(
+                updates=[{'context_id': context_id, 'text': 'new body'}],
+                atomic=True,
+            )
+        assert str(error.value) == f'Not authorized to modify context entry {context_id} at index 0'
+        assert await _read_text(context_id) == 'atomic batch read-granted target'
 
     @pytest.mark.asyncio
     async def test_batch_non_owner_update_of_private_entry_records_not_found(self) -> None:

@@ -9,6 +9,7 @@ import pytest
 
 import app.tools
 from app.types import MetadataDict
+from tests.helpers import LOCAL_SCOPE
 
 # Tools are plain async functions registered at server startup, so tests call them directly.
 update_context = app.tools.update_context
@@ -42,6 +43,7 @@ class TestMetadataPatchBasicOperations:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd0000007b',
                 patch={'new_field': 'new_value'},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -68,6 +70,7 @@ class TestMetadataPatchBasicOperations:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd000001c8',
                 patch={'status': 'completed'},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -95,6 +98,7 @@ class TestMetadataPatchBasicOperations:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00000315',
                 patch={'field_to_delete': None},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -133,6 +137,7 @@ class TestMetadataPatchNestedOperations:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd0000006f',
                 patch=nested_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -164,6 +169,7 @@ class TestMetadataPatchNestedOperations:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd000000de',
                 patch=deep_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -196,6 +202,7 @@ class TestMetadataPatchMultipleFields:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd0000014d',
                 patch=multi_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -229,6 +236,7 @@ class TestMetadataPatchMultipleFields:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd000001bc',
                 patch=mixed_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -257,6 +265,7 @@ class TestMetadataPatchEdgeCases:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd0000022b',
                 patch={},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -326,6 +335,7 @@ class TestMetadataPatchEdgeCases:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00000378',
                 patch=array_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -375,6 +385,7 @@ class TestMetadataPatchSpecialValues:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001a0a',
                 patch={'completed': True, 'active': False},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -396,6 +407,7 @@ class TestMetadataPatchSpecialValues:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001e61',
                 patch={'priority': 5, 'score': 98.6},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 

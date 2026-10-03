@@ -16,7 +16,6 @@ and never matches a prefix.
   owns it, inside or outside a transaction and across statement chunks, and omits the rest.
 """
 
-from collections.abc import Callable
 from collections.abc import Sequence
 
 from app.access_scope import Scope
@@ -25,7 +24,6 @@ from app.ids import resolve_or_normalize_id
 from tests.helpers import insert_grant
 from tests.repositories._access_scope_cases import OWNED
 from tests.repositories._access_scope_cases import READABLE
-from tests.repositories._access_scope_cases import SCOPES
 from tests.repositories._access_scope_cases import SEED_LABELS
 from tests.repositories._access_scope_cases import SEED_ROWS
 from tests.repositories._access_scope_cases import SEED_SOURCE
@@ -36,6 +34,7 @@ from tests.repositories._access_scope_cases import Grant
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_cases import Visibility
 from tests.repositories._access_scope_cases import in_seed_order
+from tests.repositories._access_scope_cases import per_scope
 
 type ProbeRow = tuple[str, bool, str | None, int | None, str | None, bool]
 type AccessRow = tuple[str, bool, bool]
@@ -105,11 +104,6 @@ _PREFIX_MATCHES: dict[str, PrefixMatches] = {
         (PREFIX_ABSENT, ()),
     ),
 }
-
-
-def _per_scope[T](build: Callable[[str], T]) -> dict[str, T]:
-    """Return ``build(scope_name)`` for every scope name, the system scope included."""
-    return {scope_name: build(scope_name) for scope_name in SCOPES}
 
 
 def _seed_ids_with_absent(db: ScopedDb) -> list[str]:
@@ -247,12 +241,12 @@ def _expected_access(scope_name: str) -> tuple[AccessRow, ...]:
 
 
 READ_CASES: tuple[AccessCase, ...] = (
-    AccessCase('S3', _get_seed_and_absent, _per_scope(READABLE.__getitem__)),
-    AccessCase('S3', _get_chunked, _per_scope(READABLE.__getitem__), variant='chunked'),
-    AccessCase('S4', _find_by_prefix, _per_scope(_PREFIX_MATCHES.__getitem__), setup=_add_prefixed_rows),
-    AccessCase('S4', _resolve_prefixes, _per_scope(_expected_resolution), variant='resolve', setup=_add_prefixed_rows),
-    AccessCase('S5', _probe_each, _per_scope(_expected_probes)),
-    AccessCase('S7', _probe_ids, _per_scope(_expected_access)),
-    AccessCase('S7', _probe_ids_in_transaction, _per_scope(_expected_access), variant='in-transaction'),
-    AccessCase('S7', _probe_ids_chunked, _per_scope(_expected_access), variant='chunked'),
+    AccessCase('S3', _get_seed_and_absent, per_scope(READABLE.__getitem__)),
+    AccessCase('S3', _get_chunked, per_scope(READABLE.__getitem__), variant='chunked'),
+    AccessCase('S4', _find_by_prefix, per_scope(_PREFIX_MATCHES.__getitem__), setup=_add_prefixed_rows),
+    AccessCase('S4', _resolve_prefixes, per_scope(_expected_resolution), variant='resolve', setup=_add_prefixed_rows),
+    AccessCase('S5', _probe_each, per_scope(_expected_probes)),
+    AccessCase('S7', _probe_ids, per_scope(_expected_access)),
+    AccessCase('S7', _probe_ids_in_transaction, per_scope(_expected_access), variant='in-transaction'),
+    AccessCase('S7', _probe_ids_chunked, per_scope(_expected_access), variant='chunked'),
 )

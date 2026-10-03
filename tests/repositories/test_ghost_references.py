@@ -77,7 +77,7 @@ class TestGhostReferencesNotRewritten:
             success, _ = await repos.context.update_context_entry(
                 context_id=original_id,
                 text_content=GHOST_TEXT,
-                txn=txn,
+                txn=txn, scope=LOCAL_SCOPE,
             )
         assert success
         entries = await repos.context.get_by_ids([original_id], scope=LOCAL_SCOPE)

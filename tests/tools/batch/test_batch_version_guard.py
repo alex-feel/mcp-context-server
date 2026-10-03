@@ -441,6 +441,45 @@ class TestBatchVersionGuard:
         assert check_calls['count'] == 2
 
     @pytest.mark.asyncio
+    async def test_nonatomic_write_access_lost_on_reread_records_not_authorized(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """atomic=False: if the post-conflict re-read finds the entry readable but no
+        longer writable, the entry fails as not authorized and is not retried.
+        """
+        _backend, repos, entry_id = setup_with_entry
+
+        real_check = repos.context.check_entry_exists
+        check_calls = {'count': 0}
+
+        async def lose_write_on_reread(context_id: str, *, scope: Scope) -> EntryProbe:
+            check_calls['count'] += 1
+            if check_calls['count'] == 1:
+                return await real_check(context_id, scope=scope)
+            return EntryProbe(True, 'agent', 1, 'alice', False)
+
+        with (
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
+            patch.object(repos.context, 'check_entry_exists', side_effect=lose_write_on_reread),
+            patch(
+                'app.tools.batch.update.execute_update_in_transaction',
+                new=AsyncMock(side_effect=VersionConflictError(entry_id)),
+            ),
+        ):
+            result = await update_context_batch(
+                updates=[{'context_id': entry_id, 'metadata': {'status': 'x'}}],
+                atomic=False,
+            )
+
+        assert result['succeeded'] == 0
+        assert result['results'][0]['error'] == f'Not authorized to modify context entry {entry_id}'
+        assert check_calls['count'] == 2
+
+    @pytest.mark.asyncio
     async def test_nonatomic_transient_reread_failure_refreshes_version(
         self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
@@ -547,6 +586,53 @@ class TestBatchVersionGuard:
         assert 'No entries were updated (atomic batch)' in str(exc_info.value)
         # The atomic batch rolled back, so the stub's in-transaction delete was
         # discarded and the row is still present with its original text.
+        final_text, final_version = await self._read_row(backend, entry_id)
+        assert final_text == 'Original text'
+        assert final_version == 0
+
+    @pytest.mark.asyncio
+    async def test_atomic_write_access_lost_mid_cas_aborts_not_found(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """atomic=True: a row the caller lost write access to between its version capture
+        and the CAS aborts as not found, never as concurrent modification.
+
+        The disambiguating re-probe on the open transaction asks whether the caller may
+        still modify the row; a row it may not modify is reported exactly like a deleted
+        one. The stub hands the row to another owner on the transaction connection and
+        then raises ``VersionConflictError``.
+        """
+        backend, repos, entry_id = setup_with_entry
+
+        async def reassign_then_conflict(
+            _repos_arg: RepositoryContainer,
+            txn: TransactionContext,
+            **_kwargs: object,
+        ) -> tuple[list[str], bool]:
+            conn = cast(sqlite3.Connection, txn.connection)
+            conn.execute("UPDATE context_entries SET owner_id = 'alice' WHERE id = ?", (entry_id,))
+            raise VersionConflictError(entry_id)
+
+        with (
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
+            patch(
+                'app.tools.batch.update.execute_update_in_transaction',
+                new=AsyncMock(side_effect=reassign_then_conflict),
+            ),
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await update_context_batch(
+                updates=[{'context_id': entry_id, 'metadata': {'status': 'x'}}],
+                atomic=True,
+            )
+
+        assert str(exc_info.value) == (
+            f'Context entry with ID {entry_id} not found. No entries were updated (atomic batch).'
+        )
         final_text, final_version = await self._read_row(backend, entry_id)
         assert final_text == 'Original text'
         assert final_version == 0

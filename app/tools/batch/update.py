@@ -13,6 +13,7 @@ from typing import cast
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.access_scope import AccessScope
 from app.auth import resolve_effective_principal
 from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
@@ -49,29 +50,32 @@ async def _reraise_disambiguated_cas_conflict(
     repos: 'RepositoryContainer',
     txn: 'TransactionContext',
     context_id: str,
+    *,
+    scope: AccessScope,
 ) -> NoReturn:
     """Disambiguate a version compare-and-set that matched zero rows.
 
     Zero matched rows is ambiguous: a concurrent writer bumped the row's
-    version (retryable), or the row was deleted after its version was captured
-    (permanent). The atomic update batch calls this on the OPEN transaction
-    connection to re-probe existence, so a deleted row aborts with the standard
-    not-found error every other update path emits instead of
-    concurrent-modification retry advice no retry can satisfy.
+    version (retryable), or the row was deleted or its write access withdrawn
+    after its version was captured (permanent). The atomic update batch calls
+    this on the OPEN transaction connection to re-probe the row under the
+    caller's write predicate, so such a row aborts with the standard not-found
+    error every other update path emits instead of concurrent-modification
+    retry advice no retry can satisfy.
 
     Args:
         repos: Repository container.
         txn: The open transaction the compare-and-set ran on.
         context_id: ID of the entry whose compare-and-set matched zero rows.
+        scope: The caller's scope.
 
     Raises:
-        EntryNotFoundError: The row is gone -- deleted between its version
-            capture and the compare-and-set.
-        VersionConflictError: The row still exists with a changed version;
-            the conflict propagates to the caller's concurrent-modification
-            handling.
+        EntryNotFoundError: The caller may no longer modify the row, or it is gone.
+        VersionConflictError: The row still exists for the caller with a changed
+            version; the conflict propagates to the caller's
+            concurrent-modification handling.
     """
-    if not await repos.context.entry_exists(context_id, txn=txn):
+    if not await repos.context.entry_exists(context_id, scope=scope, txn=txn):
         raise EntryNotFoundError(context_id) from None
     raise VersionConflictError(context_id) from None
 
@@ -197,12 +201,17 @@ async def update_context_batch(
             original_idx = update['index']
             context_id = update['context_id']
 
-            # An entry the caller may not read is not found.
+            # An entry the caller may not read is not found; one it may read but not
+            # modify is refused before any generation is spent on it.
             probe = await repos.context.check_entry_exists(context_id, scope=scope)
-            if not probe.exists:
+            if not probe.exists or not probe.can_write:
+                denial = (
+                    f'Context entry {context_id} not found' if not probe.exists
+                    else f'Not authorized to modify context entry {context_id}'
+                )
                 if atomic:
-                    raise ToolError(f'Context entry {context_id} not found at index {original_idx}')
-                existence_errors.append((original_idx, context_id, f'Context entry {context_id} not found'))
+                    raise ToolError(f'{denial} at index {original_idx}')
+                existence_errors.append((original_idx, context_id, denial))
                 continue
             assert probe.source is not None
             assert probe.version is not None
@@ -501,6 +510,7 @@ async def update_context_batch(
                                     await execute_update_in_transaction(
                                         repos, txn,
                                         context_id=context_id,
+                                        scope=scope,
                                         text=update.get('text'),
                                         metadata=update.get('metadata'),
                                         metadata_patch=update.get('metadata_patch'),
@@ -520,14 +530,16 @@ async def update_context_batch(
                                 # A compare-and-set matching zero rows is ambiguous:
                                 # the version changed under a concurrent writer
                                 # (retryable, surfaced below as concurrent-
-                                # modification advice) or the row was deleted after
-                                # its version was captured (permanent). The helper
-                                # re-probes existence on the transaction connection
-                                # and re-raises the disambiguated exception, so a
-                                # deleted row aborts with the standard not-found
-                                # error every other update path emits instead of
-                                # retry advice no retry can satisfy.
-                                await _reraise_disambiguated_cas_conflict(repos, txn, context_id)
+                                # modification advice) or the row was deleted or its
+                                # write access withdrawn after its version was
+                                # captured (permanent). The helper re-probes the row
+                                # under the caller's write predicate on the
+                                # transaction connection and re-raises the
+                                # disambiguated exception, so such a row aborts with
+                                # the standard not-found error every other update
+                                # path emits instead of retry advice no retry can
+                                # satisfy.
+                                await _reraise_disambiguated_cas_conflict(repos, txn, context_id, scope=scope)
                             if summary_cleared:
                                 cleared_attempt += 1
                             bumps_version = (
@@ -610,6 +622,7 @@ async def update_context_batch(
                                 await execute_update_in_transaction(
                                     repos, txn,
                                     context_id=context_id,
+                                    scope=scope,
                                     text=update.get('text'),
                                     metadata=update.get('metadata'),
                                     metadata_patch=update.get('metadata_patch'),
@@ -671,7 +684,7 @@ async def update_context_batch(
                         # was only a connection blip. Only an exhausted refresh records
                         # a per-entry failure.
                         try:
-                            exists, current_version = await reread_entry_version(repos, context_id, scope=scope)
+                            current = await reread_entry_version(repos, context_id, scope=scope)
                         except Exception as reread_error:
                             logger.error(f'Failed to update entry at index {original_idx}: {reread_error}')
                             results.append(BulkUpdateResultItemDict(
@@ -683,18 +696,22 @@ async def update_context_batch(
                             ))
                             discard_generation_counts(vu_idx)
                             break
-                        if not exists:
+                        if not current.exists or not current.can_write:
+                            # Gone or no longer writable for the caller: terminal, no retry.
                             results.append(BulkUpdateResultItemDict(
                                 index=original_idx,
                                 context_id=context_id,
                                 success=False,
                                 updated_fields=None,
-                                error=f'Context entry {context_id} not found',
+                                error=(
+                                    f'Context entry {context_id} not found' if not current.exists
+                                    else f'Not authorized to modify context entry {context_id}'
+                                ),
                             ))
                             discard_generation_counts(vu_idx)
                             break
-                        assert current_version is not None  # exists=True guarantees a version
-                        live_versions[context_id] = current_version
+                        assert current.version is not None  # exists=True guarantees a version
+                        live_versions[context_id] = current.version
                         continue
                     except EntryNotFoundError as e:
                         # This entry no longer exists (deleted concurrently or a

@@ -551,7 +551,7 @@ class TestHashRecomputationOnUpdate:
 
         new_text = 'Updated content'
         success, fields = await repos.context.update_context_entry(
-            context_id=context_id, text_content=new_text,
+            context_id=context_id, text_content=new_text, scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'text_content' in fields
@@ -583,7 +583,7 @@ class TestHashRecomputationOnUpdate:
         expected_hash = compute_content_hash(text)
 
         success, fields = await repos.context.update_context_entry(
-            context_id=context_id, metadata=json.dumps({'key': 'value'}),
+            context_id=context_id, metadata=json.dumps({'key': 'value'}), scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'metadata' in fields
@@ -612,7 +612,7 @@ class TestHashRecomputationOnUpdate:
 
         # Update text
         await repos.context.update_context_entry(
-            context_id=context_id, text_content='Version 2',
+            context_id=context_id, text_content='Version 2', scope=LOCAL_SCOPE,
         )
 
         # Dedup check for new text should match

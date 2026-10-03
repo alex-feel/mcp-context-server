@@ -387,6 +387,45 @@ class TestUpdateContextVersionGuard:
         assert check_calls['count'] == 2
 
     @pytest.mark.asyncio
+    async def test_write_access_lost_on_reread_raises_not_authorized(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """If the post-conflict re-read finds the entry readable but no longer writable,
+        ``update_context`` ends with the not-authorized error instead of retrying.
+
+        The caller can still see the entry, so not-found would be false, and retrying
+        a write the caller may no longer make would only burn the conflict budget.
+        """
+        _backend, repos, entry_id = setup_with_entry
+
+        real_check = repos.context.check_entry_exists
+        check_calls = {'count': 0}
+
+        async def lose_write_on_reread(context_id: str, *, scope: Scope) -> EntryProbe:
+            check_calls['count'] += 1
+            if check_calls['count'] == 1:
+                return await real_check(context_id, scope=scope)
+            return EntryProbe(True, 'agent', 1, 'alice', False)
+
+        with (
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
+            patch.object(repos.context, 'check_entry_exists', side_effect=lose_write_on_reread),
+            patch(
+                'app.tools.context.update.execute_update_in_transaction',
+                new=AsyncMock(side_effect=VersionConflictError(entry_id)),
+            ),
+            pytest.raises(ToolError) as error,
+        ):
+            await update_context(context_id=entry_id, metadata={'status': 'x'})
+
+        assert str(error.value) == f'Not authorized to modify context entry with ID {entry_id}'
+        assert check_calls['count'] == 2
+
+    @pytest.mark.asyncio
     async def test_transient_reread_failure_refreshes_version_before_retrying(
         self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:

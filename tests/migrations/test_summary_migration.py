@@ -391,6 +391,7 @@ class TestUpdateContextEntrySummary:
         success, updated_fields = await repos.context.update_context_entry(
             context_id=context_id,
             summary='Generated summary',
+            scope=LOCAL_SCOPE,
         )
 
         assert success is True
@@ -420,6 +421,7 @@ class TestUpdateContextEntrySummary:
             context_id=context_id,
             text_content='Updated content',
             summary='Updated summary',
+            scope=LOCAL_SCOPE,
         )
 
         assert success is True
@@ -454,6 +456,7 @@ class TestUpdateContextEntrySummary:
         success, _updated = await repos.context.update_context_entry(
             context_id=context_id,
             metadata=json.dumps({'key': 'value'}),
+            scope=LOCAL_SCOPE,
         )
 
         assert success is True

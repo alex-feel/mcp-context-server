@@ -252,19 +252,21 @@ class TestContextRepositoryUpdate:
             text_content='Exists',
         )
 
-        assert await repos.context.entry_exists(ctx_id) is True
-        assert await repos.context.entry_exists(generate_id()) is False
+        assert await repos.context.entry_exists(ctx_id, scope=LOCAL_SCOPE) is True
+        assert await repos.context.entry_exists(generate_id(), scope=LOCAL_SCOPE) is False
 
     @pytest.mark.asyncio
     async def test_entry_exists_locks_parent_row_on_postgresql_transaction(self) -> None:
         """On PostgreSQL the in-transaction presence check locks the parent row.
 
         The tags-only / images-only update guard runs entry_exists on the open
-        transaction connection; it must emit FOR KEY SHARE so a concurrent DELETE
-        blocks until commit and cannot leave the child tag/image writes violating
-        the foreign key. Outside a transaction the lock would release at statement
-        end, so it must NOT be emitted there. Both cases are asserted against a
-        recording connection without needing a live PostgreSQL.
+        transaction connection; it must emit FOR KEY SHARE OF context_entries so a
+        concurrent DELETE blocks until commit and cannot leave the child tag/image
+        writes violating the foreign key; naming context_entries confines the lock to
+        that parent row. Outside a transaction the lock would release at statement end,
+        so it must NOT be emitted there. Both statements carry the write predicate
+        after the id. Both cases are asserted against a recording connection without
+        needing a live PostgreSQL.
         """
         txn_conn = AsyncMock()
         txn_conn.fetchrow = AsyncMock(return_value={'?column?': 1})
@@ -275,8 +277,11 @@ class TestContextRepositoryUpdate:
         txn.connection = txn_conn
 
         repo_txn = ContextRepository(cast(StorageBackend, txn_backend))
-        assert await repo_txn.entry_exists('abc123', txn=cast(TransactionContext, txn)) is True
-        assert 'FOR KEY SHARE' in txn_conn.fetchrow.call_args.args[0]
+        assert await repo_txn.entry_exists('abc123', scope=LOCAL_SCOPE, txn=cast(TransactionContext, txn)) is True
+        txn_sql = txn_conn.fetchrow.call_args.args[0]
+        assert txn_sql.endswith(' LIMIT 1 FOR KEY SHARE OF context_entries')
+        assert 'WHERE id = $1 AND (context_entries.owner_id = $2 OR EXISTS' in txn_sql
+        assert txn_conn.fetchrow.call_args.args[1:] == ('abc123', 'local', 'local', [])
 
         pool_conn = AsyncMock()
         pool_conn.fetchrow = AsyncMock(return_value={'?column?': 1})
@@ -289,8 +294,10 @@ class TestContextRepositoryUpdate:
         pool_backend.execute_read = _execute_read
 
         repo_pool = ContextRepository(cast(StorageBackend, pool_backend))
-        assert await repo_pool.entry_exists('abc123') is True
-        assert 'FOR KEY SHARE' not in pool_conn.fetchrow.call_args.args[0]
+        assert await repo_pool.entry_exists('abc123', scope=LOCAL_SCOPE) is True
+        pool_sql = pool_conn.fetchrow.call_args.args[0]
+        assert 'FOR KEY SHARE' not in pool_sql
+        assert 'WHERE id = $1 AND (context_entries.owner_id = $2 OR EXISTS' in pool_sql
 
     @pytest.mark.asyncio
     async def test_get_content_type(
@@ -307,7 +314,7 @@ class TestContextRepositoryUpdate:
             text_content='Text content',
         )
 
-        content_type = await repos.context.get_content_type(ctx_id)
+        content_type = await repos.context.get_content_type(ctx_id, scope=LOCAL_SCOPE)
 
         assert content_type == 'text'
 
@@ -317,7 +324,7 @@ class TestContextRepositoryUpdate:
         repos: RepositoryContainer,
     ) -> None:
         """Test getting content type for nonexistent entry."""
-        content_type = await repos.context.get_content_type(generate_id())
+        content_type = await repos.context.get_content_type(generate_id(), scope=LOCAL_SCOPE)
 
         assert content_type is None
 
@@ -336,7 +343,7 @@ class TestContextRepositoryUpdate:
             text_content='Content',
         )
 
-        await repos.context.update_content_type(ctx_id, 'multimodal')
+        await repos.context.update_content_type(ctx_id, 'multimodal', scope=LOCAL_SCOPE)
 
-        new_type = await repos.context.get_content_type(ctx_id)
+        new_type = await repos.context.get_content_type(ctx_id, scope=LOCAL_SCOPE)
         assert new_type == 'multimodal'

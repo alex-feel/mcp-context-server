@@ -130,6 +130,7 @@ class TestContextRepositoryTransaction:
                 context_id=context_id,
                 text_content='Updated content',
                 txn=txn,
+                scope=LOCAL_SCOPE,
             )
             assert success is True
             assert 'text_content' in updated_fields
@@ -413,6 +414,7 @@ class TestRepositoryMethodsWithoutTransaction:
         success, fields = await repos.context.update_context_entry(
             context_id=context_id,
             text_content='Updated compat test',
+            scope=LOCAL_SCOPE,
         )
         assert success is True
 
@@ -491,7 +493,7 @@ class TestTxnAwareReadsUseTransactionConnection:
             # transaction connection instead, so execute_read is never called.
             guard = AsyncMock(side_effect=AssertionError('acquired a second connection'))
             with patch.object(backend, 'execute_read', new=guard):
-                content_type = await repos.context.get_content_type(context_id, txn=txn)
+                content_type = await repos.context.get_content_type(context_id, txn=txn, scope=LOCAL_SCOPE)
                 image_count = await repos.images.count_images_for_context(context_id, txn=txn)
                 embedding_exists = await repos.embeddings.exists(context_id, txn=txn)
 
@@ -513,5 +515,5 @@ class TestTxnAwareReadsUseTransactionConnection:
             thread_id='conc-1b', source='user', content_type='text',
             text_content='pool read target', metadata=None,
         )
-        assert await repos.context.get_content_type(context_id) == 'text'
+        assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
         assert await repos.images.count_images_for_context(context_id) == 0

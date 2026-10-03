@@ -423,6 +423,7 @@ class TestClearSummaryRepository:
             context_id=entry_id,
             text_content='Updated short text',
             clear_summary=True,
+            scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'summary' in fields
@@ -452,6 +453,7 @@ class TestClearSummaryRepository:
             context_id=entry_id,
             summary='This should be ignored',
             clear_summary=True,
+            scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'summary' in fields
@@ -481,6 +483,7 @@ class TestClearSummaryRepository:
             text_content='Updated text content',
             summary=None,
             clear_summary=False,
+            scope=LOCAL_SCOPE,
         )
         assert success is True
 
