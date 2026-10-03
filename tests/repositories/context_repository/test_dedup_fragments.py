@@ -49,7 +49,7 @@ class TestCandidateSql:
         self, backend_type: str, thread_source: str, groups_param: object,
     ) -> None:
         """The READ predicate follows the thread and source terms, before ORDER BY and LIMIT."""
-        sql, params = dedup._candidate_sql(backend_type, SCOPE, 'thread-1', 'agent')
+        sql, params = dedup._candidate_sql(backend_type, 'thread-1', 'agent', scope=SCOPE)
 
         assert _words(sql) == _words(
             'SELECT id, content_hash, text_content, summary, owner_id FROM context_entries '
@@ -70,7 +70,7 @@ class TestInterleaveSql:
     )
     def test_turn_check_is_read_scoped(self, backend_type: str, leading_terms: str) -> None:
         """The READ predicate follows the candidate-id term."""
-        sql, params = dedup._interleave_sql(backend_type, SCOPE, 'thread-1', 'agent', 'candidate-id')
+        sql, params = dedup._interleave_sql(backend_type, 'thread-1', 'agent', 'candidate-id', scope=SCOPE)
 
         assert _words(sql) == _words(
             f'SELECT 1 FROM context_entries WHERE {leading_terms} AND {_read_predicate(backend_type, 4)} LIMIT 1',
@@ -81,7 +81,7 @@ class TestInterleaveSql:
     @pytest.mark.parametrize(('source', 'opposite'), [('agent', 'user'), ('user', 'agent')])
     def test_turn_check_looks_for_the_opposite_source(self, source: str, opposite: str) -> None:
         """A user store looks for agent turns and an agent store for user turns."""
-        _, params = dedup._interleave_sql('sqlite', SCOPE, 'thread-1', source, 'candidate-id')
+        _, params = dedup._interleave_sql('sqlite', 'thread-1', source, 'candidate-id', scope=SCOPE)
 
         assert params[1] == opposite
 
@@ -99,7 +99,7 @@ class TestDedupUpdateSql:
     def test_update_where_carries_the_owner_arm(self, backend_type: str, where: str) -> None:
         """The owner arm follows the id and hash terms and binds the scope's principal last."""
         sql, params = dedup._dedup_update_sql(
-            backend_type, SCOPE,
+            backend_type, scope=SCOPE,
             metadata='{"k": 1}', content_type='text', summary=None,
             content_hash='new-hash', candidate_id='candidate-id', observed_hash='old-hash',
         )

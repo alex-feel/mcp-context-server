@@ -42,7 +42,7 @@ def _param(backend_type: str, position: int) -> str:
     return '?' if backend_type == 'sqlite' else f'${position}'
 
 
-def _candidate_sql(backend_type: str, scope: AccessScope, thread_id: str, source: str) -> Statement:
+def _candidate_sql(backend_type: str, thread_id: str, source: str, *, scope: AccessScope) -> Statement:
     """Build the statement selecting the dedup candidate of a store.
 
     The candidate is the latest entry of the thread and source that ``scope``
@@ -53,9 +53,9 @@ def _candidate_sql(backend_type: str, scope: AccessScope, thread_id: str, source
 
     Args:
         backend_type: ``'sqlite'`` or ``'postgresql'``.
-        scope: The caller's scope.
         thread_id: Thread of the store.
         source: Source of the store.
+        scope: The caller's scope.
 
     Returns:
         The statement and its parameters.
@@ -72,7 +72,7 @@ def _candidate_sql(backend_type: str, scope: AccessScope, thread_id: str, source
 
 
 def _interleave_sql(
-    backend_type: str, scope: AccessScope, thread_id: str, source: str, candidate_id: object,
+    backend_type: str, thread_id: str, source: str, candidate_id: object, *, scope: AccessScope,
 ) -> Statement:
     """Build the statement looking for a new conversational turn after the candidate.
 
@@ -82,10 +82,10 @@ def _interleave_sql(
 
     Args:
         backend_type: ``'sqlite'`` or ``'postgresql'``.
-        scope: The caller's scope.
         thread_id: Thread of the store.
         source: Source of the store; the statement looks for the other one.
         candidate_id: ID of the dedup candidate.
+        scope: The caller's scope.
 
     Returns:
         The statement and its parameters.
@@ -105,8 +105,8 @@ def _interleave_sql(
 
 def _dedup_update_sql(
     backend_type: str,
-    scope: AccessScope,
     *,
+    scope: AccessScope,
     metadata: str | None,
     content_type: str | None,
     summary: str | None,
@@ -270,11 +270,11 @@ class ContextDedupMixin(BaseRepository):
         # The candidate is matched by content hash; its text is compared only for
         # rows stored before content hashes existed (NULL hash).
         content_hash = compute_content_hash(text_content)
-        candidate_sql, candidate_params = _candidate_sql(backend_type, scope, thread_id, source)
+        candidate_sql, candidate_params = _candidate_sql(backend_type, thread_id, source, scope=scope)
 
         def _update_statement(candidate_id: object, observed_hash: str | None) -> Statement:
             return _dedup_update_sql(
-                backend_type, scope,
+                backend_type, scope=scope,
                 metadata=metadata, content_type=dedup_content_type, summary=summary,
                 content_hash=content_hash, candidate_id=candidate_id, observed_hash=observed_hash,
             )
@@ -305,7 +305,7 @@ class ContextDedupMixin(BaseRepository):
                     # A readable opposite-source entry after the candidate means this is a
                     # new conversational turn, not a retransmit: keep the chronological
                     # order by inserting instead.
-                    cursor.execute(*_interleave_sql(backend_type, scope, thread_id, source, candidate['id']))
+                    cursor.execute(*_interleave_sql(backend_type, thread_id, source, candidate['id'], scope=scope))
                     is_duplicate = cursor.fetchone() is None
 
                 if is_duplicate:
@@ -349,7 +349,7 @@ class ContextDedupMixin(BaseRepository):
                 # A readable opposite-source entry after the candidate means this is a
                 # new conversational turn, not a retransmit: keep the chronological
                 # order by inserting instead.
-                turn_sql, turn_params = _interleave_sql(backend_type, scope, thread_id, source, candidate['id'])
+                turn_sql, turn_params = _interleave_sql(backend_type, thread_id, source, candidate['id'], scope=scope)
                 is_duplicate = await conn.fetchrow(turn_sql, *turn_params) is None
 
             if is_duplicate and candidate is not None:
@@ -435,7 +435,7 @@ class ContextDedupMixin(BaseRepository):
         """
         content_hash = compute_content_hash(text_content)
         backend_type = self.backend.backend_type
-        candidate_sql, candidate_params = _candidate_sql(backend_type, scope, thread_id, source)
+        candidate_sql, candidate_params = _candidate_sql(backend_type, thread_id, source, scope=scope)
 
         if backend_type == 'sqlite':
 
@@ -448,7 +448,7 @@ class ContextDedupMixin(BaseRepository):
                     scope=scope, content_hash=content_hash, text_content=text_content,
                 ):
                     return None
-                cursor.execute(*_interleave_sql(backend_type, scope, thread_id, source, row['id']))
+                cursor.execute(*_interleave_sql(backend_type, thread_id, source, row['id'], scope=scope))
                 if cursor.fetchone() is not None:
                     return None
                 return DuplicateCandidate(
@@ -466,7 +466,7 @@ class ContextDedupMixin(BaseRepository):
                 scope=scope, content_hash=content_hash, text_content=text_content,
             ):
                 return None
-            turn_sql, turn_params = _interleave_sql(backend_type, scope, thread_id, source, row['id'])
+            turn_sql, turn_params = _interleave_sql(backend_type, thread_id, source, row['id'], scope=scope)
             if await conn.fetchrow(turn_sql, *turn_params) is not None:
                 return None
             return DuplicateCandidate(
