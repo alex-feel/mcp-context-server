@@ -58,6 +58,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata={'status': 'completed'},
+            scope=LOCAL_SCOPE,
         )
 
         # Should return only 3 entries with status=completed
@@ -100,6 +101,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 5}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return entries with priority > 5 (7 and 9)
@@ -144,6 +146,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'task_name', 'operator': 'contains', 'value': 'refactor'}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return entries with task_name containing 'refactor'
@@ -198,6 +201,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'important', 'operator': 'exists'}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return only 2 entries with 'important' field
@@ -268,6 +272,7 @@ class TestSemanticSearchMetadataFiltering:
             thread_id='combined-filter-thread',
             source='agent',
             metadata={'status': 'completed'},
+            scope=LOCAL_SCOPE,
         )
 
         # Should return only 2 entries matching all criteria
@@ -317,6 +322,7 @@ class TestSemanticSearchMetadataFiltering:
                 metadata_filters=[
                     {'key': 'DROP TABLE;--', 'operator': 'eq', 'value': 'test'},  # Invalid key
                 ],
+                scope=LOCAL_SCOPE,
             )
 
         # Verify exception contains proper error details
@@ -358,6 +364,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata={'status': 'archived'},  # No entries have this status
+            scope=LOCAL_SCOPE,
         )
 
         # Should return empty list
@@ -398,6 +405,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'category', 'operator': 'in', 'value': ['backend', 'frontend']}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 entries (backend and frontend)
@@ -445,6 +453,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'in', 'value': [5, 9]}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 entries (priority 5 and 9)
@@ -491,6 +500,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'not_in', 'value': [1, 2, 3]}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 entries (priority 4 and 5)
@@ -534,6 +544,7 @@ class TestSemanticSearchMetadataFiltering:
             limit=10,
             metadata=None,
             metadata_filters=None,
+            scope=LOCAL_SCOPE,
         )
 
         # Should return all 4 entries

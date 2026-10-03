@@ -7,6 +7,9 @@ from typing import Any
 from typing import Literal
 from typing import cast
 
+from app.access_scope import AccessMode
+from app.access_scope import Scope
+from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
 from app.repositories.embedding_repository.records import MetadataFilterValidationError
 from app.repositories.entry_filters import count_applied_filters
@@ -22,9 +25,10 @@ class Fp32SearchMixin(BaseRepository):
     """KNN search over uncompressed fp32 embeddings.
 
     ``search_fp32`` filters ``context_entries`` by thread, source, content type,
-    tags, dates and metadata, ranks the matching chunks by L2 distance with
-    sqlite-vec on SQLite and pgvector on PostgreSQL, and returns the best chunk
-    of each entry together with the search statistics.
+    tags, dates and metadata, then by the caller's read access, ranks the
+    matching chunks by L2 distance with sqlite-vec on SQLite and pgvector on
+    PostgreSQL, and returns the best chunk of each entry together with the
+    search statistics.
     """
 
     async def search_fp32(
@@ -41,11 +45,17 @@ class Fp32SearchMixin(BaseRepository):
         metadata: dict[str, str | int | float | bool] | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
         explain_query: bool = False,
+        *,
+        scope: Scope,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """KNN search over fp32 embeddings with optional filters including date range and metadata.
+        """KNN search over the fp32 embeddings of the entries the scope may read, with optional filters.
 
         SQLite: Uses CTE-based pre-filtering with vec_distance_l2() function
         PostgreSQL: Uses direct JOIN with <-> operator for L2 distance
+
+        The read predicate joins the entry filters after every client filter and
+        before the distance ranking, LIMIT and OFFSET, so an entry the scope may
+        not read never takes a rank position and never counts as a filter.
 
         Args:
             query_embedding: Query vector for similarity search
@@ -60,6 +70,7 @@ class Fp32SearchMixin(BaseRepository):
             metadata: Simple metadata filters (key=value equality)
             metadata_filters: Advanced metadata filters with operators
             explain_query: If True, include query execution plan in stats
+            scope: The caller's scope; only entries it may read are ranked.
 
         Returns:
             Tuple of (search results list, statistics dictionary)
@@ -186,6 +197,15 @@ class Fp32SearchMixin(BaseRepository):
                         filter_conditions.append(metadata_clause)
                         filter_params.extend(metadata_params)
 
+                # The caller's read predicate follows every client filter, so it shifts no
+                # filter placeholder and is never counted as a filter.
+                read = build_access_predicate(
+                    scope, mode=AccessMode.READ, backend_type='sqlite', outer='context_entries',
+                )
+                if read.sql:
+                    filter_conditions.append(read.sql)
+                    filter_params.extend(read.params)
+
                 where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
                 # Count filters applied (shared tally, so every search tool reports the same
@@ -221,9 +241,9 @@ class Fp32SearchMixin(BaseRepository):
                     best_chunks AS (
                         -- One row per context (the nearest chunk). ROW_NUMBER picks a
                         -- single chunk even when two chunks tie at the minimum
-                        -- distance, matching the PostgreSQL DISTINCT ON path; the old
-                        -- MIN-equality join emitted duplicate rows for one context on
-                        -- a tie. start_index is the unique per-context tiebreak, so
+                        -- distance, matching the PostgreSQL DISTINCT ON path; a
+                        -- MIN-equality join would emit duplicate rows for one context
+                        -- on a tie. start_index is the unique per-context tiebreak, so
                         -- two equidistant chunks always resolve to the SAME reported
                         -- matched_chunk_start/end instead of whichever the scan
                         -- happened to visit first.
@@ -428,6 +448,17 @@ class Fp32SearchMixin(BaseRepository):
                     filter_conditions.append(metadata_clause)
                     filter_params.extend(metadata_params)
                     param_position += len(metadata_params)
+
+            # The caller's read predicate follows every client filter, so it shifts no
+            # filter placeholder and is never counted as a filter; LIMIT and OFFSET are
+            # numbered after its binds.
+            read = build_access_predicate(
+                scope, mode=AccessMode.READ, backend_type='postgresql', outer='ce', start=param_position,
+            )
+            if read.sql:
+                filter_conditions.append(read.sql)
+                filter_params.extend(read.params)
+                param_position += read.bind_count
 
             where_clause = ' AND '.join(filter_conditions)
 

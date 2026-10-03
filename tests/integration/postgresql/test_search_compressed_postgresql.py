@@ -228,6 +228,7 @@ async def test_search_compressed_recall_postgresql(
                 query_embedding=q.tolist(),
                 limit=TOP_K,
                 thread_id='pg-search-e2e',
+                scope=LOCAL_SCOPE,
             )
             assert stats['backend'] == 'postgresql'
             assert len(results) == TOP_K

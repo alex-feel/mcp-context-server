@@ -60,6 +60,7 @@ class TestSemanticSearchPerformance:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-thread',
+            scope=LOCAL_SCOPE,
         )
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -102,6 +103,7 @@ class TestSemanticSearchPerformance:
             query_embedding=[0.1] * embedding_dim,
             limit=20,
             thread_id='medium-thread',
+            scope=LOCAL_SCOPE,
         )
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 

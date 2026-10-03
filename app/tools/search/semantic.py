@@ -8,6 +8,7 @@ from typing import Literal
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.settings import get_settings
 from app.startup import ensure_repositories
@@ -182,6 +183,9 @@ async def semantic_search_context(
             )
 
         repos = await ensure_repositories()
+        # The search runs as the caller: entries it may not read never take a rank
+        # position, a page slot or a count.
+        scope = resolve_access_scope()
 
         try:
             # Call raw search (Layer 1) for the full ranked depth
@@ -202,6 +206,7 @@ async def semantic_search_context(
                 explain_query=explain_query,
                 repos=repos,
                 embedding_provider=embedding_provider,
+                scope=scope,
             )
         except MetadataFilterValidationError as e:
             # Return error response (unified with search_context behavior)

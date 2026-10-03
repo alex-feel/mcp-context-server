@@ -66,6 +66,7 @@ class TestEmbeddingRepository:
         results, stats = await embedding_repo.search(
             query_embedding=query_embedding,
             limit=3,
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 3
@@ -121,6 +122,7 @@ class TestEmbeddingRepository:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-thread',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 3
@@ -169,6 +171,7 @@ class TestEmbeddingRepository:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             source='user',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 2
@@ -306,6 +309,7 @@ class TestEmbeddingRepository:
         results, stats = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
+            scope=LOCAL_SCOPE,
         )
 
         assert results == []

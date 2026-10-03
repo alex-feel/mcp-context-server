@@ -17,6 +17,7 @@ from typing import cast
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.repositories.fts_repository.query import sanitize_sqlite_fts_terms
 from app.settings import get_settings
@@ -50,8 +51,8 @@ settings = get_settings()
 # The largest legitimate window is RANKED_SEARCH_DEPTH rows times the biggest overfetch
 # factor the module applies (HYBRID_RRF_OVERFETCH, max 10) for the hybrid legs, so this
 # ceiling keeps an order of magnitude of headroom above it. It never clamps a valid
-# request now that the window no longer grows with the requested page; it is defense in
-# depth so no future factor change can grow the bind out of range.
+# request, because the window does not grow with the requested page; it is defense in
+# depth so no factor change can grow the bind out of range.
 MAX_OVERFETCH_ROWS = RANKED_SEARCH_DEPTH * 200
 
 
@@ -478,6 +479,10 @@ async def hybrid_search_context(
                 stats=depth_stats,
             )
 
+        # Both legs run as the caller through one scope object, so the fusion, the
+        # reranking, the counts and the explain stats all derive from rows it may read.
+        scope = resolve_access_scope()
+
         async def run_fts_search() -> None:
             nonlocal fts_results, fts_error, fts_stats, fts_validation_errors
             try:
@@ -498,6 +503,7 @@ async def hybrid_search_context(
                     internal_highlight_for_rerank=need_highlight_for_rerank,
                     explain_query=explain_query,
                     repos=repos,
+                    scope=scope,
                 )
                 fts_results = results
                 if explain_query:
@@ -529,6 +535,7 @@ async def hybrid_search_context(
                     explain_query=explain_query,
                     repos=repos,
                     embedding_provider=embedding_provider,
+                    scope=scope,
                 )
                 semantic_results = results
                 if explain_query:
@@ -595,7 +602,7 @@ async def hybrid_search_context(
             modes_used.append('semantic')
 
         # If NO available mode succeeded, surface the error instead of returning
-        # an empty success. The old `fts_error and semantic_error` guard missed a
+        # an empty success. Requiring both modes to have failed would miss a
         # single-mode deployment whose only available mode errored (e.g. an
         # invalid metadata_filters), masking the failure as zero results.
         if not modes_used:

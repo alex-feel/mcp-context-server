@@ -22,7 +22,8 @@ cases :mod:`tests.repositories._access_scope_registry` collects into ``CASES``. 
 modules import from this module and never the other way round. Every (case, scope) pair
 runs as its own test on its own freshly seeded database, under the test id
 ``<case id>[-<variant>][-filtered]-<scope>``, so ``pytest -k S1`` selects every variant and
-scope of case S1 on both backends.
+scope of case S1 on both backends. A case that pins a behavior the backends differ in by
+design names its backend and runs on that entry point only.
 
 Rows beyond the seed (page-fill rows that out-rank the visible ones, hidden threads or tags
 with higher counts, a second turn in a thread) come from the case's ``setup`` hook, which
@@ -71,6 +72,7 @@ if TYPE_CHECKING:
     import asyncpg
 
 type Layout = Literal['fp32', 'compressed']
+type BackendType = Literal['sqlite', 'postgresql']
 type Visibility = Literal['private', 'public']
 type Source = Literal['user', 'agent']
 type Invoker = Callable[[ScopedDb, Scope], Awaitable[object]]
@@ -462,6 +464,8 @@ class AccessCase:
         variant: Tells several cases of one case id apart in their test ids, such as
             ``page-fill``, ``adversarial`` or ``owner-mode``.
         setup: Adds the rows the case needs beyond the seed, before the invoker runs.
+        backend: Runs the case on this backend's entry point only, for a behavior the two
+            backends differ in by design; None runs it on both.
     """
 
     case_id: str
@@ -471,6 +475,7 @@ class AccessCase:
     layout: Layout = 'compressed'
     variant: str = ''
     setup: Setup | None = None
+    backend: BackendType | None = None
 
     @property
     def param_id(self) -> str:
@@ -483,6 +488,7 @@ def case_params(
     cases: Sequence[AccessCase],
     layout: Layout,
     *,
+    backend: BackendType,
     marks: Sequence[pytest.MarkDecorator] = (),
 ) -> list[ParameterSet]:
     """Build one ``(case, scope_name)`` parameter set per case of ``layout`` and scope it names.
@@ -490,6 +496,7 @@ def case_params(
     Args:
         cases: The registered cases.
         layout: The layout the parametrized test seeds.
+        backend: The backend of the entry point; a case restricted to the other backend is left out.
         marks: Marks applied to every parameter set, such as a skip for a missing extension.
 
     Returns:
@@ -498,7 +505,7 @@ def case_params(
     return [
         pytest.param(case, scope_name, id=f'{case.param_id}-{scope_name}', marks=tuple(marks))
         for case in cases
-        if case.layout == layout
+        if case.layout == layout and case.backend in (None, backend)
         for scope_name in case.expected
     ]
 

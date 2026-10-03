@@ -52,14 +52,14 @@ async def scoped_db_compressed(pg_test_url: str, monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('case', 'scope_name'), case_params(CASES, 'fp32'))
+@pytest.mark.parametrize(('case', 'scope_name'), case_params(CASES, 'fp32', backend='postgresql'))
 async def test_access_case_fp32(scoped_db_fp32: ScopedDb, case: AccessCase, scope_name: str) -> None:
     """Each fp32-layout case yields the expected observable for the scope."""
     await run_case(scoped_db_fp32, case, scope_name)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('case', 'scope_name'), case_params(CASES, 'compressed'))
+@pytest.mark.parametrize(('case', 'scope_name'), case_params(CASES, 'compressed', backend='postgresql'))
 async def test_access_case_compressed(scoped_db_compressed: ScopedDb, case: AccessCase, scope_name: str) -> None:
     """Each compressed-layout case yields the expected observable for the scope."""
     await run_case(scoped_db_compressed, case, scope_name)

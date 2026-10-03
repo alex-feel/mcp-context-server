@@ -49,6 +49,7 @@ class TestSemanticSearchDateFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             start_date=yesterday,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 3
 
@@ -58,6 +59,7 @@ class TestSemanticSearchDateFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             start_date=future_date,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 0
 
@@ -98,6 +100,7 @@ class TestSemanticSearchDateFiltering:
             query_embedding=[0.2] * embedding_dim,
             limit=10,
             end_date=tomorrow,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 3
 
@@ -107,6 +110,7 @@ class TestSemanticSearchDateFiltering:
             query_embedding=[0.2] * embedding_dim,
             limit=10,
             end_date=past_date,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 0
 
@@ -149,6 +153,7 @@ class TestSemanticSearchDateFiltering:
             limit=10,
             start_date=yesterday,
             end_date=tomorrow,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 5
 
@@ -160,6 +165,7 @@ class TestSemanticSearchDateFiltering:
             limit=10,
             start_date=far_past,
             end_date=past,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 0
 
@@ -215,6 +221,7 @@ class TestSemanticSearchDateFiltering:
             thread_id='target-date-thread',
             start_date=yesterday,
             end_date=tomorrow,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 2
         for result in results:
@@ -272,6 +279,7 @@ class TestSemanticSearchDateFiltering:
             source='user',
             start_date=yesterday,
             end_date=tomorrow,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 2
         for result in results:
@@ -310,5 +318,6 @@ class TestSemanticSearchDateFiltering:
             limit=10,
             start_date=None,
             end_date=None,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 4

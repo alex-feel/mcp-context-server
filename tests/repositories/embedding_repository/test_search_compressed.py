@@ -244,6 +244,7 @@ async def test_search_compressed_orders_planted_first(
     results, stats = await repo.search_compressed(
         query_embedding=query.tolist(),
         limit=3,
+        scope=LOCAL_SCOPE,
     )
 
     assert stats['backend'] == 'sqlite'
@@ -273,6 +274,7 @@ async def test_search_compressed_dispatch_via_search(
     results, stats = await repo.search(
         query_embedding=query.tolist(),
         limit=2,
+        scope=LOCAL_SCOPE,
     )
 
     assert stats['backend'] == 'sqlite'
@@ -323,6 +325,7 @@ async def test_search_compressed_thread_filter(
         query_embedding=query.tolist(),
         thread_id='t-search',
         limit=10,
+        scope=LOCAL_SCOPE,
     )
 
     returned_ids = {r['id'] for r in results}
@@ -345,6 +348,7 @@ async def test_search_compressed_no_candidates_returns_empty(
         query_embedding=query.tolist(),
         thread_id='nonexistent-thread',
         limit=10,
+        scope=LOCAL_SCOPE,
     )
     assert results == []
     assert stats['rows_returned'] == 0
@@ -361,6 +365,7 @@ async def test_search_compressed_dimension_mismatch_raises(
         await repo.search_compressed(
             query_embedding=[0.0] * (DIM - 1),
             limit=5,
+            scope=LOCAL_SCOPE,
         )
 
 
@@ -379,6 +384,7 @@ async def test_search_compressed_offset_pagination(
         query_embedding=query.tolist(),
         limit=2,
         offset=1,
+        scope=LOCAL_SCOPE,
     )
 
     assert len(results) == 2
@@ -441,7 +447,7 @@ async def test_search_compressed_offloads_large_candidate_decode(
         patch('app.compression.providers.turboquant._types.payload_from_bytes', spy),
         patch('asyncio.to_thread', recording_to_thread),
     ):
-        results, _ = await repo.search_compressed(query_embedding=query.tolist(), limit=5)
+        results, _ = await repo.search_compressed(query_embedding=query.tolist(), limit=5, scope=LOCAL_SCOPE)
     assert seen.get('on_main') is False  # decode ran on a worker thread, not the event loop
     # BOTH O(N-chunks) halves offload: the decode+concat AND the post-GEMM
     # distances+aggregation+sort, so no per-chunk work runs on the event loop.
@@ -477,7 +483,7 @@ async def test_search_compressed_small_candidate_decode_inline(
         patch('app.compression.providers.turboquant._types.payload_from_bytes', spy),
         patch('asyncio.to_thread', recording_to_thread),
     ):
-        await repo.search_compressed(query_embedding=query.tolist(), limit=5)
+        await repo.search_compressed(query_embedding=query.tolist(), limit=5, scope=LOCAL_SCOPE)
     assert seen.get('on_main') is True  # small candidate set decodes inline
     # Neither O(N) half is offloaded for a small candidate set (no thread hop).
     assert '_decode_and_concat' not in offloaded
@@ -561,7 +567,7 @@ async def test_search_compressed_tied_distances_order_by_context_id(
     repo = EmbeddingRepository(backend)
     vec = await _seed_identical_compressed_entries(backend, repo)
 
-    results, _stats = await repo.search_compressed(query_embedding=vec.tolist(), limit=10)
+    results, _stats = await repo.search_compressed(query_embedding=vec.tolist(), limit=10, scope=LOCAL_SCOPE)
 
     distances = [r['distance'] for r in results]
     assert len(set(distances)) == 1, 'seeded payloads must tie for this test to mean anything'
@@ -577,13 +583,14 @@ async def test_search_compressed_tied_distances_paginate_exactly_once(
     repo = EmbeddingRepository(backend)
     vec = await _seed_identical_compressed_entries(backend, repo)
 
-    unpaginated, _ = await repo.search_compressed(query_embedding=vec.tolist(), limit=10)
+    unpaginated, _ = await repo.search_compressed(query_embedding=vec.tolist(), limit=10, scope=LOCAL_SCOPE)
     expected = [r['id'] for r in unpaginated]
 
     paged: list[str] = []
     for offset in range(len(expected)):
         page, _ = await repo.search_compressed(
             query_embedding=vec.tolist(), limit=1, offset=offset,
+            scope=LOCAL_SCOPE,
         )
         assert len(page) == 1
         paged.append(page[0]['id'])
@@ -629,7 +636,7 @@ async def test_search_compressed_best_chunk_tie_resolves_on_start_index(
         model='test-model',
     )
 
-    results, _ = await repo.search_compressed(query_embedding=vec.tolist(), limit=10)
+    results, _ = await repo.search_compressed(query_embedding=vec.tolist(), limit=10, scope=LOCAL_SCOPE)
 
     assert len(results) == 1
     assert results[0]['matched_chunk_start'] == 0

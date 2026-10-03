@@ -6,6 +6,8 @@ pathological boolean query that must degrade without charging the circuit breake
 
 import sqlite3
 from collections.abc import AsyncGenerator
+from collections.abc import Awaitable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 from unittest.mock import MagicMock
@@ -18,6 +20,7 @@ from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.fts_repository import FtsRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestFtsSQLiteLanguageWarning:
@@ -49,7 +52,7 @@ class TestFtsSQLiteLanguageWarning:
         import logging
 
         with caplog.at_level(logging.WARNING):
-            await repo_sqlite.search('test', language='english')
+            await repo_sqlite.search('test', language='english', scope=LOCAL_SCOPE)
 
         # No warning should be logged for English
         assert 'SQLite FTS5 does not support language-specific stemming' not in caplog.text
@@ -64,7 +67,7 @@ class TestFtsSQLiteLanguageWarning:
         import logging
 
         with caplog.at_level(logging.WARNING):
-            await repo_sqlite.search('test', language='german')
+            await repo_sqlite.search('test', language='german', scope=LOCAL_SCOPE)
 
         # Warning should be logged for non-English language
         assert 'SQLite FTS5 does not support language-specific stemming' in caplog.text
@@ -81,7 +84,7 @@ class TestFtsSQLiteLanguageWarning:
         import logging
 
         with caplog.at_level(logging.WARNING):
-            await repo_sqlite.search('recherche', language='french')
+            await repo_sqlite.search('recherche', language='french', scope=LOCAL_SCOPE)
 
         assert 'SQLite FTS5 does not support language-specific stemming' in caplog.text
         assert 'french' in caplog.text
@@ -126,7 +129,7 @@ class TestPostgresqlSubqueryStructure:
 
         captured_sql: list[str] = []
 
-        async def mock_execute_read(func):  # noqa: ANN001, ANN202
+        async def mock_execute_read(func: Callable[[AsyncMock], Awaitable[object]]) -> object:
             mock_conn = AsyncMock()
 
             async def capture_fetch(sql: str, *_args: object) -> list[object]:
@@ -154,6 +157,7 @@ class TestPostgresqlSubqueryStructure:
             highlight=highlight,
             language='english',
             explain_query=False,
+            scope=LOCAL_SCOPE,
         )
 
         assert len(captured_sql) == 1
@@ -328,7 +332,7 @@ class TestFtsBooleanPathologicalQueryKeepsBreakerClosed:
         pathological = '(' * 100 + 'error' + ')' * 100
 
         for _ in range(12):
-            results, stats = await repos.fts.search(query=pathological, mode='boolean', limit=10)
+            results, stats = await repos.fts.search(query=pathological, mode='boolean', limit=10, scope=LOCAL_SCOPE)
             assert stats['backend'] == 'sqlite'
             assert len(results) == 1
 

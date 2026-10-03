@@ -154,7 +154,7 @@ class TestFtsRepositoryTagValidation:
     ) -> None:
         _backend, repos = backend_and_repos
         with pytest.raises(FtsValidationError):
-            await repos.fts.search('needle', thread_id='t', tags=['   '])
+            await repos.fts.search('needle', thread_id='t', tags=['   '], scope=LOCAL_SCOPE)
 
     @pytest.mark.asyncio
     async def test_empty_tags_does_not_raise_and_returns_matches(
@@ -163,7 +163,7 @@ class TestFtsRepositoryTagValidation:
     ) -> None:
         # tags=[] means "no tag filter": the search runs unfiltered.
         _backend, repos = backend_and_repos
-        rows, _stats = await repos.fts.search('needle', thread_id='t', tags=[])
+        rows, _stats = await repos.fts.search('needle', thread_id='t', tags=[], scope=LOCAL_SCOPE)
         assert len(rows) == 2
 
 
@@ -178,4 +178,4 @@ class TestEmbeddingRepositoryTagValidation:
     ) -> None:
         _backend, repos = backend_and_repos
         with pytest.raises(MetadataFilterValidationError):
-            await repos.embeddings.search([0.0] * 4, thread_id='t', tags=['   '])
+            await repos.embeddings.search([0.0] * 4, thread_id='t', tags=['   '], scope=LOCAL_SCOPE)

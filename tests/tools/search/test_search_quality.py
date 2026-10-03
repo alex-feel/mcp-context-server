@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.helpers import LOCAL_SCOPE
+
 # ============================================================
 # Limit Clamping Tests
 # ============================================================
@@ -399,6 +401,7 @@ class TestSemanticInternalFieldHygiene:
 
         results, _stats = await semantic_search_raw(
             query='hi', limit=5, extract_rerank_text=False, repos=repos, embedding_provider=provider,
+            scope=LOCAL_SCOPE,
         )
 
         assert results, 'expected at least one result'
@@ -425,6 +428,7 @@ class TestSemanticInternalFieldHygiene:
 
         results, _stats = await semantic_search_raw(
             query='hi', limit=5, extract_rerank_text=True, repos=repos, embedding_provider=provider,
+            scope=LOCAL_SCOPE,
         )
 
         assert results, 'expected at least one result'

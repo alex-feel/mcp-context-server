@@ -1,8 +1,10 @@
-"""semantic_search_context statistics: query-embedding timing and the validation-error response."""
+"""semantic_search_context statistics, the validation-error response, and the caller's scope."""
 
 from typing import Any
 
 import pytest
+
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestSemanticEmbeddingGenerationStat:
@@ -61,6 +63,7 @@ class TestSemanticEmbeddingGenerationStat:
 
         _results, stats = await semantic_search_raw(
             query='hi', limit=5, explain_query=True, repos=repos, embedding_provider=provider,
+            scope=LOCAL_SCOPE,
         )
 
         assert 'embedding_generation_ms' in stats
@@ -184,3 +187,34 @@ class TestSemanticValidationErrorStats:
         assert response['count'] == 0
         assert response['error'] == 'Invalid filters'
         assert 'stats' not in response
+
+
+class TestSemanticSearchScoping:
+    """semantic_search_context runs the vector search as the caller's scope."""
+
+    @pytest.mark.asyncio
+    async def test_scope_reaches_the_repository(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The caller's principal and groups reach the vector search; its filter count passes through."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
+
+        import app.tools.search.semantic as search_semantic
+        from app.access_scope import AccessScope
+        from app.tools.search.semantic import semantic_search_context
+        from tests.helpers import as_principal
+
+        repos = MagicMock()
+        repos.embeddings.search = AsyncMock(return_value=([], {'filters_applied': 2, 'rows_returned': 0}))
+        provider = MagicMock()
+        provider.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        monkeypatch.setattr(search_semantic, 'get_embedding_provider', lambda: provider)
+        monkeypatch.setattr(search_semantic, 'ensure_repositories', AsyncMock(return_value=repos))
+        monkeypatch.setattr(search_semantic, 'get_reranking_provider', lambda: None)
+
+        with as_principal('bob', groups=['team-x']):
+            response = await semantic_search_context(query='q', thread_id='t', source='agent', explain_query=True)
+
+        call = repos.embeddings.search.await_args
+        assert call is not None
+        assert call.kwargs['scope'] == AccessScope('bob', frozenset({'team-x'}))
+        assert response['stats']['filters_applied'] == 2

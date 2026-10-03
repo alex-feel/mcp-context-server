@@ -55,6 +55,7 @@ class TestSemanticSearchContentTypeFilter:
             query_embedding=[0.15] * embedding_dim,
             limit=10,
             content_type='text',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 1
@@ -104,6 +105,7 @@ class TestSemanticSearchContentTypeFilter:
             query_embedding=[0.5] * embedding_dim,
             limit=10,
             content_type='multimodal',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 1
@@ -151,6 +153,7 @@ class TestSemanticSearchContentTypeFilter:
             query_embedding=[0.15] * embedding_dim,
             limit=10,
             content_type=None,
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 2
@@ -219,6 +222,7 @@ class TestSemanticSearchTagsFilter:
             query_embedding=[0.15] * embedding_dim,
             limit=10,
             tags=['python', 'javascript'],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 entries (python OR javascript)
@@ -261,6 +265,7 @@ class TestSemanticSearchTagsFilter:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             tags=['important'],
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 1
@@ -298,6 +303,7 @@ class TestSemanticSearchTagsFilter:
             query_embedding=[0.2] * embedding_dim,
             limit=10,
             tags=[],
+            scope=LOCAL_SCOPE,
         )
 
         # Empty tags should not filter
@@ -336,6 +342,7 @@ class TestSemanticSearchTagsFilter:
             query_embedding=[0.25] * embedding_dim,
             limit=10,
             tags=None,
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 4
@@ -400,6 +407,7 @@ class TestSemanticSearchTagsFilter:
             thread_id='combined-tags-thread',
             source='user',
             tags=['python'],
+            scope=LOCAL_SCOPE,
         )
 
         # Should only return the one matching all criteria

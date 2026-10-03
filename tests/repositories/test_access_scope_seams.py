@@ -63,14 +63,14 @@ async def scoped_db_compressed(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('case', 'scope_name'), case_params(CASES, 'fp32', marks=(requires_sqlite_vec,)))
+@pytest.mark.parametrize(('case', 'scope_name'), case_params(CASES, 'fp32', backend='sqlite', marks=(requires_sqlite_vec,)))
 async def test_access_case_fp32(scoped_db_fp32: ScopedDb, case: AccessCase, scope_name: str) -> None:
     """Each fp32-layout case yields the expected observable for the scope."""
     await run_case(scoped_db_fp32, case, scope_name)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('case', 'scope_name'), case_params(CASES, 'compressed'))
+@pytest.mark.parametrize(('case', 'scope_name'), case_params(CASES, 'compressed', backend='sqlite'))
 async def test_access_case_compressed(scoped_db_compressed: ScopedDb, case: AccessCase, scope_name: str) -> None:
     """Each compressed-layout case yields the expected observable for the scope."""
     await run_case(scoped_db_compressed, case, scope_name)
@@ -152,8 +152,8 @@ class TestCaseRegistry:
             AccessCase('R1', _principal_of, {'system': 'system'}, layout='fp32'),
         )
 
-        compressed = case_params(cases, 'compressed')
-        fp32 = case_params(cases, 'fp32', marks=(requires_sqlite_vec,))
+        compressed = case_params(cases, 'compressed', backend='sqlite')
+        fp32 = case_params(cases, 'fp32', backend='sqlite', marks=(requires_sqlite_vec,))
 
         assert [param.id for param in compressed] == ['S1-alice', 'S1-bob', 'S1-page-fill-filtered-carol']
         assert [param.values for param in compressed] == [
@@ -161,6 +161,20 @@ class TestCaseRegistry:
         ]
         assert [param.id for param in fp32] == ['R1-system']
         assert [mark.name for param in fp32 for mark in param.marks] == ['skipif']
+
+    def test_case_params_leave_out_cases_of_the_other_backend(self) -> None:
+        """A case restricted to one backend runs on that backend's entry point only."""
+        cases = (
+            AccessCase('R4', _principal_of, {'bob': 'bob'}),
+            AccessCase('R4', _principal_of, {'bob': 'bob'}, variant='score-pin', backend='sqlite'),
+            AccessCase('R4', _principal_of, {'bob': 'bob'}, variant='score-identity', backend='postgresql'),
+        )
+
+        sqlite_ids = [param.id for param in case_params(cases, 'compressed', backend='sqlite')]
+        postgresql_ids = [param.id for param in case_params(cases, 'compressed', backend='postgresql')]
+
+        assert sqlite_ids == ['R4-bob', 'R4-score-pin-bob']
+        assert postgresql_ids == ['R4-bob', 'R4-score-identity-bob']
 
     @pytest.mark.asyncio
     async def test_run_case_runs_setup_before_the_invoker(self, scoped_db_compressed: ScopedDb) -> None:

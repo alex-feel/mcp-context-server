@@ -34,6 +34,7 @@ from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.fts_repository.faults import FtsValidationError
 from app.repositories.fts_repository.faults import is_fts5_grammar_error
+from tests.helpers import LOCAL_SCOPE
 
 # A single document containing both 'error' and 'handling' so a malformed boolean query whose
 # surviving terms still match degrades to a non-empty best-effort result set.
@@ -135,7 +136,7 @@ class TestFtsBooleanMalformedDegradation:
     @pytest.mark.asyncio
     async def test_valid_boolean_query_unaffected(self, fts_repos: RepositoryContainer) -> None:
         """A well-formed boolean query keeps its native FTS5 semantics (no degradation)."""
-        results, stats = await fts_repos.fts.search(query='error AND handling', mode='boolean', limit=10)
+        results, stats = await fts_repos.fts.search(query='error AND handling', mode='boolean', limit=10, scope=LOCAL_SCOPE)
         assert stats['backend'] == 'sqlite'
         assert len(results) == 1
 
@@ -147,7 +148,7 @@ class TestFtsBooleanMalformedDegradation:
         malformed: str,
     ) -> None:
         """A malformed boolean query returns a result set instead of raising a grammar error."""
-        results, stats = await fts_repos.fts.search(query=malformed, mode='boolean', limit=10)
+        results, stats = await fts_repos.fts.search(query=malformed, mode='boolean', limit=10, scope=LOCAL_SCOPE)
         assert isinstance(results, list)
         assert stats['backend'] == 'sqlite'
 
@@ -159,7 +160,7 @@ class TestFtsBooleanMalformedDegradation:
         malformed: str,
     ) -> None:
         """A malformed boolean whose surviving terms still match returns best-effort results."""
-        results, _ = await fts_repos.fts.search(query=malformed, mode='boolean', limit=10)
+        results, _ = await fts_repos.fts.search(query=malformed, mode='boolean', limit=10, scope=LOCAL_SCOPE)
         assert len(results) >= 1
 
     @pytest.mark.asyncio
@@ -173,6 +174,7 @@ class TestFtsBooleanMalformedDegradation:
             mode='boolean',
             limit=10,
             explain_query=True,
+            scope=LOCAL_SCOPE,
         )
         assert len(results) >= 1
         assert 'query_plan' in stats
@@ -212,6 +214,7 @@ class TestBooleanDegradationLanguageParity:
             mode='boolean',
             limit=10,
             language='english',
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 1
 
@@ -231,6 +234,7 @@ class TestBooleanDegradationLanguageParity:
             mode='boolean',
             limit=10,
             language='german',
+            scope=LOCAL_SCOPE,
         )
         assert len(results) == 0
 
@@ -247,7 +251,7 @@ class TestFtsNulQueryRejection:
     ) -> None:
         """A NUL-carrying query raises FtsValidationError instead of an engine error."""
         with pytest.raises(FtsValidationError) as excinfo:
-            await fts_repos.fts.search(query='a\x00b', mode=mode, limit=10)
+            await fts_repos.fts.search(query='a\x00b', mode=mode, limit=10, scope=LOCAL_SCOPE)
         assert any('NUL' in err for err in excinfo.value.validation_errors)
 
     @pytest.mark.asyncio
@@ -265,7 +269,7 @@ class TestFtsNulQueryRejection:
         The shared pg_bind_reject_reason probe catches it on both backends.
         """
         with pytest.raises(FtsValidationError) as excinfo:
-            await fts_repos.fts.search(query='a\ud800b', mode=mode, limit=10)
+            await fts_repos.fts.search(query='a\ud800b', mode=mode, limit=10, scope=LOCAL_SCOPE)
         assert any('surrogate' in err for err in excinfo.value.validation_errors)
 
     def test_fts_validation_error_is_control_flow(self) -> None:
@@ -284,9 +288,9 @@ class TestFtsNulQueryRejection:
         """
         for _ in range(12):
             with pytest.raises(FtsValidationError):
-                await fts_repos.fts.search(query='\x00', mode='match', limit=10)
+                await fts_repos.fts.search(query='\x00', mode='match', limit=10, scope=LOCAL_SCOPE)
         assert _sqlite_breaker_failures(fts_repos) == 0
-        results, _ = await fts_repos.fts.search(query='error', mode='match', limit=10)
+        results, _ = await fts_repos.fts.search(query='error', mode='match', limit=10, scope=LOCAL_SCOPE)
         assert len(results) == 1
 
 
@@ -311,6 +315,7 @@ class TestClientInputErrorsBypassBreaker:
                     mode='match',
                     limit=10,
                     metadata_filters=[{'key': 'x', 'operator': 'bogus-operator', 'value': 1}],
+                    scope=LOCAL_SCOPE,
                 )
         assert _sqlite_breaker_failures(fts_repos) == 0
 
@@ -341,6 +346,7 @@ class TestClientInputErrorsBypassBreaker:
                 metadata=None,
                 metadata_filters=None,
                 highlight=False,
+                scope=LOCAL_SCOPE,
             )
         assert _sqlite_breaker_failures(fts_repos) == 0
 

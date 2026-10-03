@@ -225,6 +225,7 @@ async def test_search_compressed_recall_on_real_storage(
             query_embedding=q.tolist(),
             limit=TOP_K,
             thread_id='search-e2e',
+            scope=LOCAL_SCOPE,
         )
         assert stats['backend'] == 'sqlite'
         assert len(results) == TOP_K

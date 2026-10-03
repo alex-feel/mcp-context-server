@@ -71,6 +71,7 @@ class TestSemanticSearchFilters:
             query_embedding=query_embedding,
             limit=3,
             thread_id='test-thread',
+            scope=LOCAL_SCOPE,
         )
 
         # Type guard: ensure results is a list (not error dict)
@@ -125,6 +126,7 @@ class TestSemanticSearchFilters:
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             source='user',
+            scope=LOCAL_SCOPE,
         )
 
         # Type guard: ensure results is a list (not error dict)
@@ -180,6 +182,7 @@ class TestSemanticSearchFilters:
             limit=5,
             thread_id='test-thread',
             source='user',
+            scope=LOCAL_SCOPE,
         )
 
         # Type guard: ensure results is a list (not error dict)
@@ -221,6 +224,7 @@ class TestSemanticSearchFilters:
         results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=3,
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 3 results
@@ -258,6 +262,7 @@ class TestSemanticSearchFilters:
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='thread-b',  # Does not exist
+            scope=LOCAL_SCOPE,
         )
 
         # Should return empty list, not an error
@@ -295,6 +300,7 @@ class TestSemanticSearchFilters:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='small-thread',
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 results (all available)
@@ -349,6 +355,7 @@ class TestSemanticSearchEdgeCases:
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='single-thread',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 1
@@ -386,6 +393,7 @@ class TestSemanticSearchEdgeCases:
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='only-thread',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 5
@@ -424,6 +432,7 @@ class TestSemanticSearchEdgeCases:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id=None,
+            scope=LOCAL_SCOPE,
         )
 
         # Should return results from all threads
@@ -463,6 +472,7 @@ class TestSemanticSearchEdgeCases:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             source=None,
+            scope=LOCAL_SCOPE,
         )
 
         # Should return results from both sources
