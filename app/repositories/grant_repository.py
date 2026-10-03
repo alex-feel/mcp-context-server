@@ -3,7 +3,9 @@ Grant repository for per-entry access grants.
 
 This module handles all database operations on ``context_entry_grants`` -- the
 rows that give a specific principal ('user') or group ('group') read or write
-access to one context entry under 'shared' visibility.
+access to one context entry. A grant is effective under either visibility:
+any grant opens a 'private' entry to its grantee for reading, and a write grant
+also authorizes content edits on a 'private' or 'public' entry.
 """
 
 import contextlib

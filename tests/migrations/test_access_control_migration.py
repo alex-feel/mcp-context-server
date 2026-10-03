@@ -7,11 +7,11 @@ them via ``apply_access_control_migration``. Mirrors
 from a hand-rolled ``CREATE TABLE`` in the pre-migration shape, then the
 migration adds the columns (fail-closed backfill: owner = configured default
 principal, visibility 'private'), provisions the grants table and lookup
-indexes, and is idempotent.
+indexes, and is idempotent. Both the migrated column and a fresh base-schema
+database accept only the visibility values 'private' and 'public'.
 
-PostgreSQL coverage rides on the dual-backend real-server harness plus the live
-deploy-stack integration, matching the sibling column-migration tests; a
-dedicated PostgreSQL fixture is intentionally NOT invented here.
+The PostgreSQL visibility CHECK constraint (base schema and migration) is
+covered by tests/integration/postgresql/test_access_control_schema_postgresql.py.
 """
 
 import sqlite3
@@ -156,22 +156,51 @@ class TestAccessControlMigration:
         assert stamped == (get_settings().access_control.default_principal, 'private')
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('visibility', ['everyone', 'shared'])
     async def test_visibility_check_constraint_enforced(
-        self, backend_pre_migration: StorageBackend,
+        self, backend_pre_migration: StorageBackend, visibility: str,
     ) -> None:
-        """The added visibility column carries the CHECK constraint."""
+        """The added visibility column accepts only 'private' and 'public'."""
         await apply_access_control_migration(backend_pre_migration)
 
         def _insert_bad(conn: sqlite3.Connection) -> None:
             conn.execute(
                 'INSERT INTO context_entries '
                 '(id, thread_id, source, content_type, text_content, owner_id, visibility) '
-                "VALUES (?, 't1', 'agent', 'text', 'x', 'local', 'everyone')",
-                (generate_id(),),
+                "VALUES (?, 't1', 'agent', 'text', 'x', 'local', ?)",
+                (generate_id(), visibility),
             )
 
         with pytest.raises(sqlite3.IntegrityError):
             await backend_pre_migration.execute_write(_insert_bad)
+
+    @pytest.mark.parametrize(
+        ('visibility', 'accepted'),
+        [('private', True), ('public', True), ('shared', False), ('everyone', False)],
+    )
+    def test_base_schema_visibility_check(self, tmp_path: Path, visibility: str, accepted: bool) -> None:
+        """A fresh base-schema database stores 'private' and 'public' and rejects any other value."""
+        from app.schemas import load_schema
+
+        conn = sqlite3.connect(str(tmp_path / 'test_access_control_base_schema.db'))
+        try:
+            conn.executescript(load_schema('sqlite'))
+
+            def _insert() -> None:
+                conn.execute(
+                    'INSERT INTO context_entries '
+                    '(id, thread_id, source, content_type, text_content, owner_id, visibility) '
+                    "VALUES (?, 't1', 'agent', 'text', 'x', 'local', ?)",
+                    (generate_id(), visibility),
+                )
+
+            if accepted:
+                _insert()
+            else:
+                with pytest.raises(sqlite3.IntegrityError):
+                    _insert()
+        finally:
+            conn.close()
 
     @pytest.mark.asyncio
     async def test_migration_idempotent(self, backend_pre_migration: StorageBackend) -> None:

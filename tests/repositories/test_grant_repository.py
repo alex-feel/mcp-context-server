@@ -24,7 +24,7 @@ async def _store_entry(backend: StorageBackend, thread_id: str = 'grant-thread')
         content_type='text',
         text_content=f'grant test entry for {thread_id}',
         owner_id='alice',
-        visibility='shared',
+        visibility='private',
     )
     return context_id
 

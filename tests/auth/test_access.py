@@ -1,14 +1,15 @@
 """Tests for access-control policy helpers.
 
 Covers app.auth.access: resolve_effective_principal (verified-token passthrough
-and the no-token fallback to the configured default principal) and
-visibility_denied_reason (the ACCESS_CONTROL_PUBLISH_ROLE publish gate).
+and the fallback to the configured default principal for requests without a jwt
+identity, simple_token included) and visibility_denied_reason (the
+ACCESS_CONTROL_PUBLISH_ROLE publish gate).
 """
 
 import os
 from unittest.mock import patch
 
-import pytest
+from fastmcp.server.auth import AccessToken
 
 from app.auth.access import resolve_effective_principal
 from app.auth.access import visibility_denied_reason
@@ -58,6 +59,26 @@ class TestResolveEffectivePrincipal:
         assert principal.groups == frozenset()
         assert principal.roles == frozenset()
 
+    def test_simple_token_request_maps_to_default_principal(self) -> None:
+        """A simple_token request owns rows as the default principal, not its client id."""
+        token = AccessToken(
+            token='opaque-token-value',
+            client_id='mcp-client',
+            scopes=[],
+            expires_at=None,
+            claims={},
+        )
+        env = {'MCP_AUTH_PROVIDER': 'simple_token', 'MCP_AUTH_TOKEN': 'test-token'}
+        with patch.dict(os.environ, env, clear=False):
+            get_settings.cache_clear()
+            with patch('app.auth.principal.get_access_token', return_value=token):
+                principal = resolve_effective_principal()
+        assert principal == RequestPrincipal(
+            principal_id='local',
+            groups=frozenset(),
+            roles=frozenset(),
+        )
+
 
 class TestVisibilityDeniedReason:
     """Tests for the publish gate."""
@@ -74,13 +95,12 @@ class TestVisibilityDeniedReason:
     def _principal(roles: frozenset[str] = frozenset()) -> RequestPrincipal:
         return RequestPrincipal(principal_id='p', groups=frozenset(), roles=roles)
 
-    @pytest.mark.parametrize('visibility', ['private', 'shared'])
-    def test_non_public_is_never_gated(self, visibility: str) -> None:
-        """private and shared are always allowed, publish role or not."""
+    def test_private_is_never_gated(self) -> None:
+        """private is always allowed, publish role or not."""
         env = {'ACCESS_CONTROL_PUBLISH_ROLE': 'publisher'}
         with patch.dict(os.environ, env, clear=False):
             get_settings.cache_clear()
-            assert visibility_denied_reason(visibility, self._principal()) is None
+            assert visibility_denied_reason('private', self._principal()) is None
 
     def test_public_allowed_when_role_unset(self) -> None:
         """With no configured publish role, any owner may publish."""

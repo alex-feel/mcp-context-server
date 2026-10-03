@@ -65,8 +65,7 @@ class ContextDedupMixin(BaseRepository):
             text_content: The actual text content
             owner_id: Server-resolved principal stamped as the row owner on a
                 fresh INSERT. Never caller-supplied at the tool boundary.
-            visibility: 'private', 'shared', or 'public'; stamped on a fresh
-                INSERT.
+            visibility: 'private' or 'public'; stamped on a fresh INSERT.
             metadata: JSON metadata string or None
             summary: LLM-generated summary text or None
             preserve_content_type_on_dedup: When True, a deduplication UPDATE keeps the

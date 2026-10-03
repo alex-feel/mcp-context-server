@@ -85,7 +85,7 @@ async def update_context_batch(
             '36-char hyphenated UUID, or 8-31 char hex prefix). '
             'Optional: text (str), metadata (dict - full replace), '
             'metadata_patch (dict - RFC 7396 merge), tags (list[str]), images (list[dict]), '
-            'visibility ("private", "shared", or "public"; owner-only, publishing as public '
+            'visibility ("private" or "public"; owner-only, publishing as public '
             'may require a configured role).',
             min_length=1,
             max_length=100,

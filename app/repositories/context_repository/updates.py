@@ -56,8 +56,8 @@ class ContextUpdateMixin(BaseRepository):
             summary: New LLM-generated summary text (if provided)
             clear_summary: If True, explicitly set summary to NULL in the database.
                 Takes precedence over summary parameter.
-            visibility: New visibility value ('private', 'shared', or 'public')
-                if provided. The caller authorizes the change (owner-only) and
+            visibility: New visibility value ('private' or 'public') if
+                provided. The caller authorizes the change (owner-only) and
                 validates the value before it reaches this method.
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.

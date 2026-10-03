@@ -50,7 +50,8 @@ class AuthSettings(CommonSettings):
     auth_client_id: str = Field(
         default='mcp-client',
         alias='MCP_AUTH_CLIENT_ID',
-        description='Client ID to assign to authenticated requests (used with simple_token)',
+        description='Client ID that identifies simple_token requests to FastMCP. Not an owner '
+                    'identity: simple_token requests own entries as ACCESS_CONTROL_DEFAULT_PRINCIPAL',
     )
     jwt_public_key: SecretStr | None = Field(
         default=None,
@@ -102,36 +103,36 @@ class AuthSettings(CommonSettings):
 class AccessControlSettings(CommonSettings):
     """Access-control policy for server-stamped entry ownership and visibility.
 
-    Every stored entry carries a server-stamped ``owner_id`` (the verified
-    request principal, or the configured default principal when the request
-    carries no verified token) and a ``visibility`` ('private', 'shared', or
-    'public'). These settings define the default principal, the default
-    visibility for writes that do not specify one, whether the author's group
-    memberships become read grants automatically, and which role (if any) is
-    required to publish entries as 'public'.
+    Every stored entry carries a server-stamped ``owner_id`` (the verified jwt
+    principal, or the configured default principal for stdio, ``none`` and
+    ``simple_token`` requests) and a ``visibility``: 'private' (readable by the
+    owner and every grantee) or 'public' (readable by everyone). These settings
+    define the default principal, the default visibility for writes that do not
+    specify one, whether the author's group memberships become read grants
+    automatically, and which role (if any) is required to publish entries as
+    'public'.
     """
 
     default_principal: str = Field(
         default='local',
         alias='ACCESS_CONTROL_DEFAULT_PRINCIPAL',
-        description='Principal id stamped as owner_id when a request carries no verified '
-                    'access token (stdio transport, or MCP_AUTH_PROVIDER none/simple_token '
-                    'without a sub claim source). Also the owner backfilled onto rows that '
-                    'predate the access-control columns',
+        description='Principal id stamped as owner_id for every request without a jwt '
+                    'identity: stdio transport and MCP_AUTH_PROVIDER none or simple_token. '
+                    'Also the owner backfilled onto rows that predate the access-control columns',
     )
-    default_visibility: Literal['private', 'shared', 'public'] = Field(
+    default_visibility: Literal['private', 'public'] = Field(
         default='private',
         alias='ACCESS_CONTROL_DEFAULT_VISIBILITY',
         description='Visibility stamped on stored entries when the caller does not '
-                    'specify one: private (owner only), shared (owner + explicit grants), '
-                    'public (any principal)',
+                    'specify one: private (owner plus every grantee), public (everyone)',
     )
     default_group_grants: Literal['none', 'author_groups'] = Field(
         default='none',
         alias='ACCESS_CONTROL_DEFAULT_GROUP_GRANTS',
-        description='Automatic group read grants on newly inserted entries: none (explicit '
-                    'shares only, default) or author_groups (every group of the writing '
-                    'principal receives a read grant)',
+        description='Automatic group read grants on newly inserted entries: none (no '
+                    'automatic grants, default) or author_groups (every group of the writing '
+                    'principal receives a read grant, effective under the default private '
+                    'visibility)',
     )
     publish_role: str | None = Field(
         default=None,

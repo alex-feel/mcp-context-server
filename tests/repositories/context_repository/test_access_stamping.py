@@ -41,11 +41,11 @@ class TestStoreStamping:
             content_type='text',
             text_content='stamped entry',
             owner_id='alice',
-            visibility='shared',
+            visibility='public',
         )
         assert was_updated is False
         owner, visibility, _ = await _read_access_columns(async_db_initialized, context_id)
-        assert (owner, visibility) == ('alice', 'shared')
+        assert (owner, visibility) == ('alice', 'public')
 
     @pytest.mark.asyncio
     async def test_dedup_update_never_changes_owner_or_visibility(
@@ -118,13 +118,13 @@ class TestUpdateVisibility:
 
         success, fields = await repo.update_context_entry(
             context_id,
-            visibility='shared',
+            visibility='public',
             expected_version=probe.version,
         )
         assert success is True
         assert fields == ['visibility']
         _, visibility, version = await _read_access_columns(async_db_initialized, context_id)
-        assert visibility == 'shared'
+        assert visibility == 'public'
         assert version == probe.version + 1
 
     @pytest.mark.asyncio
@@ -137,14 +137,14 @@ class TestUpdateVisibility:
             content_type='text',
             text_content='text-only update target',
             owner_id='alice',
-            visibility='shared',
+            visibility='public',
         )
 
         success, fields = await repo.update_context_entry(context_id, text_content='new text')
         assert success is True
         assert 'visibility' not in fields
         owner, visibility, _ = await _read_access_columns(async_db_initialized, context_id)
-        assert (owner, visibility) == ('alice', 'shared')
+        assert (owner, visibility) == ('alice', 'public')
 
 
 class TestEntryProbeOwner:

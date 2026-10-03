@@ -9,6 +9,7 @@ owner_id is never a tool parameter.
 
 import inspect
 import sqlite3
+from typing import get_args
 from unittest.mock import patch
 
 import pytest
@@ -99,6 +100,17 @@ class TestOwnerStamping:
         for tool in (store_context, update_context, store_context_batch, update_context_batch):
             assert 'owner_id' not in inspect.signature(tool).parameters
 
+    def test_visibility_parameter_accepts_private_and_public(self) -> None:
+        """The single-entry write tools declare exactly 'private' and 'public' (wire schema source)."""
+        from app.tools.context.store import store_context
+        from app.tools.context.update import update_context
+
+        for tool in (store_context, update_context):
+            annotation = inspect.signature(tool).parameters['visibility'].annotation
+            optional_type = get_args(annotation)[0]
+            literal_type = next(arg for arg in get_args(optional_type) if arg is not type(None))
+            assert get_args(literal_type) == ('private', 'public')
+
 
 @pytest.mark.usefixtures('initialized_server')
 class TestPublishGate:
@@ -182,10 +194,10 @@ class TestOwnerOnlyVisibilityChange:
         result = await store_context(
             thread_id='access-tools', source='agent', text='owner visibility change',
         )
-        updated = await update_context(context_id=result['context_id'], visibility='shared')
+        updated = await update_context(context_id=result['context_id'], visibility='public')
         assert 'visibility' in updated['updated_fields']
         _, visibility = await _read_owner_visibility(result['context_id'])
-        assert visibility == 'shared'
+        assert visibility == 'public'
 
     @pytest.mark.asyncio
     async def test_non_owner_visibility_change_rejected(self) -> None:
@@ -279,14 +291,14 @@ class TestBatchVisibilityVersionTracking:
         )
         result = await update_context_batch(
             updates=[
-                {'context_id': stored['context_id'], 'visibility': 'shared'},
+                {'context_id': stored['context_id'], 'visibility': 'public'},
                 {'context_id': stored['context_id'], 'text': 'updated after visibility change'},
             ],
             atomic=True,
         )
         assert result['succeeded'] == 2, result
         _, visibility = await _read_owner_visibility(stored['context_id'])
-        assert visibility == 'shared'
+        assert visibility == 'public'
 
     @pytest.mark.asyncio
     async def test_non_atomic_batch_visibility_then_text_on_same_entry(self) -> None:
@@ -314,8 +326,9 @@ class TestBatchVisibilityValidation:
     """Batch entries validate the visibility enum per entry."""
 
     @pytest.mark.asyncio
-    async def test_invalid_visibility_fails_only_that_entry(self) -> None:
-        """Non-atomic: an invalid visibility value records a per-entry error."""
+    @pytest.mark.parametrize('visibility', ['everyone', 'shared'])
+    async def test_invalid_visibility_fails_only_that_entry(self, visibility: str) -> None:
+        """Non-atomic: a visibility value other than private or public records a per-entry error."""
         from app.tools.batch.store import store_context_batch
 
         result = await store_context_batch(
@@ -323,7 +336,7 @@ class TestBatchVisibilityValidation:
                 {'thread_id': 'access-tools', 'source': 'agent', 'text': 'good entry'},
                 {
                     'thread_id': 'access-tools', 'source': 'agent',
-                    'text': 'bad visibility entry', 'visibility': 'everyone',
+                    'text': f'bad visibility entry {visibility}', 'visibility': visibility,
                 },
             ],
             atomic=False,
@@ -331,7 +344,7 @@ class TestBatchVisibilityValidation:
         assert result['succeeded'] == 1
         assert result['failed'] == 1
         errors = [r['error'] for r in result['results'] if r['error']]
-        assert any('visibility' in e for e in errors)
+        assert errors == ["visibility must be one of 'private', 'public'"]
 
     @pytest.mark.asyncio
     async def test_batch_per_entry_visibility_is_stamped(self) -> None:
@@ -340,12 +353,12 @@ class TestBatchVisibilityValidation:
 
         result = await store_context_batch(entries=[{
             'thread_id': 'access-tools', 'source': 'agent',
-            'text': 'shared batch entry', 'visibility': 'shared',
+            'text': 'public batch entry', 'visibility': 'public',
         }])
         cid = result['results'][0]['context_id']
         assert cid is not None
         _, visibility = await _read_owner_visibility(cid)
-        assert visibility == 'shared'
+        assert visibility == 'public'
 
 
 @pytest.mark.usefixtures('initialized_server')

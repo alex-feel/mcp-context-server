@@ -78,8 +78,8 @@ def validate_store_entry(
     # single-entry store_context ordering so both paths surface the same
     # first error for an entry that fails both checks.
     entry_visibility = entry.get('visibility')
-    if entry_visibility is not None and entry_visibility not in ('private', 'shared', 'public'):
-        return None, "visibility must be one of 'private', 'shared', 'public'"
+    if entry_visibility is not None and entry_visibility not in ('private', 'public'):
+        return None, "visibility must be one of 'private', 'public'"
     effective_visibility: str = (
         entry_visibility
         if entry_visibility is not None
@@ -242,8 +242,8 @@ async def validate_update_entry(
     # Validate visibility (parity with the single-entry Literal-typed
     # update_context).
     visibility_field = update.get('visibility')
-    if visibility_field is not None and visibility_field not in ('private', 'shared', 'public'):
-        return None, context_id, "visibility must be one of 'private', 'shared', 'public'"
+    if visibility_field is not None and visibility_field not in ('private', 'public'):
+        return None, context_id, "visibility must be one of 'private', 'public'"
 
     # Validate metadata / metadata_patch are JSON objects and tags is a
     # list of strings (parity with the single-entry, Pydantic-typed

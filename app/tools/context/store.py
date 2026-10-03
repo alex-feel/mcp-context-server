@@ -80,12 +80,12 @@ async def store_context(
         ),
     ] = None,
     visibility: Annotated[
-        Literal['private', 'shared', 'public'] | None,
+        Literal['private', 'public'] | None,
         Field(
-            description='Access visibility for a newly stored entry: private (owner only), '
-            'shared (owner + explicit grants), public (any principal). Omitted uses the '
-            "server's configured default. Publishing as public may require a configured "
-            'role. Ignored when deduplication updates an existing entry.',
+            description='Access visibility for a newly stored entry: private (owner plus every '
+            "grantee), public (everyone). Omitted uses the server's configured default. "
+            'Publishing as public may require a configured role. Ignored when deduplication '
+            'updates an existing entry.',
         ),
     ] = None,
 ) -> StoreContextSuccessDict:
@@ -135,10 +135,11 @@ async def store_context(
         if not text:
             raise ToolError('text cannot be empty or whitespace')
 
-        # Resolve the effective principal (verified token, or the configured
-        # default principal) and the visibility to stamp, then enforce the
-        # publish gate on the EFFECTIVE value: a caller-omitted visibility that
-        # defaults to 'public' is still a publish and still needs the role.
+        # Resolve the effective principal (the verified jwt principal, or the
+        # configured default principal) and the visibility to stamp, then
+        # enforce the publish gate on the EFFECTIVE value: a caller-omitted
+        # visibility that defaults to 'public' is still a publish and still
+        # needs the role.
         principal = resolve_effective_principal()
         effective_visibility: str = (
             visibility if visibility is not None else settings.access_control.default_visibility

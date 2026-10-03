@@ -8,6 +8,10 @@ migration: auto-applied, unconditional, and idempotent. Fresh databases (and
 migration-CLI targets, which build tables from the base schema) already carry
 everything, so this migration is a no-op there.
 
+The ``visibility`` column accepts exactly two values: 'private' (readable by the
+owner and every grantee in ``context_entry_grants``) and 'public' (readable by
+everyone).
+
 Backfill semantics (fail-closed): existing rows receive
 ``visibility='private'`` and ``owner_id=ACCESS_CONTROL_DEFAULT_PRINCIPAL`` via
 the ``ADD COLUMN ... NOT NULL DEFAULT`` literal -- a single statement per
@@ -155,7 +159,7 @@ async def _apply_sqlite(backend: StorageBackend, default_principal: str) -> None
         if 'visibility' not in columns:
             conn.execute(
                 'ALTER TABLE context_entries ADD COLUMN visibility TEXT NOT NULL '
-                "DEFAULT 'private' CHECK(visibility IN ('private', 'shared', 'public'))",
+                "DEFAULT 'private' CHECK(visibility IN ('private', 'public'))",
             )
             logger.info('Added visibility column to context_entries (SQLite)')
         conn.execute(_CREATE_GRANTS_TABLE_SQLITE)
@@ -186,7 +190,7 @@ async def _apply_postgresql(backend: StorageBackend, default_principal: str) -> 
         await execute_migration_ddl(
             conn,
             'ALTER TABLE context_entries ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL '
-            "DEFAULT 'private' CHECK(visibility IN ('private', 'shared', 'public'))",
+            "DEFAULT 'private' CHECK(visibility IN ('private', 'public'))",
             migration_timeout_s,
         )
         await execute_migration_ddl(conn, _CREATE_GRANTS_TABLE_POSTGRESQL, migration_timeout_s)

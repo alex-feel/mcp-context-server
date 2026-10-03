@@ -1054,7 +1054,7 @@
           "name": "MCP_AUTH_TOKEN"
         },
         {
-          "description": "Client ID to assign to authenticated requests",
+          "description": "Client ID that identifies simple_token requests to FastMCP. Not an owner identity: simple_token requests own entries as ACCESS_CONTROL_DEFAULT_PRINCIPAL",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1117,7 +1117,7 @@
           "name": "MCP_AUTH_ROLES_CLAIM"
         },
         {
-          "description": "Principal id stamped as owner_id when a request carries no verified access token. Also the owner backfilled onto rows that predate the access-control columns. Default local.",
+          "description": "Principal id stamped as owner_id for every request without a jwt identity: stdio transport and MCP_AUTH_PROVIDER none or simple_token. Also the owner backfilled onto rows that predate the access-control columns. Default local.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1125,7 +1125,7 @@
           "default": "local"
         },
         {
-          "description": "Visibility stamped on stored entries when the caller does not specify one: private (owner only), shared (owner + explicit grants), public (any principal). Default private.",
+          "description": "Visibility stamped on stored entries when the caller does not specify one: private (owner plus every grantee), public (everyone). Default private.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1133,7 +1133,7 @@
           "default": "private"
         },
         {
-          "description": "Automatic group read grants on newly inserted entries: none (explicit shares only, default) or author_groups (every group of the writing principal receives a read grant).",
+          "description": "Automatic group read grants on newly inserted entries: none (no automatic grants, default) or author_groups (every group of the writing principal receives a read grant, effective under the default private visibility).",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -2246,7 +2246,7 @@
           "name": "MCP_AUTH_TOKEN"
         },
         {
-          "description": "Client ID to assign to authenticated requests",
+          "description": "Client ID that identifies simple_token requests to FastMCP. Not an owner identity: simple_token requests own entries as ACCESS_CONTROL_DEFAULT_PRINCIPAL",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -2309,7 +2309,7 @@
           "name": "MCP_AUTH_ROLES_CLAIM"
         },
         {
-          "description": "Principal id stamped as owner_id when a request carries no verified access token. Also the owner backfilled onto rows that predate the access-control columns. Default local.",
+          "description": "Principal id stamped as owner_id for every request without a jwt identity: stdio transport and MCP_AUTH_PROVIDER none or simple_token. Also the owner backfilled onto rows that predate the access-control columns. Default local.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -2317,7 +2317,7 @@
           "default": "local"
         },
         {
-          "description": "Visibility stamped on stored entries when the caller does not specify one: private (owner only), shared (owner + explicit grants), public (any principal). Default private.",
+          "description": "Visibility stamped on stored entries when the caller does not specify one: private (owner plus every grantee), public (everyone). Default private.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -2325,7 +2325,7 @@
           "default": "private"
         },
         {
-          "description": "Automatic group read grants on newly inserted entries: none (explicit shares only, default) or author_groups (every group of the writing principal receives a read grant).",
+          "description": "Automatic group read grants on newly inserted entries: none (no automatic grants, default) or author_groups (every group of the writing principal receives a read grant, effective under the default private visibility).",
           "isRequired": false,
           "format": "string",
           "isSecret": false,

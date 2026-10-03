@@ -44,7 +44,7 @@ async def store_context_batch(
             description='List of context entries to store. Each entry must have: '
             'thread_id (str), source ("user" or "agent"), text (str). '
             'Optional: metadata (dict), tags (list[str]), images (list[dict]), '
-            'visibility ("private", "shared", or "public"; omitted uses the server default, '
+            'visibility ("private" or "public"; omitted uses the server default, '
             'publishing as public may require a configured role).',
             min_length=1,
             max_length=100,

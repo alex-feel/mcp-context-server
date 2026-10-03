@@ -75,11 +75,11 @@ async def update_context(
         ),
     ] = None,
     visibility: Annotated[
-        Literal['private', 'shared', 'public'] | None,
+        Literal['private', 'public'] | None,
         Field(
-            description='New access visibility: private (owner only), shared (owner + '
-            'explicit grants), public (any principal). Only the entry owner may change '
-            'visibility, and publishing as public may require a configured role.',
+            description='New access visibility: private (owner plus every grantee), public '
+            '(everyone). Only the entry owner may change visibility, and publishing as public '
+            'may require a configured role.',
         ),
     ] = None,
 ) -> UpdateContextSuccessDict:

@@ -33,11 +33,12 @@ CREATE TABLE IF NOT EXISTS context_entries (
     -- Access-control columns. owner_id is the server-stamped principal that
     -- created the row (NEVER a tool parameter; the application always supplies
     -- it explicitly on INSERT, so the column carries no default here).
-    -- visibility governs who may read the row once read scoping enforces it:
-    -- 'private' (owner only), 'shared' (owner + explicit grants in
-    -- context_entry_grants), 'public' (any principal).
+    -- visibility decides who may read the row: 'private' is readable by the
+    -- owner and every grantee (user or group rows in context_entry_grants),
+    -- 'public' by everyone. A write grant authorizes content edits under
+    -- either value; visibility changes and deletes are owner-only.
     owner_id TEXT NOT NULL,
-    visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private', 'shared', 'public')),
+    visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private', 'public')),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -96,10 +97,11 @@ CREATE TABLE IF NOT EXISTS image_attachments (
 
 CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_id);
 
--- Per-entry access grants for 'shared' visibility. Each row grants one
--- principal ('user') or one group ('group') read or write access to one entry.
--- granted_by records the principal that created the grant. The UNIQUE index
--- makes grant insertion idempotent (ON CONFLICT DO NOTHING).
+-- Per-entry access grants. Each row grants one principal ('user') or one
+-- group ('group') read or write access to one entry under either visibility;
+-- a write grant also grants read. granted_by records the principal that
+-- created the grant. The UNIQUE index makes grant insertion idempotent
+-- (ON CONFLICT DO NOTHING).
 CREATE TABLE IF NOT EXISTS context_entry_grants (
     id BIGSERIAL PRIMARY KEY,
     context_entry_id UUID NOT NULL,
