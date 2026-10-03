@@ -2,14 +2,17 @@
 
 Provides utility functions used across test infrastructure files
 (conftest.py, run_server.py) and test modules to avoid code duplication.
-Application modules are imported inside the helpers, so importing this
-module never loads the application or reads settings.
+Application modules are imported inside the helpers, apart from the
+standard-library-only ``app.access_scope``, so importing this module never
+loads the application or reads settings.
 """
 
 import importlib
 import os
 import pkgutil
+import sqlite3
 from collections.abc import Generator
+from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from contextlib import contextmanager
 from types import ModuleType
@@ -20,13 +23,21 @@ from unittest.mock import patch
 
 from pydantic import ValidationError as PydanticValidationError
 
+from app.access_scope import AccessScope
+
 if TYPE_CHECKING:
+    import asyncpg
     import pytest
     from fastmcp.exceptions import ValidationError as FastMCPValidationError
     from pydantic_core import ErrorDetails
 
+    from app.backends.base import StorageBackend
     from app.repositories.embedding_repository import EmbeddingRepository
     from app.settings import AppSettings
+
+# The scope of a request without a jwt identity under the default
+# ACCESS_CONTROL_DEFAULT_PRINCIPAL ('local'), which carries no groups.
+LOCAL_SCOPE = AccessScope('local', frozenset())
 
 
 def is_ollama_model_available(
@@ -268,3 +279,101 @@ def disable_compression(monkeypatch: 'pytest.MonkeyPatch') -> None:
     get_settings.cache_clear()
     import app.migrations.compression as compression_module
     monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+
+@contextmanager
+def as_principal(
+    principal_id: str,
+    groups: Iterable[str] = (),
+    roles: Iterable[str] = (),
+) -> Generator[None, None, None]:
+    """Run the block as a verified request principal.
+
+    Patches ``app.auth.access.resolve_request_principal``, the lookup behind both
+    ``resolve_effective_principal`` and ``resolve_access_scope``, so both return
+    this identity inside the block wherever they are called from.
+
+    Args:
+        principal_id: The principal id the request resolves to.
+        groups: The principal's group ids.
+        roles: The principal's roles.
+
+    Yields:
+        None.
+    """
+    from app.auth.principal import RequestPrincipal
+
+    principal = RequestPrincipal(principal_id=principal_id, groups=frozenset(groups), roles=frozenset(roles))
+    with patch('app.auth.access.resolve_request_principal', return_value=principal):
+        yield
+
+
+_INSERT_GRANT_COLUMNS = '(context_entry_id, principal_type, principal_id, permission, granted_by)'
+_READ_GRANTS_SQL = (
+    'SELECT principal_type, principal_id, permission, granted_by FROM context_entry_grants '
+    'WHERE context_entry_id = {placeholder} ORDER BY principal_type, principal_id, permission'
+)
+
+
+async def insert_grant(
+    backend: 'StorageBackend',
+    context_id: str,
+    principal_type: str,
+    principal_id: str,
+    permission: str,
+    granted_by: str,
+) -> None:
+    """Insert one access grant row through raw SQL on either backend.
+
+    The application writes only the group read grants of
+    ``ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups``, so tests seed user
+    grants and write grants with this helper.
+
+    Args:
+        backend: The backend whose database receives the row.
+        context_id: ID of the granted context entry.
+        principal_type: ``'user'`` or ``'group'``.
+        principal_id: The grantee principal or group id.
+        permission: ``'read'`` or ``'write'``.
+        granted_by: The principal id recorded as the grantor.
+    """
+    values = (context_id, principal_type, principal_id, permission, granted_by)
+
+    if backend.backend_type == 'sqlite':
+
+        def _insert_sqlite(conn: sqlite3.Connection) -> None:
+            conn.execute(f'INSERT INTO context_entry_grants {_INSERT_GRANT_COLUMNS} VALUES (?, ?, ?, ?, ?)', values)
+
+        await backend.execute_write(_insert_sqlite)
+        return
+
+    async def _insert_postgresql(conn: 'asyncpg.Connection') -> None:
+        await conn.execute(f'INSERT INTO context_entry_grants {_INSERT_GRANT_COLUMNS} VALUES ($1, $2, $3, $4, $5)', *values)
+
+    await backend.execute_write(_insert_postgresql)
+
+
+async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[str, str, str, str]]:
+    """Read the grant rows of one context entry through raw SQL on either backend.
+
+    Args:
+        backend: The backend whose database holds the rows.
+        context_id: ID of the context entry.
+
+    Returns:
+        ``(principal_type, principal_id, permission, granted_by)`` tuples ordered by
+        principal type, principal id and permission.
+    """
+    if backend.backend_type == 'sqlite':
+
+        def _read_sqlite(conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
+            rows = conn.execute(_READ_GRANTS_SQL.format(placeholder='?'), (context_id,)).fetchall()
+            return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+        return await backend.execute_read(_read_sqlite)
+
+    async def _read_postgresql(conn: 'asyncpg.Connection') -> list[tuple[str, str, str, str]]:
+        rows = await conn.fetch(_READ_GRANTS_SQL.format(placeholder='$1'), context_id)
+        return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+    return await backend.execute_read(_read_postgresql)

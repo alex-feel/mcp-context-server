@@ -4,7 +4,9 @@ This module is the single place that turns FastMCP's per-request access token
 into an application-level identity. Tool code never inspects raw JWT claims:
 it asks for a :class:`RequestPrincipal` and receives the caller's stable
 principal id plus normalized group and role sets, extracted via the
-IdP-agnostic helpers in :mod:`app.auth.claims`.
+IdP-agnostic helpers in :mod:`app.auth.claims`. The principal's id and groups
+form the :class:`app.access_scope.AccessScope` its reads and writes run under;
+its roles only gate publishing.
 
 Only the jwt provider carries a caller identity. Resolution returns None for
 every other request: stdio transport, HTTP with MCP_AUTH_PROVIDER=none, and
@@ -19,6 +21,7 @@ from dataclasses import dataclass
 
 from fastmcp.server.dependencies import get_access_token
 
+from app.access_scope import AccessScope
 from app.auth.claims import extract_groups
 from app.auth.claims import extract_roles
 from app.settings import get_settings
@@ -38,6 +41,16 @@ class RequestPrincipal:
     principal_id: str
     groups: frozenset[str]
     roles: frozenset[str]
+
+    def access_scope(self) -> AccessScope:
+        """Return the scope this principal reads and writes context entries as.
+
+        Roles are not part of the scope: they only gate publishing.
+
+        Returns:
+            The principal id and groups as an :class:`AccessScope`.
+        """
+        return AccessScope(principal_id=self.principal_id, groups=self.groups)
 
 
 def resolve_request_principal() -> RequestPrincipal | None:

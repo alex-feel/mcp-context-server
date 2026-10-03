@@ -3,7 +3,9 @@
 Covers app.auth.principal.resolve_request_principal against mocked FastMCP
 access tokens: only the jwt provider yields a principal (simple_token requests
 resolve like stdio and none), JWT subject and claim mapping, the client-id
-fallback for jwt tokens without a sub claim, and configured claim keys.
+fallback for jwt tokens without a sub claim, and configured claim keys. Also
+covers RequestPrincipal.access_scope, the scope a principal reads and writes
+context entries as.
 """
 
 import dataclasses
@@ -15,6 +17,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.server.auth import AccessToken
 
+from app.access_scope import AccessScope
 from app.auth.principal import RequestPrincipal
 from app.auth.principal import resolve_request_principal
 from app.settings import get_settings
@@ -154,3 +157,26 @@ class TestResolveRequestPrincipal:
         field_name = 'principal_id'
         with pytest.raises(dataclasses.FrozenInstanceError):
             setattr(principal, field_name, 'other')
+
+
+class TestRequestPrincipalAccessScope:
+    """Tests for RequestPrincipal.access_scope."""
+
+    def test_scope_carries_groups_and_drops_roles(self) -> None:
+        """The scope keeps the principal id and groups; roles only gate publishing."""
+        principal = RequestPrincipal(
+            principal_id='alice',
+            groups=frozenset({'team-a', 'team-b'}),
+            roles=frozenset({'publisher'}),
+        )
+
+        scope = principal.access_scope()
+
+        assert scope == AccessScope('alice', frozenset({'team-a', 'team-b'}))
+        assert not hasattr(scope, 'roles')
+
+    def test_scope_of_principal_without_groups_has_empty_groups(self) -> None:
+        """A principal without group memberships yields a scope with an empty group set."""
+        principal = RequestPrincipal(principal_id='ci-service', groups=frozenset(), roles=frozenset())
+
+        assert principal.access_scope() == AccessScope('ci-service', frozenset())
