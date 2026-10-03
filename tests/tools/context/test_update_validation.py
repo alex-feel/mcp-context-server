@@ -247,8 +247,8 @@ class TestUpdateContext:
     async def test_whitespace_only_text_validation_error(self, mock_repositories):
         """Test that whitespace-only text is rejected by business logic validation.
 
-        Validation runs in the function body, which checks for non-whitespace
-        content; the parameter carries no Pydantic min_length constraint.
+        Whitespace-only text satisfies the parameter's Pydantic ``min_length=1``
+        constraint, so the function body strips it and rejects the empty result.
         """
         with (
             patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories),

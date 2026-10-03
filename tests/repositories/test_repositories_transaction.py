@@ -387,7 +387,7 @@ class TestMultiRepositoryTransaction:
 
 
 class TestRepositoryMethodsWithoutTransaction:
-    """Every txn-aware repository write works when txn=None."""
+    """The context, tag and image repository writes work when txn=None."""
 
     @pytest.mark.asyncio
     async def test_all_methods_work_without_txn(
@@ -395,7 +395,7 @@ class TestRepositoryMethodsWithoutTransaction:
         backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
         sample_image_data: dict[str, str],
     ) -> None:
-        """Call each txn-aware repository method with the txn argument omitted."""
+        """Call the context, tag and image write methods with the txn argument omitted."""
         backend, repos = backend_with_repos
 
         # ContextRepository methods

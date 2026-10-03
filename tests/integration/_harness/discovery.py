@@ -172,7 +172,7 @@ class DiscoveryMixin(HarnessCore):
             return False
 
     async def test_list_threads_pagination(self) -> bool:
-        """Verify list_threads optional limit/offset pagination is bounded, ordered, and backward-compatible.
+        """Verify list_threads limit/offset pagination is bounded and ordered, and a no-arg call returns every thread.
 
         Returns:
             bool: True if test passed.
@@ -200,7 +200,7 @@ class DiscoveryMixin(HarnessCore):
                 # Ensure distinct created_at timestamps for deterministic ordering.
                 await asyncio.sleep(0.01)
 
-            # 1) No-arg call returns ALL threads (backward compatible).
+            # 1) No-arg call returns ALL threads.
             all_data = self._extract_content(await self.client.call_tool('list_threads', {}))
             if 'threads' not in all_data:
                 self.test_results.append((test_name, False, f'Missing threads key (no-arg): {all_data}'))
@@ -245,7 +245,7 @@ class DiscoveryMixin(HarnessCore):
                 return False
 
             self.test_results.append((test_name, True,
-                'list_threads pagination bounded, ordered, and backward-compatible'))
+                'list_threads pagination bounded and ordered; no-arg call returns every thread'))
             return True
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))

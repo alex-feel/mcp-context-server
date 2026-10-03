@@ -214,7 +214,7 @@ async def test_mixed_nested_structures() -> None:
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('initialized_server')
 async def test_backward_compatibility_flat_metadata() -> None:
-    """Test that flat (non-nested) metadata round-trips unchanged."""
+    """Test that flat (non-nested) metadata values come back from search_context after store_context."""
     flat_metadata: dict[str, JsonValue] = {
         'status': 'active',
         'priority': 8,

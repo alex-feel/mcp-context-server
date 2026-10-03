@@ -380,9 +380,8 @@ class RetrieveMixin(HarnessCore):
             with contextlib.suppress(Exception):
                 await secondary_client.__aexit__(None, None, None)
             # Best-effort cleanup (use anyio.Path for async-safe filesystem ops).
-            # NOTE: env_snapshot / restoration loop removed -- this test never
-            # mutates os.environ anymore (subprocess env is passed explicitly
-            # via PythonStdioTransport).
+            # The secondary server receives its env through PythonStdioTransport, so
+            # os.environ is never modified and needs no restoration.
             async_tmp_db = AsyncPath(tmp_db)
             async_tmp_dir = AsyncPath(tmp_dir)
             with contextlib.suppress(Exception):

@@ -205,7 +205,7 @@ class StoreMixin(HarnessCore):
     async def test_store_context_generation_first_return_exceptions(self) -> bool:
         """Test that store_context works end-to-end with the generation-first pattern.
 
-        Verifies the refactored asyncio.gather(return_exceptions=True) code path
+        Verifies the asyncio.gather(return_exceptions=True) code path
         succeeds when no providers are configured (default test server).
 
         Returns:
@@ -216,7 +216,7 @@ class StoreMixin(HarnessCore):
         try:
             gen_first_thread = f'{self.test_thread_id}_gen_first_store'
 
-            # Store context -- should succeed through the refactored gather path
+            # Store context -- should succeed through the gather path
             store_result = await self.client.call_tool(
                 'store_context',
                 {

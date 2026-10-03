@@ -2,8 +2,9 @@
 
 Protocol-era negotiation, the reported server version, tool annotations
 delivered by ``list_tools``, the ``ENABLE_FTS=false`` force-off on a second
-server, the ``/health`` handler, and the PostgreSQL-only session-pooler
-check staying inert on SQLite.
+server, a stand-in Starlette ``/health`` route (the live route is checked in
+``tests/integration/sqlite/test_http_transport.py``), and the PostgreSQL-only
+session-pooler check staying inert on SQLite.
 """
 
 import contextlib
@@ -272,10 +273,12 @@ class ServerMixin(HarnessCore):
                     await AsyncPath(async_second_db.parent).rmdir()
 
     async def test_health_endpoint_returns_ok(self) -> bool:
-        """Verify the /health endpoint returns HTTP 200 with {"status": "ok"}.
+        """Verify a stand-in Starlette /health route returns HTTP 200 with {"status": "ok"}.
 
-        The health endpoint is only available on HTTP transport. Since integration tests
-        use stdio transport, this test validates the handler behavior using Starlette TestClient.
+        The health endpoint is only available on HTTP transport. Since the harness uses
+        stdio transport, this check builds its own Starlette app with a local /health route
+        and calls it through TestClient; the live route registered by ``main()`` is checked
+        by tests/integration/sqlite/test_http_transport.py.
 
         Returns:
             bool: True if test passed.
@@ -323,9 +326,10 @@ class ServerMixin(HarnessCore):
     async def test_session_pooler_validation_noop_on_sqlite(self) -> bool:
         """Verify the session-pooler advisory wiring is a PostgreSQL-only no-op on SQLite.
 
-        validate_session_pooler_capacity() / _detect_session_mode_pooler() are gated on
-        backend_type == 'postgresql'; a healthy SQLite server boot proves the startup
-        step neither runs nor crashes on the default backend.
+        ``PostgreSQLBackend._detect_session_mode_pooler()`` (which calls
+        ``is_supabase_session_pooler`` from ``app/startup/validation.py``) runs only inside
+        the PostgreSQL backend's ``initialize()``; a healthy SQLite server boot proves the
+        advisory neither runs nor crashes on the default backend.
 
         Returns:
             bool: True if test passed.

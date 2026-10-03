@@ -165,9 +165,11 @@ class MetadataFiltersNumericMixin(HarnessCore):
         Casting the STORED value through ``DOUBLE PRECISION`` for a float param would drop the low
         bits of a stored integer like 2**53+1 on PostgreSQL (folding it to 2**53), so ``eq 2**53.0``
         would match on PostgreSQL but NOT on SQLite (which compares the exact integer), and ``gt``
-        would be the mirror image. The stored value is therefore read as exact NUMERIC and never
-        down-cast: an int-origin stored integer compares exactly against the float param, so it is
-        never truncated. Running the SAME expected counts on both backends proves parity by
+        would be the mirror image. ``pg_numeric_body`` therefore keeps a provably int-origin stored
+        integer such as 2**53+1 (one NOT equal to ``(stored::float8)::text::NUMERIC``) on the exact
+        ``NUMERIC`` branch against the float param, so it is never truncated, and casts only a
+        canonical-double-form value such as 2**53-1, which a double represents exactly, for a
+        double-vs-double compare. Running the SAME expected counts on both backends proves parity by
         construction; a stored-side DOUBLE PRECISION cast gives PostgreSQL different counts than
         SQLite for eq/gt/in here.
 
