@@ -262,7 +262,6 @@ REGISTRY: dict[str, Entry] = {
         'repositories/tag_repository.py:TagRepository.replace_tags_for_context._replace_tags_sqlite',
         'repositories/tag_repository.py:TagRepository.replace_tags_for_context._replace_tags_postgresql',
     ),
-    _IMAGES + 'store_image': _child(Seam.CHILD_WRITER),
     _IMAGES + 'store_images': _child(Seam.CHILD_WRITER, _STORE_TX),
     _IMAGES + 'replace_images_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX, _UPDATE_TX),
     _NODES + 'replace_nodes_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX),

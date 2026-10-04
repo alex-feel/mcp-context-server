@@ -231,30 +231,3 @@ class TestPerImageMetadataValueFidelity:
 
         images = await repos.images.get_images_for_context(context_id)
         assert 'metadata' not in images[0]
-
-    async def test_empty_mapping_metadata_round_trips_on_the_single_image_writer(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """The single-image writer applies the same gate as the batch writers."""
-        from app.repositories import RepositoryContainer
-
-        repos = RepositoryContainer(async_db_initialized)
-        context_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='image-metadata-single-writer-thread',
-            source='user',
-            content_type='multimodal',
-            text_content='Empty mapping per-image metadata',
-            metadata=None,
-        )
-
-        await repos.images.store_image(
-            context_id=context_id,
-            image_data=b'single writer bytes',
-            mime_type='image/png',
-            metadata={},
-        )
-
-        images = await repos.images.get_images_for_context(context_id)
-        assert images[0].get('metadata') == {}

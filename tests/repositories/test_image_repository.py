@@ -19,42 +19,6 @@ from tests.helpers import LOCAL_SCOPE
 class TestImageRepository:
     """Test ImageRepository functionality."""
 
-    async def test_store_single_image(self, async_db_initialized: StorageBackend) -> None:
-        """Test storing a single image attachment."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        repos = RepositoryContainer(backend)
-
-        # Create a context entry first
-        context_id, _ = await repos.context.store_with_deduplication(
-            scope=LOCAL_SCOPE,
-            visibility='private',
-            thread_id='test-thread',
-            source='user',
-            content_type='text',
-            text_content='Test entry for image',
-            metadata=None,
-        )
-
-        # Store single image
-        image_data = b'fake image data'
-        await repos.images.store_image(
-            context_id=context_id,
-            image_data=image_data,
-            mime_type='image/png',
-            metadata={'width': 100, 'height': 100},
-            position=0,
-        )
-
-        # Retrieve and verify
-        images = await repos.images.get_images_for_context(context_id)
-        assert len(images) == 1
-        assert images[0].get('mime_type') == 'image/png'
-        img_data = images[0].get('data')
-        assert img_data is not None
-        assert base64.b64decode(img_data) == image_data
-
     async def test_store_multiple_images(
         self, async_db_initialized: StorageBackend,
     ) -> None:

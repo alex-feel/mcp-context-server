@@ -113,61 +113,6 @@ class ImageRepository(BaseRepository):
         """
         super().__init__(backend)
 
-    async def store_image(
-        self,
-        context_id: str,
-        image_data: bytes,
-        mime_type: str,
-        metadata: dict[str, Any] | None = None,
-        position: int = 0,
-    ) -> None:
-        """Store a single image attachment.
-
-        Args:
-            context_id: ID of the context entry
-            image_data: Binary image data
-            mime_type: MIME type of the image
-            metadata: Optional image metadata. Only ``None`` means "no metadata";
-                an empty value is stored and read back as supplied
-                (see :func:`encode_image_metadata`).
-            position: Position/order of the image
-        """
-        if self.backend.backend_type == 'sqlite':
-
-            def _store_image_sqlite(conn: sqlite3.Connection) -> None:
-                cursor = conn.cursor()
-                query = f'''
-                    INSERT INTO image_attachments
-                    (context_entry_id, image_data, mime_type, image_metadata, position)
-                    VALUES ({self._placeholder(1)}, {self._placeholder(2)}, {self._placeholder(3)},
-                            {self._placeholder(4)}, {self._placeholder(5)})
-                '''
-                cursor.execute(
-                    query,
-                    (context_id, image_data, mime_type, encode_image_metadata(metadata), position),
-                )
-
-            await self.backend.execute_write(_store_image_sqlite)
-        else:  # postgresql
-
-            async def _store_image_postgresql(conn: 'asyncpg.Connection') -> None:
-                query = f'''
-                    INSERT INTO image_attachments
-                    (context_entry_id, image_data, mime_type, image_metadata, position)
-                    VALUES ({self._placeholder(1)}, {self._placeholder(2)}, {self._placeholder(3)},
-                            {self._placeholder(4)}, {self._placeholder(5)})
-                '''
-                await conn.execute(
-                    query,
-                    context_id,
-                    image_data,
-                    mime_type,
-                    encode_image_metadata(metadata),
-                    position,
-                )
-
-            await self.backend.execute_write(cast(Any, _store_image_postgresql))
-
     async def store_images(
         self,
         context_id: str,
