@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared utility for emitting structured JSON output from Claude Code hooks.
 
-Provides four emitter functions for the four documented JSON output schemas:
+Provides five emitter functions for the five documented JSON output schemas:
 
 - emit_additional_context: injects context into the model (UserPromptSubmit,
   SessionStart, SubagentStart, and non-blocking PreToolUse/PostToolUse).
@@ -9,6 +9,8 @@ Provides four emitter functions for the four documented JSON output schemas:
   hookSpecificOutput.permissionDecision=deny with permissionDecisionReason.
 - emit_pre_tool_use_updated_input: rewrites a PreToolUse tool call's arguments
   via hookSpecificOutput.updatedInput, without issuing a permission decision.
+- emit_permission_request_deny: answers a PermissionRequest with a denial via
+  hookSpecificOutput.decision.behavior=deny with a message.
 - emit_decision_block: blocks via top-level decision=block with reason
   (PostToolUse, Stop, SubagentStop).
 
@@ -92,6 +94,35 @@ def emit_pre_tool_use_updated_input(updated_input: dict[str, object]) -> None:
         'hookSpecificOutput': {
             'hookEventName': 'PreToolUse',
             'updatedInput': updated_input,
+        },
+    }
+    sys.stdout.write(json.dumps(hook_output))
+    sys.stdout.flush()
+
+
+def emit_permission_request_deny(message: str) -> None:
+    """Emit a JSON hookSpecificOutput that DENIES a PermissionRequest.
+
+    Writes the structured JSON output that Claude Code interprets as the
+    answer to a permission prompt it was about to show: the request is
+    denied without asking the user, and the message tells Claude why. The
+    decision carries no interrupt flag, so Claude continues its turn with
+    the denial in hand.
+
+    The caller MUST exit with status 0 after calling this function;
+    Claude Code only processes JSON output when the exit code is 0.
+
+    Args:
+        message: Why the request was denied and what to do instead. Shown
+            to the model as the denial's message.
+    """
+    hook_output: dict[str, object] = {
+        'hookSpecificOutput': {
+            'hookEventName': 'PermissionRequest',
+            'decision': {
+                'behavior': 'deny',
+                'message': message,
+            },
         },
     }
     sys.stdout.write(json.dumps(hook_output))
