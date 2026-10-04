@@ -111,7 +111,7 @@ class TestDescriptionStructure:
             '{backend}', '{engine}', '{language}',
             '{stemming_status}', '{stemming_detail}', '{stemming_example}',
             '{stopwords_status}', '{stopwords_detail}', '{stopwords_example}',
-            '{non_language_behavior}', '{mode_descriptions}',
+            '{non_language_behavior}', '{mode_descriptions}', '{fts_score_scope}',
         ]
         for field in expected_fields:
             assert field in _FTS_DESCRIPTION_TEMPLATE, f'{field} missing in template'
@@ -124,3 +124,26 @@ class TestDescriptionStructure:
                 f'{backend} FTS description omits the simple `metadata` filter param'
             )
             assert 'metadata_filters' in result
+
+
+class TestDescriptionAccessScoping:
+    """The description states the caller's read scope and how each backend's score relates to it."""
+
+    def test_both_backends_limit_results_to_readable_entries(self) -> None:
+        for backend in ('sqlite', 'postgresql'):
+            result = generate_fts_description(backend, 'english')
+            assert 'Only entries the caller may read are matched, returned and counted.' in result, (
+                f'{backend} FTS description does not state the caller read scope'
+            )
+
+    def test_sqlite_names_the_whole_index_bm25_statistics(self) -> None:
+        result = generate_fts_description('sqlite', 'english')
+        assert 'statistics of the whole FTS5 index, entries the caller cannot read included' in result
+        assert 'the set of matching entries and the number of results per page depend only on what the caller can read' in (
+            result
+        )
+
+    def test_postgresql_scores_each_entry_on_its_own(self) -> None:
+        result = generate_fts_description('postgresql', 'english')
+        assert 'ts_rank_cd scores each entry on its own' in result
+        assert 'whole FTS5 index' not in result

@@ -98,11 +98,21 @@ async def update_context(
 
     Tags and images use REPLACEMENT semantics (not merge).
 
+    Authorization:
+    - The owner and any principal holding a write grant on the entry may change
+      text, metadata, tags and images.
+    - Only the owner may change visibility, and publishing as public may require
+      a configured role.
+    - An entry the caller may not read is reported as not found
+      ("Context entry with ID {id} not found"); an entry it may read but not
+      modify is refused with "Not authorized to modify context entry with ID {id}".
+
     Returns:
         UpdateContextSuccessDict with success, context_id, updated_fields, message fields.
 
     Raises:
-        ToolError: If validation fails, embedding generation fails, entry not found, or update fails.
+        ToolError: If validation fails, embedding generation fails, entry not found,
+            the caller may not modify the entry, or update fails.
     """
     try:
         # === PHASE 1: Input Validation (no DB operations) ===

@@ -113,7 +113,11 @@ async def update_context_batch(
     - Only provided fields are modified
     - Immutable fields (cannot be changed): id, thread_id, source, created_at, ownership
     - Auto-managed fields: content_type (recalculated based on images), updated_at
+    - text, metadata, tags and images: the owner or a principal holding a write grant
     - visibility: owner-only; publishing as 'public' may require a configured role
+    - An entry the caller may not read is reported as "Context entry {id} not found";
+      one it may read but not modify as "Not authorized to modify context entry {id}"
+      (atomic mode appends " at index {i}" and fails the whole batch)
     - Metadata options (MUTUALLY EXCLUSIVE per entry):
       - metadata: FULL REPLACEMENT of entire metadata object
       - metadata_patch: RFC 7396 JSON Merge Patch (new keys added, existing updated,

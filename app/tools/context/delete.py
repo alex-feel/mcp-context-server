@@ -29,13 +29,24 @@ async def delete_context(
     ] = None,
     thread_id: Annotated[
         str | None,
-        Field(min_length=1, description='Delete ALL entries in thread (mutually exclusive with context_ids)'),
+        Field(
+            min_length=1,
+            description="Delete all of the caller's own entries in this thread (mutually exclusive with context_ids)",
+        ),
     ] = None,
 ) -> dict[str, bool | int | str]:
-    """Delete context entries by specific IDs or by entire thread. IRREVERSIBLE.
+    """Delete context entries by specific IDs or by thread. IRREVERSIBLE.
 
     Provide EITHER context_ids OR thread_id (not both). All associated data
     (tags, images) is also removed.
+
+    Only the caller's own entries are deleted:
+    - context_ids: an ID of an entry the caller may not read is treated as absent
+      and never counted. When any named entry the caller may read is not its own,
+      the call is refused with "Not authorized to delete context entries: {ids}"
+      and nothing is deleted.
+    - thread_id: the caller's own entries in the thread are deleted; every other
+      entry in it is left in place without an error.
 
     context_ids accepts at most 100 IDs per call (the same cap as
     get_context_by_ids and the batch tools); an oversized list is rejected at the
@@ -49,7 +60,8 @@ async def delete_context(
 
     Raises:
         ToolError: If neither context_ids nor thread_id is provided, if BOTH are
-            provided, or if deletion fails.
+            provided, if a named entry the caller may read is not its own, or if
+            deletion fails.
     """
     try:
         # Ensure at least one parameter is provided (business logic validation)

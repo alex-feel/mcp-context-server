@@ -29,7 +29,7 @@ async def delete_context_batch(
     ] = None,
     thread_ids: Annotated[
         list[str] | None,
-        Field(max_length=100, description='Delete ALL entries in these threads (max 100 per call)'),
+        Field(max_length=100, description="Delete the caller's own entries in these threads (max 100 per call)"),
     ] = None,
     source: Annotated[
         Literal['user', 'agent'] | None,
@@ -44,7 +44,7 @@ async def delete_context_batch(
 
     Criteria can be combined for targeted deletion:
     - context_ids: Delete specific entries by ID
-    - thread_ids: Delete all entries in specified threads
+    - thread_ids: Delete entries in the specified threads
     - source: Filter by source ('user' or 'agent')
     - older_than_days: Delete entries created more than N days ago
 
@@ -53,6 +53,15 @@ async def delete_context_batch(
     combined with another criterion, because on its own each one matches essentially the
     whole database.
     All associated data (tags, images) is also removed.
+
+    Only the caller's own entries are deleted, and an entry the caller may not read
+    is never matched or counted:
+    - With context_ids: when any named entry that matches the other criteria is one
+      the caller may read but does not own, the call is refused with
+      "Not authorized to delete context entries: {ids}" and nothing is deleted.
+    - Without context_ids: only the caller's own matching entries are deleted; every
+      other matching entry is left in place without an error.
+
     The context_ids and thread_ids lists each accept at most 100 items per call
     (the same cap as the other batch tools); oversized lists are rejected at the
     tool boundary as validation errors before any database work.
@@ -64,7 +73,8 @@ async def delete_context_batch(
         criteria_used (list of str), message (str).
 
     Raises:
-        ToolError: If no criteria provided or deletion fails.
+        ToolError: If no criteria provided, a named entry the caller may read is not
+            its own, or deletion fails.
     """
     try:
         # Validate at least one criterion is provided

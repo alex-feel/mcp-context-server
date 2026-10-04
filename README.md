@@ -18,6 +18,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Multimodal Context Storage**: Store and retrieve both text and images
 - **UUIDv7 Context Identifiers**: Every context entry is identified by a 32-character lowercase hex UUIDv7 value, providing time-ordered, globally unique IDs with a stable lex-string ordering
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
+- **Per-Record Access Control**: Every entry has an owner, a `private` or `public` visibility, and optional user or group grants, enforced on every read, update and delete on both SQLite and PostgreSQL. With IdP-issued JWTs, each caller finds, counts and changes only the entries it may access. See the [Access Model](docs/authentication.md#access-model)
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 16 powerful operators
 - **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags

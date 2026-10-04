@@ -93,17 +93,21 @@ async def store_context(
 
     All agents working on the same task should use the same thread_id to share context.
 
-    Deduplication: if an entry with identical thread_id, source, and text already exists,
-    the existing entry is updated instead of creating a duplicate:
+    Deduplication: the candidate is the latest entry of the same thread_id and source
+    among the entries the caller may read. When the caller owns that entry and its text
+    is identical, the existing entry is updated instead of creating a duplicate:
     - metadata: New values override existing; omitting metadata preserves current values
     - tags: REPLACED with new list if provided; preserved if tags=None
     - images: REPLACED with new list if provided; preserved if images=None
     - visibility/ownership: NEVER changed by a deduplication update (a retransmit
       must not re-own or re-publish the existing row)
+    An identical candidate owned by another principal is never merged into: the store
+    inserts a new entry owned by the caller.
 
     Deduplication is suppressed when opposite-source entries (e.g., agent entries
-    for a user store) exist after the candidate duplicate. This preserves
-    chronological ordering for repeated identical messages in conversations.
+    for a user store) that the caller may read exist after the candidate duplicate.
+    This preserves chronological ordering for repeated identical messages in
+    conversations.
 
     Notes:
         - Tags are normalized to lowercase

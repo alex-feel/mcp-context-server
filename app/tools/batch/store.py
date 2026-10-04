@@ -67,9 +67,11 @@ async def store_context_batch(
     - atomic=True (default): ALL entries must succeed or NONE are stored (transaction rollback).
     - atomic=False: Each entry processed independently with per-item error reporting.
 
-    Deduplication: if an entry with identical thread_id, source, and text already exists,
-    the existing entry is updated. Deduplication is suppressed when opposite-source
-    entries exist after the candidate, preserving chronological ordering.
+    Deduplication: the candidate is the latest entry of the same thread_id and source
+    among the entries the caller may read; when the caller owns it and its text is
+    identical, the existing entry is updated, otherwise a new entry owned by the caller
+    is inserted. Deduplication is suppressed when opposite-source entries the caller
+    may read exist after the candidate, preserving chronological ordering.
     Pre-check optimization skips embedding/summary generation for likely duplicates.
 
     Size limits:
