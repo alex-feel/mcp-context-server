@@ -203,11 +203,12 @@ user-settings:
     # what is written here.
     ENABLE_TOOL_SEARCH: "true"
 
-    # Enable the context-saver hooks' diagnostic logging so a failed store (for example,
+    # Enable the context saver hook's diagnostic logging so a failed store (for example,
     # the context server still starting while Ollama pulls its embedding and summary
     # models) is recorded in the hook log instead of failing silently. Read by the hook
-    # script, which the session starts and which therefore inherits this block.
-    # Log location: ~/.claude/hook_logs/user_prompt_context_saver.log
+    # script, which the session starts and which therefore inherits this block. The log
+    # is .claude/.hook_debug.log under the project the session started in, or the file
+    # CLAUDE_HOOK_DEBUG_FILE names when that is set.
     CLAUDE_HOOK_DEBUG_ENABLED: "1"
 
   permissions:

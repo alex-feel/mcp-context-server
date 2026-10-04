@@ -178,7 +178,7 @@ mcp_server:
   # package: mcp-context-server[embeddings-ollama]<2.0.0
   # Entry point to run
   # entry_point: mcp-context-server
-  # Pre-warm uvx cache at module load to avoid cold start delays
+  # Pre-warm the uvx cache before connecting over stdio to avoid cold start delays
   # prewarm_cache: true
 
 # Chunking reliability settings
@@ -188,8 +188,13 @@ chunking:
   max_chunk_retries: 3
   # Initial delay between chunk retries in seconds (exponential backoff applied)
   chunk_retry_delay: 0.5
-  # Failure mode for partial chunk storage
-  # 'silent': Log only, no user feedback (original behavior)
-  # 'warn': Print warning to stderr that displays in TUI
-  # 'error': Print error to stderr that displays in TUI
+  # Failure mode for partial chunk storage. In every mode the partial failure reaches
+  # the model through additionalContext (while output_context_id is on) and the hook's
+  # debug log (while CLAUDE_HOOK_DEBUG_ENABLED is set). The modes differ only in one
+  # extra stderr line; the hook exits 0, so Claude Code records that line only in its
+  # own debug log, which exists only while its debug logging is on (for example under
+  # --debug or --debug-file), and it appears neither in the transcript nor to the model.
+  # 'silent': No stderr line
+  # 'warn': A [WARN] line on stderr
+  # 'error': An [ERROR] line on stderr
   fail_mode: warn

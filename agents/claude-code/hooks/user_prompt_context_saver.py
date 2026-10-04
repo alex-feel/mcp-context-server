@@ -25,9 +25,17 @@ narrower handlers exist (json.JSONDecodeError for malformed stdin from Claude
 Code; an inner except Exception around the MCP store_context call and its
 additionalContext emission to absorb realistic remote-service failures without
 blocking the user's workflow). There is no outer catch-all except Exception
-block: an unexpected exception escapes to Python's default handler, surfacing
-the traceback to the operator's TUI so the underlying code-quality defect can
-be fixed.
+block: an unexpected exception escapes to Python's default handler, so the hook
+exits non-zero and the transcript shows a hook error notice carrying the first
+stderr line. The full traceback is recorded only in Claude Code's debug log,
+which exists only while its debug logging is on (for example under --debug or
+--debug-file); a run with it on shows the underlying code-quality defect so it
+can be fixed.
+
+Diagnostic logging is off unless CLAUDE_HOOK_DEBUG_ENABLED is "1", "true", or
+"yes". While it is off, the hook writes no log or error file and creates no
+directory for one; while it is on, the log location is resolved on the first
+write.
 
 Trigger: UserPromptSubmit
 """
@@ -45,8 +53,10 @@ import tempfile
 import time
 import traceback
 from collections.abc import Coroutine
+from contextlib import suppress
 from datetime import UTC
 from datetime import datetime
+from functools import cache
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -86,8 +96,7 @@ _MAX_MESSAGE_SIZE = int(os.environ.get('CLAUDE_HOOK_MAX_MESSAGE_SIZE', '32768'))
 _CHUNK_SIZE = int(os.environ.get('CLAUDE_HOOK_CHUNK_SIZE', '30000'))  # 30KB default for chunks
 _JSON_OVERHEAD = 500  # Estimated bytes for JSON structure (thread_id, source, etc.)
 
-# Default configuration - used when no config file provided
-# Maintains backward compatibility with original behavior
+# Default configuration - used when no config file is provided
 DEFAULT_CONFIG: dict[str, Any] = {
     'enabled': True,
     'output_context_id': True,  # Output stored context_id via hookSpecificOutput.additionalContext
@@ -131,14 +140,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'timeout_normal': 240.0,
     },
     'mcp_server': {
-        # Transport type: 'stdio' (default, existing behavior) or 'http'
+        # Transport type: 'stdio' (default) or 'http'
         'transport': 'stdio',
-        # For stdio transport (existing behavior)
+        # For stdio transport
         'command': 'uvx',
         'python_version': '3.12',
         'package': 'mcp-context-server[embeddings-ollama]<2.0.0',
         'entry_point': 'mcp-context-server',
-        'prewarm_cache': True,  # Pre-warm uvx cache at module load
+        'prewarm_cache': True,  # Pre-warm the uvx cache before connecting over stdio
         # For http transport (used when transport: http)
         # 'url': 'https://mcp-context-server.example.com/mcp',
         # 'headers': {},  # Optional custom headers for authentication
@@ -152,24 +161,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
-def _get_log_file() -> Path:
+@cache
+def _log_file() -> Path:
     """
-    Get log file location with multiple fallbacks and diagnostic reporting.
+    Resolve the debug log location on first use, creating its directory.
+
+    Called only while logging is enabled, so a run with logging off creates no
+    directory and prints no diagnostic. The result is cached, so each run
+    chooses and reports its location once.
 
     Fallback chain:
     1. CLAUDE_HOOK_DEBUG_FILE environment variable
     2. {CLAUDE_PROJECT_DIR}/.claude/.hook_debug.log
-    3. {HOME}/.claude/hook_logs/user_prompt_context_saver.log
+    3. ~/.claude/hook_logs/user_prompt_context_saver.log
     4. {TEMP}/claude_hook_user_prompt_context_saver.log
 
     Returns:
         Path to the log file (guaranteed to return a valid path)
     """
-    import sys
-    from contextlib import suppress
 
     def _diagnostic(msg: str) -> None:
-        """Write diagnostic to stderr (unconditionally)."""
+        """Report the chosen location, or a fallback that failed, on stderr."""
         with suppress(Exception):
             print(f'[LOG PATH DIAGNOSTIC] {msg}', file=sys.stderr, flush=True)
 
@@ -209,34 +221,25 @@ def _get_log_file() -> Path:
     return log_path
 
 
-# Initialize log file IMMEDIATELY
-_LOG_FILE = _get_log_file()
-
-
 def log_always(message: str, level: str = 'INFO') -> None:
     """
-    Log message with guaranteed write when logging is enabled (never raises exceptions).
+    Append a timestamped line to the debug log while logging is enabled (never raises).
 
-    Logging is CONDITIONAL based on CLAUDE_HOOK_DEBUG_ENABLED environment variable.
-    If not set or set to values other than "1", "true", "yes" → NO logs written.
-
-    This function provides conditional logging that:
-    - Only writes logs when CLAUDE_HOOK_DEBUG_ENABLED is set to "1", "true", or "yes"
-    - Never depends on CLAUDE_PROJECT_DIR environment variable
-    - Never breaks the hook (all exceptions caught silently)
-    - Uses multiple fallback locations for reliability when enabled
-    - Provides timestamp and log level for each message
+    Logging is on only when CLAUDE_HOOK_DEBUG_ENABLED is "1", "true", or "yes";
+    otherwise this returns at once, before any file or directory is touched.
+    While it is on, the first call resolves the log location through the
+    fallback chain of _log_file(), and a failed write is swallowed so logging
+    never breaks the hook.
 
     Args:
         message: The message to log
         level: Log level (INFO, ERROR, DEBUG, etc.)
     """
-    # Early exit if logging not enabled
     if not _LOGGING_ENABLED:
         return
 
     try:
-        with _LOG_FILE.open('a', encoding='utf-8') as f:
+        with _log_file().open('a', encoding='utf-8') as f:
             timestamp = datetime.now(tz=UTC).isoformat()
             f.write(f'{timestamp} [{level}] {message}\n')
     except Exception:
@@ -244,19 +247,19 @@ def log_always(message: str, level: str = 'INFO') -> None:
         pass
 
 
-# Log script start IMMEDIATELY
-log_always('=' * 80)
-log_always('SCRIPT START')
-log_always(f'sys.argv: {sys.argv}')
-log_always(f'cwd: {os.getcwd()}')
-log_always(f'Python version: {sys.version}')
-log_always(f'Python executable: {sys.executable}')
-log_always(f"CLAUDE_PROJECT_DIR: {os.environ.get('CLAUDE_PROJECT_DIR', 'NOT SET')}")
-log_always(f"CLAUDE_HOOK_DEBUG_FILE: {os.environ.get('CLAUDE_HOOK_DEBUG_FILE', 'NOT SET')}")
-log_always(f'Log file location: {_LOG_FILE}')
-log_always(f'stdin isatty: {sys.stdin.isatty()}')
-
-log_always('FastMCP Client imported successfully')
+# Record the run's starting state as the first entries of its log
+if _LOGGING_ENABLED:
+    log_always('=' * 80)
+    log_always('SCRIPT START')
+    log_always(f'sys.argv: {sys.argv}')
+    log_always(f'cwd: {os.getcwd()}')
+    log_always(f'Python version: {sys.version}')
+    log_always(f'Python executable: {sys.executable}')
+    log_always(f"CLAUDE_PROJECT_DIR: {os.environ.get('CLAUDE_PROJECT_DIR', 'NOT SET')}")
+    log_always(f"CLAUDE_HOOK_DEBUG_FILE: {os.environ.get('CLAUDE_HOOK_DEBUG_FILE', 'NOT SET')}")
+    log_always(f'Log file location: {_log_file()}')
+    log_always(f'stdin isatty: {sys.stdin.isatty()}')
+    log_always('FastMCP Client imported successfully')
 
 
 def _warmup_uvx_cache(server_config: dict[str, Any]) -> None:
@@ -350,47 +353,6 @@ def setup_windows_utf8() -> None:
         # Hook should still work even if UTF-8 setup fails
         error_msg = f'Failed to set Windows UTF-8 mode: {e}'
         log_always(error_msg, level='ERROR')
-
-
-def log_error(message: str) -> None:
-    """
-    Log errors to a debug file with default location for better diagnostics.
-
-    Uses CLAUDE_HOOK_DEBUG_FILE environment variable to specify log location.
-    If not set, defaults to .claude/.hook_debug.log in the project directory.
-
-    This function is kept for backward compatibility with existing code that
-    uses it, but internally delegates to log_always for guaranteed logging.
-
-    Logging is CONDITIONAL based on CLAUDE_HOOK_DEBUG_ENABLED environment variable.
-
-    Args:
-        message: The error message to log
-    """
-    # Use log_always for guaranteed logging
-    log_always(message, level='INFO')
-
-    # Early exit if logging not enabled
-    if not _LOGGING_ENABLED:
-        return
-
-    # Also try old logging path for compatibility
-    debug_file = os.environ.get('CLAUDE_HOOK_DEBUG_FILE')
-
-    # Default to project-local debug log if not specified
-    if not debug_file:
-        project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
-        if project_dir:
-            debug_file = str(Path(project_dir) / '.claude' / '.hook_debug.log')
-
-    if debug_file and debug_file != str(_LOG_FILE):
-        try:
-            with Path(debug_file).open('a', encoding='utf-8') as f:
-                timestamp = datetime.now(tz=UTC).isoformat()
-                f.write(f'{timestamp}: {message}\n')
-        except Exception:
-            # Silent failure for logging - don't break the hook
-            pass
 
 
 def report_error(error_type: str, error_msg: str) -> None:
@@ -1538,7 +1500,7 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClie
     """
     Create appropriate MCP client based on transport configuration.
 
-    This factory function selects between stdio transport (existing behavior via uvx)
+    This factory function selects between stdio transport (a server launched through uvx)
     and HTTP transport (using FastMCP Client for remote MCP servers).
 
     Args:
@@ -1621,21 +1583,15 @@ def main() -> None:
         try:
             reconfigure_method(encoding='utf-8')
             log_always('stdin reconfigured to UTF-8 via reconfigure()')
-            log_error('Git Bash compatibility: stdin reconfigured to UTF-8')
         except OSError as e:
-            error_msg = f'stdin reconfigure failed: {e}'
-            log_always(error_msg, level='ERROR')
-            log_error(f'Git Bash compatibility: {error_msg}')
+            log_always(f'stdin reconfigure failed: {e}', level='ERROR')
     else:
         # Fallback for Python < 3.7 or if reconfigure() not available
         try:
             sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
             log_always('stdin wrapped with UTF-8 TextIOWrapper')
-            log_error('Git Bash compatibility: stdin wrapped with UTF-8 TextIOWrapper')
         except Exception as e:
-            error_msg = f'stdin UTF-8 fix failed: {e}'
-            log_always(error_msg, level='ERROR')
-            log_error(f'Git Bash compatibility: {error_msg}')
+            log_always(f'stdin UTF-8 fix failed: {e}', level='ERROR')
 
     # Read input from stdin
     log_always('Reading stdin data')
@@ -1740,8 +1696,7 @@ def main() -> None:
 
         # Check for chunked storage and surface complete chunk-storage info to the
         # model via additionalContext (both success-chunk-ids AND any partial-failure
-        # summary). Operator-TUI stderr feedback for fail_mode is preserved as a
-        # deliberate companion channel that humans see in the TUI.
+        # summary).
         if result.get('chunked', False):
             chunks_failed = result.get('chunks_failed', 0)
             total_chunks = result.get('total_chunks', 0)
@@ -1773,9 +1728,12 @@ def main() -> None:
                 log_always(partial_failure_summary, level='WARN')
                 report_error('CHUNK_STORAGE_PARTIAL', partial_failure_summary)
 
-                # Operator-TUI feedback based on fail_mode (companion to model-visible
-                # additionalContext below; humans see [WARN]/[ERROR] in the TUI even
-                # when the model also sees the same info via additionalContext)
+                # A stderr line chosen by fail_mode. The hook exits 0, and Claude Code
+                # records the stderr of a hook that exits 0 only in its debug log,
+                # which exists only while its debug logging is on (for example under
+                # --debug or --debug-file), so the line reaches neither the transcript
+                # nor the model; the model learns of the partial failure through
+                # additionalContext below while output_context_id is on.
                 if fail_mode == 'warn':
                     print(f'[WARN] {partial_failure_summary}', file=sys.stderr)
                 elif fail_mode == 'error':
