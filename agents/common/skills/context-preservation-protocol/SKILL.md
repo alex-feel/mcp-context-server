@@ -8,7 +8,7 @@ description: |
 
 # Context Preservation Best Practices
 
-Storing work documentation and context before stopping is MANDATORY whenever you have context-server store capability and produced substantive work this session: only the durable record survives a context reset or compaction, so an artifact left in an ephemeral channel is lost. The patterns in this skill help you structure and store your work results in the context server.
+Storing work documentation and context before stopping is mandatory whenever you have context-server store capability and produced substantive work this session: only the durable record survives a context reset or compaction, so an artifact left in an ephemeral channel is lost. The patterns in this skill help you structure and store your work results in the context server.
 
 </overview>
 
@@ -16,7 +16,7 @@ Storing work documentation and context before stopping is MANDATORY whenever you
 
 # Mandatory First Step: Load the Metadata Schema
 
-Before composing the metadata of ANY entry you store or update, invoke `Skill(skill="context-metadata-schema")`. That skill is the single normative source for the metadata contract: the universal core fields (`schema_version`, `kind`, `project`, `links`), the kind registry (`report`, `plan`, `handoff`, `checkpoint`, `note`, `issue`, `comment`, `user_message`), the kind-scoped status vocabularies, the typed `links` registry with its design rules, the filter recipes, and the operational rules for link appends, supersession, deduplication, and concurrency. This skill covers the storage WORKFLOW; the metadata examples below show the contract in action but do not redefine it -- on any discrepancy, the schema skill wins.
+Before composing the metadata of any entry you store or update, invoke `Skill(skill="context-metadata-schema")`. That skill is the single normative source for the metadata contract: the universal core fields (`schema_version`, `kind`, `project`, `links`), the kind registry with each kind's fields, the kind-scoped status vocabularies, the typed `links` registry with its design rules, the filter recipes, and the operational rules for link appends, supersession, deduplication, and concurrency. This skill covers the storage workflow; the metadata examples below show the contract in action but do not redefine it -- on any discrepancy, the schema skill wins.
 
 </schema_directive>
 
@@ -42,8 +42,8 @@ The tools below cover storage and update. For retrieval and search, the context 
 
 | Tool                   | Status           | Use For                                              |
 |------------------------|------------------|------------------------------------------------------|
-| `store_context`        | RECOMMENDED      | Store NEW entry (standard for fresh work reports)    |
-| `update_context`       | RECOMMENDED      | Update EXISTING entry (for revisions/continuations)  |
+| `store_context`        | Recommended      | Store new entry (standard for fresh work reports)    |
+| `update_context`       | Recommended      | Update existing entry (for revisions/continuations)  |
 | `store_context_batch`  | Optional         | Store multiple entries at once (rarely needed)       |
 | `update_context_batch` | Optional         | Update multiple entries at once (rarely needed)      |
 | `delete_context`       | Use with caution | Delete specific context entries                      |
@@ -51,7 +51,7 @@ The tools below cover storage and update. For retrieval and search, the context 
 | `list_threads`         | Optional         | Discover available threads and their metadata        |
 | `get_statistics`       | Optional         | Check server health and usage metrics                |
 
-Use `store_context_batch` ONLY when storing multiple independent entries in a single operation (typically migrations, imports, or bulk data operations) -- NOT for normal work reports (use `store_context` instead).
+Use `store_context_batch` only when storing multiple independent entries in a single operation (typically migrations, imports, or bulk data operations) -- not for normal work reports (use `store_context` instead).
 
 **Protocol requirements:**
 
@@ -69,27 +69,27 @@ Use `store_context_batch` ONLY when storing multiple independent entries in a si
 
 ### When to Use update_context vs store_context
 
-Use `update_context` when revising a previously stored plan based on user feedback, continuing research that was marked INCOMPLETE, correcting errors in a prior report, or updating status from "pending" to "done". Use `store_context` when creating fresh research/implementation work, when no prior context_id exists for this task, or when starting a new research thread.
+Use `update_context` when revising a previously stored plan based on user feedback, continuing work whose entry still has `status: "pending"`, correcting errors in a prior report, or updating status from "pending" to "done". Use `store_context` when creating fresh research/implementation work, when no prior context_id exists for this task, when starting a new research thread, or when recording a milestone checkpoint, which is always a new entry.
 
 ### update_context Parameters
 
 | Parameter        | Required | Description                                        |
 |------------------|----------|----------------------------------------------------|
-| `context_id`     | YES      | ID of the entry to update                          |
-| `text`           | NO       | Complete revised text (replaces existing entirely) |
-| `metadata`       | NO       | Full metadata replacement (replaces all metadata)  |
-| `metadata_patch` | NO       | Partial metadata update (RFC 7396 merge semantics) |
-| `tags`           | NO       | Updated tags (replaces existing tags entirely)     |
+| `context_id`     | Yes      | ID of the entry to update                          |
+| `text`           | No       | Complete revised text (replaces existing entirely) |
+| `metadata`       | No       | Full metadata replacement (replaces all metadata)  |
+| `metadata_patch` | No       | Partial metadata update (RFC 7396 merge semantics) |
+| `tags`           | No       | Updated tags (replaces existing tags entirely)     |
 
 **Important:** Use `metadata_patch` (not `metadata`) for revisions to preserve fields you do not want to change. The `updated_at` timestamp is set automatically by the server, and embeddings are regenerated when text changes.
 
 ### Metadata Merge Semantics (RFC 7396)
 
-With `metadata_patch`: new keys are ADDED, existing keys are UPDATED with new values, keys set to `null` are DELETED, omitted keys are PRESERVED unchanged, and nested objects deep-merge key-by-key -- but ARRAYS are always replaced whole, never merged element-wise.
+With `metadata_patch`: new keys are added, existing keys are updated with new values, keys set to `null` are deleted, omitted keys are preserved unchanged, and nested objects deep-merge key-by-key -- but arrays are always replaced whole, never merged element-wise.
 
-**Appending to a links array is therefore read-modify-write:** retrieve the entry with `get_context_by_ids`, append the new ID client-side to the touched key's array, then patch ONLY that key with its complete new array (for example `metadata_patch={"links": {"derived_from": [3348, 3349, 3401]}}`). Sibling keys inside `links` survive the deep merge untouched. Never hand-construct an array you did not first read.
+**Appending to a links array is therefore read-modify-write:** retrieve the entry with `get_context_by_ids`, append the new ID client-side to the touched key's array, then patch only that key with its complete new array (for example `metadata_patch={"links": {"derived_from": [3348, 3349, 3401]}}`). Sibling keys inside `links` survive the deep merge untouched. Never hand-construct an array you did not first read.
 
-**Superseding an earlier entry is a two-write sequence:** FIRST store the replacing entry with `links.supersedes` naming the old ID, THEN patch the old entry to `status: "superseded"`. If the second write is lost, the edge wins -- readers trust `links.supersedes` over a stale status, and any session noticing the mismatch repairs it.
+**Superseding an earlier entry is a two-write sequence:** first store the replacing entry with `links.supersedes` naming the old ID, then patch the old entry to `status: "superseded"`. If the second write is lost, the edge wins -- readers trust `links.supersedes` over a stale status, and any session noticing the mismatch repairs it.
 
 **Concurrency:** `update_context` uses compare-and-set versioning and fails with a version-conflict error when the entry changed underneath you. On conflict, refetch, reapply your change to the fresh state, and retry once.
 
@@ -99,21 +99,17 @@ When updating an existing entry for plan revision:
 
 1. **Extract context_id** from the prompt (e.g., `PREVIOUS CONTEXT ID: 123`)
 2. **Retrieve previous entry:** `get_context_by_ids([context_id])`
-3. **Verify ownership:** Check that `agent_name` in metadata matches your agent identifier
-4. **Create revised content:** Generate the updated plan as one coherent revision (never an appended addendum)
-5. **Call update_context:**
+3. **Create revised content:** Generate the updated plan as one coherent revision (never an appended addendum)
+4. **Call update_context** with the revised text, a `metadata_patch` holding only the fields that change, and `tags` carrying the entry's kind token plus its existing labels (tags replace the whole list). A revised plan that has not been executed yet stays `pending`:
    ```text
    update_context(
        context_id=<extracted_id>,
-       text=<revised_report>,
-       metadata_patch={
-           "revision_count": <current + 1 or 1 if first revision>,
-           "status": "done"
-       },
-       tags=["report", "research", ...]
+       text=<revised_plan>,
+       metadata_patch={"status": "pending"},
+       tags=["plan", ...]
    )
    ```
-6. **Return SAME context_id** in status message
+5. **Return same context_id** in status message
 
 </update_strategy>
 
@@ -142,9 +138,9 @@ Structured metadata enables sophisticated workflows across multiple agents. Thes
 
 When you have context-server store capability and produced substantive work this session, you MUST complete the following before stopping (if you already stored this report earlier in the same session and it is unchanged, do not store it again):
 
-1. **Create a comprehensive Markdown report** of your work results:
+1. **Write a Markdown report** of your work results that covers every point a later reader needs and nothing more:
 
-   **FIRST CHECK**: If you have a specific report structure defined in your own agent instructions, use your own STRUCTURE within the Markdown format. **ONLY IF NO SPECIFIC FORMAT EXISTS**, use the following structure:
+   **First check**: If you have a specific report structure defined in your own agent instructions, use your own structure within the Markdown format. **Only if no specific format exists**, use the following structure:
 
    ```markdown
    ## Summary
@@ -154,10 +150,10 @@ When you have context-server store capability and produced substantive work this
    - What goals you were tasked to achieve
 
    ## Work Performed
-   - Detailed list of all tasks completed
+   - The tasks you completed
 
    ## Results Achieved
-   - Detailed documentation, outcomes, deliverables
+   - Outcomes and deliverables
    - Examples (code snippets, configurations)
    - URIs (URLs, file paths)
    - References (version numbers, filenames, entity names, line numbers)
@@ -168,7 +164,7 @@ When you have context-server store capability and produced substantive work this
 
    **Front-load critical information:** Place key findings, decisions, recommendations, and conclusions in the opening section (Summary) of your stored entries. Search tools return truncated previews from the beginning of stored text -- information buried deep in an entry may be invisible during search-based discovery, causing other agents to misjudge relevance and skip retrieval of entries that contain important content.
 
-2. **Always use English** to write the report, REGARDLESS of the language requested by the calling party.
+2. **Always use English** to write the report, regardless of the language requested by the calling party.
 
 3. **Save the report** using `store_context` with these parameters:
    - `thread_id`: Your thread ID (REQUIRED)
@@ -195,7 +191,7 @@ When you have context-server store capability and produced substantive work this
 
 4. **Confirm the `store_context` call succeeded** before you rely on it -- check the response for `success: true` and a `context_id` rather than assuming the call landed, since a failed or malformed call leaves nothing durable behind despite looking complete in your working trace. Once confirmed, capture the `context_id` and include it in your brief completion status to the calling party -- format: `"[Brief status summary]. Report ID: [context_id]"` (e.g., `"Implementation complete. 3 features implemented. Report ID: 2510"`). The caller can use this ID to retrieve the full report via `get_context_by_ids([context_id])`
 
-This ensures your work is documented, preserved, and **retrievable by other agents** who need your detailed findings. A structured-output return value or any other in-window reply to your caller is SEPARATE from this durable record and does NOT substitute for it; the ephemeral reply is lost on compaction, the stored entry is not. A dispatch instruction that forbids writing report files to disk (for example a swarm or deep-research "do not write files to disk" contract) governs on-disk files only and does NOT relieve you of storing the context-server entry.
+This ensures your work is documented, preserved, and **retrievable by other agents** who need your detailed findings. A structured-output return value or any other in-window reply to your caller is separate from this durable record and does not substitute for it; the ephemeral reply is lost on compaction, the stored entry is not. A dispatch instruction that forbids writing report files to disk (for example a swarm or deep-research "do not write files to disk" contract) governs on-disk files only and does not relieve you of storing the context-server entry.
 
 </strategy>
 
@@ -217,9 +213,9 @@ Apply these by default when storing context:
 
 For tasks spanning multiple context windows or extended multi-step execution:
 
-- **Checkpoint storage:** At defined milestones, store a `kind: "checkpoint"` entry containing a summary of completed steps and remaining work, key decisions and their rationale, active blockers or dependencies, and the list of modified files and their purpose. Set `status: "pending"` and point `links.derived_from` at the task plan
+- **Checkpoint storage:** At each defined milestone, store a new `kind: "checkpoint"` entry -- one per milestone, never an update of the previous checkpoint -- containing a summary of completed steps and remaining work, key decisions and their rationale, active blockers or dependencies, and the list of modified files and their purpose. Set `status: "pending"` and point `links.derived_from` at the task plan and at the previous checkpoint, so a resuming session reads the latest checkpoint and can walk the chain back from it
 - **Progressive summarization:** For tasks generating large volumes of context, periodically store condensed summary entries distilling key findings, decisions, and progress. Point `links.derived_from` at the original detailed entries and tag summaries consistently (e.g., with task name) for easy retrieval
-- **Plan supersession:** When a revised plan replaces an earlier one as a NEW entry, follow the supersession sequence (store the new plan with `links.supersedes`, then patch the old plan to `status: "superseded"`) so later sessions can always answer "is there a newer plan"
+- **Plan supersession:** When a revised plan replaces an earlier one as a new entry, follow the supersession sequence (store the new plan with `links.supersedes`, then patch the old plan to `status: "superseded"`) so later sessions can always answer "is there a newer plan"
 - **Multi-agent handoff reports:** When another agent will continue your work, store a comprehensive handoff report that the receiving agent can understand without additional context: clear sections (Summary, Work Performed, Results, Next Steps, and others) covering goals, work performed, results, and explicit next steps; all relevant typed links so the receiving agent can trace the full work chain; and `kind`, `report_type`, and `agent_name` set accurately for precise filtering
 
 </context_continuity>
@@ -237,13 +233,13 @@ For tasks spanning multiple context windows or extended multi-step execution:
 
 <example scenario="partial_completion">
 **Input:** Agent completed 2 of 3 tasks, blocked on third
-**Correct Approach:** (1) Create report documenting completed work AND blocker; (2) Set status to "pending" in metadata; (3) Store report and capture `context_id`; (4) Return brief status with Report ID explaining blocker
+**Correct Approach:** (1) Create report documenting completed work and blocker; (2) Set status to "pending" in metadata; (3) Store report and capture `context_id`; (4) Return brief status with Report ID explaining blocker
 **Returned Status:** "Partial completion. 2/3 tasks done. BLOCKED: Missing API credentials. Report ID: 2511"
 </example>
 
 <example scenario="context_server_failure">
 **Input:** Agent completed work but `store_context` call fails
-**Correct Approach:** (1) Attempt storage; (2) On failure, log error; (3) Return FULL REPORT to caller (not just status); (4) Inform caller of storage failure
+**Correct Approach:** (1) Attempt storage; (2) On failure, log error; (3) Return full report to caller (not just status); (4) Inform caller of storage failure
 **Returned to Caller:** Full Markdown report + "WARNING: Context server storage failed. Full report included above."
 </example>
 
@@ -258,7 +254,7 @@ For tasks spanning multiple context windows or extended multi-step execution:
 Context server storage is mandatory for substantive work when you have store capability; failure to store means work results may be lost. If context storage fails (network error, server unavailable, timeout):
 
 1. **Retry once** after 2 seconds for transient errors (timeout, 5xx)
-2. **If retry fails or the error is non-transient (4xx, connection refused):** return the FULL REPORT to the caller inline in your response (not just a status summary) and inform the caller of the storage failure so they can decide next steps. Preserving the report inline ensures work is not lost entirely; the caller can manually store it later or take other action. Example fallback message:
+2. **If retry fails or the error is non-transient (4xx, connection refused):** return the full report to the caller inline in your response (not just a status summary) and inform the caller of the storage failure so they can decide next steps. Preserving the report inline ensures work is not lost entirely; the caller can manually store it later or take other action. Example fallback message:
 
    ```text
    WARNING: Context server storage failed. Full report included below.

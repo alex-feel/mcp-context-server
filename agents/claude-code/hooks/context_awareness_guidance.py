@@ -7,8 +7,8 @@
 Context Awareness Guidance Hook for Claude Code.
 
 This hook provides guidance text to the orchestrator at session start,
-informing it about the option to check recent context entries for workflow
-continuity after context compaction or session resume.
+telling it how to restore the original requirements and the state of prior
+work from the context server after a context compaction or session resume.
 
 The guidance content is configurable via external YAML configuration. The hook
 emits the message via the modern JSON ``hookSpecificOutput.additionalContext``
@@ -61,73 +61,54 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'guidance': {
         'header': 'THREAD CONTEXT AWARENESS',
         'purpose': (
-            'After context compaction or session resume, you may have lost track of session state '
-            'AND the original user requirements. ALWAYS retrieve user messages first (source="user") -- '
-            'these contain the original requirements and are the PRIMARY SOURCE OF TRUTH. Then check '
-            'recent agent reports (source="agent") to restore awareness of prior work.'
+            'After a context compaction or a session resume you may have lost track of session state and of the '
+            "original requirements. The user messages stored in the context server (source='user') state those "
+            'requirements and outrank any summary, your own compacted recollection included; agent reports '
+            "(source='agent') restore the state of prior work."
         ),
         'when_to_check': [
-            'At session start, especially after context compaction (retrieve original user requirements first)',
-            'When you are unsure about recent work or session state',
-            'When the user asks about prior work or session history',
-            "Before any action that depends on interpreting the user's original requirements",
+            'After a compaction or a session resume, before continuing work',
+            'When you are unsure about recent work or session state, or the user asks about it',
+            'Before an action that depends on how the original requirements read',
         ],
         'how_to_check': {
             'description': (
-                "Retrieve user messages FIRST (source='user'), then agent reports (source='agent'), "
-                'then use get_context_by_ids for full content of relevant entries from both searches.'
+                'Search the user messages first, then the agent reports, then read the relevant entries in full '
+                'with get_context_by_ids, because search results are truncated previews.'
             ),
             'example': (
-                "search_context(thread_id='thread-id', source='user', limit=10)   # USER MESSAGES FIRST\n"
-                "search_context(thread_id='thread-id', source='agent', limit=10)  # THEN AGENT REPORTS\n"
-                'get_context_by_ids(context_ids=[...relevant IDs, user messages first...])  # FULL CONTENT'
+                "search_context(thread_id='thread-id', source='user', limit=10)\n"
+                "search_context(thread_id='thread-id', source='agent', limit=10)\n"
+                'get_context_by_ids(context_ids=[...])'
             ),
         },
         'what_to_look_for': [
-            "User messages (source='user') containing original requirements - AUTHORITATIVE source of truth",
-            'Recent agent work reports and their status',
-            'Pending continuation markers (status: pending)',
-            'User decisions and preferences from this session',
-            'Discrepancies between agent reports and the original user messages',
+            "The original requirements, and the user's decisions and preferences from this session",
+            'Recent agent reports, their status, and entries with status pending, which mark interrupted work',
+            (
+                'Any place where an agent report or a task description departs from the user messages; '
+                'the user messages win'
+            ),
         ],
         'boundaries': [
-            'This check is for restoring YOUR session awareness',
-            'Always retrieve user messages first (they are the AUTHORITATIVE source of truth)',
-            'User messages override any summary or interpretation (including your own compacted recollection)',
-            'Do NOT preemptively load all context -- retrieve user messages, then agent reports as needed',
-            'Focus on the most recent entries first',
+            (
+                'The check restores your own session awareness, so retrieve what the current work needs, '
+                'most recent first, rather than loading everything'
+            ),
         ],
-            'emphasis': (
-            'This recovery is MANDATORY for session continuity after any compaction or resume: '
-            'before continuing work, re-read the original user requirements and your own active '
-            'plan or work-state by its preserved context_id.'
+        'emphasis': (
+            'After any compaction or resume, do this recovery before continuing work: re-read the original user '
+            'requirements and your own active plan or work-state by its preserved context_id.'
         ),
         'recovery_after_compaction': {
             'header': 'Recovery After Compaction',
             'steps': [
+                'Retrieve and read the user messages, then the agent reports, as described above',
                 (
-                    "FIRST retrieve user messages: search_context(thread_id='...', source='user', limit=10) -- "
-                    'original requirements are authoritative'
+                    'Re-read your own active plan or work-state by its preserved context_id; '
+                    'work you are doing yourself cannot resume without it'
                 ),
-                "THEN retrieve agent reports: search_context(thread_id='...', source='agent', limit=10)",
-                (
-                    'Use get_context_by_ids to read full content of relevant user messages AND agent reports '
-                    '(user messages first)'
-                ),
-                (
-                    'Re-read YOUR OWN active plan or work-state by its preserved context_id (get_context_by_ids) -- '
-                    'if you are doing the work yourself, you cannot resume it after compaction without re-reading '
-                    'the plan you authored'
-                ),
-                'Look for entries with status: pending to identify interrupted work',
-                (
-                    'Reconcile any orchestrator task description against retrieved user messages; '
-                    'user messages win on conflict'
-                ),
-                (
-                    'Continue from last confirmed state, verified against the original user requirements '
-                    'and your re-read active plan'
-                ),
+                'Continue from the last confirmed state, checked against the user messages and the re-read plan',
             ],
         },
     },
