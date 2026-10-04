@@ -3,9 +3,14 @@
 Tests verify that generate_fts_description produces correct output
 for both SQLite and PostgreSQL backends across various FTS language
 configurations, and that structural invariants of the description
-template are maintained.
+template are maintained. The access-scoping tests also pin the
+SQLite score note in the description hybrid_search_context serves.
 """
 
+import pytest
+from fastmcp import FastMCP
+
+from app.tools import register_tool
 from app.tools.descriptions import _FTS_DESCRIPTION_TEMPLATE
 from app.tools.descriptions import _POSTGRESQL_MODE_DESCRIPTIONS
 from app.tools.descriptions import _SQLITE_MODE_DESCRIPTIONS
@@ -147,3 +152,22 @@ class TestDescriptionAccessScoping:
         result = generate_fts_description('postgresql', 'english')
         assert 'ts_rank_cd scores each entry on its own' in result
         assert 'whole FTS5 index' not in result
+
+    @pytest.mark.asyncio
+    async def test_hybrid_names_the_whole_index_bm25_statistics(self) -> None:
+        """The served hybrid description carries the SQLite score note its fts_score inherits from bm25()."""
+        from app.tools.search.hybrid import hybrid_search_context
+
+        mcp: FastMCP[None] = FastMCP(name='hybrid-description')
+        assert register_tool(mcp, hybrid_search_context) is True
+        tool = await mcp.get_tool('hybrid_search_context')
+        assert tool is not None
+        assert tool.description is not None
+        # The description is the tool docstring, wrapped across lines; a client reads it as prose.
+        description = ' '.join(tool.description.split())
+        assert 'On SQLite the BM25 score draws on statistics of the whole FTS5 index' in description
+        assert 'entries the caller cannot read included' in description
+        assert 'the set of matching entries and the number of results per page depend only on what the caller can read' in (
+            description
+        )
+        assert "PostgreSQL's ts_rank_cd scores each entry on its own" in description

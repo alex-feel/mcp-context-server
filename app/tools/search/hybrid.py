@@ -276,7 +276,12 @@ async def hybrid_search_context(
     - rrf: Combined fusion score (HIGHER = better)
     - fts_rank: Rank in full-text results (LOWER = better, 1 = best)
     - semantic_rank: Rank in semantic results (LOWER = better, 1 = best)
-    - fts_score: BM25/ts_rank relevance (HIGHER = better match)
+    - fts_score: BM25/ts_rank relevance (HIGHER = better match). On SQLite the BM25
+      score draws on statistics of the whole FTS5 index, entries the caller cannot
+      read included, so the scores of readable entries and their relative order can
+      shift as other principals' entries change, while the set of matching entries
+      and the number of results per page depend only on what the caller can read.
+      PostgreSQL's ts_rank_cd scores each entry on its own.
     - semantic_distance: LOWER = more similar (L2 for fp32/mse storage, negated inner product for the ip compression variant)
     - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
