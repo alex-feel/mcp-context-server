@@ -4,7 +4,7 @@
 # dependencies = ["pyyaml"]
 # ///
 """
-Git worktree context detection hook for AEGIS.
+Git worktree context detection hook for Claude Code sessions.
 
 Provides canonical project name from git remote URL and worktree metadata
 to enable proper context isolation across parallel worktree sessions.
