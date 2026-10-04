@@ -67,6 +67,9 @@ class HarnessCore:
         self.pg_url = pg_url
         self.client_mode: ClientMode = client_mode
         self.registered_tools: frozenset[str] = frozenset()
+        # The environment the primary server was started with; a second server that
+        # shares the primary's database starts from it (see _second_server).
+        self.server_env: dict[str, str] | None = None
 
     def _new_client(self, transport: ClientTransport) -> Client[Any]:
         """Build a client that negotiates the harness's protocol era.
@@ -137,6 +140,7 @@ class HarnessCore:
                     'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
                     'SUMMARY_ANTHROPIC_EFFORT': 'low',
                 }
+                self.server_env = server_env
                 transport = PythonStdioTransport(
                     script_path=str(wrapper_script),
                     env=server_env,
@@ -172,6 +176,7 @@ class HarnessCore:
                 'SUMMARY_ANTHROPIC_EFFORT': 'low',
             }
             print(f'[INFO] Using temporary database: {self.temp_db_path}')
+            self.server_env = server_env
             transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
             self.client = self._new_client(transport)
 
@@ -248,50 +253,69 @@ class HarnessCore:
         return {'success': False, 'error': 'Unable to extract content from result'}
 
     @contextlib.asynccontextmanager
-    async def _second_server(self, extra_env: dict[str, str]) -> AsyncIterator[Client[Any]]:
+    async def _second_server(
+        self, extra_env: dict[str, str], *, share_primary_database: bool = False,
+    ) -> AsyncIterator[Client[Any]]:
         """Run a SECOND server subprocess carrying extra environment overrides.
 
         Some behavior is decided once, at server startup -- a feature toggle, a pool
-        timeout, the indexed-metadata configuration -- so it cannot be exercised against
-        the long-lived server ``connect_client`` connected to. The overrides are applied
-        on top of that same environment, and backend routing matches the harness's own:
-        PostgreSQL reuses the shared test database, while SQLite gets an isolated
-        temporary file so the second server never contends with the primary client's
-        database.
+        timeout, the indexed-metadata configuration, the default principal -- so it
+        cannot be exercised against the long-lived server ``connect_client`` connected
+        to. By default the overrides are applied on top of the harness defaults, and
+        backend routing matches the harness's own: PostgreSQL reuses the shared test
+        database, while SQLite gets an isolated temporary file so the second server
+        never contends with the primary client's database.
+
+        With ``share_primary_database`` the second server instead starts from the
+        primary server's own environment, so it serves the primary's database on
+        both backends (SQLite in WAL mode admits the second process) with the same
+        embedding provider, model and dimension and the same compression setting --
+        the startup guard refuses a compression setting that disagrees with the
+        database -- and differs only by the overrides.
 
         ``PythonStdioTransport(env=...)`` passes the dict explicitly on both backends,
         because the MCP SDK env whitelist applied to a bare script path strips
         app-specific variables.
 
         Args:
-            extra_env: Environment overrides applied last, so they win over the
-                harness defaults.
+            extra_env: Environment overrides applied last, so they win over every
+                other value.
+            share_primary_database: Start from the primary server's environment and
+                serve its database.
 
         Yields:
             A connected client for the second server.
+
+        Raises:
+            RuntimeError: If sharing is requested before the primary server started.
         """
         wrapper_script = Path(__file__).parents[2] / 'run_server.py'
-        server_env: dict[str, str] = {
-            **os.environ,
-            'MCP_TEST_MODE': '1',
-            'DISABLED_TOOLS': '',
-            'ENABLE_SEMANTIC_SEARCH': 'true',
-            'ENABLE_FTS': 'true',
-            'ENABLE_HYBRID_SEARCH': 'true',
-            'ENABLE_EMBEDDING_COMPRESSION': 'false',
-            'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
-            'SUMMARY_ANTHROPIC_EFFORT': 'low',
-        }
         second_db_path: Path | None = None
-        if self.backend == 'postgresql':
-            server_env['STORAGE_BACKEND'] = 'postgresql'
-            server_env['POSTGRESQL_CONNECTION_STRING'] = self.pg_url or ''
+        if share_primary_database:
+            if self.server_env is None:
+                raise RuntimeError('The primary server must be started before a second server can share its database')
+            server_env = {**self.server_env, **extra_env}
         else:
-            server_env['STORAGE_BACKEND'] = 'sqlite'
-            second_db_dir = tempfile.mkdtemp(prefix='mcp_harness_second_')
-            second_db_path = Path(second_db_dir) / 'second_server.db'
-            server_env['DB_PATH'] = str(second_db_path)
-        server_env.update(extra_env)
+            server_env = {
+                **os.environ,
+                'MCP_TEST_MODE': '1',
+                'DISABLED_TOOLS': '',
+                'ENABLE_SEMANTIC_SEARCH': 'true',
+                'ENABLE_FTS': 'true',
+                'ENABLE_HYBRID_SEARCH': 'true',
+                'ENABLE_EMBEDDING_COMPRESSION': 'false',
+                'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
+                'SUMMARY_ANTHROPIC_EFFORT': 'low',
+            }
+            if self.backend == 'postgresql':
+                server_env['STORAGE_BACKEND'] = 'postgresql'
+                server_env['POSTGRESQL_CONNECTION_STRING'] = self.pg_url or ''
+            else:
+                server_env['STORAGE_BACKEND'] = 'sqlite'
+                second_db_dir = tempfile.mkdtemp(prefix='mcp_harness_second_')
+                second_db_path = Path(second_db_dir) / 'second_server.db'
+                server_env['DB_PATH'] = str(second_db_path)
+            server_env.update(extra_env)
 
         transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
         second_client = self._new_client(transport)
