@@ -29,6 +29,7 @@ from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import rebind_package_settings
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
@@ -146,7 +147,7 @@ async def _seed_fp32_pg(
             vec = rng.standard_normal(DIM).astype(np.float32)
             vec /= np.linalg.norm(vec)
             cid, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='pg-compress-e2e',
                 source='user',

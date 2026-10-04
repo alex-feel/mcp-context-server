@@ -28,6 +28,7 @@ from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 
 DIM = 1024
 N_QUERIES = 10
@@ -138,7 +139,7 @@ async def compressed_corpus_backend(
             doc = doc.astype(np.float32)
             docs.append(doc)
             cid, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='search-e2e',
                 source='user',
@@ -171,7 +172,7 @@ async def compressed_corpus_backend(
         bg = bg.astype(np.float32)
         docs.append(bg)
         cid, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='search-e2e',
             source='user',
@@ -224,6 +225,7 @@ async def test_search_compressed_recall_on_real_storage(
             query_embedding=q.tolist(),
             limit=TOP_K,
             thread_id='search-e2e',
+            scope=LOCAL_SCOPE,
         )
         assert stats['backend'] == 'sqlite'
         assert len(results) == TOP_K

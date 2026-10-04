@@ -58,18 +58,19 @@ class TestAccessControlSettings:
     def test_env_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Each field binds to its ACCESS_CONTROL_* env var."""
         monkeypatch.setenv('ACCESS_CONTROL_DEFAULT_PRINCIPAL', 'kb-service')
-        monkeypatch.setenv('ACCESS_CONTROL_DEFAULT_VISIBILITY', 'shared')
+        monkeypatch.setenv('ACCESS_CONTROL_DEFAULT_VISIBILITY', 'public')
         monkeypatch.setenv('ACCESS_CONTROL_DEFAULT_GROUP_GRANTS', 'author_groups')
         monkeypatch.setenv('ACCESS_CONTROL_PUBLISH_ROLE', 'publisher')
         settings = AccessControlSettings()
         assert settings.default_principal == 'kb-service'
-        assert settings.default_visibility == 'shared'
+        assert settings.default_visibility == 'public'
         assert settings.default_group_grants == 'author_groups'
         assert settings.publish_role == 'publisher'
 
-    def test_invalid_visibility_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """default_visibility only accepts the three-value enum."""
-        monkeypatch.setenv('ACCESS_CONTROL_DEFAULT_VISIBILITY', 'everyone')
+    @pytest.mark.parametrize('visibility', ['everyone', 'shared'])
+    def test_invalid_visibility_rejected(self, visibility: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """default_visibility only accepts private or public."""
+        monkeypatch.setenv('ACCESS_CONTROL_DEFAULT_VISIBILITY', visibility)
         with pytest.raises(ValidationError):
             AccessControlSettings()
 
@@ -106,7 +107,7 @@ class TestAccessControlSettings:
         """AppSettings exposes the nested access_control settings."""
         get_settings.cache_clear()
         try:
-            assert get_settings().access_control.default_visibility in ('private', 'shared', 'public')
+            assert get_settings().access_control.default_visibility in ('private', 'public')
         finally:
             get_settings.cache_clear()
 

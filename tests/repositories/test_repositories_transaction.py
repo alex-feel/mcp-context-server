@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.helpers import LOCAL_SCOPE
+
 if TYPE_CHECKING:
     from app.backends import StorageBackend
     from app.repositories import RepositoryContainer
@@ -31,7 +33,7 @@ class TestContextRepositoryTransaction:
         backend, repos = backend_with_repos
 
         context_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -45,7 +47,7 @@ class TestContextRepositoryTransaction:
         assert was_updated is False
 
         # Verify data was stored
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == 'Test content'
 
@@ -59,7 +61,7 @@ class TestContextRepositoryTransaction:
 
         async with backend.begin_transaction() as txn:
             context_id, was_updated = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='test-thread',
                 source='agent',
@@ -73,7 +75,7 @@ class TestContextRepositoryTransaction:
             assert was_updated is False
 
         # Transaction committed - verify data persisted
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == 'Transaction content'
 
@@ -87,7 +89,7 @@ class TestContextRepositoryTransaction:
 
         # First create an entry
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -97,11 +99,11 @@ class TestContextRepositoryTransaction:
 
         # Delete within transaction
         async with backend.begin_transaction() as txn:
-            deleted_count = await repos.context.delete_by_ids([context_id], txn=txn)
+            deleted_count = await repos.context.delete_by_ids([context_id], scope=LOCAL_SCOPE, txn=txn)
             assert deleted_count == 1
 
         # Verify deletion persisted
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 0
 
     @pytest.mark.asyncio
@@ -114,7 +116,7 @@ class TestContextRepositoryTransaction:
 
         # First create an entry
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -128,12 +130,13 @@ class TestContextRepositoryTransaction:
                 context_id=context_id,
                 text_content='Updated content',
                 txn=txn,
+                scope=LOCAL_SCOPE,
             )
             assert success is True
             assert 'text_content' in updated_fields
 
         # Verify update persisted
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == 'Updated content'
 
@@ -151,7 +154,7 @@ class TestTagRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -176,7 +179,7 @@ class TestTagRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -202,7 +205,7 @@ class TestTagRepositoryTransaction:
 
         # Create context with initial tags
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -234,7 +237,7 @@ class TestImageRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -261,7 +264,7 @@ class TestImageRepositoryTransaction:
 
         # Create context entry first
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread',
             source='user',
@@ -292,7 +295,7 @@ class TestMultiRepositoryTransaction:
         async with backend.begin_transaction() as txn:
             # Store context
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='atomic-test',
                 source='agent',
@@ -305,7 +308,7 @@ class TestMultiRepositoryTransaction:
             await repos.tags.store_tags(context_id, ['atomic', 'test'], txn=txn)
 
         # Both should be committed
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -323,7 +326,7 @@ class TestMultiRepositoryTransaction:
         async with backend.begin_transaction() as txn:
             # Store context
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='multimodal-atomic',
                 source='user',
@@ -339,7 +342,7 @@ class TestMultiRepositoryTransaction:
             await repos.images.store_images(context_id, [sample_image_data], txn=txn)
 
         # All should be committed
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -363,7 +366,7 @@ class TestMultiRepositoryTransaction:
             async with backend.begin_transaction() as txn:
                 # Store context - this should succeed
                 context_id, _ = await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='rollback-test',
                     source='user',
@@ -382,7 +385,7 @@ class TestMultiRepositoryTransaction:
             pass  # Expected error
 
         # Verify nothing was committed - search for the content
-        entries, _ = await repos.context.search_contexts(thread_id='rollback-test')
+        entries, _ = await repos.context.search_contexts(thread_id='rollback-test', scope=LOCAL_SCOPE)
         assert len(entries) == initial_count  # Should be 0 if this was the only test
 
 
@@ -400,7 +403,7 @@ class TestRepositoryMethodsWithoutTransaction:
 
         # ContextRepository methods
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='compat-test',
             source='user',
@@ -411,6 +414,7 @@ class TestRepositoryMethodsWithoutTransaction:
         success, fields = await repos.context.update_context_entry(
             context_id=context_id,
             text_content='Updated compat test',
+            scope=LOCAL_SCOPE,
         )
         assert success is True
 
@@ -423,7 +427,7 @@ class TestRepositoryMethodsWithoutTransaction:
 
         # ImageRepository methods (create multimodal entry for images)
         mm_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='compat-test',
             source='user',
@@ -437,7 +441,7 @@ class TestRepositoryMethodsWithoutTransaction:
         assert len(images) == 1
 
         # Cleanup
-        await repos.context.delete_by_ids([context_id, mm_id])
+        await repos.context.delete_by_ids([context_id, mm_id], scope=LOCAL_SCOPE)
 
 
 class TestTxnAwareReadsUseTransactionConnection:
@@ -478,7 +482,7 @@ class TestTxnAwareReadsUseTransactionConnection:
         await backend.execute_write(_create_embedding_metadata)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='conc-1', source='user', content_type='text',
             text_content='txn read target', metadata=None,
@@ -489,7 +493,7 @@ class TestTxnAwareReadsUseTransactionConnection:
             # transaction connection instead, so execute_read is never called.
             guard = AsyncMock(side_effect=AssertionError('acquired a second connection'))
             with patch.object(backend, 'execute_read', new=guard):
-                content_type = await repos.context.get_content_type(context_id, txn=txn)
+                content_type = await repos.context.get_content_type(context_id, txn=txn, scope=LOCAL_SCOPE)
                 image_count = await repos.images.count_images_for_context(context_id, txn=txn)
                 embedding_exists = await repos.embeddings.exists(context_id, txn=txn)
 
@@ -506,10 +510,10 @@ class TestTxnAwareReadsUseTransactionConnection:
         # Omitting txn uses the pooled-read path.
         backend, repos = backend_with_repos
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='conc-1b', source='user', content_type='text',
             text_content='pool read target', metadata=None,
         )
-        assert await repos.context.get_content_type(context_id) == 'text'
+        assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
         assert await repos.images.count_images_for_context(context_id) == 0

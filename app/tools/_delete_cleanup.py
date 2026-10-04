@@ -1,16 +1,18 @@
-"""Entry deletion with the explicit embedding cleanup the active storage layout needs.
+"""Entry deletion with owner authorization and the explicit embedding cleanup the storage layout needs.
 
-Used by ``delete_context`` and ``delete_context_batch``: deletes the entries and,
-on SQLite layouts whose embedding rows do not cascade with the entry, removes
-their chunk and vector rows explicitly.
+Used by ``delete_context`` and ``delete_context_batch``: deletes the entries the
+caller owns and, on SQLite layouts whose embedding rows do not cascade with the
+entry, removes their chunk and vector rows explicitly.
 """
 
 import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from app.access_scope import AccessScope
 from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.settings import get_settings
+from app.tools._transactions import EntryNotAuthorizedError
 from app.tools._transactions import is_connection_error
 
 if TYPE_CHECKING:
@@ -118,37 +120,66 @@ async def delete_entries_with_cleanup(
     repos: 'RepositoryContainer',
     context_ids: list[str],
     *,
+    scope: AccessScope,
+    refuse_unauthorized: bool,
     max_retries: int = 2,
 ) -> int:
-    """Delete context entries and their FK-less embedding rows in one transaction.
+    """Delete the given entries the caller owns, with their FK-less embedding rows, in one transaction.
 
-    The single chokepoint shared by ``delete_context`` (both the by-ids and the
-    SQLite by-thread branch) and ``delete_context_batch``'s SQLite criteria
-    branch, so all three get identical cleanup-then-delete ordering, identical
-    atomicity, and identical transient-fault recovery.
+    The single chokepoint of every delete: ``delete_context`` by ids and by
+    thread, and ``delete_context_batch`` with and without ``context_ids``, so all
+    of them get identical authorization, cleanup-then-delete ordering, atomicity
+    and transient-fault recovery.
 
-    Cleanup and row delete share ONE transaction so a failure between them can
-    never leave entries stripped of their vectors while their rows survive. The
-    bounded retry mirrors the store and update write paths: a SQLITE_BUSY from a
-    cross-process lock collision, or a dropped PostgreSQL connection, is
-    self-clearing contention rather than a client error, and ``delete_by_ids`` is
-    idempotent, so re-running the rolled-back transaction is safe.
+    Deleting is owner-only. Inside the transaction the ids are probed under the
+    caller's scope: an id the caller may not read is skipped exactly like an
+    absent one, and an entry the caller may read but does not own is either
+    skipped (a thread or criteria delete) or, when ``refuse_unauthorized`` is set
+    for a delete that names ids, refuses the whole request before anything is
+    written. The cleanup and the row delete then cover exactly the owned ids.
+
+    The probe, the cleanup and the row delete share ONE transaction, so a grant
+    or visibility change after the probe cannot strip vectors from an entry the
+    delete then leaves in place, and a failure between the cleanup and the
+    delete can never leave entries stripped of their vectors while their rows
+    survive. The bounded retry mirrors the store and update write paths: a
+    SQLITE_BUSY from a cross-process lock collision, or a dropped PostgreSQL
+    connection, is self-clearing contention rather than a client error, and the
+    probe and ``delete_by_ids`` are idempotent, so re-running the rolled-back
+    transaction is safe.
 
     Args:
         repos: Repository container.
-        context_ids: The exact ids to remove.
+        context_ids: The ids to remove: the ids the caller named, or the snapshot
+            a thread or criteria delete took.
+        scope: The caller's scope.
+        refuse_unauthorized: Refuse the request when a readable id is not the
+            caller's, instead of skipping it.
         max_retries: Maximum transient-fault retries (exponential backoff).
 
     Returns:
         The number of context rows deleted.
+
+    Raises:
+        EntryNotAuthorizedError: When ``refuse_unauthorized`` is set and the
+            caller may read but does not own one of the entries; nothing is
+            deleted.
     """
     backend = repos.context.backend
     attempt = 0
     while True:
         try:
             async with backend.begin_transaction() as txn:
-                await cleanup_embeddings_for_delete(repos, txn, context_ids)
-                return await repos.context.delete_by_ids(context_ids, txn=txn)
+                access = await repos.context.probe_ids(context_ids, scope=scope, txn=txn)
+                deletable = [i for i in context_ids if i in access and access[i].is_owner]
+                if refuse_unauthorized:
+                    denied = [i for i in context_ids if i in access and not access[i].is_owner]
+                    if denied:
+                        raise EntryNotAuthorizedError(denied, action='delete')
+                if not deletable:
+                    return 0
+                await cleanup_embeddings_for_delete(repos, txn, deletable)
+                return await repos.context.delete_by_ids(deletable, scope=scope, txn=txn)
         except Exception as exc:
             if is_connection_error(exc) and attempt < max_retries:
                 delay = 0.5 * (2 ** attempt)

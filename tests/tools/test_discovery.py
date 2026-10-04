@@ -4,13 +4,17 @@ import asyncio
 import base64
 import sqlite3
 from typing import Literal
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 from fastmcp.exceptions import ToolError
 
+import app.startup
 import app.tools
+from app.access_scope import AccessScope
+from tests.helpers import as_principal
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -100,6 +104,62 @@ class TestListThreads:
         # Most recent activity should be first
         assert result['threads'][0]['thread_id'] == 'old_thread'
         assert result['threads'][1]['thread_id'] == 'new_thread'
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestListThreadsScoping:
+    """list_threads lists and counts only the entries the caller may read."""
+
+    @staticmethod
+    async def _store_as(principal_id: str, thread_id: str, text: str, visibility: Literal['private', 'public']) -> str:
+        """Store one entry as the principal and return its id."""
+        with as_principal(principal_id):
+            result = await store_context(thread_id=thread_id, source='agent', text=text, visibility=visibility)
+        return result['context_id']
+
+    @pytest.mark.asyncio
+    async def test_threads_without_a_readable_entry_are_absent(self) -> None:
+        """Bob does not see alice's private-only thread; alice sees both of hers."""
+        await self._store_as('alice', 'alice-private-thread', 'alice private thread entry', 'private')
+        await self._store_as('alice', 'alice-public-thread', 'alice public thread entry', 'public')
+
+        with as_principal('bob'):
+            bob = await list_threads()
+        with as_principal('alice'):
+            alice = await list_threads()
+
+        assert [thread['thread_id'] for thread in bob['threads']] == ['alice-public-thread']
+        assert bob['total_threads'] == 1
+        assert {thread['thread_id'] for thread in alice['threads']} == {'alice-private-thread', 'alice-public-thread'}
+        assert alice['total_threads'] == 2
+
+    @pytest.mark.asyncio
+    async def test_thread_figures_cover_readable_entries_only(self) -> None:
+        """A newer private entry raises alice's count and last id but not bob's."""
+        public_id = await self._store_as('alice', 'mixed-thread', 'alice public mixed entry', 'public')
+        private_id = await self._store_as('alice', 'mixed-thread', 'alice private mixed entry', 'private')
+
+        with as_principal('bob'):
+            [bob_thread] = (await list_threads())['threads']
+        with as_principal('alice'):
+            [alice_thread] = (await list_threads())['threads']
+
+        assert (bob_thread['entry_count'], bob_thread['last_id']) == (1, public_id)
+        assert (alice_thread['entry_count'], alice_thread['last_id']) == (2, private_id)
+
+    @pytest.mark.asyncio
+    async def test_scope_reaches_the_repository(self) -> None:
+        """The caller's principal and groups reach get_thread_list as its scope."""
+        repos = await app.startup.ensure_repositories()
+
+        with (
+            as_principal('bob', groups=['team-x']),
+            patch.object(repos.statistics, 'get_thread_list', AsyncMock(return_value=[])) as spy,
+        ):
+            await list_threads(limit=10)
+
+        assert spy.await_args is not None
+        assert spy.await_args.kwargs == {'scope': AccessScope('bob', frozenset({'team-x'})), 'limit': 10, 'offset': 0}
 
 
 @pytest.mark.usefixtures('initialized_server')

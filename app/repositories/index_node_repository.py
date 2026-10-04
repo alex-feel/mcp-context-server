@@ -15,6 +15,10 @@ from typing import Any
 from typing import NamedTuple
 from typing import cast
 
+from app.access_scope import AccessMode
+from app.access_scope import Scope
+from app.access_scope import build_access_predicate
+from app.access_scope import build_readable_parent_predicate
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 
@@ -242,13 +246,29 @@ class IndexNodeRepository(BaseRepository):
 
         return await self.backend.execute_read(cast(Any, _get_postgresql))
 
-    async def count_all_nodes(self) -> int:
-        """Return the total number of stored index_tree nodes (0 if table absent)."""
-        if self.backend.backend_type == 'sqlite':
+    async def count_all_nodes(self, *, scope: Scope) -> int:
+        """Return the number of stored index_tree nodes of the entries the scope may read.
+
+        A node counts when the READ predicate admits its entry. On SQLite the node's
+        context id is matched against the readable entry ids rather than joined to its
+        entry row (see ``build_readable_parent_predicate``).
+
+        Args:
+            scope: The caller's scope.
+
+        Returns:
+            The node count, or 0 when the table is absent.
+        """
+        backend_type = self.backend.backend_type
+        if backend_type == 'sqlite':
+            readable = build_readable_parent_predicate(
+                scope, child_key='n.context_id', parent_key='id', backend_type=backend_type,
+            )
+            sqlite_count_sql = f'SELECT COUNT(*) AS n FROM context_index_nodes n{readable.where_clause()}'
 
             def _count_sqlite(conn: sqlite3.Connection) -> int:
                 try:
-                    cursor = conn.execute('SELECT COUNT(*) AS n FROM context_index_nodes')
+                    cursor = conn.execute(sqlite_count_sql, readable.params)
                 except sqlite3.OperationalError as exc:
                     # Table-absence probe ONLY (see get_nodes_for_context): a
                     # missing table means node summaries were never enabled, so
@@ -263,9 +283,15 @@ class IndexNodeRepository(BaseRepository):
 
             return await self.backend.execute_read(_count_sqlite)
 
+        predicate = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
+        count_sql = (
+            'SELECT COUNT(*) AS n FROM context_index_nodes n '
+            f'JOIN context_entries ce ON ce.id = n.context_id{predicate.where_clause()}'
+        )
+
         async def _count_postgresql(conn: 'asyncpg.Connection') -> int:
             try:
-                value = await conn.fetchval('SELECT COUNT(*) FROM context_index_nodes')
+                value = await conn.fetchval(count_sql, *predicate.params)
             except asyncpg.UndefinedTableError:
                 return 0
             return int(value or 0)

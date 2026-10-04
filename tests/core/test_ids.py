@@ -7,7 +7,10 @@ Covers the centralized identifier handling primitives:
   - ``normalize_id()`` -- accepts 32-char hex and 36-char hyphenated UUIDs
     and always emits lowercase hex output.
   - ``is_id_prefix()`` -- predicate for 8 to 31 char hex prefixes.
-  - ``resolve_prefix()`` -- repository-backed unique-prefix resolution.
+  - ``resolve_prefix()`` -- repository-backed unique-prefix resolution, decided
+    over the rows the caller's scope may read.
+  - ``resolve_or_normalize_id()`` / ``resolve_or_normalize_ids()`` -- the tool
+    boundary helpers that normalize full ids and resolve prefixes.
 """
 
 import re
@@ -19,11 +22,16 @@ from datetime import timedelta
 
 import pytest
 
+from app.access_scope import AccessScope
+from app.access_scope import Scope
 from app.ids import generate_id
 from app.ids import generate_id_with_timestamp
 from app.ids import is_id_prefix
 from app.ids import normalize_id
+from app.ids import resolve_or_normalize_id
+from app.ids import resolve_or_normalize_ids
 from app.ids import resolve_prefix
+from tests.helpers import LOCAL_SCOPE
 
 HEX_32_RE = re.compile(r'^[0-9a-f]{32}$')
 
@@ -283,13 +291,23 @@ class TestIsIdPrefix:
 
 
 class _StubRepo:
-    """In-memory stub of the prefix-resolver repository protocol for unit tests."""
+    """In-memory stub of the prefix-resolver repository protocol that records each lookup's scope.
 
-    def __init__(self, ids: list[str]) -> None:
+    ``readable`` limits what a scope may match, keyed by principal id: a scope whose
+    principal is listed matches only those ids; any other scope matches every id.
+    """
+
+    def __init__(self, ids: list[str], readable: dict[str, list[str]] | None = None) -> None:
         self._ids = ids
+        self._readable = readable or {}
+        self.scopes: list[Scope] = []
 
-    async def find_ids_by_prefix(self, prefix: str, limit: int = 2) -> list[str]:
-        matches = [i for i in self._ids if i.startswith(prefix)]
+    async def find_ids_by_prefix(self, prefix: str, limit: int = 2, *, scope: Scope) -> list[str]:
+        self.scopes.append(scope)
+        visible = self._ids
+        if isinstance(scope, AccessScope) and scope.principal_id in self._readable:
+            visible = self._readable[scope.principal_id]
+        matches = [i for i in visible if i.startswith(prefix)]
         return matches[:limit]
 
 
@@ -303,7 +321,7 @@ class TestResolvePrefix:
             '0190abcdef1234567890abcdef123456',
             '0190ffffeeeeeeeeeeeeeeeeeeeeeeee',
         ])
-        result = await resolve_prefix('0190abcd', repo)
+        result = await resolve_prefix('0190abcd', repo, scope=LOCAL_SCOPE)
         assert result == '0190abcdef1234567890abcdef123456'
 
     @pytest.mark.asyncio
@@ -314,7 +332,7 @@ class TestResolvePrefix:
             '0190abcdaabbccddeeff0011223344556',  # also starts with '0190abcd'
         ])
         with pytest.raises(ValueError, match='Ambiguous prefix'):
-            await resolve_prefix('0190abcd', repo)
+            await resolve_prefix('0190abcd', repo, scope=LOCAL_SCOPE)
 
     @pytest.mark.asyncio
     async def test_no_match_raises(self) -> None:
@@ -323,28 +341,29 @@ class TestResolvePrefix:
             '0190ffffeeeeeeeeeeeeeeeeeeeeeeee',
         ])
         with pytest.raises(ValueError, match='No context entry matches prefix'):
-            await resolve_prefix('0190abcd', repo)
+            await resolve_prefix('0190abcd', repo, scope=LOCAL_SCOPE)
 
     @pytest.mark.asyncio
     async def test_short_prefix_rejected(self) -> None:
         """A prefix shorter than 8 chars raises :class:`ValueError` before querying the repo."""
         repo = _StubRepo(['0190abcdef1234567890abcdef123456'])
         with pytest.raises(ValueError, match='Invalid UUID prefix'):
-            await resolve_prefix('0190abc', repo)  # 7 chars
+            await resolve_prefix('0190abc', repo, scope=LOCAL_SCOPE)  # 7 chars
+        assert repo.scopes == []
 
     @pytest.mark.asyncio
     async def test_full_uuid_rejected(self) -> None:
         """A 32-char full UUID is rejected (callers must use ``normalize_id`` instead)."""
         repo = _StubRepo(['0190abcdef1234567890abcdef123456'])
         with pytest.raises(ValueError, match='Invalid UUID prefix'):
-            await resolve_prefix('0190abcdef1234567890abcdef123456', repo)
+            await resolve_prefix('0190abcdef1234567890abcdef123456', repo, scope=LOCAL_SCOPE)
 
     @pytest.mark.asyncio
     async def test_non_hex_prefix_rejected(self) -> None:
         """A prefix with non-hex characters raises :class:`ValueError` before querying the repo."""
         repo = _StubRepo(['0190abcdef1234567890abcdef123456'])
         with pytest.raises(ValueError, match='Invalid UUID prefix'):
-            await resolve_prefix('0190abcZ', repo)  # Z is not hex
+            await resolve_prefix('0190abcZ', repo, scope=LOCAL_SCOPE)  # Z is not hex
 
     @pytest.mark.asyncio
     async def test_uppercase_prefix_normalized(self) -> None:
@@ -352,5 +371,61 @@ class TestResolvePrefix:
         repo = _StubRepo([
             '0190abcdef1234567890abcdef123456',
         ])
-        result = await resolve_prefix('0190ABCD', repo)
+        result = await resolve_prefix('0190ABCD', repo, scope=LOCAL_SCOPE)
         assert result == '0190abcdef1234567890abcdef123456'
+
+    @pytest.mark.asyncio
+    async def test_lookup_runs_under_the_given_scope(self) -> None:
+        """The repository lookup receives exactly the scope the caller passed."""
+        bob = AccessScope('bob', frozenset({'team-x'}))
+        repo = _StubRepo(['0190abcdef1234567890abcdef123456'])
+        await resolve_prefix('0190abcd', repo, scope=bob)
+        assert repo.scopes == [bob]
+
+    @pytest.mark.asyncio
+    async def test_match_set_is_the_scoped_lookup(self) -> None:
+        """Uniqueness and no-match are decided over what the scope may read, not over every stored id."""
+        visible_id = '0190abcdef1234567890abcdef123456'
+        hidden_id = '0190abcdaabbccddeeff001122334455'
+        repo = _StubRepo([visible_id, hidden_id], readable={'bob': [visible_id], 'dave': []})
+
+        with pytest.raises(ValueError, match='Ambiguous prefix'):
+            await resolve_prefix('0190abcd', repo, scope=LOCAL_SCOPE)
+        assert await resolve_prefix('0190abcd', repo, scope=AccessScope('bob', frozenset())) == visible_id
+        with pytest.raises(ValueError, match="No context entry matches prefix '0190abcd'"):
+            await resolve_prefix('0190abcd', repo, scope=AccessScope('dave', frozenset()))
+
+
+class TestResolveOrNormalizeId:
+    """Tests for the tool-boundary helpers ``resolve_or_normalize_id()`` and ``resolve_or_normalize_ids()``."""
+
+    @pytest.mark.asyncio
+    async def test_full_id_is_normalized_without_a_lookup(self) -> None:
+        """A full id is canonicalized locally; the repository is never asked."""
+        repo = _StubRepo([])
+        result = await resolve_or_normalize_id('  0190ABCDEF1234567890ABCDEF123456 ', repo, scope=LOCAL_SCOPE)
+        assert result == '0190abcdef1234567890abcdef123456'
+        assert repo.scopes == []
+
+    @pytest.mark.asyncio
+    async def test_prefix_resolves_under_the_given_scope(self) -> None:
+        """A prefix resolves through the repository under the caller's scope."""
+        bob = AccessScope('bob', frozenset())
+        repo = _StubRepo(['0190abcdef1234567890abcdef123456'])
+        assert await resolve_or_normalize_id('0190abcd', repo, scope=bob) == '0190abcdef1234567890abcdef123456'
+        assert repo.scopes == [bob]
+
+    @pytest.mark.asyncio
+    async def test_list_form_keeps_order_and_forwards_the_scope_per_prefix(self) -> None:
+        """Every prefix of the list resolves under the same scope; full ids need no lookup."""
+        bob = AccessScope('bob', frozenset())
+        repo = _StubRepo(['0190abcdef1234567890abcdef123456', '0190ffffeeeeeeeeeeeeeeeeeeeeeeee'])
+        result = await resolve_or_normalize_ids(
+            ['0190ffff', '0190ABCDEF1234567890ABCDEF123456', '0190abcd'], repo, scope=bob,
+        )
+        assert result == [
+            '0190ffffeeeeeeeeeeeeeeeeeeeeeeee',
+            '0190abcdef1234567890abcdef123456',
+            '0190abcdef1234567890abcdef123456',
+        ]
+        assert repo.scopes == [bob, bob]

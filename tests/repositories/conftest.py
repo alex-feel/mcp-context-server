@@ -4,6 +4,7 @@ import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 
 from app.backends import StorageBackend
@@ -11,6 +12,20 @@ from app.backends import create_backend
 from app.repositories import RepositoryContainer
 from app.repositories.statistics_repository import StatisticsRepository
 from app.schemas import load_schema
+from tests.repositories._access_scope_layouts import SQLITE_TEST_VARIABLE_LIMIT
+from tests.repositories._access_scope_layouts import limit_sqlite_variables
+
+
+@pytest.fixture
+def sqlite_999_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cap every connection a SQLite backend opens or hands out at 999 bind variables.
+
+    999 is the compile-time default limit of SQLite builds before 3.32, the lowest limit
+    the repositories' 900-id chunks are sized to clear. The bundled SQLite allows 32,766,
+    so without this cap a statement that binds more than 999 variables cannot fail in a
+    test. The cap reaches backends created before and after the fixture alike.
+    """
+    limit_sqlite_variables(monkeypatch, SQLITE_TEST_VARIABLE_LIMIT)
 
 
 @pytest_asyncio.fixture

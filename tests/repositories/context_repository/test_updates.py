@@ -5,9 +5,11 @@ import sqlite3
 
 import pytest
 
+from app.access_scope import AccessScope
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestContextRepositoryPatchMetadata:
@@ -19,7 +21,7 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching adds a new key to existing metadata."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='patch-add-thread',
             source='user',
@@ -27,11 +29,11 @@ class TestContextRepositoryPatchMetadata:
             text_content='Patch test entry',
             metadata=json.dumps({'existing': 'value'}),
         )
-        success, fields = await context_repo.patch_metadata(ctx_id, {'new_key': 'new_value'})
+        success, fields = await context_repo.patch_metadata(ctx_id, {'new_key': 'new_value'}, scope=LOCAL_SCOPE)
         assert success is True
         assert 'metadata' in fields
 
-        rows, _ = await context_repo.search_contexts(thread_id='patch-add-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='patch-add-thread', scope=LOCAL_SCOPE)
         assert len(rows) == 1
         meta = json.loads(rows[0]['metadata'])
         assert meta['existing'] == 'value'
@@ -43,7 +45,7 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching updates an existing key's value."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='patch-update-thread',
             source='user',
@@ -51,10 +53,10 @@ class TestContextRepositoryPatchMetadata:
             text_content='Patch update test',
             metadata=json.dumps({'status': 'pending'}),
         )
-        success, fields = await context_repo.patch_metadata(ctx_id, {'status': 'done'})
+        success, fields = await context_repo.patch_metadata(ctx_id, {'status': 'done'}, scope=LOCAL_SCOPE)
         assert success is True
 
-        rows, _ = await context_repo.search_contexts(thread_id='patch-update-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='patch-update-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert meta['status'] == 'done'
 
@@ -64,7 +66,7 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Patching with null value deletes the key (RFC 7396)."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='patch-delete-thread',
             source='user',
@@ -72,10 +74,10 @@ class TestContextRepositoryPatchMetadata:
             text_content='Patch delete test',
             metadata=json.dumps({'keep': 'yes', 'remove': 'me'}),
         )
-        success, _ = await context_repo.patch_metadata(ctx_id, {'remove': None})
+        success, _ = await context_repo.patch_metadata(ctx_id, {'remove': None}, scope=LOCAL_SCOPE)
         assert success is True
 
-        rows, _ = await context_repo.search_contexts(thread_id='patch-delete-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='patch-delete-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert 'keep' in meta
         assert 'remove' not in meta
@@ -85,7 +87,7 @@ class TestContextRepositoryPatchMetadata:
         self, context_repo: ContextRepository,
     ) -> None:
         """Patching nonexistent entry returns (False, [])."""
-        success, fields = await context_repo.patch_metadata(generate_id(), {'key': 'value'})
+        success, fields = await context_repo.patch_metadata(generate_id(), {'key': 'value'}, scope=LOCAL_SCOPE)
         assert success is False
         assert fields == []
 
@@ -95,7 +97,7 @@ class TestContextRepositoryPatchMetadata:
     ) -> None:
         """Empty patch is a no-op for data but updates timestamp."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='patch-empty-thread',
             source='user',
@@ -103,11 +105,11 @@ class TestContextRepositoryPatchMetadata:
             text_content='Patch empty test',
             metadata=json.dumps({'unchanged': 'value'}),
         )
-        success, fields = await context_repo.patch_metadata(ctx_id, {})
+        success, fields = await context_repo.patch_metadata(ctx_id, {}, scope=LOCAL_SCOPE)
         assert success is True
         assert 'metadata' in fields
 
-        rows, _ = await context_repo.search_contexts(thread_id='patch-empty-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='patch-empty-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert meta['unchanged'] == 'value'
 
@@ -148,7 +150,7 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """A freshly inserted entry starts at version 0 (schema DEFAULT 0)."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-init-thread',
             source='user',
@@ -156,7 +158,7 @@ class TestContextRepositoryVersionCAS:
             text_content='Initial version content',
         )
 
-        probe = await repos.context.check_entry_exists(ctx_id)
+        probe = await repos.context.check_entry_exists(ctx_id, scope=LOCAL_SCOPE)
         assert probe.exists is True
         assert probe.version == 0
 
@@ -169,7 +171,7 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """update with expected_version=0 succeeds and bumps version to 1."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-success-thread',
             source='user',
@@ -178,7 +180,7 @@ class TestContextRepositoryVersionCAS:
         )
 
         success, fields = await repos.context.update_context_entry(
-            ctx_id, text_content='v1', expected_version=0,
+            ctx_id, text_content='v1', expected_version=0, scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'text_content' in fields
@@ -197,7 +199,7 @@ class TestContextRepositoryVersionCAS:
         from app.repositories.context_repository.records import VersionConflictError
 
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-stale-thread',
             source='user',
@@ -206,11 +208,11 @@ class TestContextRepositoryVersionCAS:
         )
 
         # First update advances version 0 -> 1.
-        await repos.context.update_context_entry(ctx_id, text_content='v1', expected_version=0)
+        await repos.context.update_context_entry(ctx_id, text_content='v1', expected_version=0, scope=LOCAL_SCOPE)
 
         # Second update reuses the now-stale captured version 0.
         with pytest.raises(VersionConflictError) as exc_info:
-            await repos.context.update_context_entry(ctx_id, text_content='v2', expected_version=0)
+            await repos.context.update_context_entry(ctx_id, text_content='v2', expected_version=0, scope=LOCAL_SCOPE)
         assert exc_info.value.context_id == ctx_id
 
         # Row is untouched: text stays 'v1', version stays 1 (no spurious bump).
@@ -224,7 +226,7 @@ class TestContextRepositoryVersionCAS:
     ) -> None:
         """Re-reading the current version (1) and retrying CAS succeeds, bumping to 2."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-current-thread',
             source='user',
@@ -232,10 +234,10 @@ class TestContextRepositoryVersionCAS:
             text_content='v0',
         )
 
-        await repos.context.update_context_entry(ctx_id, text_content='v1', expected_version=0)
+        await repos.context.update_context_entry(ctx_id, text_content='v1', expected_version=0, scope=LOCAL_SCOPE)
 
         success, _fields = await repos.context.update_context_entry(
-            ctx_id, text_content='v3', expected_version=1,
+            ctx_id, text_content='v3', expected_version=1, scope=LOCAL_SCOPE,
         )
         assert success is True
 
@@ -251,7 +253,7 @@ class TestContextRepositoryVersionCAS:
         CAS predicate and does NOT bump the version column.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cas-legacy-thread',
             source='user',
@@ -260,7 +262,7 @@ class TestContextRepositoryVersionCAS:
         )
 
         success, fields = await repos.context.update_context_entry(
-            ctx_id, text_content='legacy', expected_version=None,
+            ctx_id, text_content='legacy', expected_version=None, scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'text_content' in fields
@@ -279,7 +281,33 @@ class TestContextRepositoryVersionCAS:
         "no such row" from "row exists but version moved".
         """
         success, fields = await repos.context.update_context_entry(
-            generate_id(), text_content='ghost', expected_version=0,
+            generate_id(), text_content='ghost', expected_version=0, scope=LOCAL_SCOPE,
         )
         assert success is False
         assert fields == []
+
+    @pytest.mark.asyncio
+    async def test_cas_by_a_scope_without_write_access_returns_false(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """A stale CAS by a caller that may not modify the row reports no row, never a version conflict.
+
+        A version conflict would tell the caller the row exists; a row the caller may
+        not modify must read exactly like an absent one, and stays unchanged.
+        """
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE,
+            visibility='public',
+            thread_id='cas-unauthorized-thread',
+            source='user',
+            content_type='text',
+            text_content='v0',
+        )
+        await repos.context.update_context_entry(ctx_id, text_content='v1', expected_version=0, scope=LOCAL_SCOPE)
+
+        success, fields = await repos.context.update_context_entry(
+            ctx_id, text_content='intruder', expected_version=0, scope=AccessScope('bob', frozenset()),
+        )
+
+        assert (success, fields) == (False, [])
+        assert await self._read_row(context_repo, ctx_id) == ('v1', 1)

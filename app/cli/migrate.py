@@ -7,7 +7,8 @@ Parses the command line and routes each invocation to its mode:
 - ``--compress`` and ``--decompress``: :mod:`app.cli.migrate_compression`;
 - ``--re-embed``: :mod:`app.cli.migrate_reembed`;
 - ``--embed-missing``, standalone or after ``--compress``:
-  :mod:`app.cli.migrate_embeddings`.
+  :mod:`app.cli.migrate_embeddings`;
+- ``--reassign-owner``: :mod:`app.cli.migrate_reassign_owner`.
 """
 
 import argparse
@@ -34,8 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             'Migrate an integer-keyed MCP context database to the UUIDv7 '
             'schema, compress/decompress an existing UUIDv7 database with '
-            'TurboQuant embedding compression, or re-embed an existing '
-            'database under a new model.'
+            'TurboQuant embedding compression, re-embed an existing '
+            'database under a new model, or reassign the owner of existing '
+            'context entries.'
         ),
     )
     parser.add_argument(
@@ -49,7 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             'Target database URL or filesystem path. Required for the v2->v3 '
-            'migration; ignored when --compress or --decompress is set.'
+            'migration; ignored by the in-place modes (--compress, '
+            '--decompress, --re-embed, --embed-missing, --reassign-owner).'
         ),
     )
     parser.add_argument(
@@ -105,6 +108,20 @@ def build_parser() -> argparse.ArgumentParser:
             'every entry.'
         ),
     )
+    mode_group.add_argument(
+        '--reassign-owner',
+        nargs=2,
+        metavar=('FROM', 'TO'),
+        default=None,
+        help=(
+            'Reassign every context_entries row owned by FROM to TO, for '
+            'example after switching to MCP_AUTH_PROVIDER=jwt when the legacy '
+            'rows belong to ACCESS_CONTROL_DEFAULT_PRINCIPAL. Stop the server '
+            'first. Grants are not changed. Reads from --source-url; '
+            '--target-url is ignored. Use --dry-run to print the row count. '
+            'Not combinable with --embed-missing.'
+        ),
+    )
     # --embed-missing is intentionally OUTSIDE mode_group: it composes with
     # --compress (one-shot compress+backfill) AND runs standalone (fp32-only
     # backfill or compressed-only backfill, depending on the env var state).
@@ -143,16 +160,17 @@ def main(argv: list[str] | None = None) -> int:
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
-    # Single-backend in-place operations: --compress, --decompress,
-    # --re-embed, --embed-missing. All dispatch on --source-url alone;
-    # --target-url is ignored. Composition rule: --compress and
+    # Single-backend in-place operations: --reassign-owner, --compress,
+    # --decompress, --re-embed, --embed-missing. All dispatch on --source-url
+    # alone; --target-url is ignored. Composition rule: --compress and
     # --embed-missing can be combined (--compress runs first, then
-    # --embed-missing against the compressed layout). --compress,
-    # --decompress, and --re-embed are mutually exclusive (enforced by
-    # argparse mode_group). Both --decompress and --re-embed return before the
-    # --embed-missing check below, so a co-passed --embed-missing is silently
-    # superseded: --re-embed already re-embeds every entry (gaps included),
-    # and --decompress is documented as not combinable with --embed-missing
+    # --embed-missing against the compressed layout). --reassign-owner,
+    # --compress, --decompress, and --re-embed are mutually exclusive
+    # (enforced by argparse mode_group). --reassign-owner, --decompress and
+    # --re-embed return before the --embed-missing check below, so a
+    # co-passed --embed-missing is silently superseded: --re-embed already
+    # re-embeds every entry (gaps included), and --reassign-owner and
+    # --decompress are documented as not combinable with --embed-missing
     # (run it separately afterward). Imported lazily so callers running the
     # v2->v3 migration do not pay the compression/numpy import cost.
     #
@@ -165,6 +183,10 @@ def main(argv: list[str] | None = None) -> int:
     # traceback and the generic exit 1 supervisors cannot distinguish from a
     # transient failure.
     try:
+        if args.reassign_owner:
+            from app.cli.migrate_reassign_owner import run_reassign_owner
+            from_principal, to_principal = args.reassign_owner
+            return run_reassign_owner(args.source_url, from_principal, to_principal, dry_run=args.dry_run)
         if args.compress:
             from app.cli.migrate_compression.compress import run_compress
             rc = run_compress(args.source_url, dry_run=args.dry_run)
@@ -191,8 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error(
             '--target-url is required for the v2->v3 migration. '
             'For an in-place operation against --source-url, pass one of '
-            '--compress, --decompress, --re-embed, or --embed-missing '
-            '(none of which use --target-url).',
+            '--compress, --decompress, --re-embed, --embed-missing, or '
+            '--reassign-owner (none of which use --target-url).',
         )
         return 1
 

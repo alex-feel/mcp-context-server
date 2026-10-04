@@ -18,6 +18,7 @@ from app.embeddings.base import EmbeddingProvider
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.records import MetadataFilterValidationError
 from app.tools.search.legs import semantic_search_raw
+from tests.helpers import LOCAL_SCOPE
 
 BAD_FILTER: list[dict[str, Any]] = [{'key': 'priority', 'operator': 'bogus_op', 'value': 5}]
 BLANK_TAGS = ['   ', '']
@@ -124,6 +125,7 @@ class TestRawSemanticSearch:
                 **kwargs,
                 repos=cast(RepositoryContainer, fake_repos),
                 embedding_provider=cast(EmbeddingProvider, embedding_provider),
+                scope=LOCAL_SCOPE,
             )
 
         assert excinfo.value.message == 'Metadata filter validation failed'
@@ -145,6 +147,7 @@ class TestRawSemanticSearch:
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 5}],
             repos=cast(RepositoryContainer, fake_repos),
             embedding_provider=cast(EmbeddingProvider, embedding_provider),
+            scope=LOCAL_SCOPE,
         )
 
         assert results == []

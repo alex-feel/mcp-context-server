@@ -20,6 +20,7 @@ from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
 from app.settings import get_settings
 from app.startup import init_database
+from tests.helpers import LOCAL_SCOPE
 from tests.integration.postgresql.conftest import NON_DEFAULT_SCHEMA
 from tests.integration.postgresql.non_default_schema._schema import configure_non_default_env
 from tests.integration.postgresql.non_default_schema._schema import function_exists_in_schema
@@ -293,17 +294,17 @@ def test_patch_metadata_runtime_quotes_mixed_case_schema(
             await apply_jsonb_merge_patch_migration(backend=backend)
             repos = RepositoryContainer(backend)
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='mixed-patch', source='user', content_type='text',
                 text_content='patch target', metadata=None,
             )
             # An unquoted call would raise SQLSTATE 3F000/42883 (mixedcaseschema.jsonb_merge_patch
             # does not exist); the quoted call resolves to the "MixedCaseSchema" object.
-            success, fields = await repos.context.patch_metadata(context_id, {'b': 2})
+            success, fields = await repos.context.patch_metadata(context_id, {'b': 2}, scope=LOCAL_SCOPE)
             result['success'] = success
             result['fields'] = fields
-            entries = await repos.context.get_by_ids([context_id])
+            entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
             result['metadata'] = entries[0]['metadata'] if entries else None
         finally:
             with contextlib.suppress(TimeoutError):

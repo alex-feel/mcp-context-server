@@ -7,6 +7,7 @@ from fastmcp.exceptions import ToolError
 
 from app.backends import StorageBackend
 from app.tools.navigation import read_context_range
+from tests.helpers import as_principal
 from tests.tools._navigation import grep_as_dict
 from tests.tools._navigation import navigate_as_dict
 from tests.tools._navigation import store_entry
@@ -55,6 +56,42 @@ class TestReadContextRange:
         assert nav_backend is not None  # fixture provides the wired repositories
         with pytest.raises(ToolError):
             await read_context_range(context_id='0' * 32, start_char=0, end_char=1)
+
+
+class TestReadContextRangeScoping:
+    """read_context_range reads only entries the caller may read."""
+
+    @pytest.mark.asyncio
+    async def test_unreadable_entry_fails_like_a_missing_one(self, nav_backend: StorageBackend) -> None:
+        """Another principal's private entry yields the same not-found error as an absent id."""
+        hidden_id = await store_entry(nav_backend, 'alice private text', owner='alice')
+        absent_id = '0' * 32
+
+        with pytest.raises(ToolError) as hidden:
+            await read_context_range(context_id=hidden_id, start_char=0, end_char=5)
+        with pytest.raises(ToolError) as absent:
+            await read_context_range(context_id=absent_id, start_char=0, end_char=5)
+
+        assert str(hidden.value) == f'Context entry not found: {hidden_id}'
+        assert str(absent.value) == f'Context entry not found: {absent_id}'
+
+    @pytest.mark.asyncio
+    async def test_owner_reads_their_private_entry(self, nav_backend: StorageBackend) -> None:
+        """The owner of a private entry reads its range."""
+        cid = await store_entry(nav_backend, 'alice private text', owner='alice')
+
+        with as_principal('alice'):
+            result = await read_context_range(context_id=cid, start_char=0, end_char=5)
+
+        assert result['text'] == 'alice'
+
+    @pytest.mark.asyncio
+    async def test_prefix_of_an_unreadable_entry_matches_nothing(self, nav_backend: StorageBackend) -> None:
+        """A prefix that matches only a hidden entry resolves to no entry at all."""
+        hidden_id = await store_entry(nav_backend, 'alice private text', owner='alice')
+
+        with pytest.raises(ToolError, match=f"No context entry matches prefix '{hidden_id[:12]}'"):
+            await read_context_range(context_id=hidden_id[:12], start_char=0, end_char=5)
 
 
 class TestLocateThenExtract:

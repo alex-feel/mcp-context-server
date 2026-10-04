@@ -25,7 +25,8 @@ Module contents
     - :func:`normalize_id` -- validate and canonicalize any accepted input.
     - :func:`is_id_prefix` -- predicate for partial-hex prefix strings.
     - :func:`resolve_prefix` -- resolve a prefix to a unique full ID via a
-      repository implementing the :class:`_PrefixResolverRepo` protocol.
+      repository implementing the :class:`_PrefixResolverRepo` protocol,
+      matching only the entries the caller's scope may read.
     - :func:`resolve_or_normalize_id` -- single boundary helper that either
       normalizes a full ID or resolves an 8-31 char hex prefix.
     - :func:`resolve_or_normalize_ids` -- the list form of
@@ -39,6 +40,8 @@ from typing import runtime_checkable
 
 import uuid_utils
 
+from app.access_scope import Scope
+
 type ContextId = str  # PEP 695 type alias
 
 
@@ -50,12 +53,13 @@ class _PrefixResolverRepo(Protocol):
     dependency on the repository layer.
     """
 
-    async def find_ids_by_prefix(self, prefix: ContextId, limit: int = 2) -> list[ContextId]:
-        """Return up to ``limit`` context-entry IDs starting with ``prefix``.
+    async def find_ids_by_prefix(self, prefix: ContextId, limit: int = 2, *, scope: Scope) -> list[ContextId]:
+        """Return up to ``limit`` IDs of entries the scope may read that start with ``prefix``.
 
         Returning more than one indicates ambiguity. Implementations should
         cap the result at ``limit`` (default 2) since the caller only needs
-        to distinguish unique from ambiguous matches.
+        to distinguish unique from ambiguous matches, and apply the scope
+        before that cap, so an entry the scope may not read never counts.
         """
         ...
 
@@ -153,8 +157,12 @@ def is_id_prefix(value: str) -> bool:
     return all(c in '0123456789abcdef' for c in s)
 
 
-async def resolve_prefix(prefix: str, repo: _PrefixResolverRepo) -> ContextId:
-    """Resolve an 8-31 char hex prefix to a unique full UUID via ``repo``.
+async def resolve_prefix(prefix: str, repo: _PrefixResolverRepo, *, scope: Scope) -> ContextId:
+    """Resolve an 8-31 char hex prefix to the unique full UUID of an entry the scope may read.
+
+    Uniqueness is decided over the entries the scope may read, so an entry the
+    scope may not read never makes a prefix ambiguous, and a prefix that only
+    such entries carry matches nothing, exactly like a prefix no entry carries.
 
     Args:
         prefix: A hex string 8 through 31 characters long (validated via
@@ -162,21 +170,22 @@ async def resolve_prefix(prefix: str, repo: _PrefixResolverRepo) -> ContextId:
             folded internally.
         repo: Object implementing the :class:`_PrefixResolverRepo`
             protocol; provides :meth:`find_ids_by_prefix`.
+        scope: The caller's scope.
 
     Returns:
-        A 32-character lowercase hex string identifying the unique context
-        entry whose ``id`` starts with ``prefix``.
+        A 32-character lowercase hex string identifying the unique readable
+        context entry whose ``id`` starts with ``prefix``.
 
     Raises:
         ValueError: If ``prefix`` is not a valid 8-31 char hex prefix
             (length below 8, length 32 or above, contains non-hex
-            characters), if no entry matches, or if more than one entry
-            matches the prefix.
+            characters), if no readable entry matches, or if more than one
+            readable entry matches the prefix.
     """
     s = prefix.strip().lower()
     if not is_id_prefix(s):
         raise ValueError(f'Invalid UUID prefix (must be 8-31 hex chars): {prefix!r}')
-    matches = await repo.find_ids_by_prefix(s, limit=2)
+    matches = await repo.find_ids_by_prefix(s, limit=2, scope=scope)
     if not matches:
         raise ValueError(f'No context entry matches prefix {prefix!r}')
     if len(matches) > 1:
@@ -184,7 +193,7 @@ async def resolve_prefix(prefix: str, repo: _PrefixResolverRepo) -> ContextId:
     return matches[0]
 
 
-async def resolve_or_normalize_id(value: str, repo: _PrefixResolverRepo) -> ContextId:
+async def resolve_or_normalize_id(value: str, repo: _PrefixResolverRepo, *, scope: Scope) -> ContextId:
     """Canonicalize a full ID, or resolve an 8-31 char hex prefix to its unique full ID.
 
     Single boundary helper for every tool that accepts a context-entry ID from
@@ -203,16 +212,19 @@ async def resolve_or_normalize_id(value: str, repo: _PrefixResolverRepo) -> Cont
         value: A full UUID (32-char hex or 36-char hyphenated) or an 8-31 char
             hex prefix.
         repo: Object implementing the :class:`_PrefixResolverRepo` protocol.
+        scope: The caller's scope; a prefix resolves over the entries it may read.
 
     Returns:
         A 32-character lowercase hex string matching ``^[0-9a-f]{32}$``.
     """
     if is_id_prefix(value):
-        return await resolve_prefix(value, repo)
+        return await resolve_prefix(value, repo, scope=scope)
     return normalize_id(value)
 
 
-async def resolve_or_normalize_ids(values: Sequence[str], repo: _PrefixResolverRepo) -> list[ContextId]:
+async def resolve_or_normalize_ids(
+    values: Sequence[str], repo: _PrefixResolverRepo, *, scope: Scope,
+) -> list[ContextId]:
     """Apply :func:`resolve_or_normalize_id` to each item, preserving order.
 
     Propagates :class:`ValueError` from the first item that is neither a valid
@@ -221,8 +233,9 @@ async def resolve_or_normalize_ids(values: Sequence[str], repo: _PrefixResolverR
     Args:
         values: Context-entry IDs and/or 8-31 char hex prefixes.
         repo: Object implementing the :class:`_PrefixResolverRepo` protocol.
+        scope: The caller's scope; every prefix resolves over the entries it may read.
 
     Returns:
         The canonical 32-char lowercase hex IDs in the same order as ``values``.
     """
-    return [await resolve_or_normalize_id(value, repo) for value in values]
+    return [await resolve_or_normalize_id(value, repo, scope=scope) for value in values]

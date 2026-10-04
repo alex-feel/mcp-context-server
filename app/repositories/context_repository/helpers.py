@@ -12,7 +12,8 @@ import hashlib
 # id-list SELECTs and DELETEs are issued in bounded chunks to stay under each backend's
 # per-statement bound-parameter limit -- SQLite's SQLITE_MAX_VARIABLE_NUMBER (historically
 # as low as 999) and PostgreSQL's 65535 parameters. 900 clears the lowest historical SQLite
-# ceiling with margin. Shared by get_by_ids, delete_by_ids, and the batch-criteria
+# ceiling with room for the access-predicate binds a statement adds beside its ids (at most
+# 7, in probe_ids). Shared by get_by_ids, probe_ids, delete_by_ids, and the batch-criteria
 # statements (via _criteria_chunk_pairs).
 _ID_CHUNK_SIZE = 900
 
@@ -37,12 +38,11 @@ def describe_batch_delete_criteria(
 ) -> list[str]:
     """Describe batch-delete criteria as human-readable ``criteria_used`` strings.
 
-    Single source of truth for the strings returned in batch-delete tool
-    responses. ``delete_contexts_batch`` builds them here for its criteria-based
-    delete, and the SQLite branch of the ``delete_context_batch`` tool builds
-    them here too, because it deletes by the pre-queried snapshot ids (see
-    ``get_ids_matching_batch_criteria``) and never reaches the criteria-building
-    closures.
+    Single source of truth for the strings returned in ``delete_context_batch``
+    responses. They echo the criteria the caller passed, not the rows they
+    matched: the tool deletes the pre-queried snapshot ids (see
+    ``get_ids_matching_batch_criteria``) and reports the deleted rows only in its
+    count.
 
     Args:
         context_ids: Specific context entry IDs targeted by the delete

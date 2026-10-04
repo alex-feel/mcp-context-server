@@ -5,6 +5,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.repositories import RepositoryContainer
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest_asyncio.fixture
@@ -20,13 +21,13 @@ class TestDuplicatePreCheck:
     async def test_check_latest_is_duplicate_found(self, repos: RepositoryContainer) -> None:
         """Pre-check detects duplicate content."""
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Duplicate text', metadata=None,
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='test-thread', source='user', text_content='Duplicate text',
+            thread_id='test-thread', source='user', text_content='Duplicate text', scope=LOCAL_SCOPE,
         )
         assert result is not None
         assert result.context_id == context_id
@@ -34,52 +35,52 @@ class TestDuplicatePreCheck:
     async def test_check_latest_is_duplicate_not_found(self, repos: RepositoryContainer) -> None:
         """Pre-check returns None for different content."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Original text', metadata=None,
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='test-thread', source='user', text_content='Different text',
+            thread_id='test-thread', source='user', text_content='Different text', scope=LOCAL_SCOPE,
         )
         assert result is None
 
     async def test_check_latest_is_duplicate_empty_thread(self, repos: RepositoryContainer) -> None:
         """Pre-check returns None for empty thread."""
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='nonexistent', source='user', text_content='Any text',
+            thread_id='nonexistent', source='user', text_content='Any text', scope=LOCAL_SCOPE,
         )
         assert result is None
 
     async def test_check_latest_different_source(self, repos: RepositoryContainer) -> None:
         """Pre-check returns None when source differs."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Same text', metadata=None,
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='test-thread', source='agent', text_content='Same text',
+            thread_id='test-thread', source='agent', text_content='Same text', scope=LOCAL_SCOPE,
         )
         assert result is None
 
     async def test_check_latest_only_checks_latest(self, repos: RepositoryContainer) -> None:
         """Pre-check only checks the latest entry, not older ones."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='Old matching text', metadata=None,
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-thread', source='user', content_type='text',
             text_content='New different text', metadata=None,
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='test-thread', source='user', text_content='Old matching text',
+            thread_id='test-thread', source='user', text_content='Old matching text', scope=LOCAL_SCOPE,
         )
         assert result is None  # Latest is "New different text", not matching
 
@@ -95,13 +96,13 @@ class TestDuplicatePreCheck:
         restored one, so the mismatched summary would persist via COALESCE.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='snap-t1', source='user', content_type='text',
             text_content='Snapshot text', metadata=None, summary='Snapshot summary',
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='snap-t1', source='user', text_content='Snapshot text',
+            thread_id='snap-t1', source='user', text_content='Snapshot text', scope=LOCAL_SCOPE,
         )
         assert result is not None
         assert result.context_id == ctx_id
@@ -112,13 +113,13 @@ class TestDuplicatePreCheck:
     ) -> None:
         """A candidate without a stored summary yields summary=None in the snapshot."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='snap-t2', source='user', content_type='text',
             text_content='No summary here', metadata=None,
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='snap-t2', source='user', text_content='No summary here',
+            thread_id='snap-t2', source='user', text_content='No summary here', scope=LOCAL_SCOPE,
         )
         assert result is not None
         assert result.summary is None
@@ -143,14 +144,14 @@ class TestBatchPreCheckInterleaving:
         generation for this entry, saving LLM API calls.
         """
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='batch-t1', source='user', content_type='text',
             text_content='Batch duplicate', metadata=None,
         )
         # Pre-check should identify this as a duplicate
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='batch-t1', source='user', text_content='Batch duplicate',
+            thread_id='batch-t1', source='user', text_content='Batch duplicate', scope=LOCAL_SCOPE,
         )
         assert result is not None, 'Pre-check should find the genuine duplicate'
         assert result.context_id == ctx_id, (
@@ -168,20 +169,20 @@ class TestBatchPreCheckInterleaving:
         """
         # Store user entry, then agent entry (creates interleaving)
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='batch-t1', source='user', content_type='text',
             text_content='Batch entry', metadata=None,
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='batch-t1', source='agent', content_type='text',
             text_content='Agent response', metadata=None,
         )
         # Pre-check for same user text should return None (interleaving detected)
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='batch-t1', source='user', text_content='Batch entry',
+            thread_id='batch-t1', source='user', text_content='Batch entry', scope=LOCAL_SCOPE,
         )
         assert result is None, (
             'Pre-check should return None when interleaving detected '

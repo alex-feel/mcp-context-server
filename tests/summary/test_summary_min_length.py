@@ -27,6 +27,7 @@ import app.tools
 from app.repositories.context_repository.records import EntryProbe
 from app.settings.summary import SummarySettings
 from app.startup import ensure_repositories
+from tests.helpers import LOCAL_SCOPE
 
 store_context = app.tools.store_context
 update_context = app.tools.update_context
@@ -105,7 +106,7 @@ def _make_mock_repos() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local'))
+    repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'agent', 0, 'local', True))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -403,7 +404,7 @@ class TestClearSummaryRepository:
 
         # First, store an entry with a summary
         entry_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-clear-summary',
             source='agent',
@@ -414,7 +415,7 @@ class TestClearSummaryRepository:
         )
 
         # Verify the summary was stored
-        stored_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
+        stored_summary = (await repos.context.get_by_ids([entry_id], scope=LOCAL_SCOPE))[0]['summary']
         assert stored_summary == 'Old summary that should be cleared'
 
         # Update with clear_summary=True
@@ -422,12 +423,13 @@ class TestClearSummaryRepository:
             context_id=entry_id,
             text_content='Updated short text',
             clear_summary=True,
+            scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'summary' in fields
 
         # Verify the summary is now NULL
-        cleared_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
+        cleared_summary = (await repos.context.get_by_ids([entry_id], scope=LOCAL_SCOPE))[0]['summary']
         assert cleared_summary is None
 
     @pytest.mark.asyncio
@@ -436,7 +438,7 @@ class TestClearSummaryRepository:
         repos = await ensure_repositories()
 
         entry_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-clear-precedence',
             source='agent',
@@ -451,11 +453,12 @@ class TestClearSummaryRepository:
             context_id=entry_id,
             summary='This should be ignored',
             clear_summary=True,
+            scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'summary' in fields
 
-        result_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
+        result_summary = (await repos.context.get_by_ids([entry_id], scope=LOCAL_SCOPE))[0]['summary']
         assert result_summary is None
 
     @pytest.mark.asyncio
@@ -464,7 +467,7 @@ class TestClearSummaryRepository:
         repos = await ensure_repositories()
 
         entry_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-preserve-summary',
             source='agent',
@@ -480,11 +483,12 @@ class TestClearSummaryRepository:
             text_content='Updated text content',
             summary=None,
             clear_summary=False,
+            scope=LOCAL_SCOPE,
         )
         assert success is True
 
         # Summary should be preserved
-        result_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
+        result_summary = (await repos.context.get_by_ids([entry_id], scope=LOCAL_SCOPE))[0]['summary']
         assert result_summary == 'Summary that should be preserved'
 
 
@@ -504,7 +508,7 @@ class TestDedupPreservesExistingSummary:
 
         # First, store an entry with a summary (simulates pre-threshold entry)
         entry_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-dedup-preserve',
             source='agent',
@@ -515,13 +519,13 @@ class TestDedupPreservesExistingSummary:
         )
 
         # Verify summary exists
-        initial_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
+        initial_summary = (await repos.context.get_by_ids([entry_id], scope=LOCAL_SCOPE))[0]['summary']
         assert initial_summary == 'Pre-existing summary from before threshold'
 
         # Now store the same text again as a duplicate, with summary=None
         # (simulating what happens when min_content_length skips generation)
         updated_id, was_dedup = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='test-dedup-preserve',
             source='agent',
@@ -536,5 +540,5 @@ class TestDedupPreservesExistingSummary:
         assert updated_id == entry_id
 
         # Summary should be PRESERVED via COALESCE(NULL, existing_summary)
-        preserved_summary = (await repos.context.get_by_ids([entry_id]))[0]['summary']
+        preserved_summary = (await repos.context.get_by_ids([entry_id], scope=LOCAL_SCOPE))[0]['summary']
         assert preserved_summary == 'Pre-existing summary from before threshold'

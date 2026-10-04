@@ -3,16 +3,23 @@ unusual input (unicode, large metadata, SQL metacharacters).
 """
 
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from typing import Literal
 from typing import cast
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 from fastmcp.exceptions import ToolError
 
 import app.tools
+from app.access_scope import AccessScope
+from app.repositories.context_repository.records import DuplicateCandidate
+from tests.helpers import as_principal
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -238,3 +245,46 @@ class TestEdgeCases:
         # Tables should still exist
         stats = await get_statistics()
         assert stats['total_entries'] > 0
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestStoreScope:
+    """store_context runs its pre-check and its store under the caller's scope."""
+
+    @pytest.mark.asyncio
+    async def test_scope_reaches_the_precheck_and_the_store(self) -> None:
+        """The scope of the request principal, groups included, reaches both repository calls."""
+        mock_repos = AsyncMock()
+        mock_backend = MagicMock()
+        mock_backend.begin_transaction = _mock_begin_transaction
+        mock_repos.context.backend = mock_backend
+        precheck = AsyncMock(return_value=DuplicateCandidate(context_id='dup-id', summary='Stored summary'))
+        mock_repos.context.check_latest_is_duplicate = precheck
+
+        with (
+            as_principal('bob', groups=['team-x']),
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=None),
+            patch('app.tools.context.store.get_summary_provider', return_value=MagicMock()),
+            patch(
+                'app.tools.context.store.execute_store_in_transaction',
+                new_callable=AsyncMock,
+                return_value=('dup-id', True, False),
+            ) as mock_store,
+        ):
+            result = await store_context(thread_id='scope-thread', source='user', text='Re-sent text')
+
+        expected = AccessScope('bob', frozenset({'team-x'}))
+        precheck_call = precheck.await_args
+        store_call = mock_store.await_args
+        assert result['context_id'] == 'dup-id'
+        assert precheck_call is not None
+        assert precheck_call.kwargs['scope'] == expected
+        assert store_call is not None
+        assert store_call.kwargs['scope'] == expected
+
+
+@asynccontextmanager
+async def _mock_begin_transaction() -> AsyncIterator[MagicMock]:
+    """Yield a mock transaction for a mocked backend."""
+    yield MagicMock()

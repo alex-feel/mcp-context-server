@@ -1,7 +1,7 @@
 """Record types and the column list shared by the context repository and its callers.
 
 Holds the optimistic-concurrency ``VersionConflictError``, the explicit
-``CONTEXT_ENTRY_COLUMNS`` select list, and the ``EntryProbe`` and
+``CONTEXT_ENTRY_COLUMNS`` select list, and the ``EntryProbe``, ``IdAccess`` and
 ``DuplicateCandidate`` result tuples.
 """
 
@@ -38,17 +38,33 @@ CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, meta
 class EntryProbe(NamedTuple):
     """Existence probe result for one context entry (see ``check_entry_exists``).
 
-    ``source``, ``version``, and ``owner_id`` are None when the entry does not
-    exist. ``version`` is the optimistic-concurrency token the update paths
-    capture BEFORE generation as their compare-and-set guard; ``owner_id`` backs
-    the owner-only visibility-change authorization (it is immutable, so a
-    pre-generation read of it cannot go stale).
+    ``exists`` is True only for an entry the caller may read, so an entry the
+    caller may not read probes exactly like a missing one. ``source``,
+    ``version``, and ``owner_id`` are None and ``can_write`` is False when the
+    entry does not exist for the caller. ``version`` is the optimistic-concurrency
+    token the update paths capture BEFORE generation as their compare-and-set
+    guard; ``owner_id`` backs the owner-only visibility-change authorization (it
+    is immutable, so a pre-generation read of it cannot go stale); ``can_write``
+    says whether the caller may modify the entry's content.
     """
 
     exists: bool
     source: str | None
     version: int | None
     owner_id: str | None
+    can_write: bool
+
+
+class IdAccess(NamedTuple):
+    """What the caller may do with one readable entry (see ``probe_ids``).
+
+    ``can_write`` says whether the caller may modify the entry's content;
+    ``is_owner`` whether the caller owns it, the only role that may delete it or
+    change its visibility.
+    """
+
+    can_write: bool
+    is_owner: bool
 
 
 class DuplicateCandidate(NamedTuple):

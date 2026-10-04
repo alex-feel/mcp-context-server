@@ -32,6 +32,7 @@ from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.fixture(autouse=True)
@@ -125,7 +126,7 @@ async def test_store_chunked_routes_to_compressed_when_enabled(
     repo = EmbeddingRepository(compressed_backend)
 
     cid, _ = await repos.context.store_with_deduplication(
-        owner_id='local',
+        scope=LOCAL_SCOPE,
         visibility='private',
         thread_id='t1', source='user', content_type='text',
         text_content='compressed-routing entry', metadata=None,
@@ -162,7 +163,7 @@ async def test_store_chunked_requires_payload_when_compressed(
     repo = EmbeddingRepository(compressed_backend)
 
     cid, _ = await repos.context.store_with_deduplication(
-        owner_id='local',
+        scope=LOCAL_SCOPE,
         visibility='private',
         thread_id='t-missing', source='user', content_type='text',
         text_content='missing payload', metadata=None,
@@ -183,7 +184,7 @@ async def test_delete_all_chunks_cleans_compressed_table_when_enabled(
     repo = EmbeddingRepository(compressed_backend)
 
     cid, _ = await repos.context.store_with_deduplication(
-        owner_id='local',
+        scope=LOCAL_SCOPE,
         visibility='private',
         thread_id='t-delete', source='user', content_type='text',
         text_content='delete me', metadata=None,
@@ -221,7 +222,7 @@ async def test_compressed_round_trip_payload_bytes(
     repo = EmbeddingRepository(compressed_backend)
 
     cid, _ = await repos.context.store_with_deduplication(
-        owner_id='local',
+        scope=LOCAL_SCOPE,
         visibility='private',
         thread_id='t-roundtrip', source='agent', content_type='text',
         text_content='round trip', metadata=None,
@@ -252,7 +253,7 @@ async def test_compressed_store_preserves_chunk_boundaries(
     repo = EmbeddingRepository(compressed_backend)
 
     cid, _ = await repos.context.store_with_deduplication(
-        owner_id='local',
+        scope=LOCAL_SCOPE,
         visibility='private',
         thread_id='t-boundaries', source='user', content_type='text',
         text_content='boundary check', metadata=None,
@@ -298,7 +299,7 @@ async def test_compressed_chunk_count_per_context(
     repo = EmbeddingRepository(compressed_backend)
 
     cid, _ = await repos.context.store_with_deduplication(
-        owner_id='local',
+        scope=LOCAL_SCOPE,
         visibility='private',
         thread_id='t-count', source='user', content_type='text',
         text_content='count check', metadata=None,
@@ -328,7 +329,7 @@ async def test_upsert_replaces_existing_compressed_chunks(
     repo = EmbeddingRepository(compressed_backend)
 
     cid, _ = await repos.context.store_with_deduplication(
-        owner_id='local',
+        scope=LOCAL_SCOPE,
         visibility='private',
         thread_id='t-upsert', source='user', content_type='text',
         text_content='upsert', metadata=None,
@@ -374,7 +375,7 @@ async def test_bulk_delete_compressed_uses_multi_row_statements(
     stored_ids: list[str] = []
     for index in range(4):
         cid, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='bulk-compressed-thread', source='user', content_type='text',
             text_content=f'compressed bulk entry {index}', metadata=None,
@@ -468,7 +469,7 @@ async def test_bulk_delete_compressed_chunks_beyond_the_bind_parameter_limit(
     stored_ids: list[str] = []
     for index in range(3):
         cid, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='bulk-compressed-chunking-thread', source='user', content_type='text',
             text_content=f'compressed chunking entry {index}', metadata=None,

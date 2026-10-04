@@ -6,6 +6,7 @@ import pytest
 
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestContextRepositoryDeduplication:
@@ -18,7 +19,7 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Test that duplicate content updates timestamp instead of inserting."""
         ctx_id1, was_updated1 = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup_thread',
             source='user',
@@ -28,7 +29,7 @@ class TestContextRepositoryDeduplication:
         assert was_updated1 is False  # First insert, not an update
 
         ctx_id2, was_updated2 = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup_thread',
             source='user',
@@ -57,7 +58,7 @@ class TestContextRepositoryDeduplication:
         from app.repositories.context_repository.helpers import compute_content_hash
 
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup_race_thread',
             source='user',
@@ -112,7 +113,7 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Test that different content creates new entry."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup_thread',
             source='user',
@@ -120,7 +121,7 @@ class TestContextRepositoryDeduplication:
             text_content='Content A',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup_thread',
             source='user',
@@ -137,7 +138,7 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Test that same content from different source creates new entry."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup_thread',
             source='user',
@@ -145,7 +146,7 @@ class TestContextRepositoryDeduplication:
             text_content='Same content',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dedup_thread',
             source='agent',  # Different source
@@ -162,7 +163,7 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Test that same content in different thread creates new entry."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread_1',
             source='user',
@@ -170,7 +171,7 @@ class TestContextRepositoryDeduplication:
             text_content='Same content',
         )
         ctx_id2, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread_2',  # Different thread
             source='user',
@@ -186,7 +187,7 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Deduplication COALESCE: new metadata replaces existing."""
         ctx_id1, was_updated1 = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='coalesce-thread',
             source='user',
@@ -197,7 +198,7 @@ class TestContextRepositoryDeduplication:
         assert was_updated1 is False
 
         ctx_id2, was_updated2 = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='coalesce-thread',
             source='user',
@@ -208,7 +209,7 @@ class TestContextRepositoryDeduplication:
         assert was_updated2 is True
         assert ctx_id2 == ctx_id1
 
-        rows, _ = await context_repo.search_contexts(thread_id='coalesce-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='coalesce-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert meta['key'] == 'updated'
 
@@ -218,7 +219,7 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Deduplication COALESCE(NULL, existing) preserves existing metadata."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='preserve-meta-thread',
             source='user',
@@ -228,7 +229,7 @@ class TestContextRepositoryDeduplication:
         )
 
         ctx_id2, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='preserve-meta-thread',
             source='user',
@@ -239,7 +240,7 @@ class TestContextRepositoryDeduplication:
         assert was_updated is True
         assert ctx_id2 == ctx_id1
 
-        rows, _ = await context_repo.search_contexts(thread_id='preserve-meta-thread')
+        rows, _ = await context_repo.search_contexts(thread_id='preserve-meta-thread', scope=LOCAL_SCOPE)
         meta = json.loads(rows[0]['metadata'])
         assert meta['preserved'] == 'yes'
 
@@ -249,7 +250,7 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Deduplication COALESCE preserves existing summary when new is None."""
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='summary-coalesce-thread',
             source='user',
@@ -259,7 +260,7 @@ class TestContextRepositoryDeduplication:
         )
 
         ctx_id2, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='summary-coalesce-thread',
             source='user',
@@ -270,7 +271,7 @@ class TestContextRepositoryDeduplication:
         assert was_updated is True
         assert ctx_id2 == ctx_id1
 
-        rows = await context_repo.get_by_ids([ctx_id1])
+        rows = await context_repo.get_by_ids([ctx_id1], scope=LOCAL_SCOPE)
         assert rows[0]['summary'] == 'Existing summary'
 
     @pytest.mark.asyncio
@@ -285,7 +286,7 @@ class TestContextRepositoryDeduplication:
         assert expected_hash is not None
 
         ctx_id1, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='hash-dedup-thread',
             source='user',
@@ -294,7 +295,7 @@ class TestContextRepositoryDeduplication:
         )
 
         ctx_id2, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='hash-dedup-thread',
             source='user',
@@ -310,7 +311,7 @@ class TestContextRepositoryDeduplication:
     ) -> None:
         """Deduplication normalizes empty/whitespace summary to None."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='norm-summary-thread',
             source='user',
@@ -318,7 +319,7 @@ class TestContextRepositoryDeduplication:
             text_content='Normalized summary test',
             summary='   ',
         )
-        rows = await context_repo.get_by_ids([ctx_id])
+        rows = await context_repo.get_by_ids([ctx_id], scope=LOCAL_SCOPE)
         assert rows[0]['summary'] is None
 
     @pytest.mark.asyncio
@@ -329,7 +330,7 @@ class TestContextRepositoryDeduplication:
         result = await context_repo.check_latest_is_duplicate(
             thread_id='empty-thread',
             source='user',
-            text_content='Some content',
+            text_content='Some content', scope=LOCAL_SCOPE,
         )
         assert result is None
 
@@ -343,7 +344,7 @@ class TestContextRepositoryCheckDuplicate:
     ) -> None:
         """Returns context_id when latest entry has identical content."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='dup-check-thread',
             source='user',
@@ -353,7 +354,7 @@ class TestContextRepositoryCheckDuplicate:
         result = await context_repo.check_latest_is_duplicate(
             thread_id='dup-check-thread',
             source='user',
-            text_content='Duplicate content check',
+            text_content='Duplicate content check', scope=LOCAL_SCOPE,
         )
         assert result is not None
         assert result.context_id == ctx_id
@@ -364,7 +365,7 @@ class TestContextRepositoryCheckDuplicate:
     ) -> None:
         """Returns None when latest entry has different content."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='no-dup-thread',
             source='user',
@@ -374,7 +375,7 @@ class TestContextRepositoryCheckDuplicate:
         result = await context_repo.check_latest_is_duplicate(
             thread_id='no-dup-thread',
             source='user',
-            text_content='Different content',
+            text_content='Different content', scope=LOCAL_SCOPE,
         )
         assert result is None
 
@@ -384,7 +385,7 @@ class TestContextRepositoryCheckDuplicate:
     ) -> None:
         """Returns None when content matches but thread_id differs."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='thread-a',
             source='user',
@@ -394,6 +395,6 @@ class TestContextRepositoryCheckDuplicate:
         result = await context_repo.check_latest_is_duplicate(
             thread_id='thread-b',
             source='user',
-            text_content='Same content different thread',
+            text_content='Same content different thread', scope=LOCAL_SCOPE,
         )
         assert result is None

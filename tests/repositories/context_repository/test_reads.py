@@ -13,6 +13,7 @@ from app.backends.base import TransactionContext
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestContextRepositoryGetById:
@@ -25,7 +26,7 @@ class TestContextRepositoryGetById:
     ) -> None:
         """Test getting single entry by ID."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='get_thread',
             source='user',
@@ -33,7 +34,7 @@ class TestContextRepositoryGetById:
             text_content='Test entry',
         )
 
-        rows = await repos.context.get_by_ids([ctx_id])
+        rows = await repos.context.get_by_ids([ctx_id], scope=LOCAL_SCOPE)
 
         assert len(rows) == 1
         assert rows[0]['id'] == ctx_id
@@ -47,7 +48,7 @@ class TestContextRepositoryGetById:
         ids = []
         for i in range(3):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='multi_get',
                 source='user',
@@ -56,7 +57,7 @@ class TestContextRepositoryGetById:
             )
             ids.append(ctx_id)
 
-        rows = await repos.context.get_by_ids(ids)
+        rows = await repos.context.get_by_ids(ids, scope=LOCAL_SCOPE)
 
         assert len(rows) == 3
         returned_ids = {r['id'] for r in rows}
@@ -68,7 +69,7 @@ class TestContextRepositoryGetById:
         repos: RepositoryContainer,
     ) -> None:
         """Test getting entries with empty ID list."""
-        rows = await repos.context.get_by_ids([])
+        rows = await repos.context.get_by_ids([], scope=LOCAL_SCOPE)
 
         assert rows == []
 
@@ -78,7 +79,7 @@ class TestContextRepositoryGetById:
         repos: RepositoryContainer,
     ) -> None:
         """Test getting nonexistent IDs returns empty."""
-        rows = await repos.context.get_by_ids([generate_id(), generate_id()])
+        rows = await repos.context.get_by_ids([generate_id(), generate_id()], scope=LOCAL_SCOPE)
 
         assert rows == []
 
@@ -89,7 +90,7 @@ class TestContextRepositoryGetById:
     ) -> None:
         """Test getting mix of existing and nonexistent IDs."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='partial_get',
             source='user',
@@ -97,7 +98,7 @@ class TestContextRepositoryGetById:
             text_content='Exists',
         )
 
-        rows = await repos.context.get_by_ids([ctx_id, generate_id()])
+        rows = await repos.context.get_by_ids([ctx_id, generate_id()], scope=LOCAL_SCOPE)
 
         assert len(rows) == 1
         assert rows[0]['id'] == ctx_id
@@ -121,7 +122,7 @@ class TestContextRepositoryGetById:
         real_ids: list[str] = []
         for i in range(5):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='chunk_get_thread',
                 source='user',
@@ -134,7 +135,7 @@ class TestContextRepositoryGetById:
         # (each a single-chunk fetch): created_at DESC, id DESC.
         keyed: list[tuple[str, str]] = []
         for ctx_id in real_ids:
-            row = (await repos.context.get_by_ids([ctx_id]))[0]
+            row = (await repos.context.get_by_ids([ctx_id], scope=LOCAL_SCOPE))[0]
             keyed.append((row['created_at'], row['id']))
         expected_ids = [entry_id for _created_at, entry_id in sorted(keyed, reverse=True)]
 
@@ -145,9 +146,62 @@ class TestContextRepositoryGetById:
         for pos, real_id in zip((0, 450, 899, 900, 32999), oldest_first, strict=True):
             mixed[pos] = real_id
 
-        rows = await repos.context.get_by_ids(mixed)
+        rows = await repos.context.get_by_ids(mixed, scope=LOCAL_SCOPE)
 
         assert [row['id'] for row in rows] == expected_ids
+
+
+async def _store_local_entries(repos: RepositoryContainer, count: int, thread_id: str) -> list[str]:
+    """Store ``count`` entries owned by the default principal and return their ids."""
+    stored: list[str] = []
+    for i in range(count):
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE,
+            visibility='private',
+            thread_id=thread_id,
+            source='user',
+            content_type='text',
+            text_content=f'{thread_id} entry {i}',
+        )
+        stored.append(ctx_id)
+    return stored
+
+
+def _pad_to_1000_ids(real_ids: list[str]) -> list[str]:
+    """Return 1,000 ids with the real ids at the first, last-of-chunk and last positions."""
+    ids = [generate_id() for _ in range(1000)]
+    for position, real_id in zip((0, 899, 999), real_ids, strict=True):
+        ids[position] = real_id
+    return ids
+
+
+@pytest.mark.usefixtures('sqlite_999_variables')
+class TestScopedReadsUnderVariableCap:
+    """The scoped id reads fit each 900-id chunk plus its access binds within 999 variables."""
+
+    @pytest.mark.asyncio
+    async def test_get_by_ids_binds_1000_ids_with_scope(self, repos: RepositoryContainer) -> None:
+        """A 1,000-id read under a scope binds without error and returns every stored row."""
+        real_ids = await _store_local_entries(repos, 3, 'capped_get')
+
+        rows = await repos.context.get_by_ids(_pad_to_1000_ids(real_ids), scope=LOCAL_SCOPE)
+
+        assert {row['id'] for row in rows} == set(real_ids)
+
+    @pytest.mark.asyncio
+    async def test_probe_ids_binds_1000_ids_with_scope(self, repos: RepositoryContainer) -> None:
+        """A 1,000-id access probe binds without error and reports every stored row."""
+        real_ids = await _store_local_entries(repos, 3, 'capped_probe')
+
+        access = await repos.context.probe_ids(_pad_to_1000_ids(real_ids), scope=LOCAL_SCOPE)
+
+        assert set(access) == set(real_ids)
+        assert all(entry.can_write and entry.is_owner for entry in access.values())
+
+    @pytest.mark.asyncio
+    async def test_probe_ids_of_an_empty_list_is_empty(self, repos: RepositoryContainer) -> None:
+        """No ids means no statement and an empty result."""
+        assert await repos.context.probe_ids([], scope=LOCAL_SCOPE) == {}
 
 
 class TestContextRepositoryUpdate:
@@ -160,7 +214,7 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test checking if entry exists."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='exists_thread',
             source='user',
@@ -168,18 +222,20 @@ class TestContextRepositoryUpdate:
             text_content='Exists',
         )
 
-        probe = await repos.context.check_entry_exists(ctx_id)
+        probe = await repos.context.check_entry_exists(ctx_id, scope=LOCAL_SCOPE)
         assert probe.exists is True
         assert probe.source == 'user'
         assert isinstance(probe.version, int)
         assert probe.version == 0
         assert probe.owner_id == 'local'
+        assert probe.can_write is True
 
-        missing = await repos.context.check_entry_exists(generate_id())
+        missing = await repos.context.check_entry_exists(generate_id(), scope=LOCAL_SCOPE)
         assert missing.exists is False
         assert missing.source is None
         assert missing.version is None
         assert missing.owner_id is None
+        assert missing.can_write is False
 
     @pytest.mark.asyncio
     async def test_entry_exists(
@@ -188,7 +244,7 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """entry_exists returns True for a stored id and False for an absent one."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='entry_exists_thread',
             source='user',
@@ -196,19 +252,21 @@ class TestContextRepositoryUpdate:
             text_content='Exists',
         )
 
-        assert await repos.context.entry_exists(ctx_id) is True
-        assert await repos.context.entry_exists(generate_id()) is False
+        assert await repos.context.entry_exists(ctx_id, scope=LOCAL_SCOPE) is True
+        assert await repos.context.entry_exists(generate_id(), scope=LOCAL_SCOPE) is False
 
     @pytest.mark.asyncio
     async def test_entry_exists_locks_parent_row_on_postgresql_transaction(self) -> None:
         """On PostgreSQL the in-transaction presence check locks the parent row.
 
         The tags-only / images-only update guard runs entry_exists on the open
-        transaction connection; it must emit FOR KEY SHARE so a concurrent DELETE
-        blocks until commit and cannot leave the child tag/image writes violating
-        the foreign key. Outside a transaction the lock would release at statement
-        end, so it must NOT be emitted there. Both cases are asserted against a
-        recording connection without needing a live PostgreSQL.
+        transaction connection; it must emit FOR KEY SHARE OF context_entries so a
+        concurrent DELETE blocks until commit and cannot leave the child tag/image
+        writes violating the foreign key; naming context_entries confines the lock to
+        that parent row. Outside a transaction the lock would release at statement end,
+        so it must NOT be emitted there. Both statements carry the write predicate
+        after the id. Both cases are asserted against a recording connection without
+        needing a live PostgreSQL.
         """
         txn_conn = AsyncMock()
         txn_conn.fetchrow = AsyncMock(return_value={'?column?': 1})
@@ -219,8 +277,11 @@ class TestContextRepositoryUpdate:
         txn.connection = txn_conn
 
         repo_txn = ContextRepository(cast(StorageBackend, txn_backend))
-        assert await repo_txn.entry_exists('abc123', txn=cast(TransactionContext, txn)) is True
-        assert 'FOR KEY SHARE' in txn_conn.fetchrow.call_args.args[0]
+        assert await repo_txn.entry_exists('abc123', scope=LOCAL_SCOPE, txn=cast(TransactionContext, txn)) is True
+        txn_sql = txn_conn.fetchrow.call_args.args[0]
+        assert txn_sql.endswith(' LIMIT 1 FOR KEY SHARE OF context_entries')
+        assert 'WHERE id = $1 AND (context_entries.owner_id = $2 OR EXISTS' in txn_sql
+        assert txn_conn.fetchrow.call_args.args[1:] == ('abc123', 'local', 'local', [])
 
         pool_conn = AsyncMock()
         pool_conn.fetchrow = AsyncMock(return_value={'?column?': 1})
@@ -233,8 +294,10 @@ class TestContextRepositoryUpdate:
         pool_backend.execute_read = _execute_read
 
         repo_pool = ContextRepository(cast(StorageBackend, pool_backend))
-        assert await repo_pool.entry_exists('abc123') is True
-        assert 'FOR KEY SHARE' not in pool_conn.fetchrow.call_args.args[0]
+        assert await repo_pool.entry_exists('abc123', scope=LOCAL_SCOPE) is True
+        pool_sql = pool_conn.fetchrow.call_args.args[0]
+        assert 'FOR KEY SHARE' not in pool_sql
+        assert 'WHERE id = $1 AND (context_entries.owner_id = $2 OR EXISTS' in pool_sql
 
     @pytest.mark.asyncio
     async def test_get_content_type(
@@ -243,7 +306,7 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test getting content type by ID."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='type_thread',
             source='user',
@@ -251,7 +314,7 @@ class TestContextRepositoryUpdate:
             text_content='Text content',
         )
 
-        content_type = await repos.context.get_content_type(ctx_id)
+        content_type = await repos.context.get_content_type(ctx_id, scope=LOCAL_SCOPE)
 
         assert content_type == 'text'
 
@@ -261,7 +324,7 @@ class TestContextRepositoryUpdate:
         repos: RepositoryContainer,
     ) -> None:
         """Test getting content type for nonexistent entry."""
-        content_type = await repos.context.get_content_type(generate_id())
+        content_type = await repos.context.get_content_type(generate_id(), scope=LOCAL_SCOPE)
 
         assert content_type is None
 
@@ -272,7 +335,7 @@ class TestContextRepositoryUpdate:
     ) -> None:
         """Test updating content type."""
         ctx_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='update_type',
             source='user',
@@ -280,7 +343,7 @@ class TestContextRepositoryUpdate:
             text_content='Content',
         )
 
-        await repos.context.update_content_type(ctx_id, 'multimodal')
+        await repos.context.update_content_type(ctx_id, 'multimodal', scope=LOCAL_SCOPE)
 
-        new_type = await repos.context.get_content_type(ctx_id)
+        new_type = await repos.context.get_content_type(ctx_id, scope=LOCAL_SCOPE)
         assert new_type == 'multimodal'

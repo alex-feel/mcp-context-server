@@ -80,6 +80,19 @@ export STORAGE_BACKEND=postgresql
 
 **Note:** PostgreSQL settings are only needed when using PostgreSQL. The server uses SQLite by default if `STORAGE_BACKEND` is not set.
 
+## Access Isolation by Backend
+
+Both backends enforce the same [Access Model](authentication.md#access-model): apart from the deployment-wide figures in the table below, every query a tool runs against stored entries reaches only the entries the calling principal may read, modify or own, and applies that limit ahead of any `LIMIT`, ranking or aggregation. The enforcement lives in the server's application layer on both backends; neither backend installs database-level row security, so a client that connects to the database directly, outside the server, sees every row.
+
+| Aspect                                          | SQLite                                                                                                                   | PostgreSQL                                                         |
+|-------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------|
+| Where the access rules are enforced             | Application layer (SQLite has no row-level security)                                                                     | Application layer                                                  |
+| Results, counts, pages and per-entry statistics | Limited to readable entries                                                                                              | Limited to readable entries                                        |
+| Full-text `fts_score`                           | FTS5 `bm25()` uses whole-index statistics, so entries the caller cannot read shift the scores and order of readable ones | `ts_rank_cd` scores each entry on its own                          |
+| Figures that describe the whole deployment      | `get_statistics` sizes, connection metrics and configuration fields, and the full-text rebuild estimate                  | The same, plus planner row estimates in `explain_query=True` plans |
+
+Which entries match and how many land on a page are the same on both backends. For deployments with more than one principal (`MCP_AUTH_PROVIDER=jwt`), use PostgreSQL, whose full-text scores depend on nothing the caller cannot read.
+
 ## External Connection Pooler Compatibility
 
 When using external PostgreSQL connection poolers (PgBouncer in transaction mode, Pgpool-II, AWS RDS Proxy, etc.), you may encounter connection errors caused by asyncpg's prepared statement caching.

@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 from app.startup import ensure_repositories
+from tests.helpers import LOCAL_SCOPE
 
 
 def require_context_id(value: str | None) -> str:
@@ -44,7 +45,7 @@ THREAD_PREFIX = 'conformance'
 async def read_db_entry(context_id: str) -> dict[str, Any]:
     """Read a context entry from the database and return a normalized dict for state comparison."""
     repos = await ensure_repositories()
-    rows = await repos.context.get_by_ids([context_id])
+    rows = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
     assert len(rows) == 1, f'Expected 1 row for id {context_id}, got {len(rows)}'
     row = rows[0]
 
@@ -77,6 +78,7 @@ async def count_entries_in_thread(thread_id: str) -> int:
     repos = await ensure_repositories()
     rows, _ = await repos.context.search_contexts(
         thread_id=thread_id, limit=10000, offset=0, explain_query=False,
+        scope=LOCAL_SCOPE,
     )
     return len(rows)
 

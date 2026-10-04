@@ -15,6 +15,7 @@ from app.tools import get_statistics
 from app.tools import list_threads
 from app.tools import search_context
 from app.tools import store_context
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestListThreads:
@@ -477,6 +478,7 @@ class TestGetContextByIds:
         success, updated_fields = await repos.context.update_context_entry(
             context_id=context_id,
             summary=injected_summary,
+            scope=LOCAL_SCOPE,
         )
         assert success, f'Failed to inject summary; updated_fields={updated_fields}'
         assert 'summary' in updated_fields, f'summary not in updated_fields: {updated_fields}'

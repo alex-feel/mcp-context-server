@@ -27,7 +27,7 @@ Whitespace is stripped and the value is folded to lowercase before validation. S
 
 **Prefix Lookup:**
 
-Every tool parameter that accepts a context identifier ALSO accepts a hex prefix of 8 to 31 characters, including the bulk and batch list parameters (each element is resolved independently). The server resolves each prefix against stored entries:
+Every tool parameter that accepts a context identifier ALSO accepts a hex prefix of 8 to 31 characters, including the bulk and batch list parameters (each element is resolved independently). The server resolves each prefix against the stored entries the caller may read, so an entry the caller cannot read never matches a prefix or makes one ambiguous:
 
 - Exactly one match: resolves to that entry's full ID.
 - Zero matches: returns an error `No context entry matches prefix '<prefix>'`.
@@ -51,6 +51,17 @@ get_context_by_ids(context_ids=[
 ])
 ```
 
+## Access Scoping
+
+Every tool call runs as one principal: the verified token subject under `MCP_AUTH_PROVIDER=jwt`, and `ACCESS_CONTROL_DEFAULT_PRINCIPAL` for STDIO, `none` and `simple_token`. Each entry has an owner (the principal that stored it), a `visibility` of `private` (owner plus every grantee) or `public` (everyone), and optional read or write grants for users or groups. The tools apply these rules on SQLite and PostgreSQL alike; the [Access Model](authentication.md#access-model) explains them in full.
+
+- **Reads**: `get_context_by_ids` omits an ID the caller may not read exactly as it omits a missing one. `search_context`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context` and `grep_context` match, return and count only readable entries, so hidden entries never add to `count`, `total_matches`, `truncated` or the `rows_returned` explain statistic, never consume `grep_context`'s `max_entries_scanned` budget, and never take a slot on a page. With `explain_query=True` on PostgreSQL, the returned query plan still carries row estimates from table-wide planner statistics. `navigate_context` and `read_context_range` report an unreadable entry as `Context entry not found: {id}`. ID prefixes resolve over readable entries only.
+- **Discovery**: `list_threads` lists a thread only when the caller may read at least one of its entries, and computes every figure from those entries. `get_statistics` counts only readable entries in every entry, thread, image, tag, embedding, index, summary and node figure; `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` and the configuration fields describe the whole deployment and are the same for every caller.
+- **Updates**: the owner and principals holding a write grant may change text, metadata, tags and images; only the owner may change `visibility`. An entry the caller may not read is reported as not found (`Context entry with ID {id} not found`; in `update_context_batch`, `Context entry {id} not found`). An entry the caller may read but not modify (through a read grant, or a `public` entry it does not own) is refused with `Not authorized to modify context entry with ID {id}` (in `update_context_batch`, `Not authorized to modify context entry {id}`) for every change, a visibility change included. A visibility change by a write grantee who is not the owner is refused with `Only the owner may change the visibility of context {id}`. In atomic mode the not-found and not-authorized batch messages end with "at index {i}" and the whole batch fails.
+- **Deletes**: only the owner may delete an entry. A delete that names IDs (`delete_context` with `context_ids`, `delete_context_batch` with `context_ids`) is refused with `Not authorized to delete context entries: {ids}` and deletes nothing when a named entry the caller may read is not its own; a named ID the caller may not read is skipped and not counted. A thread or criteria delete (`delete_context` with `thread_id`, `delete_context_batch` without `context_ids`) deletes only the caller's own matching entries and leaves the rest in place without an error.
+- **Deduplication**: `store_context` and `store_context_batch` take as the candidate the latest entry of the same thread and source among the entries the caller may read, and merge into it only when the caller owns it and its text is identical; otherwise they insert a new entry owned by the caller. Only opposite-source entries the caller may read mark a new conversational turn.
+- **Full-text scores on SQLite**: `fts_score` comes from FTS5 `bm25()`, which uses statistics of the whole index, entries the caller cannot read included, so the scores of readable entries and their relative order can shift as other principals' entries change; the matching set and page sizes depend only on readable entries. The same score feeds the full-text leg of `hybrid_search_context`. PostgreSQL's `ts_rank_cd` scores each entry on its own.
+
 ## Core Tools
 
 ### store_context
@@ -64,6 +75,7 @@ Store a context entry with optional images and flexible metadata.
 - `images` (list, optional): Base64 encoded images with mime_type. Each image's own `metadata` crosses the boundary as a JSON-encoded **string**, not an object, and `get_context_by_ids` returns it verbatim as that same string -- including an empty string, which round-trips unchanged. Only an ABSENT (or null) metadata value omits the key from the returned image.
 - `metadata` (dict, optional): Additional structured data - completely flexible JSON object for your use case
 - `tags` (list, optional): Tags for organization (automatically normalized). At most 100 tags, each at most 128 characters.
+- `visibility` (str, optional): `private` (readable by the owner and every grantee) or `public` (readable by everyone). Omitted uses `ACCESS_CONTROL_DEFAULT_VISIBILITY` (default `private`). Publishing as `public` may require the role named by `ACCESS_CONTROL_PUBLISH_ROLE`. Applies only when the store inserts a new entry: a deduplication update never changes the existing entry's owner or visibility.
 
 **Write-path length caps:** `thread_id` (256 characters), each tag (128 characters) and the value stored under any *indexed* metadata field (512 characters) are bounded at the tool boundary. Each of those values lands in a PostgreSQL btree index whose index-tuple ceiling would otherwise reject the write inside the store transaction while SQLite accepted the identical value, so the cap is what keeps the two backends accepting and rejecting the same input. Values under non-indexed metadata keys are not length-capped. The indexed-value cap is measured on the text the index actually stores, so a list or object under an indexed field is measured as its whole serialized JSON, not skipped.
 
@@ -122,7 +134,7 @@ Fetch specific context entries by their IDs.
 - `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form (at most 100 IDs per call). Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
 - `include_images` (bool, optional): Include image data (default: True)
 
-**Returns:** List of context entries with full untruncated `text_content`. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, and `updated_at`. The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
+**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, and `updated_at`. The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
 
 - When disabled (the default), the `summary` key is omitted entirely; consumers reading `entry.get('summary')` will receive `None`, which is the conventional Python signal for "feature disabled, no value to surface".
 - When enabled and the stored summary is a non-empty string, the value is returned verbatim.
@@ -134,17 +146,19 @@ Delete context entries by IDs or thread.
 
 **Parameters:**
 - `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID IDs to delete (at most 100 IDs per call). Both forms are accepted at the tool boundary. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
-- `thread_id` (str, optional): Delete all entries in a thread
+- `thread_id` (str, optional): Delete the caller's own entries in a thread
 
 Provide EXACTLY ONE of them. Supplying both is rejected with an error, and supplying neither is rejected as well. Deletion is irreversible, so a request that names two different sets of entries is refused rather than served by silently honoring one of them and reporting success for the whole call.
 
 Note the contrast with `delete_context_batch`, which takes the same two argument names and COMBINES them as criteria: there, `context_ids` plus `thread_id` means "these ids, restricted to that thread".
 
+Only the caller's own entries are deleted. With `context_ids`, an ID of an entry the caller may not read is skipped and not counted, and a named entry the caller may read but does not own refuses the whole call with `Not authorized to delete context entries: {ids}`, deleting nothing. With `thread_id`, the caller's own entries in the thread are deleted and every other entry stays in place without an error.
+
 **Returns:** Dictionary with deletion count
 
 ### list_threads
 
-List threads with statistics. Pagination is optional and backward-compatible: with no arguments ALL threads are returned, ordered by most-recent activity first.
+List threads with statistics. Pagination is optional and backward-compatible: with no arguments every thread holding an entry the caller may read is returned, ordered by most-recent activity first. Every figure counts only the entries the caller may read.
 
 **Parameters:**
 - `limit` (int, optional): Maximum threads to return (1-100). Omit (the default) to return all threads with no limit.
@@ -159,6 +173,8 @@ Threads are ordered by `last_entry` descending, tie-broken by the latest entry i
 ### get_statistics
 
 Get database statistics, usage metrics, and feature status.
+
+The entry, thread, image, tag, embedding, index, summary and node figures count only the entries the caller may read. `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` and the configuration fields describe the whole deployment and are the same for every caller.
 
 **Returns:** Dictionary with:
 - Total entries count
@@ -187,6 +203,7 @@ Update specific fields of an existing context entry.
 - `metadata_patch` (dict, optional): Partial metadata update using RFC 7396 JSON Merge Patch
 - `tags` (list, optional): New tags (full replacement). At most 100 tags, each at most 128 characters.
 - `images` (list, optional): New images (full replacement). Each image's own `metadata` crosses the boundary as a JSON-encoded **string**, not an object.
+- `visibility` (str, optional): New visibility, `private` or `public`. Only the entry owner may change it, and publishing as `public` may require the role named by `ACCESS_CONTROL_PUBLISH_ROLE`.
 
 The same write-path length caps as `store_context` apply: each tag is limited to 128 characters, and the value under any indexed metadata field to 512 characters, in both the `metadata` and the `metadata_patch` form.
 
@@ -210,8 +227,8 @@ update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"r
 **Limitations (RFC 7396):** Null values cannot be stored (null means delete key - use full replacement if needed), arrays are replaced entirely (not merged). See [Metadata Guide](metadata-addition-updating-and-filtering.md#partial-updates-metadata_patch) for details.
 
 **Field Update Rules:**
-- **Updatable fields**: text_content, metadata, tags, images
-- **Immutable fields**: id, thread_id, source, created_at (preserved for data integrity)
+- **Updatable fields**: text_content, metadata, tags, images (owner or write grant); visibility (owner only)
+- **Immutable fields**: id, thread_id, source, created_at, owner (preserved for data integrity)
 - **Auto-managed fields**: content_type (recalculated based on image presence), updated_at (set to current timestamp)
 
 **Update Behavior:**
@@ -219,6 +236,7 @@ update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"r
 - Tags and images use full replacement semantics for consistency
 - Content type automatically switches between 'text' and 'multimodal' based on image presence
 - At least one updatable field must be provided
+- An entry the caller may not read is reported as `Context entry with ID {id} not found`; an entry it may read but not modify is refused with `Not authorized to modify context entry with ID {id}`
 
 **Returns:** Dictionary with:
 - Success status
@@ -532,6 +550,7 @@ Store multiple context entries in a single batch operation.
 - `entries` (list, required): List of context entries (max 100). Each entry has:
   - `thread_id` (str, required), `source` (str, required), `text` (str, required)
   - `metadata` (dict, optional), `tags` (list, optional), `images` (list, optional)
+  - `visibility` (str, optional): `private` or `public`, as for `store_context`
 - `atomic` (bool, optional): If true, all succeed or all fail (default: true)
 
 Each entry is subject to the same write-path length caps as `store_context`: `thread_id` at most 256 characters, at most 100 tags of at most 128 characters each, and at most 512 characters in the value under any indexed metadata field. A breach is reported as a per-entry validation error, so `atomic=false` still stores the remaining entries.
@@ -547,11 +566,14 @@ Update multiple context entries in a single batch operation.
   - `context_id` (str, required): 32-character hex or 36-character hyphenated UUID, or an 8-31 character hex prefix resolved against stored entries (zero matches or an ambiguous prefix returns an error).
   - `text` (str, optional), `metadata` (dict, optional), `metadata_patch` (dict, optional)
   - `tags` (list, optional), `images` (list, optional)
+  - `visibility` (str, optional): `private` or `public`; owner-only, as for `update_context`
 - `atomic` (bool, optional): If true, all succeed or all fail (default: true)
 
 Each update is subject to the same write-path length caps as `update_context`: at most 100 tags of at most 128 characters each, and at most 512 characters in the value under any indexed metadata field (in both the `metadata` and the `metadata_patch` form). A breach is reported as a per-entry validation error.
 
 **Note:** `metadata_patch` uses RFC 7396 JSON Merge Patch semantics. See [Metadata Guide](metadata-addition-updating-and-filtering.md#partial-updates-metadata_patch) for details.
+
+An entry the caller may not read is reported as `Context entry {id} not found`, and one it may read but not modify as `Not authorized to modify context entry {id}`; atomic mode ends the message with "at index {i}" and fails the whole batch, while non-atomic mode records the message in that entry's result.
 
 **Returns:** Dictionary with success, total, succeeded, failed, results array, message
 
@@ -561,11 +583,13 @@ Delete multiple context entries by various criteria. **IRREVERSIBLE.**
 
 **Parameters:**
 - `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID context IDs to delete, or 8-31 character hex prefixes resolved independently per element (zero matches or an ambiguous prefix returns an error). At most 100 IDs per call.
-- `thread_ids` (list, optional): Delete all entries in these threads (at most 100 thread IDs per call)
+- `thread_ids` (list, optional): Delete the caller's own entries in these threads (at most 100 thread IDs per call)
 - `source` (str, optional): Filter by source ('user' or 'agent') - must combine with another criterion
 - `older_than_days` (int, optional): Delete entries older than N days - must combine with another criterion
 
 At least one criterion must be provided. `source` and `older_than_days` are each insufficient on their own: on any database older than the requested window, either one matches essentially every row, so a single scalar would irreversibly reach the whole table. Combine them with each other, with `thread_ids`, or with `context_ids` (a retention purge is expressible as `older_than_days` plus `source`). Cascading delete removes associated tags, images, and embeddings.
+
+Only the caller's own entries are deleted, and an entry the caller may not read is never matched or counted. With `context_ids`, a named entry that matches the other criteria and that the caller may read but does not own refuses the whole call with `Not authorized to delete context entries: {ids}`, deleting nothing. Without `context_ids`, only the caller's own matching entries are deleted and every other matching entry stays in place without an error.
 
 **Returns:** Dictionary with success, deleted_count, criteria_used, message
 

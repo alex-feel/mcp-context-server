@@ -8,6 +8,7 @@ import pytest
 
 import app.tools
 from app.types import MetadataDict
+from tests.helpers import LOCAL_SCOPE
 
 # Tools are plain async functions registered at server startup, so tests call them directly.
 update_context = app.tools.update_context
@@ -56,6 +57,7 @@ class TestRFC7396DeepMergeSemantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001ce4',
                 patch=nested_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -85,6 +87,7 @@ class TestRFC7396DeepMergeSemantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001cf5',
                 patch={'a': 1},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -122,6 +125,7 @@ class TestRFC7396DeepMergeSemantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001cf7',
                 patch=deep_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -150,6 +154,7 @@ class TestRFC7396DeepMergeSemantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001ce8',
                 patch={'a': {'b': 'updated'}},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -178,6 +183,7 @@ class TestRFC7396DeepMergeSemantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001ce9',
                 patch={'a': {'b': None}},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -208,6 +214,7 @@ class TestMetadataPatchRFC7396AppendixA:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001c85',
                 patch={'a': 'c'},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -228,6 +235,7 @@ class TestMetadataPatchRFC7396AppendixA:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001c86',
                 patch={'b': 'c'},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -248,6 +256,7 @@ class TestMetadataPatchRFC7396AppendixA:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001c87',
                 patch={'a': None},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -268,6 +277,7 @@ class TestMetadataPatchRFC7396AppendixA:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001c88',
                 patch={'a': None},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -288,6 +298,7 @@ class TestMetadataPatchRFC7396AppendixA:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001c89',
                 patch={'a': 'c'},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -308,6 +319,7 @@ class TestMetadataPatchRFC7396AppendixA:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001c8a',
                 patch={'a': ['b']},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -328,6 +340,7 @@ class TestMetadataPatchRFC7396AppendixA:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001c8c',
                 patch={'a': [1]},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -370,6 +383,7 @@ class TestMetadataPatchRFC7396Semantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001b5f',
                 patch=nested_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -394,6 +408,7 @@ class TestMetadataPatchRFC7396Semantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001b65',
                 patch={'a': 1},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -420,6 +435,7 @@ class TestMetadataPatchRFC7396Semantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001b67',
                 patch=deep_patch,
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )
 
@@ -445,5 +461,6 @@ class TestMetadataPatchRFC7396Semantics:
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id='0190abcdef1234567890abcd00001bbc',
                 patch={'a': {'b': 'updated'}},
+                scope=LOCAL_SCOPE,
                 txn=ANY,
             )

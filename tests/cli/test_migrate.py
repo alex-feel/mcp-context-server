@@ -31,7 +31,7 @@ class TestCliArgs:
         """The argparse parser declares all expected options."""
         parser = build_parser()
         actions = {action.dest for action in parser._actions}
-        assert {'source_url', 'target_url', 'dry_run', 'report'}.issubset(actions)
+        assert {'source_url', 'target_url', 'dry_run', 'report', 'reassign_owner'}.issubset(actions)
 
 
 class TestSettingsValidationExitCode:

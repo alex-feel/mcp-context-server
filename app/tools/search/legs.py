@@ -1,7 +1,8 @@
 """Raw semantic and full-text search legs, without reranking.
 
 The standalone semantic and FTS tools and the hybrid tool all run these legs. Each
-caller resolves the repositories and the embedding provider once and passes them in.
+caller resolves the repositories, the embedding provider and the caller's access scope
+once and passes them in; every leg searches only the entries that scope may read.
 """
 
 import json
@@ -12,6 +13,7 @@ from typing import Literal
 
 from fastmcp.exceptions import ToolError
 
+from app.access_scope import Scope
 from app.embeddings.base import EmbeddingProvider
 from app.errors import format_exception_message
 from app.migrations import get_fts_migration_status
@@ -41,6 +43,7 @@ async def semantic_search_raw(
     *,
     repos: RepositoryContainer,
     embedding_provider: EmbeddingProvider | None,
+    scope: Scope,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Raw semantic search without reranking (Layer 1).
 
@@ -64,6 +67,7 @@ async def semantic_search_raw(
         explain_query: Include query execution statistics.
         repos: Repository container the search runs against.
         embedding_provider: Provider that embeds the query; None when semantic search is unavailable.
+        scope: The caller's scope; only entries it may read are ranked.
 
     Returns:
         Tuple of (results, stats). Results include text_content and distance.
@@ -134,6 +138,7 @@ async def semantic_search_raw(
             metadata=metadata,
             metadata_filters=metadata_filters,
             explain_query=explain_query,
+            scope=scope,
         )
     except MetadataFilterValidationError:
         raise  # Let caller handle validation errors
@@ -161,7 +166,7 @@ async def semantic_search_raw(
                     f'from [{start_idx}:{end_idx}]',
                 )
             else:
-                # Fallback: use beginning of document (legacy data without boundaries)
+                # Fallback: use the beginning of the document (an embedding stored without chunk boundaries)
                 max_rerank_len = int(settings.reranking.max_length * settings.reranking.chars_per_token * 0.95)
                 result['rerank_text'] = text_content[:max_rerank_len]
                 logger.debug(
@@ -218,6 +223,7 @@ async def fts_search_raw(
     explain_query: bool = False,
     *,
     repos: RepositoryContainer,
+    scope: Scope,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Raw full-text search without reranking (Layer 1).
 
@@ -242,6 +248,7 @@ async def fts_search_raw(
         internal_highlight_for_rerank: Generate highlights internally for passage extraction.
         explain_query: Include query execution statistics.
         repos: Repository container the search runs against.
+        scope: The caller's scope; only entries it may read match.
 
     Returns:
         Tuple of (results, stats). Results include text_content and score.
@@ -294,6 +301,7 @@ async def fts_search_raw(
             highlight=actual_highlight,
             language=settings.fts.language,
             explain_query=explain_query,
+            scope=scope,
         )
     except FtsValidationError:
         raise  # Let caller handle validation errors

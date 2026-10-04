@@ -8,6 +8,7 @@ This guide covers authentication options for the MCP Context Server when using H
 - Authentication is **only relevant for HTTP transports** (http, sse, streamable-http)
 - STDIO transport (default) provides process-level security without authentication
 - Three authentication modes available: no auth (STDIO), bearer token (HTTP), and JWT verification (HTTP)
+- Every request reads and writes as one principal: the token's subject under JWT verification, and the configured default principal otherwise (see [Access Model](#access-model))
 - Configuration is entirely via environment variables
 
 ## Authentication Methods Overview
@@ -76,15 +77,17 @@ The `SimpleTokenVerifier` class validates bearer tokens against a static token c
 - **Constant-time comparison**: Prevents timing attacks via `hmac.compare_digest()`
 - **Centralized configuration**: Uses `AuthSettings` for consistent settings management
 
+The bearer token proves access to the server but names no principal. Every `simple_token` request reads and writes as `ACCESS_CONTROL_DEFAULT_PRINCIPAL` with no groups or roles, exactly like STDIO and `MCP_AUTH_PROVIDER=none`, so all token holders share one owner identity. `MCP_AUTH_CLIENT_ID` identifies the client to FastMCP and is not an owner identity. A `simple_token` caller cannot reach entries owned by a client id such as `mcp-client`: it cannot read the private ones and cannot change or delete any of them. Hand them to the default principal with `mcp-context-server-migrate --source-url <url> --reassign-owner mcp-client local`, replacing `local` with your `ACCESS_CONTROL_DEFAULT_PRINCIPAL` value if you changed it (see [Reassigning Entry Ownership](migration-v2-to-v3.md#reassigning-entry-ownership)).
+
 ### Configuration
 
 **Required Environment Variables:**
 
-| Variable             | Required | Description                                                  |
-|----------------------|----------|--------------------------------------------------------------|
-| `MCP_AUTH_PROVIDER`  | Yes      | Set to `simple_token`                                        |
-| `MCP_AUTH_TOKEN`     | Yes      | The bearer token for authentication                          |
-| `MCP_AUTH_CLIENT_ID` | No       | Client ID for authenticated requests (default: `mcp-client`) |
+| Variable             | Required | Description                                                                                    |
+|----------------------|----------|------------------------------------------------------------------------------------------------|
+| `MCP_AUTH_PROVIDER`  | Yes      | Set to `simple_token`                                                                          |
+| `MCP_AUTH_TOKEN`     | Yes      | The bearer token for authentication                                                            |
+| `MCP_AUTH_CLIENT_ID` | No       | Client ID that identifies the client to FastMCP; not an owner identity (default: `mcp-client`) |
 
 **Example Configuration:**
 
@@ -155,7 +158,7 @@ response = httpx.post(
 
 ## JWT Authentication
 
-> **Experimental and non-isolating.** The `jwt` provider verifies IdP-issued tokens and rejects unauthenticated requests, and every stored entry is stamped at write time with its owner (the token's principal) and a visibility value (see [Access Control Settings](environment-variables.md#access-control-settings)) — but reads are not yet filtered by them: any successfully authenticated caller can still read and update ALL stored context. Use it today only where every token holder is trusted with the full data set; read-path enforcement is under active development.
+> **Experimental.** The `jwt` provider verifies IdP-issued tokens, rejects unauthenticated requests, and runs every request as the token's principal: each stored entry is owned by the principal that wrote it, and every read, update and delete reaches only the entries that principal may access (see [Access Model](#access-model)). Grants are created only by `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups` when an entry is stored: no tool lists, adds or removes grants, and responses do not report an entry's owner or visibility. Prefer PostgreSQL for deployments with more than one principal (see [Enforcement and Its Limits](#enforcement-and-its-limits)).
 
 ### When to Use
 
@@ -249,12 +252,74 @@ MCP_AUTH_GROUPS_CLAIM=https://example.com/groups
 MCP_AUTH_ROLES_CLAIM=https://example.com/roles
 ```
 
+Auth0 subjects carry a `|` (`auth0|...`, `google-oauth2|...`), which `ACCESS_CONTROL_DEFAULT_PRINCIPAL` cannot hold. To hand existing entries to such a subject, use the CLI route of [Switching an Existing Deployment to JWT](#switching-an-existing-deployment-to-jwt).
+
 ### Security Best Practices
 
 1. **Pin issuer and audience**: leaving `MCP_AUTH_JWT_ISSUER`/`MCP_AUTH_JWT_AUDIENCE` unset skips those checks, so any token signed by the configured key is accepted
 2. **Prefer JWKS mode** for real IdPs: key rotation at the IdP is picked up automatically
 3. **Use HTTPS in production**: the JWT travels in the Authorization header and requires TLS
 4. **Keep token lifetimes short**: expiration is validated on every request
+
+### Switching an Existing Deployment to JWT
+
+Entries written over STDIO, `MCP_AUTH_PROVIDER=none` or `simple_token` are owned by `ACCESS_CONTROL_DEFAULT_PRINCIPAL` (default `local`). Under `jwt` every request runs as its token's subject, so no caller owns those entries: the private ones are unreachable and the public ones cannot be changed or deleted until they are handed to a real subject. Two routes exist:
+
+1. **Set the default principal in the run that stamps the existing entries.** Set `ACCESS_CONTROL_DEFAULT_PRINCIPAL` to the operator's IdP subject in the environment of the run that writes the owner of the existing entries. For an integer-keyed v2 database, that run is the `mcp-context-server-migrate` conversion to the UUIDv7 schema: the CLI stamps every copied entry with the value from its own environment, and the first server start on the migrated database adds no column and changes no owner (see [Migrating to the UUIDv7 Schema](migration-v2-to-v3.md)). For a UUIDv7-keyed database whose `context_entries` table predates the ownership columns, that run is the first start of the upgraded server, which adds the columns and makes this subject the owner of every existing entry. Both runs reject any value outside 1-128 characters from `A-Z a-z 0-9 . _ @ : + -`, a limit that exists because the server interpolates the value into the access-control migration's DDL. Keycloak subjects (UUIDs) fit, and Auth0 subjects such as `auth0|...` and `google-oauth2|...` do not. Microsoft documents the Entra ID `sub` claim only as an opaque pairwise string, so compare the value your tokens carry against this character set before choosing this route.
+2. **Reassign the owner with the migration CLI.** This route works for any subject, on a database that carries the ownership columns. Every database the UUIDv7 conversion produces carries them, so for an integer-keyed v2 database, run the conversion first and `--reassign-owner` on the migrated database. Stop the server, preview with `--dry-run`, then run:
+
+   ```bash
+   mcp-context-server-migrate --source-url <url> --reassign-owner local <subject>
+   ```
+
+   The CLI binds both values as statement parameters, so it has no character-set limit. It rewrites the owner of every entry owned by `local` in one statement, bumps `updated_at`, and leaves grants unchanged. With `--dry-run` it prints the number of matching entries and changes nothing. See [Reassigning Entry Ownership](migration-v2-to-v3.md#reassigning-entry-ownership).
+
+## Access Model
+
+Every request runs as one principal, and every entry belongs to the principal that stored it. The server enforces the model on every read, update and delete, on SQLite and PostgreSQL alike.
+
+### Principals
+
+| Request                                    | Principal                                                    | Groups and roles                                        |
+|--------------------------------------------|--------------------------------------------------------------|---------------------------------------------------------|
+| STDIO transport                            | `ACCESS_CONTROL_DEFAULT_PRINCIPAL` (default `local`)         | None                                                    |
+| HTTP with `MCP_AUTH_PROVIDER=none`         | `ACCESS_CONTROL_DEFAULT_PRINCIPAL`                           | None                                                    |
+| HTTP with `MCP_AUTH_PROVIDER=simple_token` | `ACCESS_CONTROL_DEFAULT_PRINCIPAL`                           | None                                                    |
+| HTTP with `MCP_AUTH_PROVIDER=jwt`          | The token's `sub` claim (its client id when `sub` is absent) | From `MCP_AUTH_GROUPS_CLAIM` and `MCP_AUTH_ROLES_CLAIM` |
+
+Without `jwt`, every request shares the default principal, which owns every entry those requests store, so the server behaves as a single-user store.
+
+### Ownership, Visibility and Grants
+
+- **Owner**: the server stamps the writing principal as an entry's owner when the entry is first stored. The owner is never a tool parameter and no tool changes it; only the operator CLI `--reassign-owner` rewrites it.
+- **Visibility**: `private` (readable by the owner and every grantee) or `public` (readable by everyone). An entry without an explicit `visibility` takes `ACCESS_CONTROL_DEFAULT_VISIBILITY` (default `private`).
+- **Grants**: a grant gives one user or one group `read` or `write` permission on one entry. A grant is effective under either visibility, and a write grant also grants read. `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups` writes a read grant for every group of the writing principal when an entry is first stored, so under the default `private` visibility the author's groups can read the entry.
+
+| Operation                                                                                                                                                                                                          | Allowed when the caller                                                                           |
+|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
+| Read: `get_context_by_ids`, `search_context`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context`, `grep_context`, `navigate_context`, `read_context_range`, `list_threads`, `get_statistics` | Owns the entry, the entry is `public`, or holds a read or write grant directly or through a group |
+| Change text, metadata, tags or images: `update_context`, `update_context_batch`                                                                                                                                    | Owns the entry or holds a write grant directly or through a group                                 |
+| Change visibility                                                                                                                                                                                                  | Owns the entry; publishing as `public` may also require `ACCESS_CONTROL_PUBLISH_ROLE`             |
+| Delete: `delete_context`, `delete_context_batch`                                                                                                                                                                   | Owns the entry                                                                                    |
+
+### Not Found Versus Not Authorized
+
+- **An entry the caller may not read behaves exactly like one that does not exist.** It is never returned, matched, listed or counted; an ID prefix resolves over readable entries only; `update_context` reports `Context entry with ID {id} not found`, and `navigate_context` and `read_context_range` report `Context entry not found: {id}`.
+- **An entry the caller may read but not modify is refused explicitly.** A caller who may only read the entry, through a read grant or because the entry is `public`, gets `Not authorized to modify context entry with ID {id}` from `update_context` (`update_context_batch`: `Not authorized to modify context entry {id}`) for every change, a visibility change included. A caller holding a write grant who is not the owner may change text, metadata, tags and images, and both update tools refuse that caller's visibility change with `Only the owner may change the visibility of context {id}`.
+- **A delete that names IDs refuses the whole call.** When `delete_context` with `context_ids`, or `delete_context_batch` with `context_ids`, names an entry the caller may read but does not own, the call fails with `Not authorized to delete context entries: {ids}` and deletes nothing.
+- **Thread and criteria deletes cover only the caller's own entries.** `delete_context` with `thread_id` and `delete_context_batch` without `context_ids` delete the caller's own matching entries and leave every other entry in place without an error.
+- **Deduplication merges only into the caller's own entries.** `store_context` and `store_context_batch` take as the deduplication candidate the latest entry of the same thread and source that the caller may read, and update it only when the caller owns it and the text is identical; otherwise they insert a new entry owned by the caller. Only opposite-source entries the caller may read mark a new conversational turn.
+
+### Enforcement and Its Limits
+
+The server applies the access rules in the application layer, on both backends: apart from the deployment-wide figures listed below, every query a tool runs against stored entries carries the access condition in SQL, ahead of any `LIMIT`, ranking or aggregation, and tags, images and per-node summaries are read only for entries such a query returned. Entries the caller cannot read therefore never take a slot on a page, in a ranked candidate set or in a top-N list. The database itself enforces nothing: no row-level security policy is installed, and a client that connects to the database directly sees every row.
+
+Some figures still reflect entries the caller cannot read:
+
+- **SQLite full-text scores.** On SQLite, `fts_score` comes from FTS5 `bm25()`, which draws on statistics of the whole index (row count, average length, how many entries contain each term), entries the caller cannot read included. The scores of readable entries and their relative order can therefore shift as other principals' entries change, and the same score feeds the full-text leg of `hybrid_search_context`; which entries match, and how many results a page holds, depend only on what the caller can read. PostgreSQL's `ts_rank_cd` scores each entry on its own. Use PostgreSQL for deployments with more than one principal.
+- **Deployment-wide statistics.** `get_statistics` reports `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` (query counters and the last error text) and the configuration fields for the whole deployment, identically for every caller. Every entry, thread, image, tag, embedding, index, summary and node figure counts only the entries the caller may read.
+- **Full-text migration progress.** While a full-text index rebuild runs, `fts_search_context` reports `estimated_remaining_seconds` computed from the total entry count.
+- **Query plans.** With `explain_query=True` on PostgreSQL, the returned query plan carries row estimates from table-wide planner statistics.
 
 ## MCP Client Configuration
 
@@ -320,11 +385,11 @@ headers = {"Authorization": f"Bearer {token}"}
 
 ### Bearer Token Authentication
 
-| Variable             | Required | Default      | Description                                  |
-|----------------------|----------|--------------|----------------------------------------------|
-| `MCP_AUTH_PROVIDER`  | Yes      | -            | `simple_token`                               |
-| `MCP_AUTH_TOKEN`     | Yes      | -            | Bearer token for validation                  |
-| `MCP_AUTH_CLIENT_ID` | No       | `mcp-client` | Client ID assigned to authenticated requests |
+| Variable             | Required | Default      | Description                                                   |
+|----------------------|----------|--------------|---------------------------------------------------------------|
+| `MCP_AUTH_PROVIDER`  | Yes      | -            | `simple_token`                                                |
+| `MCP_AUTH_TOKEN`     | Yes      | -            | Bearer token for validation                                   |
+| `MCP_AUTH_CLIENT_ID` | No       | `mcp-client` | Client ID that identifies the client to FastMCP; not an owner |
 
 ### JWT Authentication
 

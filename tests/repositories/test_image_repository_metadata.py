@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.backends import StorageBackend
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.mark.asyncio
@@ -44,7 +45,7 @@ class TestMalformedStoredImageMetadata:
 
         repos = RepositoryContainer(backend)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='malformed-image-metadata-thread',
             source='agent',
@@ -80,21 +81,6 @@ class TestMalformedStoredImageMetadata:
         assert images[0]['mime_type'] == 'image/png'
         assert 'metadata' not in images[0]
 
-    async def test_batch_reader_omits_unreadable_metadata(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """The multi-context reader degrades the same way."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        context_id = await self._seed_entry_with_raw_metadata(backend, '{"unclosed": ')
-        repos = RepositoryContainer(backend)
-
-        by_context = await repos.images.get_images_for_contexts([context_id])
-
-        assert len(by_context[context_id]) == 1
-        assert 'metadata' not in by_context[context_id][0]
-
     async def test_unreadable_metadata_does_not_charge_the_failure_counters(
         self, async_db_initialized: StorageBackend,
     ) -> None:
@@ -108,7 +94,6 @@ class TestMalformedStoredImageMetadata:
         before = backend.get_metrics()
         for _ in range(3):
             await repos.images.get_images_for_context(context_id)
-            await repos.images.get_images_for_contexts([context_id])
         after = backend.get_metrics()
 
         assert after['failed_queries'] == before['failed_queries']
@@ -181,7 +166,7 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='image-metadata-fidelity-thread',
             source='user',
@@ -204,7 +189,7 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='image-metadata-replace-thread',
             source='user',
@@ -219,6 +204,39 @@ class TestPerImageMetadataValueFidelity:
         images = await repos.images.get_images_for_context(context_id)
         assert images[0].get('metadata') == ''
 
+    async def test_empty_mapping_metadata_round_trips(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """An empty mapping is stored as its JSON encoding and read back as an empty mapping.
+
+        Only an absent or ``None`` value stores SQL NULL; an empty mapping is a supplied value.
+        """
+        from app.repositories import RepositoryContainer
+
+        repos = RepositoryContainer(async_db_initialized)
+        context_id, _ = await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE,
+            visibility='private',
+            thread_id='image-metadata-empty-mapping-thread',
+            source='user',
+            content_type='multimodal',
+            text_content='Empty mapping per-image metadata',
+            metadata=None,
+        )
+
+        await repos.images.store_images(context_id, [self._image({})])
+
+        def _stored_metadata(conn: sqlite3.Connection) -> object:
+            row = conn.execute(
+                'SELECT image_metadata FROM image_attachments WHERE context_entry_id = ?', (context_id,),
+            ).fetchone()
+            return row[0]
+
+        assert await async_db_initialized.execute_read(_stored_metadata) == '{}'
+        images = await repos.images.get_images_for_context(context_id)
+        assert 'metadata' in images[0]
+        assert images[0]['metadata'] == {}
+
     async def test_absent_metadata_still_omits_the_key(
         self, async_db_initialized: StorageBackend,
     ) -> None:
@@ -227,7 +245,7 @@ class TestPerImageMetadataValueFidelity:
 
         repos = RepositoryContainer(async_db_initialized)
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='image-metadata-absent-thread',
             source='user',
@@ -246,51 +264,3 @@ class TestPerImageMetadataValueFidelity:
 
         images = await repos.images.get_images_for_context(context_id)
         assert 'metadata' not in images[0]
-
-    async def test_empty_mapping_metadata_round_trips_on_the_single_image_writer(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """The single-image writer applies the same gate as the batch writers."""
-        from app.repositories import RepositoryContainer
-
-        repos = RepositoryContainer(async_db_initialized)
-        context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
-            visibility='private',
-            thread_id='image-metadata-single-writer-thread',
-            source='user',
-            content_type='multimodal',
-            text_content='Empty mapping per-image metadata',
-            metadata=None,
-        )
-
-        await repos.images.store_image(
-            context_id=context_id,
-            image_data=b'single writer bytes',
-            mime_type='image/png',
-            metadata={},
-        )
-
-        images = await repos.images.get_images_for_context(context_id)
-        assert images[0].get('metadata') == {}
-
-    async def test_batch_reader_returns_the_empty_value_too(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """Reading many contexts preserves the same value fidelity."""
-        from app.repositories import RepositoryContainer
-
-        repos = RepositoryContainer(async_db_initialized)
-        context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
-            visibility='private',
-            thread_id='image-metadata-batch-thread',
-            source='user',
-            content_type='multimodal',
-            text_content='Empty per-image metadata read in batch',
-            metadata=None,
-        )
-        await repos.images.store_images(context_id, [self._image('')])
-
-        by_context = await repos.images.get_images_for_contexts([context_id])
-        assert by_context[context_id][0].get('metadata') == ''

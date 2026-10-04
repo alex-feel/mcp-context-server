@@ -312,6 +312,26 @@ Steps:
 
 Changing `EMBEDDING_DIM` is heavier and `--re-embed` deliberately refuses it. The dimension is baked into the vector-storage geometry: the fp32 `vec_context_embeddings` column width is fixed at table creation, and under compression the dimension is part of the seed-locked `compression_metadata` codebook (immutable by design). A dimension change therefore requires recreating the vector storage from scratch, not an in-place re-embed. Follow the [Changing Embedding Dimensions](semantic-search.md#changing-embedding-dimensions) procedure: back up, update the configuration, delete the database (or drop and recreate the vector tables at the new dimension), restart the server to create fresh tables, and re-store the data so embeddings are generated at the new dimension.
 
+## Reassigning Entry Ownership
+
+`--reassign-owner FROM TO` is an in-place mode like `--compress`, `--decompress`, `--re-embed` and `--embed-missing`: it operates on the database named by `--source-url` and ignores `--target-url`. It rewrites the owner of every `context_entries` row owned by `FROM` to `TO` in one statement. Its main use is switching an existing deployment to `MCP_AUTH_PROVIDER=jwt`: the entries written over STDIO, `none` or `simple_token` are owned by `ACCESS_CONTROL_DEFAULT_PRINCIPAL` (default `local`), and under `jwt` no caller owns them: the private ones are unreachable and the public ones cannot be changed or deleted until they belong to an IdP subject (see [Switching an Existing Deployment to JWT](authentication.md#switching-an-existing-deployment-to-jwt)).
+
+It is also the route for subjects the environment variable cannot hold. `ACCESS_CONTROL_DEFAULT_PRINCIPAL` is limited to `A-Z a-z 0-9 . _ @ : + -` because the access-control migration interpolates it into DDL, while this mode binds both values as statement parameters and accepts any non-empty value, including Auth0 subjects such as `auth0|...` and `google-oauth2|...`.
+
+Steps:
+
+1. **Stop the server.** The statement runs while no request can read or write the entries, which is why it leaves the optimistic-concurrency `version` untouched.
+2. **Preview** with `--dry-run`, which prints the number of entries owned by `FROM` and changes nothing:
+
+   ```bash
+   mcp-context-server-migrate --source-url sqlite:////path/to/db.sqlite --reassign-owner local 'auth0|abc123' --dry-run
+   ```
+
+3. **Execute** by re-running without `--dry-run`. The CLI prints the number of entries reassigned; when no entry is owned by `FROM` it reports that and exits successfully.
+4. **Restart the server.**
+
+The statement sets `updated_at` on every reassigned entry and leaves `context_entry_grants` unchanged: a grant's `granted_by` records who created it, and grantee rows name principals, not owners. `FROM` and `TO` must both be non-empty and must differ; otherwise the CLI exits with status 1 and writes nothing. `--reassign-owner` is mutually exclusive with `--compress`, `--decompress` and `--re-embed`, and a co-passed `--embed-missing` does not run: run it separately.
+
 ## End-to-End Checklist: Supabase v2 to v3 With Compression
 
 This is the recommended order for moving an existing v2 deployment to a v3.0.0 Supabase (PostgreSQL) database with TurboQuant compression enabled. The key ordering rule is that compression is always the LAST step: the migration auto-initializes the target with the fp32 layout, and `--compress` converts it afterward.

@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 import pytest
 
+from app.access_scope import AccessScope
 from app.repositories.context_repository.records import DuplicateCandidate
+from tests.helpers import as_principal
 from tests.tools.batch._mocks import make_mock_txn
 
 
@@ -146,3 +148,53 @@ class TestBatchStoreResponseParity:
             assert result['results'][1]['success'] is True
             # 2 embeddings generated, 1 stored (entry 1), 1 not stored (entry 2 = duplicate)
             assert 'not stored - duplicates' in result['message']
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestBatchStoreScope:
+    """The batch store runs its pre-check and every store under the caller's scope."""
+
+    @pytest.mark.parametrize('atomic', [True, False])
+    @pytest.mark.asyncio
+    async def test_scope_reaches_the_precheck_and_the_store(self, atomic: bool) -> None:
+        """One scope per call reaches the pre-check and the deduplicating store on both batch paths."""
+        from app.tools.batch.store import store_context_batch
+
+        _, mock_begin_transaction = make_mock_txn()
+        mock_settings = MagicMock()
+        mock_settings.summary.min_content_length = 0
+        mock_settings.access_control.default_visibility = 'private'
+        mock_settings.access_control.default_group_grants = 'none'
+
+        with (
+            as_principal('bob', groups=['team-x']),
+            patch('app.tools.batch.store.settings', mock_settings),
+            patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.store.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.store.get_summary_provider', return_value=MagicMock()),
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+            precheck = AsyncMock(return_value=DuplicateCandidate(context_id='42', summary='Stored summary'))
+            store = AsyncMock(return_value=('42', True))
+            mock_repos.context.check_latest_is_duplicate = precheck
+            mock_repos.context.store_with_deduplication = store
+
+            result = await store_context_batch(
+                entries=[{'thread_id': 'scope-thread', 'source': 'user', 'text': 'Re-sent text'}],
+                atomic=atomic,
+            )
+
+        expected = AccessScope('bob', frozenset({'team-x'}))
+        precheck_call = precheck.await_args
+        store_call = store.await_args
+        assert result['results'][0]['success'] is True
+        assert precheck_call is not None
+        assert precheck_call.kwargs['scope'] == expected
+        assert store_call is not None
+        assert store_call.kwargs['scope'] == expected

@@ -4,6 +4,7 @@ import pytest
 
 from app.backends import StorageBackend
 from tests.conftest import requires_semantic_search
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import store_single_chunk_embedding
 
 
@@ -30,7 +31,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with different status metadata
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='metadata-test-thread',
                 source='agent',
@@ -42,7 +43,7 @@ class TestSemanticSearchMetadataFiltering:
 
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='metadata-test-thread',
                 source='agent',
@@ -57,6 +58,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata={'status': 'completed'},
+            scope=LOCAL_SCOPE,
         )
 
         # Should return only 3 entries with status=completed
@@ -84,7 +86,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with different priority values
         for priority in [1, 3, 5, 7, 9]:
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='priority-test-thread',
                 source='user',
@@ -99,6 +101,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 5}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return entries with priority > 5 (7 and 9)
@@ -128,7 +131,7 @@ class TestSemanticSearchMetadataFiltering:
         task_names = ['refactor_auth', 'refactor_database', 'implement_api', 'fix_bug']
         for i, name in enumerate(task_names):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='taskname-test-thread',
                 source='agent',
@@ -143,6 +146,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'task_name', 'operator': 'contains', 'value': 'refactor'}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return entries with task_name containing 'refactor'
@@ -170,7 +174,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries - some with 'important' flag, some without
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='exists-test-thread',
                 source='user',
@@ -182,7 +186,7 @@ class TestSemanticSearchMetadataFiltering:
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='exists-test-thread',
                 source='user',
@@ -197,6 +201,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'important', 'operator': 'exists'}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return only 2 entries with 'important' field
@@ -224,7 +229,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=agent and status=completed
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='combined-filter-thread',
                 source='agent',
@@ -237,7 +242,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=user and status=completed
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='combined-filter-thread',
                 source='user',
@@ -250,7 +255,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries in target thread with source=agent and status=pending
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='combined-filter-thread',
                 source='agent',
@@ -267,6 +272,7 @@ class TestSemanticSearchMetadataFiltering:
             thread_id='combined-filter-thread',
             source='agent',
             metadata={'status': 'completed'},
+            scope=LOCAL_SCOPE,
         )
 
         # Should return only 2 entries matching all criteria
@@ -297,7 +303,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create test entries
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='invalid-filter-test-thread',
                 source='user',
@@ -316,6 +322,7 @@ class TestSemanticSearchMetadataFiltering:
                 metadata_filters=[
                     {'key': 'DROP TABLE;--', 'operator': 'eq', 'value': 'test'},  # Invalid key
                 ],
+                scope=LOCAL_SCOPE,
             )
 
         # Verify exception contains proper error details
@@ -342,7 +349,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create entries with status=active
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='no-match-thread',
                 source='agent',
@@ -357,6 +364,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata={'status': 'archived'},  # No entries have this status
+            scope=LOCAL_SCOPE,
         )
 
         # Should return empty list
@@ -382,7 +390,7 @@ class TestSemanticSearchMetadataFiltering:
         categories = ['backend', 'frontend', 'devops', 'testing', 'docs']
         for i, category in enumerate(categories):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='in-operator-thread',
                 source='user',
@@ -397,6 +405,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'category', 'operator': 'in', 'value': ['backend', 'frontend']}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 entries (backend and frontend)
@@ -429,7 +438,7 @@ class TestSemanticSearchMetadataFiltering:
         priorities = [1, 3, 5, 7, 9]
         for i, priority in enumerate(priorities):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='in-operator-int-thread',
                 source='agent',
@@ -444,6 +453,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'in', 'value': [5, 9]}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 entries (priority 5 and 9)
@@ -475,7 +485,7 @@ class TestSemanticSearchMetadataFiltering:
         priorities = [1, 2, 3, 4, 5]
         for i, priority in enumerate(priorities):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='not-in-operator-int-thread',
                 source='user',
@@ -490,6 +500,7 @@ class TestSemanticSearchMetadataFiltering:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'not_in', 'value': [1, 2, 3]}],
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 entries (priority 4 and 5)
@@ -517,7 +528,7 @@ class TestSemanticSearchMetadataFiltering:
         # Create test entries with various metadata
         for i in range(4):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='none-filter-thread',
                 source='agent',
@@ -533,6 +544,7 @@ class TestSemanticSearchMetadataFiltering:
             limit=10,
             metadata=None,
             metadata_filters=None,
+            scope=LOCAL_SCOPE,
         )
 
         # Should return all 4 entries

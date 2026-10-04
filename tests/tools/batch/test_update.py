@@ -8,7 +8,9 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+from app.access_scope import Scope
 from app.repositories.context_repository.records import EntryProbe
+from tests.helpers import LOCAL_SCOPE
 from tests.tools.batch._mocks import make_mock_txn
 
 
@@ -36,7 +38,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local', True))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(False, []))
 
@@ -74,7 +76,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local', True))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.patch_metadata = AsyncMock(return_value=(False, []))
 
@@ -112,7 +114,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local', True))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(False, []))
 
@@ -153,7 +155,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.update.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local', True))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.patch_metadata = AsyncMock(return_value=(False, []))
 
@@ -212,7 +214,7 @@ class TestBatchUpdateResponseParity:
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local', True))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(True, ['text']))
             mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
@@ -284,7 +286,7 @@ class TestUpdateBatchSiblingNotDropped:
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local', True))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             # index 1 is a metadata-only update -> patch_metadata applies it.
             mock_repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
@@ -340,9 +342,10 @@ class TestUpdateBatchSiblingNotDropped:
 
         # index 0's existence check passes; index 1's fails, as if a concurrent delete of
         # the shared context_id committed between the two sequential checks.
-        exists_results = [EntryProbe(True, 'user', 0, 'local'), EntryProbe(False, None, None, None)]
+        exists_results = [EntryProbe(True, 'user', 0, 'local', True), EntryProbe(False, None, None, None, False)]
 
-        async def exists_side_effect(_context_id):
+        async def exists_side_effect(_context_id: str, *, scope: Scope) -> EntryProbe:
+            assert scope == LOCAL_SCOPE
             return exists_results.pop(0)
 
         with (

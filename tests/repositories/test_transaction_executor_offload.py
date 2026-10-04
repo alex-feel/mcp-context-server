@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.helpers import LOCAL_SCOPE
+
 if TYPE_CHECKING:
     from app.backends import StorageBackend
     from app.repositories import RepositoryContainer
@@ -76,7 +78,7 @@ class TestTransactionExecutorOffload:
         with patch.object(BaseRepository, '_run_sqlite_txn', staticmethod(_spy)):
             async with backend.begin_transaction() as txn:
                 context_id, _ = await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='offload-1', source='user', content_type='text',
                     text_content='offloaded txn write', metadata=None, txn=txn,
@@ -85,7 +87,7 @@ class TestTransactionExecutorOffload:
 
         assert '_store_sqlite' in calls
         assert '_store_tags_sqlite' in calls
-        assert await repos.context.get_content_type(context_id) == 'text'
+        assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
 
     @pytest.mark.asyncio
     async def test_begin_transaction_rolls_back_on_cancellation(
@@ -113,7 +115,7 @@ class TestTransactionExecutorOffload:
             """
             async with backend.begin_transaction() as txn:
                 await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='cancel-1', source='user', content_type='text',
                     text_content='must roll back', metadata=None, txn=txn,
@@ -124,17 +126,17 @@ class TestTransactionExecutorOffload:
             await _cancelled_mid_transaction()
 
         # The partial write was rolled back...
-        results, _stats = await repos.context.search_contexts(thread_id='cancel-1')
+        results, _stats = await repos.context.search_contexts(thread_id='cancel-1', scope=LOCAL_SCOPE)
         assert results == []
         # ...the breaker stayed closed, and the writer connection is clean:
         # a follow-up write commits normally.
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cancel-2', source='user', content_type='text',
             text_content='post-cancel write', metadata=None,
         )
-        assert await repos.context.get_content_type(context_id) == 'text'
+        assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
 
     @pytest.mark.asyncio
     async def test_cancellation_mid_closure_drains_before_rollback(
@@ -192,13 +194,13 @@ class TestTransactionExecutorOffload:
         # The zombie write landed INSIDE the rolled-back transaction: a
         # follow-up commit must not resurrect it.
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='zombie-2', source='user', content_type='text',
             text_content='post-cancel commit', metadata=None,
         )
-        assert await repos.context.get_content_type(context_id) == 'text'
-        results, _stats = await repos.context.search_contexts(thread_id='zombie-1')
+        assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
+        results, _stats = await repos.context.search_contexts(thread_id='zombie-1', scope=LOCAL_SCOPE)
         assert results == []
 
     @pytest.mark.asyncio
@@ -274,7 +276,7 @@ class TestTransactionExecutorOffload:
             """
             async with backend.begin_transaction() as txn:
                 await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='drain-rollback', source='user', content_type='text',
                     text_content='rollback via drain', metadata=None, txn=txn,
@@ -285,7 +287,7 @@ class TestTransactionExecutorOffload:
             # Success path -> commit routes through the drain.
             async with backend.begin_transaction() as txn:
                 await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='drain-commit', source='user', content_type='text',
                     text_content='commit via drain', metadata=None, txn=txn,

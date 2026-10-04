@@ -44,7 +44,7 @@ async def store_context_batch(
             description='List of context entries to store. Each entry must have: '
             'thread_id (str), source ("user" or "agent"), text (str). '
             'Optional: metadata (dict), tags (list[str]), images (list[dict]), '
-            'visibility ("private", "shared", or "public"; omitted uses the server default, '
+            'visibility ("private" or "public"; omitted uses the server default, '
             'publishing as public may require a configured role).',
             min_length=1,
             max_length=100,
@@ -67,9 +67,11 @@ async def store_context_batch(
     - atomic=True (default): ALL entries must succeed or NONE are stored (transaction rollback).
     - atomic=False: Each entry processed independently with per-item error reporting.
 
-    Deduplication: if an entry with identical thread_id, source, and text already exists,
-    the existing entry is updated. Deduplication is suppressed when opposite-source
-    entries exist after the candidate, preserving chronological ordering.
+    Deduplication: the candidate is the latest entry of the same thread_id and source
+    among the entries the caller may read; when the caller owns it and its text is
+    identical, the existing entry is updated, otherwise a new entry owned by the caller
+    is inserted. Deduplication is suppressed when opposite-source entries the caller
+    may read exist after the candidate, preserving chronological ordering.
     Pre-check optimization skips embedding/summary generation for likely duplicates.
 
     Size limits:
@@ -91,9 +93,11 @@ async def store_context_batch(
         repos = await ensure_repositories()
 
         # Resolve the effective principal ONCE for the whole batch (one request,
-        # one caller identity) plus the author-group grant policy; the publish
-        # gate is then enforced per entry on each entry's EFFECTIVE visibility.
+        # one caller identity), the scope every entry deduplicates and stamps
+        # under, and the author-group grant policy; the publish gate is then
+        # enforced per entry on each entry's EFFECTIVE visibility.
         principal = resolve_effective_principal()
+        scope = principal.access_scope()
         author_group_grants: frozenset[str] = (
             principal.groups
             if settings.access_control.default_group_grants == 'author_groups'
@@ -187,6 +191,7 @@ async def store_context_batch(
                     thread_id=entry['thread_id'],
                     source=entry['source'],
                     text_content=text_content,
+                    scope=scope,
                 )
                 if duplicate_candidate is not None:
                     likely_duplicate_id = duplicate_candidate.context_id
@@ -434,7 +439,7 @@ async def store_context_batch(
                                     source=entry['source'],
                                     content_type=entry['content_type'],
                                     text_content=entry['text_content'],
-                                    owner_id=principal.principal_id,
+                                    scope=scope,
                                     visibility=entry['visibility'],
                                     author_group_grants=author_group_grants,
                                     metadata_str=entry['metadata'],
@@ -578,7 +583,7 @@ async def store_context_batch(
                                     source=entry['source'],
                                     content_type=entry['content_type'],
                                     text_content=entry['text_content'],
-                                    owner_id=principal.principal_id,
+                                    scope=scope,
                                     visibility=entry['visibility'],
                                     author_group_grants=author_group_grants,
                                     metadata_str=entry['metadata'],

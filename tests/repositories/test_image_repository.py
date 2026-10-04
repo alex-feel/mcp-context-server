@@ -12,47 +12,12 @@ import pytest
 
 from app.backends import StorageBackend
 from app.ids import generate_id
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.mark.asyncio
 class TestImageRepository:
     """Test ImageRepository functionality."""
-
-    async def test_store_single_image(self, async_db_initialized: StorageBackend) -> None:
-        """Test storing a single image attachment."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        repos = RepositoryContainer(backend)
-
-        # Create a context entry first
-        context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
-            visibility='private',
-            thread_id='test-thread',
-            source='user',
-            content_type='text',
-            text_content='Test entry for image',
-            metadata=None,
-        )
-
-        # Store single image
-        image_data = b'fake image data'
-        await repos.images.store_image(
-            context_id=context_id,
-            image_data=image_data,
-            mime_type='image/png',
-            metadata={'width': 100, 'height': 100},
-            position=0,
-        )
-
-        # Retrieve and verify
-        images = await repos.images.get_images_for_context(context_id)
-        assert len(images) == 1
-        assert images[0].get('mime_type') == 'image/png'
-        img_data = images[0].get('data')
-        assert img_data is not None
-        assert base64.b64decode(img_data) == image_data
 
     async def test_store_multiple_images(
         self, async_db_initialized: StorageBackend,
@@ -64,7 +29,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='multi-img-thread',
             source='user',
@@ -110,7 +75,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='validation-thread',
             source='user',
@@ -136,7 +101,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='invalid-base64-thread',
             source='user',
@@ -162,7 +127,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='no-data-thread',
             source='user',
@@ -189,80 +154,6 @@ class TestImageRepository:
         assert images[0].get('mime_type') == 'image/png'
         assert images[0].get('data') is None
 
-    async def test_get_images_for_contexts_batch(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """Test getting images for multiple contexts in batch."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        repos = RepositoryContainer(backend)
-
-        context_ids = []
-        for i in range(3):
-            context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
-                visibility='private',
-                thread_id=f'batch-thread-{i}',
-                source='user',
-                content_type='multimodal',
-                text_content=f'Batch entry {i}',
-                metadata=None,
-            )
-            context_ids.append(context_id)
-
-            # Store 2 images per context
-            await repos.images.store_images(
-                context_id,
-                [
-                    {
-                        'data': base64.b64encode(f'img {i}-0'.encode()).decode('utf-8'),
-                        'mime_type': 'image/png',
-                    },
-                    {
-                        'data': base64.b64encode(f'img {i}-1'.encode()).decode('utf-8'),
-                        'mime_type': 'image/jpeg',
-                    },
-                ],
-            )
-
-        # Get all images in batch
-        all_images = await repos.images.get_images_for_contexts(context_ids)
-
-        assert len(all_images) == 3
-        for ctx_id in context_ids:
-            assert ctx_id in all_images
-            assert len(all_images[ctx_id]) == 2
-
-    async def test_get_images_for_contexts_empty_list(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """Test getting images for empty context list."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        repos = RepositoryContainer(backend)
-
-        result = await repos.images.get_images_for_contexts([])
-        assert result == {}
-
-    async def test_get_images_for_contexts_nonexistent(
-        self, async_db_initialized: StorageBackend,
-    ) -> None:
-        """Test getting images for non-existent contexts."""
-        from app.repositories import RepositoryContainer
-
-        backend = async_db_initialized
-        repos = RepositoryContainer(backend)
-
-        missing_id_a = generate_id()
-        missing_id_b = generate_id()
-        result = await repos.images.get_images_for_contexts([missing_id_a, missing_id_b])
-        assert missing_id_a in result
-        assert missing_id_b in result
-        assert result[missing_id_a] == []
-        assert result[missing_id_b] == []
-
     async def test_count_images_for_context(
         self, async_db_initialized: StorageBackend,
     ) -> None:
@@ -273,7 +164,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='count-thread',
             source='user',
@@ -318,7 +209,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='replace-thread',
             source='user',
@@ -371,7 +262,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='empty-replace-thread',
             source='user',
@@ -408,7 +299,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='metadata-thread',
             source='user',
@@ -450,7 +341,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='position-thread',
             source='user',
@@ -488,7 +379,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='cascade-thread',
             source='user',
@@ -504,7 +395,7 @@ class TestImageRepository:
         count_before = await repos.images.count_images_for_context(context_id)
         assert count_before == 1
 
-        deleted = await repos.context.delete_by_ids([context_id])
+        deleted = await repos.context.delete_by_ids([context_id], scope=LOCAL_SCOPE)
         assert deleted == 1
 
         count_after = await repos.images.count_images_for_context(context_id)
@@ -520,7 +411,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='large-img-thread',
             source='user',
@@ -552,7 +443,7 @@ class TestImageRepository:
         repos = RepositoryContainer(backend)
 
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='default-mime-thread',
             source='user',

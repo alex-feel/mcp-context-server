@@ -32,6 +32,7 @@ import regex
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.repositories.index_node_repository import StoredNodeSummaries
@@ -264,6 +265,9 @@ async def grep_context(
     """
     try:
         repos = await ensure_repositories()
+        # The scan runs as the caller: entries it may not read are never scanned and
+        # never count toward the scan cap or the truncated flag.
+        scope = resolve_access_scope()
 
         # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id or a tag before
         # it reaches the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
@@ -333,6 +337,7 @@ async def grep_context(
             metadata_filters=metadata_filters,
             max_entries_scanned=max_entries_scanned,
             aggregate_bytes_budget=grep_settings.aggregate_bytes_budget,
+            scope=scope,
         )
 
         scan_validation_errors = scan_stats.get('validation_errors')
@@ -490,8 +495,11 @@ async def navigate_context(
     """
     try:
         repos = await ensure_repositories()
+        # Every read below runs as the caller: an entry it may not read is not found,
+        # and its node summaries are never read.
+        scope = resolve_access_scope()
         try:
-            resolved_id = await resolve_or_normalize_id(context_id, repos.context)
+            resolved_id = await resolve_or_normalize_id(context_id, repos.context, scope=scope)
         except ValueError as exc:
             raise ToolError(f'Invalid context ID: {exc}') from exc
 
@@ -515,8 +523,8 @@ async def navigate_context(
         for _snapshot_attempt in range(3):
             version_before: int | None = None
             if want_node_summaries:
-                version_before = (await repos.context.check_entry_exists(resolved_id)).version
-            rows = await repos.context.get_by_ids([resolved_id])
+                version_before = (await repos.context.check_entry_exists(resolved_id, scope=scope)).version
+            rows = await repos.context.get_by_ids([resolved_id], scope=scope)
             if not rows:
                 raise ToolError(f'Context entry not found: {context_id}')
             row = rows[0]
@@ -537,7 +545,7 @@ async def navigate_context(
             # Stored per-node summaries are fetched by id and do NOT depend on the
             # parse, so they are loaded before the CPU-bound parse + serialize block.
             stored_nodes = await repos.index_nodes.get_nodes_for_context(resolved_id)
-            version_after = (await repos.context.check_entry_exists(resolved_id)).version
+            version_after = (await repos.context.check_entry_exists(resolved_id, scope=scope)).version
             if version_after == version_before:
                 break
             logger.debug(
@@ -633,8 +641,10 @@ async def read_context_range(
     """
     try:
         repos = await ensure_repositories()
+        # The read below runs as the caller, so an entry it may not read is not found.
+        scope = resolve_access_scope()
         try:
-            resolved_id = await resolve_or_normalize_id(context_id, repos.context)
+            resolved_id = await resolve_or_normalize_id(context_id, repos.context, scope=scope)
         except ValueError as exc:
             raise ToolError(f'Invalid context ID: {exc}') from exc
 
@@ -647,7 +657,7 @@ async def read_context_range(
                 'a line range (start_line/end_line), or a node_id.',
             )
 
-        rows = await repos.context.get_by_ids([resolved_id])
+        rows = await repos.context.get_by_ids([resolved_id], scope=scope)
         if not rows:
             raise ToolError(f'Context entry not found: {context_id}')
         text_value = rows[0]['text_content']

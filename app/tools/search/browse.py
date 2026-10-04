@@ -10,6 +10,7 @@ from typing import cast
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.startup import ensure_repositories
 from app.startup.validation import validate_date_param
@@ -124,10 +125,11 @@ async def search_context(
                 caps_response['stats'] = empty_stats_for_unexecuted_query()
             return caps_response
 
-        # Get repositories
         repos = await ensure_repositories()
+        # The search runs as the caller: entries it may not read never match, never
+        # take a page slot and never count.
+        scope = resolve_access_scope()
 
-        # Use the improved search_contexts method that now supports metadata and date filtering
         result = await repos.context.search_contexts(
             thread_id=thread_id,
             source=source,
@@ -140,6 +142,7 @@ async def search_context(
             limit=limit,
             offset=offset,
             explain_query=explain_query,
+            scope=scope,
         )
 
         # Always expect tuple from repository

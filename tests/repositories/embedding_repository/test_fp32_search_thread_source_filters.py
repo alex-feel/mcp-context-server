@@ -8,6 +8,7 @@ import pytest
 
 from app.backends import StorageBackend
 from tests.conftest import requires_semantic_search
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import store_single_chunk_embedding
 
 
@@ -38,7 +39,7 @@ class TestSemanticSearchFilters:
         # Create 2 entries in "test-thread"
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='test-thread',
                 source='user',
@@ -53,7 +54,7 @@ class TestSemanticSearchFilters:
         # Create 5 entries in other threads
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'other-thread-{i}',
                 source='user',
@@ -70,6 +71,7 @@ class TestSemanticSearchFilters:
             query_embedding=query_embedding,
             limit=3,
             thread_id='test-thread',
+            scope=LOCAL_SCOPE,
         )
 
         # Type guard: ensure results is a list (not error dict)
@@ -96,7 +98,7 @@ class TestSemanticSearchFilters:
         # Create 3 entries with source="user"
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'thread-user-{i}',
                 source='user',
@@ -109,7 +111,7 @@ class TestSemanticSearchFilters:
         # Create 5 entries with source="agent"
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'thread-agent-{i}',
                 source='agent',
@@ -124,6 +126,7 @@ class TestSemanticSearchFilters:
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             source='user',
+            scope=LOCAL_SCOPE,
         )
 
         # Type guard: ensure results is a list (not error dict)
@@ -150,7 +153,7 @@ class TestSemanticSearchFilters:
         # Create 2 entries in "test-thread" with source="user"
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='test-thread',
                 source='user',
@@ -163,7 +166,7 @@ class TestSemanticSearchFilters:
         # Create entries in test-thread with source="agent"
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='test-thread',
                 source='agent',
@@ -179,6 +182,7 @@ class TestSemanticSearchFilters:
             limit=5,
             thread_id='test-thread',
             source='user',
+            scope=LOCAL_SCOPE,
         )
 
         # Type guard: ensure results is a list (not error dict)
@@ -206,7 +210,7 @@ class TestSemanticSearchFilters:
         # Create 5 entries
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'thread-{i}',
                 source='user' if i % 2 == 0 else 'agent',
@@ -220,6 +224,7 @@ class TestSemanticSearchFilters:
         results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=3,
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 3 results
@@ -242,7 +247,7 @@ class TestSemanticSearchFilters:
         # Create entries in thread-a
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='thread-a',
                 source='user',
@@ -257,6 +262,7 @@ class TestSemanticSearchFilters:
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='thread-b',  # Does not exist
+            scope=LOCAL_SCOPE,
         )
 
         # Should return empty list, not an error
@@ -279,7 +285,7 @@ class TestSemanticSearchFilters:
         # Create only 2 entries in small-thread
         for i in range(2):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='small-thread',
                 source='user',
@@ -294,6 +300,7 @@ class TestSemanticSearchFilters:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='small-thread',
+            scope=LOCAL_SCOPE,
         )
 
         # Should return 2 results (all available)
@@ -320,7 +327,7 @@ class TestSemanticSearchEdgeCases:
 
         # Create 1 entry in single-thread
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='single-thread',
             source='user',
@@ -333,7 +340,7 @@ class TestSemanticSearchEdgeCases:
         # Create entries in other threads
         for i in range(5):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'other-{i}',
                 source='user',
@@ -348,6 +355,7 @@ class TestSemanticSearchEdgeCases:
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='single-thread',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 1
@@ -370,7 +378,7 @@ class TestSemanticSearchEdgeCases:
         # Create 10 entries all in "only-thread"
         for i in range(10):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='only-thread',
                 source='user',
@@ -385,6 +393,7 @@ class TestSemanticSearchEdgeCases:
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='only-thread',
+            scope=LOCAL_SCOPE,
         )
 
         assert len(results) == 5
@@ -408,7 +417,7 @@ class TestSemanticSearchEdgeCases:
         # Create entries in multiple threads
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'thread-{i}',
                 source='user',
@@ -423,6 +432,7 @@ class TestSemanticSearchEdgeCases:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id=None,
+            scope=LOCAL_SCOPE,
         )
 
         # Should return results from all threads
@@ -447,7 +457,7 @@ class TestSemanticSearchEdgeCases:
         # Create entries with both sources
         for i in range(4):
             context_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id=f'thread-{i}',
                 source='user' if i % 2 == 0 else 'agent',
@@ -462,6 +472,7 @@ class TestSemanticSearchEdgeCases:
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             source=None,
+            scope=LOCAL_SCOPE,
         )
 
         # Should return results from both sources

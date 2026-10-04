@@ -126,7 +126,7 @@ class TestStatementTimeoutRetryToolLayer:
     async def test_update_context_retries_statement_timeout_then_succeeds(self) -> None:
         """update_context retries a 57014 cancellation, then commits once."""
         repos = MagicMock()
-        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local'))
+        repos.context.check_entry_exists = AsyncMock(return_value=EntryProbe(True, 'user', 0, 'local', True))
         state = {'calls': 0}
 
         @contextlib.asynccontextmanager

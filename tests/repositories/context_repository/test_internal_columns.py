@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import LOCAL_SCOPE
+
 
 class TestInternalColumnsNotExposed:
     """Test that internal database columns are not exposed in API responses.
@@ -66,7 +68,7 @@ class TestInternalColumnsNotExposed:
             repo = ContextRepository(backend)
 
             # Call search_contexts
-            rows, _stats = await repo.search_contexts(thread_id='test-thread')
+            rows, _stats = await repo.search_contexts(thread_id='test-thread', scope=LOCAL_SCOPE)
 
             # Verify we got results
             assert len(rows) == 1
@@ -114,12 +116,12 @@ class TestInternalColumnsNotExposed:
             repo = ContextRepository(backend)
 
             # First get the ID of the test entry
-            rows, _stats = await repo.search_contexts(thread_id='test-thread')
+            rows, _stats = await repo.search_contexts(thread_id='test-thread', scope=LOCAL_SCOPE)
             assert len(rows) == 1
             context_id = rows[0]['id']
 
             # Call get_by_ids
-            result_rows = await repo.get_by_ids([context_id])
+            result_rows = await repo.get_by_ids([context_id], scope=LOCAL_SCOPE)
 
             # Verify we got results
             assert len(result_rows) == 1

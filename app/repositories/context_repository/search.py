@@ -2,7 +2,8 @@
 
 Both read paths build their WHERE clause through one shared filter builder, so
 the browse search and the server-side grep scan apply identical thread, source,
-content-type, tag, date and metadata filters.
+content-type, tag, date and metadata filters, followed by the caller's read
+predicate, and match only the entries the caller may read.
 """
 
 import logging
@@ -12,6 +13,9 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.access_scope import AccessMode
+from app.access_scope import Scope
+from app.access_scope import build_access_predicate
 from app.ids import normalize_id
 from app.repositories.base import BaseRepository
 from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
@@ -45,14 +49,16 @@ class ContextSearchMixin(BaseRepository):
     """Browse search and grep pre-filter scan over ``context_entries``.
 
     ``_build_context_filter_clause`` turns the thread, source, content-type, tag,
-    date and metadata arguments into one WHERE clause, which ``search_contexts``
-    uses for the paginated browse search and ``grep_scan_text_contents`` for the
-    exhaustive keyset scan feeding server-side grep.
+    date and metadata arguments into one WHERE clause ending in the caller's read
+    predicate, which ``search_contexts`` uses for the paginated browse search and
+    ``grep_scan_text_contents`` for the exhaustive keyset scan feeding server-side
+    grep.
     """
 
     def _build_context_filter_clause(
         self,
         *,
+        scope: Scope,
         thread_id: str | None = None,
         source: str | None = None,
         content_type: str | None = None,
@@ -61,7 +67,6 @@ class ContextSearchMixin(BaseRepository):
         metadata_filters: list[dict[str, Any]] | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
-        params_start: int = 0,
     ) -> tuple[str, list[Any], int, list[str]]:
         """Build the shared ``context_entries`` WHERE clause used by search and grep.
 
@@ -69,9 +74,16 @@ class ContextSearchMixin(BaseRepository):
         thread/source/content_type, date range, metadata, and the tag subquery),
         so ``search_contexts`` and ``grep_scan_text_contents`` cannot drift. The
         caller is expected to have already emitted ``WHERE 1=1``; the returned SQL
-        is a run of `` AND ...`` fragments (or ``''`` when no filters apply).
+        is a run of `` AND ...`` fragments (``''`` for the system scope with no
+        filters), whose placeholders start at 1.
+
+        The scope's read predicate is the LAST fragment, after every client filter:
+        no filter placeholder moves, the predicate never counts toward
+        ``filter_count`` or the metadata bind budget, and a caller appending
+        ``LIMIT``/``OFFSET`` or keyset placeholders numbers them after its binds.
 
         Args:
+            scope: The caller's scope; only entries it may read match.
             thread_id: Filter by thread id (indexed).
             source: Filter by source ('user' or 'agent', indexed).
             content_type: Filter by content type.
@@ -80,8 +92,6 @@ class ContextSearchMixin(BaseRepository):
             metadata_filters: Advanced metadata filters with operators.
             start_date: Filter by created_at >= date (ISO 8601).
             end_date: Filter by created_at <= date (ISO 8601).
-            params_start: Number of bind parameters already emitted before this
-                clause, so PostgreSQL ``$n`` positions continue correctly.
 
         Returns:
             ``(where_sql, params, filter_count, validation_errors)``, where
@@ -102,7 +112,7 @@ class ContextSearchMixin(BaseRepository):
         validation_errors: list[str] = []
 
         def _next_ph() -> str:
-            return self._placeholder(params_start + len(params) + 1)
+            return self._placeholder(len(params) + 1)
 
         # Indexed scalar filters (thread_id + source use idx_thread_source).
         if thread_id:
@@ -138,7 +148,7 @@ class ContextSearchMixin(BaseRepository):
         else:
             metadata_builder = MetadataQueryBuilder(
                 backend_type='postgresql',
-                param_offset=params_start + len(params),
+                param_offset=len(params),
             )
 
         if metadata:
@@ -186,7 +196,7 @@ class ContextSearchMixin(BaseRepository):
                 validation_errors.append(str(e))
                 return '', [], 0, validation_errors
             tag_placeholders = ','.join([
-                self._placeholder(params_start + len(params) + i + 1)
+                self._placeholder(len(params) + i + 1)
                 for i in range(len(normalized_tags))
             ])
             clauses.append(
@@ -203,6 +213,14 @@ class ContextSearchMixin(BaseRepository):
             end_date=end_date,
             metadata_filter_count=metadata_builder.get_filter_count(),
         )
+
+        # The caller's read predicate goes last, after every client filter, so it shifts
+        # no filter placeholder and is never counted as a filter.
+        read = build_access_predicate(
+            scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=len(params) + 1,
+        )
+        clauses.append(read.and_clause())
+        params.extend(read.params)
         return ''.join(clauses), params, filter_count, validation_errors
 
     async def search_contexts(
@@ -218,8 +236,13 @@ class ContextSearchMixin(BaseRepository):
         limit: int = 50,
         offset: int = 0,
         explain_query: bool = False,
+        *,
+        scope: Scope,
     ) -> tuple[list[Any], dict[str, Any]]:
-        """Search for context entries with filtering including metadata and date range.
+        """Search the context entries the scope may read, with metadata and date-range filtering.
+
+        The read predicate applies in SQL before ordering and pagination, so every
+        page is a window into the readable matches alone.
 
         Args:
             thread_id: Filter by thread ID
@@ -233,6 +256,7 @@ class ContextSearchMixin(BaseRepository):
             limit: Maximum number of results
             offset: Pagination offset
             explain_query: If True, include query execution plan
+            scope: The caller's scope; only entries it may read are returned.
 
         Returns:
             Tuple of (matching rows, query statistics)
@@ -250,6 +274,7 @@ class ContextSearchMixin(BaseRepository):
                 # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
                 query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
                 where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
+                    scope=scope,
                     thread_id=thread_id,
                     source=source,
                     content_type=content_type,
@@ -325,6 +350,7 @@ class ContextSearchMixin(BaseRepository):
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
             where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
+                scope=scope,
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
@@ -382,6 +408,7 @@ class ContextSearchMixin(BaseRepository):
     async def grep_scan_text_contents(
         self,
         *,
+        scope: Scope,
         ascii_literal: str | None = None,
         thread_id: str | None = None,
         source: str | None = None,
@@ -395,7 +422,7 @@ class ContextSearchMixin(BaseRepository):
         aggregate_bytes_budget: int = 67108864,
         page_size: int = 200,
     ) -> tuple[list[tuple[str, str]], dict[str, Any]]:
-        """Scan ``text_content`` newest-first for a server-side grep pre-filter.
+        """Scan the ``text_content`` of the entries the scope may read, newest first, for server-side grep.
 
         Exhaustive keyset pagination ordered ``id DESC`` -- deliberately NOT
         ``search_contexts`` (whose ``LIMIT 50`` would cap results and make grep
@@ -405,9 +432,12 @@ class ContextSearchMixin(BaseRepository):
         in the tool layer. The scan is bounded by ``max_entries_scanned`` and an
         aggregate code-point budget so an unscoped thread cannot exhaust memory;
         the first entry that crosses the budget is still returned (so a single
-        huge entry is never silently skipped).
+        huge entry is never silently skipped). The read predicate is part of every
+        page and lookahead statement, so an entry the scope may not read is never
+        returned and never counts toward ``scanned`` or ``truncated``.
 
         Args:
+            scope: The caller's scope; only entries it may read are scanned.
             ascii_literal: Optional pure-ASCII substring for an ``LIKE``/``ILIKE``
                 pre-narrow (a superset of the Python match). None disables it.
             thread_id: Filter by thread id (indexed; bounds the scan).
@@ -431,6 +461,7 @@ class ContextSearchMixin(BaseRepository):
         """
         backend_type = self.backend.backend_type
         where_sql, base_params, _filter_count, validation_errors = self._build_context_filter_clause(
+            scope=scope,
             thread_id=thread_id,
             source=source,
             content_type=content_type,

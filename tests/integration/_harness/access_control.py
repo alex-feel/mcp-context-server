@@ -33,8 +33,8 @@ class AccessControlMixin(HarnessCore):
                 {
                     'thread_id': visibility_thread,
                     'source': 'agent',
-                    'text': 'Visibility lifecycle entry: stored shared, published public.',
-                    'visibility': 'shared',
+                    'text': 'Visibility lifecycle entry: stored private, published public.',
+                    'visibility': 'private',
                 },
             )
             store_data = self._extract_content(store_result)

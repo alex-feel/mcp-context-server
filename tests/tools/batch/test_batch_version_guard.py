@@ -43,6 +43,7 @@ import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
+from app.access_scope import Scope
 from app.backends.base import TransactionContext
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
@@ -51,6 +52,7 @@ from app.repositories.context_repository.records import EntryProbe
 from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
 from app.tools.batch.update import update_context_batch
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -159,9 +161,9 @@ class TestBatchVersionGuard:
         real_check = repos.context.check_entry_exists
         check_calls = {'count': 0}
 
-        async def counting_check(context_id: str) -> EntryProbe:
+        async def counting_check(context_id: str, *, scope: Scope) -> EntryProbe:
             check_calls['count'] += 1
-            return await real_check(context_id)
+            return await real_check(context_id, scope=scope)
 
         with (
             patch('app.tools.batch.update.ensure_repositories', return_value=repos),
@@ -213,8 +215,8 @@ class TestBatchVersionGuard:
         real_check = repos.context.check_entry_exists
         bumped = {'done': False}
 
-        async def check_then_bump(context_id: str) -> EntryProbe:
-            result = await real_check(context_id)
+        async def check_then_bump(context_id: str, *, scope: Scope) -> EntryProbe:
+            result = await real_check(context_id, scope=scope)
             if not bumped['done'] and result[0]:
                 bumped['done'] = True
 
@@ -261,8 +263,8 @@ class TestBatchVersionGuard:
         real_check = repos.context.check_entry_exists
         bumped = {'done': False}
 
-        async def check_then_bump(context_id: str) -> EntryProbe:
-            result = await real_check(context_id)
+        async def check_then_bump(context_id: str, *, scope: Scope) -> EntryProbe:
+            result = await real_check(context_id, scope=scope)
             # Only bump on the very FIRST pre-generation capture (version 0), so the
             # retry's re-read sees the post-bump version and the CAS then matches.
             if not bumped['done'] and result[2] == 0:
@@ -320,7 +322,7 @@ class TestBatchVersionGuard:
 
         # Same thread_id/source/text as the inserted row -> dedup UPDATE path.
         context_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='batch-guard-thread',
             source='agent',
@@ -406,11 +408,11 @@ class TestBatchVersionGuard:
         real_check = repos.context.check_entry_exists
         check_calls = {'count': 0}
 
-        async def vanish_on_reread(context_id: str) -> EntryProbe:
+        async def vanish_on_reread(context_id: str, *, scope: Scope) -> EntryProbe:
             check_calls['count'] += 1
             if check_calls['count'] == 1:
-                return await real_check(context_id)
-            return EntryProbe(False, None, None, None)
+                return await real_check(context_id, scope=scope)
+            return EntryProbe(False, None, None, None, False)
 
         with (
             patch('app.tools.batch.update.ensure_repositories', return_value=repos),
@@ -439,6 +441,45 @@ class TestBatchVersionGuard:
         assert check_calls['count'] == 2
 
     @pytest.mark.asyncio
+    async def test_nonatomic_write_access_lost_on_reread_records_not_authorized(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """atomic=False: if the post-conflict re-read finds the entry readable but no
+        longer writable, the entry fails as not authorized and is not retried.
+        """
+        _backend, repos, entry_id = setup_with_entry
+
+        real_check = repos.context.check_entry_exists
+        check_calls = {'count': 0}
+
+        async def lose_write_on_reread(context_id: str, *, scope: Scope) -> EntryProbe:
+            check_calls['count'] += 1
+            if check_calls['count'] == 1:
+                return await real_check(context_id, scope=scope)
+            return EntryProbe(True, 'agent', 1, 'alice', False)
+
+        with (
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
+            patch.object(repos.context, 'check_entry_exists', side_effect=lose_write_on_reread),
+            patch(
+                'app.tools.batch.update.execute_update_in_transaction',
+                new=AsyncMock(side_effect=VersionConflictError(entry_id)),
+            ),
+        ):
+            result = await update_context_batch(
+                updates=[{'context_id': entry_id, 'metadata': {'status': 'x'}}],
+                atomic=False,
+            )
+
+        assert result['succeeded'] == 0
+        assert result['results'][0]['error'] == f'Not authorized to modify context entry {entry_id}'
+        assert check_calls['count'] == 2
+
+    @pytest.mark.asyncio
     async def test_nonatomic_transient_reread_failure_refreshes_version(
         self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
@@ -456,13 +497,13 @@ class TestBatchVersionGuard:
         check_calls = {'count': 0}
         versions_seen: list[int | None] = []
 
-        async def flaky_reread(context_id: str) -> EntryProbe:
+        async def flaky_reread(context_id: str, *, scope: Scope) -> EntryProbe:
             check_calls['count'] += 1
             if check_calls['count'] == 1:
-                return await real_check(context_id)  # PHASE 2 up-front capture
+                return await real_check(context_id, scope=scope)  # PHASE 2 up-front capture
             if check_calls['count'] == 2:
                 raise asyncpg.InterfaceError('connection recycled by the pooler')
-            return EntryProbe(True, 'agent', 3, 'local')
+            return EntryProbe(True, 'agent', 3, 'local', True)
 
         async def conflict_once(*_args: object, **kwargs: object) -> tuple[list[str], bool]:
             versions_seen.append(cast('int | None', kwargs.get('expected_version')))
@@ -519,7 +560,7 @@ class TestBatchVersionGuard:
             txn: TransactionContext,
             **_kwargs: object,
         ) -> tuple[list[str], bool]:
-            await repos_arg.context.delete_by_ids([entry_id], txn=txn)
+            await repos_arg.context.delete_by_ids([entry_id], scope=LOCAL_SCOPE, txn=txn)
             raise VersionConflictError(entry_id)
 
         with (
@@ -545,6 +586,53 @@ class TestBatchVersionGuard:
         assert 'No entries were updated (atomic batch)' in str(exc_info.value)
         # The atomic batch rolled back, so the stub's in-transaction delete was
         # discarded and the row is still present with its original text.
+        final_text, final_version = await self._read_row(backend, entry_id)
+        assert final_text == 'Original text'
+        assert final_version == 0
+
+    @pytest.mark.asyncio
+    async def test_atomic_write_access_lost_mid_cas_aborts_not_found(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """atomic=True: a row the caller lost write access to between its version capture
+        and the CAS aborts as not found, never as concurrent modification.
+
+        The disambiguating re-probe on the open transaction asks whether the caller may
+        still modify the row; a row it may not modify is reported exactly like a deleted
+        one. The stub hands the row to another owner on the transaction connection and
+        then raises ``VersionConflictError``.
+        """
+        backend, repos, entry_id = setup_with_entry
+
+        async def reassign_then_conflict(
+            _repos_arg: RepositoryContainer,
+            txn: TransactionContext,
+            **_kwargs: object,
+        ) -> tuple[list[str], bool]:
+            conn = cast(sqlite3.Connection, txn.connection)
+            conn.execute("UPDATE context_entries SET owner_id = 'alice' WHERE id = ?", (entry_id,))
+            raise VersionConflictError(entry_id)
+
+        with (
+            patch('app.tools.batch.update.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.update.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.update.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
+            patch(
+                'app.tools.batch.update.execute_update_in_transaction',
+                new=AsyncMock(side_effect=reassign_then_conflict),
+            ),
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await update_context_batch(
+                updates=[{'context_id': entry_id, 'metadata': {'status': 'x'}}],
+                atomic=True,
+            )
+
+        assert str(exc_info.value) == (
+            f'Context entry with ID {entry_id} not found. No entries were updated (atomic batch).'
+        )
         final_text, final_version = await self._read_row(backend, entry_id)
         assert final_text == 'Original text'
         assert final_version == 0

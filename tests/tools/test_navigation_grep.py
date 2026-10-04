@@ -11,10 +11,12 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.services.grep_service import GrepEntryResult
 from app.startup import ensure_repositories
 from app.tools.navigation import grep_context
+from tests.helpers import as_principal
 from tests.tools._navigation import grep_as_dict
 from tests.tools._navigation import store_entry
 
@@ -318,3 +320,58 @@ class TestGrepServerSideClamps:
             await grep_context(pattern='needle', thread_id='t', max_entries_scanned=1000000)
 
         assert captured['max_entries_scanned'] == 2
+
+
+class TestGrepContextScoping:
+    """grep_context scans only the entries the caller may read."""
+
+    @pytest.mark.asyncio
+    async def test_unreadable_entry_never_matches(self, nav_backend: StorageBackend) -> None:
+        """Another principal's private entry yields the same empty result as no entry at all."""
+        await store_entry(nav_backend, 'the needle is hidden', owner='alice')
+
+        hidden = await grep_as_dict(pattern='needle', thread_id='t')
+        absent = await grep_as_dict(pattern='needle', thread_id='absent-thread')
+
+        assert hidden == absent
+        assert hidden['total_matches'] == 0
+
+    @pytest.mark.asyncio
+    async def test_owner_matches_their_private_entry(self, nav_backend: StorageBackend) -> None:
+        """The owner of a private entry finds its match."""
+        cid = await store_entry(nav_backend, 'the needle is hers', owner='alice')
+
+        with as_principal('alice'):
+            payload = await grep_as_dict(pattern='needle', thread_id='t')
+
+        assert [row['context_id'] for row in payload['results']] == [cid]
+
+    @pytest.mark.asyncio
+    async def test_hidden_entries_neither_take_scan_slots_nor_flag_truncation(self, nav_backend: StorageBackend) -> None:
+        """Hidden entries newer and older than the caller's never fill the scan cap or mark the scan truncated."""
+        await store_entry(nav_backend, 'old hidden needle', offset_seconds=0, owner='alice')
+        own = [await store_entry(nav_backend, f'own needle {index}', offset_seconds=10 + index) for index in range(2)]
+        for index in range(3):
+            await store_entry(nav_backend, f'new hidden needle {index}', offset_seconds=20 + index, owner='alice')
+
+        payload = await grep_as_dict(pattern='needle', thread_id='t', max_entries_scanned=2)
+
+        assert [row['context_id'] for row in payload['results']] == own[::-1]
+        assert payload['truncated'] is False
+
+    @pytest.mark.asyncio
+    async def test_scope_reaches_the_repository(self, nav_backend: StorageBackend) -> None:
+        """The caller's principal and groups reach grep_scan_text_contents as its scope."""
+        del nav_backend
+        captured: dict[str, Any] = {}
+        repos = await ensure_repositories()
+        real_scan = repos.context.grep_scan_text_contents
+
+        async def spy_scan(**kwargs: Any) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+            captured['scope'] = kwargs['scope']
+            return await real_scan(**kwargs)
+
+        with as_principal('bob', groups=['team-x']), patch.object(repos.context, 'grep_scan_text_contents', spy_scan):
+            await grep_context(pattern='needle', thread_id='t')
+
+        assert captured['scope'] == AccessScope('bob', frozenset({'team-x'}))

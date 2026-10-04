@@ -4,25 +4,20 @@ The rest of the integration suite drives the server over stdio, so two
 user-facing HTTP behaviors have no end-to-end coverage:
 
 1. Bearer-token authentication (``MCP_AUTH_PROVIDER=simple_token`` plus
-   ``MCP_AUTH_TOKEN``). It is wired only on HTTP transports (``app/server.py``
-   ``main()`` calls ``create_auth_provider()`` when ``transport != 'stdio'``)
-   and is otherwise only unit-tested against ``SimpleTokenVerifier`` directly.
+   ``MCP_AUTH_TOKEN``) and JWT verification (``MCP_AUTH_PROVIDER=jwt``). Both are
+   wired only on HTTP transports (``app/server.py`` ``main()`` calls
+   ``create_auth_provider()`` when ``transport != 'stdio'``).
 2. The real ``/health`` route registered via ``mcp.custom_route('/health', ...)``
    for non-stdio transports. The existing harness ``test_health_endpoint_returns_ok``
    builds its own throwaway Starlette app and never hits the live route.
 
-These tests launch the actual server as an HTTP server by spawning
-``tests/run_server.py`` via ``subprocess.Popen`` with an explicit environment
-(the MCP SDK strips app-specific env vars when ``env=None``, so the full env is
-passed as a dict). Embeddings/semantic/FTS/summary/compression are disabled for
-fast startup. Each test picks a free ephemeral loopback port and terminates the
-subprocess in a ``finally`` block so no orphan server or port binding leaks.
+These tests launch the actual server as an HTTP server through the helpers of
+:mod:`tests.integration._http_jwt`: an explicit environment built from the MCP SDK's
+default environment, generation disabled for a fast start, a free ephemeral loopback
+port, and termination of the subprocess when the test ends so no orphan server or port
+binding leaks.
 """
 
-import os
-import socket
-import subprocess
-import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -36,166 +31,25 @@ from fastmcp.server.auth.providers.jwt import RSAKeyPair
 from tests.integration._harness.core import CLIENT_MODES
 from tests.integration._harness.core import ERA_PROTOCOL_VERSIONS
 from tests.integration._harness.core import ClientMode
-
-# The HTTP transport mode the project exposes. main() registers /health and
-# wires auth for every non-stdio transport; 'http' maps to FastMCP's
-# streamable-http MCP endpoint mounted at /mcp.
-HTTP_TRANSPORT = 'http'
-TEST_TOKEN = 'integration-secret-token-123'
-JWT_ISSUER = 'https://issuer.integration.test'
-JWT_AUDIENCE = 'mcp-context-server-test'
-
-# run_server.py wrapper that configures sys.path and test mode, then calls main().
-WRAPPER_SCRIPT = Path(__file__).parent.parent.parent / 'run_server.py'
-
-
-def _free_port() -> int:
-    """Return an unused TCP port on the loopback interface."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('127.0.0.1', 0))
-        return int(s.getsockname()[1])
-
-
-def _build_env(*, db_path: Path, port: int, auth: bool) -> dict[str, str]:
-    """Build the explicit subprocess environment for a fast-startup HTTP server.
-
-    The MCP SDK whitelists env vars when spawning subprocesses, so all
-    app-specific configuration is passed explicitly. Generation features are
-    disabled so the server starts without Ollama/LLM dependencies.
-
-    Args:
-        db_path: Temporary SQLite database path for this server instance.
-        port: Loopback TCP port the HTTP server should bind.
-        auth: When True, enable simple_token bearer auth with TEST_TOKEN.
-
-    Returns:
-        A complete environment dict for ``subprocess.Popen``.
-    """
-    env = {
-        **os.environ,
-        'STORAGE_BACKEND': 'sqlite',
-        'DB_PATH': str(db_path),
-        'MCP_TEST_MODE': '1',
-        'MCP_TRANSPORT': HTTP_TRANSPORT,
-        'FASTMCP_HOST': '127.0.0.1',
-        'FASTMCP_PORT': str(port),
-        # Disable all generation/search subsystems for fast, dependency-free startup.
-        'ENABLE_EMBEDDING_GENERATION': 'false',
-        'ENABLE_SEMANTIC_SEARCH': 'false',
-        'ENABLE_FTS': 'false',
-        'ENABLE_HYBRID_SEARCH': 'false',
-        'ENABLE_SUMMARY_GENERATION': 'false',
-        'ENABLE_EMBEDDING_COMPRESSION': 'false',
-        # Avoid noisy rich logging in subprocess output.
-        'FASTMCP_ENABLE_RICH_LOGGING': 'false',
-    }
-    if auth:
-        env['MCP_AUTH_PROVIDER'] = 'simple_token'
-        env['MCP_AUTH_TOKEN'] = TEST_TOKEN
-    else:
-        env['MCP_AUTH_PROVIDER'] = 'none'
-        env.pop('MCP_AUTH_TOKEN', '')
-    return env
-
-
-def _build_jwt_env(*, db_path: Path, port: int, public_key: str) -> dict[str, str]:
-    """Build the subprocess environment for a server verifying minted JWTs.
-
-    Starts from the no-auth environment, strips any inherited JWT configuration,
-    and enables the jwt provider with a static public key plus pinned issuer
-    and audience so only tokens minted by the test key pair are accepted.
-
-    Args:
-        db_path: Temporary SQLite database path for this server instance.
-        port: Loopback TCP port the HTTP server should bind.
-        public_key: PEM-encoded public key matching the test RSA key pair.
-
-    Returns:
-        A complete environment dict for ``subprocess.Popen``.
-    """
-    env = _build_env(db_path=db_path, port=port, auth=False)
-    env = {k: v for k, v in env.items() if not k.startswith('MCP_AUTH_JWT_')}
-    env['MCP_AUTH_PROVIDER'] = 'jwt'
-    env['MCP_AUTH_JWT_PUBLIC_KEY'] = public_key
-    env['MCP_AUTH_JWT_ISSUER'] = JWT_ISSUER
-    env['MCP_AUTH_JWT_AUDIENCE'] = JWT_AUDIENCE
-    return env
-
-
-def _wait_for_health(base_url: str, proc: 'subprocess.Popen[bytes]', timeout_s: float = 60.0) -> None:
-    """Poll ``GET {base_url}/health`` until it returns HTTP 200.
-
-    Args:
-        base_url: Server origin, e.g. ``http://127.0.0.1:8123``.
-        proc: The running server subprocess (checked for premature exit).
-        timeout_s: Maximum time to wait for readiness.
-
-    Raises:
-        RuntimeError: If the subprocess exits before becoming ready.
-        TimeoutError: If the server does not become healthy in time.
-    """
-    deadline = time.time() + timeout_s
-    last_exc: Exception | None = None
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(
-                f'Server subprocess exited prematurely with code {proc.returncode} '
-                'before /health became ready',
-            )
-        try:
-            resp = httpx.get(f'{base_url}/health', timeout=2.0)
-            if resp.status_code == 200:
-                return
-        except httpx.HTTPError as exc:
-            last_exc = exc
-        time.sleep(0.25)
-    raise TimeoutError(
-        f'Server at {base_url} did not become healthy within {timeout_s}s '
-        f'(last error: {last_exc!r})',
-    )
-
-
-def _terminate(proc: 'subprocess.Popen[bytes]') -> None:
-    """Terminate the server subprocess, escalating to kill, leaving no orphan.
-
-    Args:
-        proc: The server subprocess to stop.
-    """
-    if proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=10)
+from tests.integration._http_jwt import JWT_AUDIENCE
+from tests.integration._http_jwt import JWT_ISSUER
+from tests.integration._http_jwt import TEST_TOKEN
+from tests.integration._http_jwt import build_env
+from tests.integration._http_jwt import build_jwt_env
+from tests.integration._http_jwt import free_port
+from tests.integration._http_jwt import running_http_server
 
 
 @pytest.fixture
 def http_auth_server(tmp_path: Path) -> Iterator[str]:
     """Launch a real HTTP server with bearer-token auth; yield its base URL.
 
-    Spawns ``tests/run_server.py`` with an explicit env (auth enabled), waits
-    for ``/health`` readiness, yields the loopback origin, and terminates the
-    subprocess in teardown so no orphan process or port binding leaks.
-
     Yields:
         The server origin URL, e.g. ``http://127.0.0.1:<port>``.
     """
-    port = _free_port()
-    base_url = f'http://127.0.0.1:{port}'
-    env = _build_env(db_path=tmp_path / 'http_auth.db', port=port, auth=True)
-    proc = subprocess.Popen(
-        [sys.executable, str(WRAPPER_SCRIPT)],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        _wait_for_health(base_url, proc)
+    env = build_env(backend='sqlite', database=str(tmp_path / 'http_auth.db'), port=free_port(), auth=True)
+    with running_http_server(env) as base_url:
         yield base_url
-    finally:
-        _terminate(proc)
 
 
 @pytest.fixture
@@ -209,58 +63,29 @@ def http_noauth_server(tmp_path: Path) -> Iterator[str]:
     Yields:
         The server origin URL, e.g. ``http://127.0.0.1:<port>``.
     """
-    port = _free_port()
-    base_url = f'http://127.0.0.1:{port}'
-    env = _build_env(db_path=tmp_path / 'http_health.db', port=port, auth=False)
-    proc = subprocess.Popen(
-        [sys.executable, str(WRAPPER_SCRIPT)],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        _wait_for_health(base_url, proc)
+    env = build_env(backend='sqlite', database=str(tmp_path / 'http_health.db'), port=free_port(), auth=False)
+    with running_http_server(env) as base_url:
         yield base_url
-    finally:
-        _terminate(proc)
-
-
-@pytest.fixture(scope='module')
-def jwt_key_pair() -> RSAKeyPair:
-    """Generate one RSA key pair shared by all JWT tests in this module."""
-    return RSAKeyPair.generate()
 
 
 @pytest.fixture
 def http_jwt_server(tmp_path: Path, jwt_key_pair: RSAKeyPair) -> Iterator[str]:
     """Launch a real HTTP server verifying JWTs against the test key pair.
 
-    Spawns ``tests/run_server.py`` with ``MCP_AUTH_PROVIDER=jwt`` and the test
-    key pair's public key (issuer and audience pinned), waits for ``/health``
-    readiness, yields the loopback origin, and terminates the subprocess in
-    teardown so no orphan process or port binding leaks.
+    The server runs ``MCP_AUTH_PROVIDER=jwt`` with the test key pair's public key,
+    issuer and audience pinned.
 
     Yields:
         The server origin URL, e.g. ``http://127.0.0.1:<port>``.
     """
-    port = _free_port()
-    base_url = f'http://127.0.0.1:{port}'
-    env = _build_jwt_env(
-        db_path=tmp_path / 'http_jwt.db',
-        port=port,
+    env = build_jwt_env(
+        backend='sqlite',
+        database=str(tmp_path / 'http_jwt.db'),
+        port=free_port(),
         public_key=jwt_key_pair.public_key,
     )
-    proc = subprocess.Popen(
-        [sys.executable, str(WRAPPER_SCRIPT)],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        _wait_for_health(base_url, proc)
+    with running_http_server(env) as base_url:
         yield base_url
-    finally:
-        _terminate(proc)
 
 
 def _initialize_payload() -> dict[str, object]:

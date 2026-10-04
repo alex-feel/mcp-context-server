@@ -38,6 +38,7 @@ import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
+from app.access_scope import Scope
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -180,8 +181,8 @@ class TestUpdateContextVersionGuard:
         real_check = repos.context.check_entry_exists
         bumped = {'done': False}
 
-        async def check_then_bump(context_id: str) -> EntryProbe:
-            result = await real_check(context_id)
+        async def check_then_bump(context_id: str, *, scope: Scope) -> EntryProbe:
+            result = await real_check(context_id, scope=scope)
             # On the very first capture (version 0), simulate a concurrent writer
             # committing a newer version out-of-band, so our captured version is
             # already stale when the transaction's CAS runs.
@@ -249,8 +250,8 @@ class TestUpdateContextVersionGuard:
         real_check = repos.context.check_entry_exists
         bumped = {'done': False}
 
-        async def check_then_bump(context_id: str) -> EntryProbe:
-            result = await real_check(context_id)
+        async def check_then_bump(context_id: str, *, scope: Scope) -> EntryProbe:
+            result = await real_check(context_id, scope=scope)
             if not bumped['done'] and result[2] == 0:
                 bumped['done'] = True
 
@@ -357,14 +358,14 @@ class TestUpdateContextVersionGuard:
         real_check = repos.context.check_entry_exists
         check_calls = {'count': 0}
 
-        async def vanish_on_reread(context_id: str) -> EntryProbe:
+        async def vanish_on_reread(context_id: str, *, scope: Scope) -> EntryProbe:
             check_calls['count'] += 1
             # First call = the pre-generation capture: report the entry exists so the
             # transaction proceeds. Subsequent calls = the post-conflict re-read: the
             # entry has vanished.
             if check_calls['count'] == 1:
-                return await real_check(context_id)
-            return EntryProbe(False, None, None, None)
+                return await real_check(context_id, scope=scope)
+            return EntryProbe(False, None, None, None, False)
 
         with (
             patch('app.tools.context.update.ensure_repositories', return_value=repos),
@@ -383,6 +384,45 @@ class TestUpdateContextVersionGuard:
 
         # The pre-generation capture (1) plus the single post-conflict re-read (2):
         # the not-found branch terminates the loop immediately, no further retries.
+        assert check_calls['count'] == 2
+
+    @pytest.mark.asyncio
+    async def test_write_access_lost_on_reread_raises_not_authorized(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """If the post-conflict re-read finds the entry readable but no longer writable,
+        ``update_context`` ends with the not-authorized error instead of retrying.
+
+        The caller can still see the entry, so not-found would be false, and retrying
+        a write the caller may no longer make would only burn the conflict budget.
+        """
+        _backend, repos, entry_id = setup_with_entry
+
+        real_check = repos.context.check_entry_exists
+        check_calls = {'count': 0}
+
+        async def lose_write_on_reread(context_id: str, *, scope: Scope) -> EntryProbe:
+            check_calls['count'] += 1
+            if check_calls['count'] == 1:
+                return await real_check(context_id, scope=scope)
+            return EntryProbe(True, 'agent', 1, 'alice', False)
+
+        with (
+            patch('app.tools.context.update.ensure_repositories', return_value=repos),
+            patch('app.tools.context.update.get_embedding_provider', return_value=None),
+            patch('app.tools._generation.get_embedding_provider', return_value=None),
+            patch('app.tools.context.update.get_summary_provider', return_value=None),
+            patch('app.tools._generation.get_summary_provider', return_value=None),
+            patch.object(repos.context, 'check_entry_exists', side_effect=lose_write_on_reread),
+            patch(
+                'app.tools.context.update.execute_update_in_transaction',
+                new=AsyncMock(side_effect=VersionConflictError(entry_id)),
+            ),
+            pytest.raises(ToolError) as error,
+        ):
+            await update_context(context_id=entry_id, metadata={'status': 'x'})
+
+        assert str(error.value) == f'Not authorized to modify context entry with ID {entry_id}'
         assert check_calls['count'] == 2
 
     @pytest.mark.asyncio
@@ -405,13 +445,13 @@ class TestUpdateContextVersionGuard:
         check_calls = {'count': 0}
         versions_seen: list[int | None] = []
 
-        async def flaky_reread(context_id: str) -> EntryProbe:
+        async def flaky_reread(context_id: str, *, scope: Scope) -> EntryProbe:
             check_calls['count'] += 1
             if check_calls['count'] == 1:
-                return await real_check(context_id)  # pre-generation capture
+                return await real_check(context_id, scope=scope)  # pre-generation capture
             if check_calls['count'] == 2:
                 raise asyncpg.InterfaceError('connection recycled by the pooler')
-            return EntryProbe(True, 'agent', 3, 'local')
+            return EntryProbe(True, 'agent', 3, 'local', True)
 
         async def conflict_once(*_args: object, **kwargs: object) -> tuple[list[str], bool]:
             versions_seen.append(cast('int | None', kwargs.get('expected_version')))

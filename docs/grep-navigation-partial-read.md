@@ -54,6 +54,10 @@ When `ENABLE_INDEX_TREE_NODE_SUMMARIES` is on (the default), each substantial he
 
 `read_context_range` returns a slice of one record, addressed by exactly one of: a character range (`start_char`/`end_char`), a line range (`start_line`/`end_line`, 1-based inclusive), or an outline `node_id`. It slices the full stored `text_content` directly, so it is generation-independent and works for every entry. Out-of-range offsets are clamped to `[0, len(text)]` and the response echoes the resolved span, so an offset or node id captured in a prior turn degrades gracefully if the record was edited since.
 
+## Access scope
+
+All three tools work only on the entries the caller may read (see the [Access Model](authentication.md#access-model)). `grep_context` scans, matches and counts readable entries alone, so an entry the caller cannot read never consumes the `max_entries_scanned` budget, never sets `truncated`, and never appears in the results. `navigate_context` and `read_context_range` report an unreadable entry as `Context entry not found: {id}`, exactly like an entry that does not exist, and an ID prefix resolves over readable entries only. Per-node summaries are read only for an entry the caller may read.
+
 ## Backend parity
 
 Every behavior is identical on SQLite and PostgreSQL: all matching, line splitting, offset arithmetic, Markdown parsing, and slicing run in Python over `text_content` (which both backends already return). Offsets are Unicode code-point indices throughout, matching the chunking subsystem's discipline, so chained reads stay correct on multibyte text. The `context_index_nodes` table (created only when per-node summaries are enabled) uses a TEXT foreign key on SQLite and a UUID foreign key on PostgreSQL, both with `ON DELETE CASCADE`.

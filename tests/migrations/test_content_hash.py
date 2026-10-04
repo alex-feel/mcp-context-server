@@ -22,9 +22,11 @@ import pytest_asyncio
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.ids import generate_id
+from app.migrations.access_control import apply_access_control_migration
 from app.migrations.content_hash import apply_content_hash_migration
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository.helpers import compute_content_hash
+from tests.helpers import LOCAL_SCOPE
 
 # Module-level alias keeps `generate_id` reachable for ruff once test methods reference it.
 _make_id = generate_id
@@ -318,7 +320,7 @@ class TestHashStoredOnInsert:
         """New entries have content_hash populated."""
         text = 'Hello test content'
         context_id, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content=text, metadata=None,
@@ -342,14 +344,14 @@ class TestHashStoredOnInsert:
         """When dedup fires, content_hash is refreshed (same value since text matches)."""
         text = 'Duplicate content'
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content=text, metadata=None,
         )
         # Store duplicate
         context_id2, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content=text, metadata=None,
@@ -380,13 +382,13 @@ class TestHashBasedPreCheck:
     async def test_hash_match_returns_id(self, repos: RepositoryContainer) -> None:
         """When content_hash matches, returns existing entry id."""
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Same text', metadata=None,
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='t1', source='user', text_content='Same text',
+            thread_id='t1', source='user', text_content='Same text', scope=LOCAL_SCOPE,
         )
         assert result is not None
         assert result.context_id == context_id
@@ -394,20 +396,20 @@ class TestHashBasedPreCheck:
     async def test_hash_mismatch_returns_none(self, repos: RepositoryContainer) -> None:
         """When content_hash does not match, returns None."""
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Original', metadata=None,
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='t1', source='user', text_content='Different',
+            thread_id='t1', source='user', text_content='Different', scope=LOCAL_SCOPE,
         )
         assert result is None
 
     async def test_empty_thread_returns_none(self, repos: RepositoryContainer) -> None:
         """Empty thread returns None."""
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='nonexistent', source='user', text_content='Any',
+            thread_id='nonexistent', source='user', text_content='Any', scope=LOCAL_SCOPE,
         )
         assert result is None
 
@@ -415,6 +417,22 @@ class TestHashBasedPreCheck:
 # ===========================================================================
 # Backward compatibility: NULL hash fallback
 # ===========================================================================
+
+
+async def _migrate_legacy_database(backend: StorageBackend) -> None:
+    """Apply the startup migrations the deduplicating store reads to a pre-content-hash database.
+
+    The content-hash migration adds the column the store writes; the access-control
+    migration adds the owner and visibility columns and the grants table its scoped
+    statements read, owning existing and later legacy-shaped rows by the default
+    principal. Rows inserted afterwards without a content hash keep the NULL hash of
+    rows stored before content hashes existed.
+
+    Args:
+        backend: The backend of the pre-content-hash database.
+    """
+    await apply_content_hash_migration(backend=backend)
+    await apply_access_control_migration(backend=backend)
 
 
 @pytest.mark.asyncio
@@ -425,8 +443,7 @@ class TestNullHashFallback:
         self, backend_pre_migration: StorageBackend, repos_pre_migration: RepositoryContainer,
     ) -> None:
         """Pre-migration rows without content_hash still deduplicate via text comparison."""
-        # Apply the migration so the column exists (needed for INSERT to include content_hash)
-        await apply_content_hash_migration(backend=backend_pre_migration)
+        await _migrate_legacy_database(backend_pre_migration)
 
         legacy_id = _make_id()
 
@@ -454,7 +471,7 @@ class TestNullHashFallback:
 
         # store_with_deduplication with same text should detect duplicate via fallback
         context_id, was_updated = await repos_pre_migration.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Legacy text', metadata=None,
@@ -466,7 +483,7 @@ class TestNullHashFallback:
         self, backend_pre_migration: StorageBackend, repos_pre_migration: RepositoryContainer,
     ) -> None:
         """check_latest_is_duplicate falls back to text comparison for NULL hash rows."""
-        await apply_content_hash_migration(backend=backend_pre_migration)
+        await _migrate_legacy_database(backend_pre_migration)
 
         legacy_id = _make_id()
 
@@ -483,7 +500,7 @@ class TestNullHashFallback:
 
         # check_latest_is_duplicate should find the match via text fallback
         result = await repos_pre_migration.context.check_latest_is_duplicate(
-            thread_id='t1', source='agent', text_content='Old agent text',
+            thread_id='t1', source='agent', text_content='Old agent text', scope=LOCAL_SCOPE,
         )
         assert result is not None
         assert result.context_id == legacy_id
@@ -492,7 +509,7 @@ class TestNullHashFallback:
         self, backend_pre_migration: StorageBackend, repos_pre_migration: RepositoryContainer,
     ) -> None:
         """NULL hash row with different text correctly returns None."""
-        await apply_content_hash_migration(backend=backend_pre_migration)
+        await _migrate_legacy_database(backend_pre_migration)
 
         legacy_id = _make_id()
 
@@ -506,7 +523,7 @@ class TestNullHashFallback:
         await backend_pre_migration.execute_write(_insert_without_hash)
 
         result = await repos_pre_migration.context.check_latest_is_duplicate(
-            thread_id='t1', source='user', text_content='Different text',
+            thread_id='t1', source='user', text_content='Different text', scope=LOCAL_SCOPE,
         )
         assert result is None
 
@@ -526,7 +543,7 @@ class TestHashRecomputationOnUpdate:
         """Updating text_content recomputes the content_hash."""
         original_text = 'Original content'
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content=original_text, metadata=None,
@@ -534,7 +551,7 @@ class TestHashRecomputationOnUpdate:
 
         new_text = 'Updated content'
         success, fields = await repos.context.update_context_entry(
-            context_id=context_id, text_content=new_text,
+            context_id=context_id, text_content=new_text, scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'text_content' in fields
@@ -557,7 +574,7 @@ class TestHashRecomputationOnUpdate:
         """Updating only metadata does NOT change content_hash."""
         text = 'Stable content'
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content=text, metadata=None,
@@ -566,7 +583,7 @@ class TestHashRecomputationOnUpdate:
         expected_hash = compute_content_hash(text)
 
         success, fields = await repos.context.update_context_entry(
-            context_id=context_id, metadata=json.dumps({'key': 'value'}),
+            context_id=context_id, metadata=json.dumps({'key': 'value'}), scope=LOCAL_SCOPE,
         )
         assert success is True
         assert 'metadata' in fields
@@ -587,7 +604,7 @@ class TestHashRecomputationOnUpdate:
     ) -> None:
         """After updating text_content, dedup correctly uses the new hash."""
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Version 1', metadata=None,
@@ -595,19 +612,19 @@ class TestHashRecomputationOnUpdate:
 
         # Update text
         await repos.context.update_context_entry(
-            context_id=context_id, text_content='Version 2',
+            context_id=context_id, text_content='Version 2', scope=LOCAL_SCOPE,
         )
 
         # Dedup check for new text should match
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='t1', source='user', text_content='Version 2',
+            thread_id='t1', source='user', text_content='Version 2', scope=LOCAL_SCOPE,
         )
         assert result is not None
         assert result.context_id == context_id
 
         # Dedup check for old text should NOT match
         result_old = await repos.context.check_latest_is_duplicate(
-            thread_id='t1', source='user', text_content='Version 1',
+            thread_id='t1', source='user', text_content='Version 1', scope=LOCAL_SCOPE,
         )
         assert result_old is None
 

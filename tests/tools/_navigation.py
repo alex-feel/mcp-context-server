@@ -15,15 +15,22 @@ from app.tools.navigation import navigate_context
 _SEQ = datetime(2024, 1, 1, tzinfo=UTC)
 
 
-async def store_entry(backend: StorageBackend, text: str, *, thread_id: str = 't', offset_seconds: int = 0) -> str:
-    """Insert one entry and return its canonical id."""
+async def store_entry(
+    backend: StorageBackend,
+    text: str,
+    *,
+    thread_id: str = 't',
+    offset_seconds: int = 0,
+    owner: str = 'local',
+) -> str:
+    """Insert one private entry owned by ``owner`` (the default principal unless given) and return its id."""
     cid = generate_id_with_timestamp(_SEQ + timedelta(seconds=offset_seconds))
 
     def _write(conn: sqlite3.Connection) -> None:
         conn.execute(
-            "INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) "
-            "VALUES (?, ?, ?, ?, ?, 'local')",
-            (cid, thread_id, 'agent', 'text', text),
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (cid, thread_id, 'agent', 'text', text, owner),
         )
 
     await backend.execute_write(_write)

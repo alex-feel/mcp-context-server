@@ -2,23 +2,27 @@
 
 Runs the database writes of one store or update inside an open transaction,
 keeps that transaction alive with a heartbeat, classifies connection faults,
-re-reads an entry's version for the compare-and-set retry, and defines the
-control-flow exceptions these paths raise to their callers.
+re-probes an entry for the compare-and-set retry, and defines the control-flow
+exceptions these paths raise to their callers.
 """
 
 import asyncio
 import json
 import logging
 from collections.abc import Collection
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import Literal
 from typing import cast
 
 import asyncpg
 from fastmcp.exceptions import ToolError
 
+from app.access_scope import AccessScope
 from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.errors import ControlFlowError
+from app.repositories.context_repository.records import EntryProbe
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 
@@ -72,6 +76,34 @@ class EntryNotFoundError(ControlFlowError):
     def __init__(self, context_id: str) -> None:
         super().__init__(f'Context entry with ID {context_id} not found')
         self.context_id = context_id
+
+
+class EntryNotAuthorizedError(ControlFlowError):
+    """Internal control-flow signal: the caller may read the entries but not modify or delete them.
+
+    An entry the caller may not read is reported as not found instead, so this
+    signal never reveals a hidden entry: the caller already knows these entries
+    exist. Like ``EntryNotFoundError`` it is a ``ControlFlowError`` -- a refused
+    request is a client-input outcome, never charged to the circuit breaker --
+    and its message is the exact text the tools report:
+    ``Not authorized to modify context entry with ID {id}`` for ``modify`` and
+    ``Not authorized to delete context entries: {ids}`` for ``delete``, the ids
+    comma-separated in the order the caller named them.
+
+    Attributes:
+        context_ids: The refused entry ids, in the caller's order.
+        action: What the caller was refused.
+    """
+
+    def __init__(self, context_ids: Sequence[str], *, action: Literal['modify', 'delete']) -> None:
+        self.context_ids = tuple(context_ids)
+        self.action = action
+        joined = ', '.join(self.context_ids)
+        if action == 'modify':
+            message = f'Not authorized to modify context entry with ID {joined}'
+        else:
+            message = f'Not authorized to delete context entries: {joined}'
+        super().__init__(message)
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +221,9 @@ async def reread_entry_version(
     repos: 'RepositoryContainer',
     context_id: str,
     *,
+    scope: AccessScope,
     max_retries: int = 2,
-) -> tuple[bool, int | None]:
+) -> EntryProbe:
     """Re-read an entry's optimistic-concurrency version after a failed compare-and-set.
 
     The update write paths capture ``version`` before their (LLM-bound) generation
@@ -209,15 +242,19 @@ async def reread_entry_version(
     Args:
         repos: Repository container.
         context_id: ID (32-char canonical hex) of the entry whose version to refresh.
+        scope: The caller's scope; the entry is re-read as the caller.
         max_retries: Maximum transient-fault retries (exponential backoff).
 
     Returns:
-        ``(exists, version)``; ``version`` is None when the entry is gone.
+        The fresh probe of the entry as the caller: ``exists`` is False when the
+        entry is gone or the caller may no longer read it, and ``can_write`` is
+        False when the caller may still read it but no longer modify it; the
+        caller re-enters the write with ``version`` only when both hold.
     """
     attempt = 0
     while True:
         try:
-            probe = await repos.context.check_entry_exists(context_id)
+            probe = await repos.context.check_entry_exists(context_id, scope=scope)
         except Exception as exc:
             if is_connection_error(exc) and attempt < max_retries:
                 delay = 0.5 * (2 ** attempt)
@@ -230,7 +267,7 @@ async def reread_entry_version(
                 await asyncio.sleep(delay)
                 continue
             raise
-        return probe.exists, probe.version
+        return probe
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +283,7 @@ async def execute_store_in_transaction(
     source: str,
     content_type: str,
     text_content: str,
-    owner_id: str,
+    scope: AccessScope,
     visibility: str,
     author_group_grants: 'Collection[str]' = (),
     metadata_str: str | None,
@@ -264,8 +301,8 @@ async def execute_store_in_transaction(
     """Execute all store operations within an existing transaction.
 
     Performs deduplication-aware storage of a single context entry:
-    1. Store entry with deduplication (store_with_deduplication), stamping
-       owner_id/visibility on a fresh INSERT
+    1. Store entry with deduplication (store_with_deduplication) under the
+       caller's scope, stamping owner_id/visibility on a fresh INSERT
     2. Store author-group read grants on a fresh INSERT (when configured)
     3. Store/replace tags based on dedup outcome
     4. Store/replace images based on dedup outcome
@@ -279,8 +316,12 @@ async def execute_store_in_transaction(
         source: 'user' or 'agent'.
         content_type: 'text' or 'multimodal'.
         text_content: The text content to store.
-        owner_id: Server-resolved effective principal stamped as the row owner
-            on a fresh INSERT (never caller-supplied at the tool boundary).
+        scope: The caller's scope, built from the server-resolved effective
+            principal (never caller-supplied at the tool boundary).
+            Deduplication considers only entries it may read and merges only
+            into an entry its principal owns; a fresh INSERT is owned by its
+            principal, which is also recorded as the grantor of author-group
+            grants.
         visibility: Validated visibility value stamped on a fresh INSERT. A
             deduplication UPDATE leaves the existing row's owner_id and
             visibility untouched.
@@ -348,7 +389,7 @@ async def execute_store_in_transaction(
         source=source,
         content_type=content_type,
         text_content=text_content,
-        owner_id=owner_id,
+        scope=scope,
         visibility=visibility,
         metadata=metadata_str,
         summary=summary,
@@ -394,7 +435,7 @@ async def execute_store_in_transaction(
         await repos.grants.store_group_read_grants(
             context_id,
             author_group_grants,
-            granted_by=owner_id,
+            granted_by=scope.principal_id,
             txn=txn,
         )
 
@@ -469,6 +510,7 @@ async def execute_update_in_transaction(
     txn: 'TransactionContext',
     *,
     context_id: str,
+    scope: AccessScope,
     text: str | None,
     metadata: dict[str, Any] | None,
     metadata_patch: dict[str, Any] | None,
@@ -485,7 +527,11 @@ async def execute_update_in_transaction(
 ) -> tuple[list[str], bool]:
     """Execute all update operations within an existing transaction.
 
-    Performs a complete update of a single context entry:
+    Performs a complete update of a single context entry as the caller. Every
+    statement on the entry row re-asserts the caller's access: owner-only when
+    the visibility changes, owner or write grant otherwise, so access lost
+    between the caller's pre-generation probe and this transaction ends the
+    update as not found:
     1. Update text/metadata/summary/visibility via update_context_entry (CHECK success)
     2. Apply metadata_patch via patch_metadata (CHECK success)
     3. Replace tags if provided
@@ -499,15 +545,17 @@ async def execute_update_in_transaction(
         repos: Repository container.
         txn: Active transaction context.
         context_id: ID (32-char canonical hex) of entry to update.
+        scope: The caller's scope, passed to every statement on the entry row.
         text: New text content or None.
         metadata: Full metadata replacement or None.
         metadata_patch: Metadata merge patch or None.
         summary: New summary or None.
         clear_summary: Whether to clear existing summary.
         visibility: New visibility value or None. The caller validates the
-            value and authorizes the change (owner-only) BEFORE the
-            transaction; here it simply rides the update_context_entry write,
-            so it participates in the same compare-and-set as text/metadata.
+            value and checks ownership BEFORE the transaction; here it rides
+            the update_context_entry write, which admits only an entry the
+            scope owns and participates in the same compare-and-set as
+            text/metadata.
         tags: New tags or None.
         images: Raw images parameter from caller (for None vs empty detection).
         validated_images: Validated image list (empty if images is None).
@@ -524,11 +572,12 @@ async def execute_update_in_transaction(
         - summary_cleared: True if summary was cleared (for response message)
 
     Raises:
-        EntryNotFoundError: If the target entry does not exist -- update_context_entry
-            or patch_metadata reports no matching row, or the tags-only / images-only
-            path finds the parent missing. A ControlFlowError, so the failed write is
-            not charged to the circuit breaker; the caller catches it outside the
-            transaction and converts it to a not-found ToolError.
+        EntryNotFoundError: If the target entry does not exist or the scope may no
+            longer modify it -- update_context_entry or patch_metadata reports no
+            matching row, the tags-only / images-only path finds the parent missing,
+            or the entry's content type cannot be read. A ControlFlowError, so the
+            failed write is not charged to the circuit breaker; the caller catches it
+            outside the transaction and converts it to a not-found ToolError.
     """
     updated_fields: list[str] = []
 
@@ -555,13 +604,15 @@ async def execute_update_in_transaction(
             clear_summary=clear_summary,
             visibility=visibility,
             expected_version=expected_version,
+            scope=scope,
             txn=txn,
         )
 
         if not success:
-            # update_context_entry returns success=False only when no row matched
-            # its WHERE id=? (a version mismatch is raised, not returned), i.e. the
-            # entry was deleted concurrently or the id is stale.
+            # update_context_entry returns success=False only when no row the scope
+            # may modify matched its id (a version mismatch is raised, not
+            # returned), i.e. the entry was deleted concurrently, the caller lost
+            # access to it, or the id is stale.
             raise EntryNotFoundError(context_id)
 
         updated_fields.extend(fields)
@@ -572,30 +623,34 @@ async def execute_update_in_transaction(
         success, fields = await repos.context.patch_metadata(
             context_id=context_id,
             patch=metadata_patch,
+            scope=scope,
             txn=txn,
         )
 
         if not success:
-            # patch_metadata returns success=False only when the row is gone.
+            # patch_metadata returns success=False only when the row is gone or the
+            # scope may no longer modify it.
             raise EntryNotFoundError(context_id)
 
         updated_fields.extend(fields)
         entry_row_stamped = True
 
     # A tags-only or images-only update issues no write that first confirms the
-    # parent exists: the text/metadata and metadata_patch branches each SELECT the
-    # row (and raise EntryNotFoundError above when it is gone), but neither ran
-    # here. Without that guard, replacing tags/images against a deleted parent
-    # violates the child foreign key -- a non-ControlFlowError that charges the
-    # circuit breaker -- or, with FK enforcement off, orphans the replacement
-    # rows. Confirm the parent explicitly and raise the same breaker-exempt signal.
+    # parent exists and admits the caller: the text/metadata and metadata_patch
+    # branches each SELECT the row under the caller's access predicate (and raise
+    # EntryNotFoundError above when it is gone), but neither ran here. Without that
+    # guard, replacing tags/images against a deleted parent violates the child
+    # foreign key -- a non-ControlFlowError that charges the circuit breaker --
+    # or, with FK enforcement off, orphans the replacement rows, and the child
+    # writes would reach an entry the caller may no longer modify. Confirm the
+    # parent under the write predicate and raise the same breaker-exempt signal.
     if (
         text is None
         and metadata is None
         and metadata_patch is None
         and visibility is None
         and (tags is not None or images is not None)
-        and not await repos.context.entry_exists(context_id, txn=txn)
+        and not await repos.context.entry_exists(context_id, scope=scope, txn=txn)
     ):
         raise EntryNotFoundError(context_id)
 
@@ -620,14 +675,14 @@ async def execute_update_in_transaction(
         if images is not None:
             if len(images) == 0:
                 await repos.images.replace_images_for_context(context_id, [], txn=txn)
-                await repos.context.update_content_type(context_id, 'text', txn=txn)
+                await repos.context.update_content_type(context_id, 'text', scope=scope, txn=txn)
                 updated_fields.extend(['images', 'content_type'])
             else:
                 await repos.images.replace_images_for_context(
                     context_id, validated_images, txn=txn,
                 )
                 await repos.context.update_content_type(
-                    context_id, 'multimodal', txn=txn,
+                    context_id, 'multimodal', scope=scope, txn=txn,
                 )
                 updated_fields.extend(['images', 'content_type'])
             # update_content_type writes context_entries, so it carried the stamp.
@@ -654,15 +709,20 @@ async def execute_update_in_transaction(
     if images is None and updated_fields:
         image_count = await repos.images.count_images_for_context(context_id, txn=txn)
         current_content_type = 'multimodal' if image_count > 0 else 'text'
-        stored_content_type = await repos.context.get_content_type(context_id, txn=txn)
+        stored_content_type = await repos.context.get_content_type(context_id, scope=scope, txn=txn)
+        if stored_content_type is None:
+            # The row is gone or the scope may no longer modify it. Comparing None
+            # with the recomputed type would read as a difference and issue a
+            # content-type write, so the update ends as not found instead.
+            raise EntryNotFoundError(context_id)
         if stored_content_type != current_content_type:
             await repos.context.update_content_type(
-                context_id, current_content_type, txn=txn,
+                context_id, current_content_type, scope=scope, txn=txn,
             )
             entry_row_stamped = True
             updated_fields.append('content_type')
         elif not entry_row_stamped:
-            await repos.context.touch_updated_at(context_id, txn=txn)
+            await repos.context.touch_updated_at(context_id, scope=scope, txn=txn)
             entry_row_stamped = True
 
     # Embeddings describe text_content, so a text change invalidates the stored vectors.

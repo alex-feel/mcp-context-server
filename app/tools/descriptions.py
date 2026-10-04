@@ -64,6 +64,16 @@ def _generate_sqlite_fts_description(language: str) -> str:
     # Non-language text behavior
     non_language_behavior = 'Tokenized by unicode61 but NOT stemmed'
 
+    # bm25() reads corpus statistics (row count, average length, per-term document
+    # counts) from the whole FTS5 index, so entries outside the caller's scope
+    # still weigh on the scores of the entries it may read.
+    fts_score_scope = (
+        'The BM25 score draws on statistics of the whole FTS5 index, entries the caller cannot read '
+        "included, so the scores of readable entries and their relative order can shift as other principals' "
+        'entries change, while the set of matching entries and the number of results per page depend only '
+        'on what the caller can read.'
+    )
+
     return _FTS_DESCRIPTION_TEMPLATE.format(
         backend='SQLite',
         engine='FTS5',
@@ -76,6 +86,7 @@ def _generate_sqlite_fts_description(language: str) -> str:
         stopwords_example=stopwords_example,
         non_language_behavior=non_language_behavior,
         mode_descriptions=_SQLITE_MODE_DESCRIPTIONS,
+        fts_score_scope=fts_score_scope,
     )
 
 
@@ -114,6 +125,9 @@ def _generate_postgresql_fts_description(language: str) -> str:
     # Non-language text behavior
     non_language_behavior = 'Tokenized on spaces but NOT stemmed (CJK languages require extensions)'
 
+    # ts_rank_cd() reads only the scored entry's own tsvector.
+    fts_score_scope = 'ts_rank_cd scores each entry on its own, so a score depends only on the entry and the query.'
+
     return _FTS_DESCRIPTION_TEMPLATE.format(
         backend='PostgreSQL',
         engine='tsvector',
@@ -126,6 +140,7 @@ def _generate_postgresql_fts_description(language: str) -> str:
         stopwords_example=stopwords_example,
         non_language_behavior=non_language_behavior,
         mode_descriptions=_POSTGRESQL_MODE_DESCRIPTIONS,
+        fts_score_scope=fts_score_scope,
     )
 
 
@@ -152,8 +167,10 @@ Filtering options (all combinable):
 - metadata: Simple key=value equality matching
 - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
+Only entries the caller may read are matched, returned and counted.
+
 The `scores` object contains:
-- fts_score: BM25/ts_rank relevance (HIGHER = better match)
+- fts_score: BM25/ts_rank relevance (HIGHER = better match). {fts_score_scope}
 - fts_rank: Always null for standalone FTS search
 - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 

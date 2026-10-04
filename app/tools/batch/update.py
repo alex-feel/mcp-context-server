@@ -4,18 +4,14 @@ import asyncio
 import logging
 import operator
 from collections.abc import Awaitable
-from typing import TYPE_CHECKING
 from typing import Annotated
 from typing import Any
-from typing import NoReturn
 from typing import cast
 
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from app.auth import RequestPrincipal
 from app.auth import resolve_effective_principal
-from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
 from app.repositories.context_repository.records import VersionConflictError
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -35,46 +31,13 @@ from app.tools._transactions import is_connection_error
 from app.tools._transactions import reread_entry_version
 from app.tools._transactions import transaction_heartbeat
 from app.tools.batch.entry_validation import validate_update_entry
+from app.tools.batch.update_access import authorize_updates
+from app.tools.batch.update_access import reraise_disambiguated_cas_conflict
 from app.types import BulkUpdateResponseDict
 from app.types import BulkUpdateResultItemDict
 
-if TYPE_CHECKING:
-    from app.backends.base import TransactionContext
-    from app.repositories import RepositoryContainer
-
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-
-async def _reraise_disambiguated_cas_conflict(
-    repos: 'RepositoryContainer',
-    txn: 'TransactionContext',
-    context_id: str,
-) -> NoReturn:
-    """Disambiguate a version compare-and-set that matched zero rows.
-
-    Zero matched rows is ambiguous: a concurrent writer bumped the row's
-    version (retryable), or the row was deleted after its version was captured
-    (permanent). The atomic update batch calls this on the OPEN transaction
-    connection to re-probe existence, so a deleted row aborts with the standard
-    not-found error every other update path emits instead of
-    concurrent-modification retry advice no retry can satisfy.
-
-    Args:
-        repos: Repository container.
-        txn: The open transaction the compare-and-set ran on.
-        context_id: ID of the entry whose compare-and-set matched zero rows.
-
-    Raises:
-        EntryNotFoundError: The row is gone -- deleted between its version
-            capture and the compare-and-set.
-        VersionConflictError: The row still exists with a changed version;
-            the conflict propagates to the caller's concurrent-modification
-            handling.
-    """
-    if not await repos.context.entry_exists(context_id, txn=txn):
-        raise EntryNotFoundError(context_id) from None
-    raise VersionConflictError(context_id) from None
 
 
 async def update_context_batch(
@@ -85,7 +48,7 @@ async def update_context_batch(
             '36-char hyphenated UUID, or 8-31 char hex prefix). '
             'Optional: text (str), metadata (dict - full replace), '
             'metadata_patch (dict - RFC 7396 merge), tags (list[str]), images (list[dict]), '
-            'visibility ("private", "shared", or "public"; owner-only, publishing as public '
+            'visibility ("private" or "public"; owner-only, publishing as public '
             'may require a configured role).',
             min_length=1,
             max_length=100,
@@ -110,7 +73,11 @@ async def update_context_batch(
     - Only provided fields are modified
     - Immutable fields (cannot be changed): id, thread_id, source, created_at, ownership
     - Auto-managed fields: content_type (recalculated based on images), updated_at
+    - text, metadata, tags and images: the owner or a principal holding a write grant
     - visibility: owner-only; publishing as 'public' may require a configured role
+    - An entry the caller may not read is reported as "Context entry {id} not found";
+      one it may read but not modify as "Not authorized to modify context entry {id}"
+      (atomic mode appends " at index {i}" and fails the whole batch)
     - Metadata options (MUTUALLY EXCLUSIVE per entry):
       - metadata: FULL REPLACEMENT of entire metadata object
       - metadata_patch: RFC 7396 JSON Merge Patch (new keys added, existing updated,
@@ -133,6 +100,11 @@ async def update_context_batch(
     """
     try:
         repos = await ensure_repositories()
+        # The caller's identity, resolved once before anything that can reveal whether
+        # an entry exists: id resolution and the existence probes below see only the
+        # entries the caller may read, and the publish gate needs the caller's roles.
+        principal = resolve_effective_principal()
+        scope = principal.access_scope()
 
         # === PHASE 1: Validate all updates before processing ===
         validated_updates: list[dict[str, Any]] = []
@@ -140,7 +112,7 @@ async def update_context_batch(
 
         for idx, update in enumerate(updates):
             validated_update, entry_context_id, entry_validation_error = await validate_update_entry(
-                update, idx, repos.context,
+                update, idx, repos.context, scope=scope,
             )
             if entry_validation_error is not None:
                 validation_errors.append((idx, entry_context_id, entry_validation_error))
@@ -182,48 +154,9 @@ async def update_context_batch(
 
         # === PHASE 2: Check all entries exist and authorize visibility changes
         # (fail fast in atomic mode) ===
-        existence_errors: list[tuple[int, str, str]] = []  # (index, context_id, error)
-        entry_sources: dict[str, str] = {}  # context_id -> source
-        # context_id -> optimistic-concurrency version captured BEFORE generation;
-        # passed to execute_update_in_transaction as the compare-and-set guard so a
-        # concurrent writer that commits during generation is detected.
-        entry_versions: dict[str, int] = {}
-        # Resolved lazily: only a batch that actually changes visibility needs
-        # the caller identity.
-        principal: RequestPrincipal | None = None
-
-        for update in validated_updates:
-            original_idx = update['index']
-            context_id = update['context_id']
-
-            probe = await repos.context.check_entry_exists(context_id)
-            if not probe.exists:
-                if atomic:
-                    raise ToolError(f'Context entry {context_id} not found at index {original_idx}')
-                existence_errors.append((original_idx, context_id, f'Context entry {context_id} not found'))
-                continue
-            assert probe.source is not None
-            assert probe.version is not None
-            entry_sources[context_id] = probe.source
-            entry_versions[context_id] = probe.version
-
-            # Visibility changes are owner-only, and publishing as 'public' may
-            # additionally require the configured publish role. owner_id is
-            # immutable, so this pre-generation read cannot go stale.
-            visibility_change = update.get('visibility')
-            if visibility_change is None:
-                continue
-            if principal is None:
-                principal = resolve_effective_principal()
-            auth_error: str | None = None
-            if probe.owner_id != principal.principal_id:
-                auth_error = f'Only the owner may change the visibility of context {context_id}'
-            else:
-                auth_error = visibility_denied_reason(visibility_change, principal)
-            if auth_error is not None:
-                if atomic:
-                    raise ToolError(f'{auth_error} (index {original_idx})')
-                existence_errors.append((original_idx, context_id, auth_error))
+        entry_sources, entry_versions, existence_errors = await authorize_updates(
+            repos, validated_updates, principal, scope=scope, atomic=atomic,
+        )
 
         # In non-atomic mode, add existence errors to results
         if not atomic:
@@ -501,6 +434,7 @@ async def update_context_batch(
                                     await execute_update_in_transaction(
                                         repos, txn,
                                         context_id=context_id,
+                                        scope=scope,
                                         text=update.get('text'),
                                         metadata=update.get('metadata'),
                                         metadata_patch=update.get('metadata_patch'),
@@ -520,14 +454,16 @@ async def update_context_batch(
                                 # A compare-and-set matching zero rows is ambiguous:
                                 # the version changed under a concurrent writer
                                 # (retryable, surfaced below as concurrent-
-                                # modification advice) or the row was deleted after
-                                # its version was captured (permanent). The helper
-                                # re-probes existence on the transaction connection
-                                # and re-raises the disambiguated exception, so a
-                                # deleted row aborts with the standard not-found
-                                # error every other update path emits instead of
-                                # retry advice no retry can satisfy.
-                                await _reraise_disambiguated_cas_conflict(repos, txn, context_id)
+                                # modification advice) or the row was deleted or its
+                                # write access withdrawn after its version was
+                                # captured (permanent). The helper re-probes the row
+                                # under the caller's write predicate on the
+                                # transaction connection and re-raises the
+                                # disambiguated exception, so such a row aborts with
+                                # the standard not-found error every other update
+                                # path emits instead of retry advice no retry can
+                                # satisfy.
+                                await reraise_disambiguated_cas_conflict(repos, txn, context_id, scope=scope)
                             if summary_cleared:
                                 cleared_attempt += 1
                             bumps_version = (
@@ -610,6 +546,7 @@ async def update_context_batch(
                                 await execute_update_in_transaction(
                                     repos, txn,
                                     context_id=context_id,
+                                    scope=scope,
                                     text=update.get('text'),
                                     metadata=update.get('metadata'),
                                     metadata_patch=update.get('metadata_patch'),
@@ -671,7 +608,7 @@ async def update_context_batch(
                         # was only a connection blip. Only an exhausted refresh records
                         # a per-entry failure.
                         try:
-                            exists, current_version = await reread_entry_version(repos, context_id)
+                            current = await reread_entry_version(repos, context_id, scope=scope)
                         except Exception as reread_error:
                             logger.error(f'Failed to update entry at index {original_idx}: {reread_error}')
                             results.append(BulkUpdateResultItemDict(
@@ -683,18 +620,22 @@ async def update_context_batch(
                             ))
                             discard_generation_counts(vu_idx)
                             break
-                        if not exists:
+                        if not current.exists or not current.can_write:
+                            # Gone or no longer writable for the caller: terminal, no retry.
                             results.append(BulkUpdateResultItemDict(
                                 index=original_idx,
                                 context_id=context_id,
                                 success=False,
                                 updated_fields=None,
-                                error=f'Context entry {context_id} not found',
+                                error=(
+                                    f'Context entry {context_id} not found' if not current.exists
+                                    else f'Not authorized to modify context entry {context_id}'
+                                ),
                             ))
                             discard_generation_counts(vu_idx)
                             break
-                        assert current_version is not None  # exists=True guarantees a version
-                        live_versions[context_id] = current_version
+                        assert current.version is not None  # exists=True guarantees a version
+                        live_versions[context_id] = current.version
                         continue
                     except EntryNotFoundError as e:
                         # This entry no longer exists (deleted concurrently or a

@@ -8,6 +8,9 @@ from typing import Any
 from typing import Literal
 from typing import cast
 
+from app.access_scope import AccessMode
+from app.access_scope import Scope
+from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
 from app.repositories.embedding_repository.compression_cache import get_cached_compression_metadata
 from app.repositories.embedding_repository.records import SQLITE_IN_CLAUSE_BATCH
@@ -36,10 +39,11 @@ _COMPRESSED_OFFLOAD_MIN_ROWS = 2048
 class CompressedSearchMixin(BaseRepository):
     """KNN search over compressed embeddings.
 
-    ``search_compressed`` applies the same entry filters as the fp32 search, scores
-    the candidate payloads in ``vec_context_embeddings_compressed`` with the active
-    provider's inner-product estimator or decoded L2 distance, and returns results
-    in the same shape as the fp32 search.
+    ``search_compressed`` applies the same entry filters and read predicate as the
+    fp32 search, scores the candidate payloads in ``vec_context_embeddings_compressed``
+    with the active provider's inner-product estimator or decoded L2 distance,
+    re-applies the read predicate when it hydrates the ranked page, and returns
+    results in the same shape as the fp32 search.
     """
 
     async def search_compressed(
@@ -56,13 +60,16 @@ class CompressedSearchMixin(BaseRepository):
         metadata: dict[str, str | int | float | bool] | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
         explain_query: bool = False,
+        *,
+        scope: Scope,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """KNN search over compressed embeddings (TurboQuant payloads).
+        """KNN search over the compressed embeddings (TurboQuant payloads) of the entries the scope may read.
 
         Algorithm:
             1. Resolve the singleton provenance row + cached provider.
-            2. Filter ``context_entries`` exactly as :meth:`search_fp32` does to
-               narrow the candidate set.
+            2. Filter ``context_entries`` exactly as :meth:`search_fp32` does,
+               the scope's read predicate included, to narrow the candidate set;
+               an entry the scope may not read is never scored.
             3. Read the matching rows from
                ``vec_context_embeddings_compressed``.
             4. For ``variant='ip'`` use the provider's unbiased
@@ -77,7 +84,9 @@ class CompressedSearchMixin(BaseRepository):
             7. Sort ASC by ``(distance, context_id)`` -- the id is the unique
                secondary key that keeps a tied ordering reproducible across
                executions -- slice ``[offset : offset + limit]``, hydrate from
-               ``context_entries``.
+               ``context_entries`` under the read predicate again, so an entry
+               that stopped being readable after its candidate was selected is
+               dropped rather than returned.
 
         Return shape is IDENTICAL to :meth:`search_fp32` so the calling tool
         layer needs no compression-specific branching.
@@ -95,6 +104,7 @@ class CompressedSearchMixin(BaseRepository):
             metadata: Simple metadata filters (key=value equality).
             metadata_filters: Advanced metadata filters with operators.
             explain_query: If True, include query execution plan in stats.
+            scope: The caller's scope; only entries it may read are ranked and hydrated.
 
         Returns:
             Tuple of (search results list, statistics dictionary). Each
@@ -233,6 +243,16 @@ class CompressedSearchMixin(BaseRepository):
                         conditions.append(clause)
                         params.extend(mparams)
 
+                # The read predicate follows every client filter and is the only filter
+                # applied before ranking, so the payloads of entries the scope may not
+                # read are never scored.
+                read = build_access_predicate(
+                    scope, mode=AccessMode.READ, backend_type='sqlite', outer='context_entries',
+                )
+                if read.sql:
+                    conditions.append(read.sql)
+                    params.extend(read.params)
+
                 where_clause = (
                     f'WHERE {" AND ".join(conditions)}' if conditions else ''
                 )
@@ -354,6 +374,15 @@ class CompressedSearchMixin(BaseRepository):
                         conditions.append(clause)
                         params.extend(mparams)
                         position += len(mparams)
+
+                # The read predicate follows every client filter, numbered after them.
+                read = build_access_predicate(
+                    scope, mode=AccessMode.READ, backend_type='postgresql', outer='ce', start=position,
+                )
+                if read.sql:
+                    conditions.append(read.sql)
+                    params.extend(read.params)
+                    position += read.bind_count
 
                 where_clause = ' AND '.join(conditions)
                 cand_sql = (
@@ -570,15 +599,21 @@ class CompressedSearchMixin(BaseRepository):
 
         page_ids = [cid for cid, _ in page]
 
-        # Hydrate the result rows from context_entries.
+        # Hydrate the result rows from context_entries under the read predicate again:
+        # an entry whose access changed after its candidate was selected is not
+        # returned, and the skip-on-missing loop below drops it from the page.
         if self.backend.backend_type == 'sqlite':
+            hydrate_read = build_access_predicate(
+                scope, mode=AccessMode.READ, backend_type='sqlite', outer='context_entries',
+            )
 
             def _hydrate_sqlite(
                 conn: sqlite3.Connection,
             ) -> dict[str, dict[str, Any]]:
                 # page_ids is bounded by the overfetch limit, not by the final
                 # page size, so it can exceed SQLITE_MAX_VARIABLE_NUMBER; bind it
-                # in bounded batches like the compressed candidate read.
+                # in bounded batches like the compressed candidate read (a batch
+                # plus the predicate's binds stays below the variable limit).
                 out: dict[str, dict[str, Any]] = {}
                 for start in range(0, len(page_ids), SQLITE_IN_CLAUSE_BATCH):
                     batch = page_ids[start:start + SQLITE_IN_CLAUSE_BATCH]
@@ -586,22 +621,27 @@ class CompressedSearchMixin(BaseRepository):
                     cursor = conn.execute(
                         'SELECT id, thread_id, source, content_type, text_content, '
                         'metadata, summary, created_at, updated_at FROM context_entries '
-                        f'WHERE id IN ({placeholders})',
-                        batch,
+                        f'WHERE id IN ({placeholders}){hydrate_read.and_clause()}',
+                        [*batch, *hydrate_read.params],
                     )
                     out.update({str(dict(r)['id']): dict(r) for r in cursor.fetchall()})
                 return out
 
             hydrated = await self.backend.execute_read(_hydrate_sqlite)
         else:
+            hydrate_read = build_access_predicate(
+                scope, mode=AccessMode.READ, backend_type='postgresql', outer='context_entries', start=2,
+            )
+
             async def _hydrate_pg(
                 conn: 'asyncpg.Connection',
             ) -> dict[str, dict[str, Any]]:
                 rows = await conn.fetch(
                     'SELECT id, thread_id, source, content_type, text_content, '
                     'metadata, summary, created_at, updated_at FROM context_entries '
-                    'WHERE id = ANY($1::uuid[])',
+                    f'WHERE id = ANY($1::uuid[]){hydrate_read.and_clause()}',
                     page_ids,
+                    *hydrate_read.params,
                 )
                 return {str(dict(r)['id']): dict(r) for r in rows}
 
@@ -611,9 +651,9 @@ class CompressedSearchMixin(BaseRepository):
         for context_id, (dist, start_index, end_index) in page:
             row = hydrated.get(context_id)
             if row is None:
-                # Compressed row points at a context_id that vanished
-                # between the candidate scan and the hydration query
-                # (concurrent deletion). Skip rather than fabricate a row.
+                # The entry was deleted or stopped being readable between the
+                # candidate scan and the hydration query. Skip rather than
+                # fabricate a row.
                 continue
             row['distance'] = dist
             row['matched_chunk_start'] = start_index

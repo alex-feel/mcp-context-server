@@ -9,7 +9,8 @@ This package contains all MCP tool functions, organized by domain:
   reranking and result display formatting (ranking.py), and argument bounds and filter caps (limits.py)
 - discovery.py: list_threads, get_statistics
 - batch/: store_context_batch (store.py), update_context_batch (update.py), delete_context_batch
-  (delete.py), and the per-entry validation they share (entry_validation.py)
+  (delete.py), the per-entry validation they share (entry_validation.py), and the update tool's
+  write-access checks (update_access.py)
 - descriptions.py: Backend-specific dynamic tool descriptions (generate_fts_description)
 - _validation.py: Input validation shared by the tools (unstorable text, tag and indexed-value
   limits, image validation and normalization) (not re-exported)

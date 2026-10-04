@@ -108,7 +108,7 @@ class TestReadPathNulRejection:
 
     @pytest.mark.asyncio
     async def test_delete_context_thread_id_rejected(self) -> None:
-        """delete_context rejects a NUL thread_id before it reaches delete_by_thread's bind."""
+        """delete_context rejects a NUL thread_id before it reaches the thread snapshot's bind."""
         from app.tools.context.delete import delete_context
 
         with pytest.raises(ToolError):

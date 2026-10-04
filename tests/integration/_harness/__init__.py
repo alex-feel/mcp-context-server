@@ -17,6 +17,7 @@ directly; the per-backend entry-point modules import it.
 """
 
 from tests.integration._harness.access_control import AccessControlMixin
+from tests.integration._harness.access_scoping import AccessScopingMixin
 from tests.integration._harness.backend_runtime import BackendRuntimeMixin
 from tests.integration._harness.batch import BatchMixin
 from tests.integration._harness.batch_atomicity import BatchAtomicityMixin
@@ -60,6 +61,7 @@ class MCPServerIntegrationTest(
     MetadataPatchMixin,
     DeleteMixin,
     AccessControlMixin,
+    AccessScopingMixin,
     TagsImagesMixin,
     BatchMixin,
     BatchAtomicityMixin,
@@ -316,6 +318,9 @@ class MCPServerIntegrationTest(
             ('Image Metadata Empty String Preserved', self.test_image_metadata_empty_string_preserved),
             ('Literal Markup Survives Ranked Search', self.test_literal_markup_survives_ranked_search),
             ('FTS Deeply Nested Boolean Query Degrades', self.test_fts_deeply_nested_boolean_query_degrades),
+            # A second principal served from the same database reaches only the entries
+            # the access model lets it read, and changes only those it may modify.
+            ('Access Scoping Second Principal', self.test_access_scoping_second_principal),
         ]
 
         print('\nRunning tests...\n')

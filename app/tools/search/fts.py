@@ -11,6 +11,7 @@ from typing import Literal
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.auth import resolve_access_scope
 from app.errors import format_exception_message
 from app.migrations import get_fts_migration_status
 from app.settings import get_settings
@@ -116,8 +117,15 @@ async def fts_search_context(
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
       at most 100 filters per request, in/not_in value lists accept at most 100 members
 
+    Only entries the caller may read are matched, returned and counted.
+
     The `scores` object contains:
-    - fts_score: BM25/ts_rank relevance (HIGHER = better match)
+    - fts_score: BM25/ts_rank relevance (HIGHER = better match). On SQLite the BM25
+      score draws on statistics of the whole FTS5 index, entries the caller cannot
+      read included, so the scores of readable entries and their relative order can
+      shift as other principals' entries change, while the set of matching entries
+      and the number of results per page depend only on what the caller can read.
+      PostgreSQL's ts_rank_cd scores each entry on its own.
     - fts_rank: Always null for standalone FTS search
     - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
@@ -229,6 +237,9 @@ async def fts_search_context(
             )
 
         repos = await ensure_repositories()
+        # The search runs as the caller: entries it may not read never take a rank
+        # position, a page slot or a count.
+        scope = resolve_access_scope()
 
         try:
             # Call raw search (Layer 1) for the full ranked depth
@@ -249,6 +260,7 @@ async def fts_search_context(
                 internal_highlight_for_rerank=need_highlight_for_rerank,
                 explain_query=explain_query,
                 repos=repos,
+                scope=scope,
             )
         except FtsValidationError as e:
             # Return error response (unified with search_context behavior)

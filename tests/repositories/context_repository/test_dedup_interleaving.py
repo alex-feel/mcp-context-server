@@ -8,6 +8,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.repositories import RepositoryContainer
+from tests.helpers import LOCAL_SCOPE
 
 
 @pytest_asyncio.fixture
@@ -32,21 +33,21 @@ class TestDeduplicationInterleaving:
         """Dedup is suppressed when an opposite-source entry exists after the candidate."""
         # User says "Proceed"
         id_a, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Proceed', metadata=None,
         )
         # Agent responds
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content='Working on it', metadata=None,
         )
         # User says "Proceed" again (new conversational turn)
         id_c, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Proceed', metadata=None,
@@ -55,7 +56,7 @@ class TestDeduplicationInterleaving:
         assert id_c > id_a, 'New entry should have a higher id'
         assert was_updated is False, 'Should be an insertion, not an update'
         # Verify original entry still exists unchanged
-        entries = await repos.context.get_by_ids([id_a])
+        entries = await repos.context.get_by_ids([id_a], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == 'Proceed'
 
@@ -65,13 +66,13 @@ class TestDeduplicationInterleaving:
     ) -> None:
         """Dedup proceeds normally for genuine rapid duplicates (retry protection)."""
         id_a, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Hello', metadata=None,
         )
         id_b, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Hello', metadata=None,
@@ -85,21 +86,21 @@ class TestDeduplicationInterleaving:
     ) -> None:
         """Interleaving check works for agent source with user interleaving."""
         id_a, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content='status update', metadata=None,
         )
         # User interleaves
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='acknowledged', metadata=None,
         )
         # Agent sends identical text again
         id_c, was_updated = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content='status update', metadata=None,
@@ -113,19 +114,19 @@ class TestDeduplicationInterleaving:
     ) -> None:
         """Pre-check method returns None when interleaving is detected."""
         id_a, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Proceed', metadata=None,
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='agent', content_type='text',
             text_content='Done', metadata=None,
         )
         result = await repos.context.check_latest_is_duplicate(
-            thread_id='t1', source='user', text_content='Proceed',
+            thread_id='t1', source='user', text_content='Proceed', scope=LOCAL_SCOPE,
         )
         assert result is None, (
             f'Expected None (interleaving suppresses dedup), got {result}'
@@ -137,20 +138,20 @@ class TestDeduplicationInterleaving:
     ) -> None:
         """Dedup works normally in a single-source thread (no opposite-source entries)."""
         id_a, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Only users here', metadata=None,
         )
         await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Different message', metadata=None,
         )
         # Store duplicate of first when latest is different -- should insert (not latest)
         id_c, was_updated_c = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t1', source='user', content_type='text',
             text_content='Different message', metadata=None,
@@ -168,7 +169,7 @@ class TestDeduplicationInterleaving:
         texts = ['Go', 'Done', 'Go', 'Done again', 'Go']
         for source, text in zip(sources, texts, strict=True):
             ctx_id, _ = await repos.context.store_with_deduplication(
-                owner_id='local',
+                scope=LOCAL_SCOPE,
                 visibility='private',
                 thread_id='t1', source=source, content_type='text',
                 text_content=text, metadata=None,
@@ -180,5 +181,5 @@ class TestDeduplicationInterleaving:
         for i in range(1, len(ids)):
             assert ids[i] > ids[i - 1], f'ids not monotonically increasing: {ids}'
         # Verify all entries exist
-        entries, _ = await repos.context.search_contexts(thread_id='t1', limit=1000)
+        entries, _ = await repos.context.search_contexts(thread_id='t1', limit=1000, scope=LOCAL_SCOPE)
         assert len(entries) == 5

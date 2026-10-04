@@ -1,14 +1,20 @@
 """Tests for execute_update_in_transaction in app.tools._transactions."""
 
+from typing import Any
 from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 import pytest
+from fastmcp.exceptions import ToolError
 
+from app.access_scope import AccessScope
+from app.errors import ControlFlowError
 from app.repositories.embedding_repository.records import ChunkEmbedding
+from app.tools._transactions import EntryNotAuthorizedError
 from app.tools._transactions import EntryNotFoundError
 from app.tools._transactions import execute_update_in_transaction
+from tests.helpers import LOCAL_SCOPE
 
 
 class TestExecuteUpdateInTransaction:
@@ -47,6 +53,7 @@ class TestExecuteUpdateInTransaction:
         updated_fields, summary_cleared = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
+            scope=LOCAL_SCOPE,
             text='New text',
             metadata=None,
             metadata_patch=None,
@@ -70,6 +77,7 @@ class TestExecuteUpdateInTransaction:
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
+            scope=LOCAL_SCOPE,
             text=None,
             metadata=None,
             metadata_patch={'key': 'value'},
@@ -92,6 +100,7 @@ class TestExecuteUpdateInTransaction:
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
+            scope=LOCAL_SCOPE,
             text=None,
             metadata=None,
             metadata_patch=None,
@@ -114,6 +123,7 @@ class TestExecuteUpdateInTransaction:
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
+            scope=LOCAL_SCOPE,
             text=None,
             metadata=None,
             metadata_patch=None,
@@ -131,7 +141,7 @@ class TestExecuteUpdateInTransaction:
             '0190abcdef1234567890abcd00000001', [], txn=mock_txn,
         )
         mock_repos.context.update_content_type.assert_called_once_with(
-            '0190abcdef1234567890abcd00000001', 'text', txn=mock_txn,
+            '0190abcdef1234567890abcd00000001', 'text', scope=LOCAL_SCOPE, txn=mock_txn,
         )
 
     @pytest.mark.asyncio
@@ -143,6 +153,7 @@ class TestExecuteUpdateInTransaction:
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
+            scope=LOCAL_SCOPE,
             text='New text',
             metadata=None,
             metadata_patch=None,
@@ -179,6 +190,7 @@ class TestExecuteUpdateInTransaction:
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
+            scope=LOCAL_SCOPE,
             text='Replaced text',
             metadata=None,
             metadata_patch=None,
@@ -212,6 +224,7 @@ class TestExecuteUpdateInTransaction:
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
+            scope=LOCAL_SCOPE,
             text='Replaced text',
             metadata=None,
             metadata_patch=None,
@@ -237,6 +250,7 @@ class TestExecuteUpdateInTransaction:
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
                 context_id='0190abcdef1234567890abcd00000001',
+                scope=LOCAL_SCOPE,
                 text='New text',
                 metadata=None,
                 metadata_patch=None,
@@ -259,6 +273,7 @@ class TestExecuteUpdateInTransaction:
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
                 context_id='0190abcdef1234567890abcd00000001',
+                scope=LOCAL_SCOPE,
                 text=None,
                 metadata=None,
                 metadata_patch={'key': 'value'},
@@ -286,6 +301,7 @@ class TestExecuteUpdateInTransaction:
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
                 context_id='0190abcdef1234567890abcd00000001',
+                scope=LOCAL_SCOPE,
                 text=None,
                 metadata=None,
                 metadata_patch=None,
@@ -313,6 +329,7 @@ class TestExecuteUpdateInTransaction:
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
                 context_id='0190abcdef1234567890abcd00000001',
+                scope=LOCAL_SCOPE,
                 text=None,
                 metadata=None,
                 metadata_patch=None,
@@ -334,6 +351,7 @@ class TestExecuteUpdateInTransaction:
         _, summary_cleared = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
+            scope=LOCAL_SCOPE,
             text='Short',
             metadata=None,
             metadata_patch=None,
@@ -346,3 +364,89 @@ class TestExecuteUpdateInTransaction:
             embedding_model='m',
         )
         assert summary_cleared is True
+
+    @pytest.mark.asyncio
+    async def test_every_gate_receives_the_scope(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """Each statement on the entry row runs as the caller, so each re-asserts its access."""
+        bob = AccessScope('bob', frozenset({'team-x'}))
+        context_id = '0190abcdef1234567890abcd00000001'
+        common: dict[str, Any] = {
+            'context_id': context_id, 'scope': bob, 'summary': None, 'clear_summary': False,
+            'chunk_embeddings': None, 'embedding_model': 'm',
+        }
+
+        await execute_update_in_transaction(
+            mock_repos, mock_txn, text='New text', metadata=None, metadata_patch={'k': 'v'}, visibility='public',
+            tags=None, images=None, validated_images=[], **common,
+        )
+        await execute_update_in_transaction(
+            mock_repos, mock_txn, text=None, metadata=None, metadata_patch=None,
+            tags=['tag'], images=None, validated_images=[], **common,
+        )
+        await execute_update_in_transaction(
+            mock_repos, mock_txn, text=None, metadata=None, metadata_patch=None,
+            tags=None, images=[], validated_images=[], **common,
+        )
+
+        assert mock_repos.context.update_context_entry.await_args.kwargs['scope'] is bob
+        mock_repos.context.patch_metadata.assert_awaited_once_with(
+            context_id=context_id, patch={'k': 'v'}, scope=bob, txn=mock_txn,
+        )
+        mock_repos.context.entry_exists.assert_awaited_with(context_id, scope=bob, txn=mock_txn)
+        mock_repos.context.get_content_type.assert_awaited_with(context_id, scope=bob, txn=mock_txn)
+        mock_repos.context.touch_updated_at.assert_awaited_once_with(context_id, scope=bob, txn=mock_txn)
+        mock_repos.context.update_content_type.assert_awaited_once_with(context_id, 'text', scope=bob, txn=mock_txn)
+
+    @pytest.mark.asyncio
+    async def test_unreadable_content_type_raises_not_found_without_writing(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """No content type for the caller means the row is gone or no longer writable: nothing is written.
+
+        Comparing None with the recomputed type would report a difference and issue a
+        content-type write, so the missing type ends the update as not found instead.
+        """
+        mock_repos.context.get_content_type = AsyncMock(return_value=None)
+        with pytest.raises(EntryNotFoundError, match='not found'):
+            await execute_update_in_transaction(
+                mock_repos, mock_txn,
+                context_id='0190abcdef1234567890abcd00000001',
+                scope=LOCAL_SCOPE,
+                text=None,
+                metadata=None,
+                metadata_patch=None,
+                summary=None,
+                clear_summary=False,
+                tags=['new-tag'],
+                images=None,
+                validated_images=[],
+                chunk_embeddings=None,
+                embedding_model='m',
+            )
+        mock_repos.context.update_content_type.assert_not_called()
+        mock_repos.context.touch_updated_at.assert_not_called()
+
+
+class TestEntryNotAuthorizedError:
+    """The denial for a readable entry the caller may not modify or delete."""
+
+    def test_modify_message_names_the_entry(self) -> None:
+        """A modify denial reads exactly like the update tool reports it."""
+        error = EntryNotAuthorizedError(['0190abcdef1234567890abcd00000001'], action='modify')
+        assert str(error) == 'Not authorized to modify context entry with ID 0190abcdef1234567890abcd00000001'
+        assert error.context_ids == ('0190abcdef1234567890abcd00000001',)
+        assert error.action == 'modify'
+
+    def test_delete_message_lists_the_entries_in_input_order(self) -> None:
+        """A delete denial lists every refused entry in the order the caller named them."""
+        error = EntryNotAuthorizedError(['b' * 32, 'a' * 32], action='delete')
+        assert str(error) == f'Not authorized to delete context entries: {"b" * 32}, {"a" * 32}'
+        assert error.context_ids == ('b' * 32, 'a' * 32)
+
+    def test_is_breaker_exempt_control_flow(self) -> None:
+        """A denial is client-input control flow, never a backend fault or a ToolError."""
+        error = EntryNotAuthorizedError(['0190abcdef1234567890abcd00000001'], action='modify')
+        assert isinstance(error, ControlFlowError)
+        assert not isinstance(error, ToolError)

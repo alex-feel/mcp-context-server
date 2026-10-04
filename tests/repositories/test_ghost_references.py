@@ -17,6 +17,7 @@ import pytest_asyncio
 from app.backends import create_backend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from tests.helpers import LOCAL_SCOPE
 
 GHOST_TEXT = (
     'See entries 8944 and 9044, plus 14226 in the broader context. '
@@ -51,12 +52,12 @@ class TestGhostReferencesNotRewritten:
     ) -> None:
         """``store_with_deduplication`` does not rewrite any substring in text_content."""
         context_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content=GHOST_TEXT, metadata=None,
         )
-        entries = await repos.context.get_by_ids([context_id])
+        entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['text_content'] == GHOST_TEXT
 
@@ -67,7 +68,7 @@ class TestGhostReferencesNotRewritten:
     ) -> None:
         """``update_context_entry`` writes text_content verbatim without rewriting."""
         original_id, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='Old content', metadata=None,
@@ -76,10 +77,10 @@ class TestGhostReferencesNotRewritten:
             success, _ = await repos.context.update_context_entry(
                 context_id=original_id,
                 text_content=GHOST_TEXT,
-                txn=txn,
+                txn=txn, scope=LOCAL_SCOPE,
             )
         assert success
-        entries = await repos.context.get_by_ids([original_id])
+        entries = await repos.context.get_by_ids([original_id], scope=LOCAL_SCOPE)
         assert entries[0]['text_content'] == GHOST_TEXT
 
     @pytest.mark.asyncio
@@ -100,6 +101,6 @@ class TestGhostReferencesNotRewritten:
 
         await repos.context.backend.execute_write(_insert)
 
-        entries = await repos.context.get_by_ids([new_id])
+        entries = await repos.context.get_by_ids([new_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
         assert entries[0]['summary'] == GHOST_TEXT

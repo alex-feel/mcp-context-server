@@ -11,6 +11,7 @@ from fastmcp.exceptions import ToolError
 
 import app.tools
 from app.repositories.context_repository.records import EntryProbe
+from app.repositories.context_repository.records import IdAccess
 from tests.tools._tool_error_mocks import build_mock_repos
 from tests.tools._tool_error_mocks import patch_tool_repositories
 
@@ -194,7 +195,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_context_not_found(self, mock_server_dependencies):
         """Test that updating non-existent context raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(False, None, None, None)
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(False, None, None, None, False)
 
         with pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd000003e7 not found'):
             await update_context(
@@ -205,7 +206,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_update_failure(self, mock_server_dependencies):
         """A no-such-row update (repository reports no matching row) surfaces a clean not-found error."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
         mock_server_dependencies.context.update_context_entry.return_value = (False, [])
 
         with pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd00000001 not found'):
@@ -217,7 +218,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_invalid_image_format(self, mock_server_dependencies):
         """Test that invalid image data raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
@@ -228,7 +229,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_invalid_base64_in_update(self, mock_server_dependencies):
         """Test that invalid base64 in update raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local')
+        mock_server_dependencies.context.check_entry_exists.return_value = EntryProbe(True, 'agent', 0, 'local', True)
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
@@ -250,16 +251,18 @@ class TestDeleteContextErrors:
     @pytest.mark.asyncio
     async def test_database_deletion_error(self, mock_server_dependencies):
         """Test that database deletion error raises ToolError."""
+        context_ids = [
+            '0190abcdef1234567890abcd00000001',
+            '0190abcdef1234567890abcd00000002',
+            '0190abcdef1234567890abcd00000003',
+        ]
+        mock_server_dependencies.context.probe_ids.return_value = dict.fromkeys(
+            context_ids, IdAccess(can_write=True, is_owner=True),
+        )
         mock_server_dependencies.context.delete_by_ids.side_effect = Exception('Deletion failed')
 
         with pytest.raises(ToolError, match='Failed to delete context: Deletion failed'):
-            await delete_context(
-                context_ids=[
-                    '0190abcdef1234567890abcd00000001',
-                    '0190abcdef1234567890abcd00000002',
-                    '0190abcdef1234567890abcd00000003',
-                ],
-            )
+            await delete_context(context_ids=context_ids)
 
 
 class TestSearchContextErrors:

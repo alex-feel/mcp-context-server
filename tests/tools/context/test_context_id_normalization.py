@@ -6,6 +6,8 @@ from unittest.mock import patch
 import pytest
 
 import app.tools
+from app.repositories.context_repository.records import IdAccess
+from tests.helpers import LOCAL_SCOPE
 
 # Tools are plain async functions registered at server startup, so tests call them directly.
 get_context_by_ids = app.tools.get_context_by_ids
@@ -31,11 +33,17 @@ class TestContextIdNormalization:
                 include_images=False,
             )
 
-            mock_repositories.context.get_by_ids.assert_awaited_once_with(['0190abcdef1234567890abcd00000d05'])
+            mock_repositories.context.get_by_ids.assert_awaited_once_with(
+                ['0190abcdef1234567890abcd00000d05'], scope=LOCAL_SCOPE,
+            )
 
     @pytest.mark.asyncio
     async def test_delete_context_normalizes_ids_before_delete(self, mock_repositories):
         """Whitespace and uppercase in context_ids are folded before the repository delete."""
+        normalized = '0190abcdef1234567890abcd00000d05'
+        mock_repositories.context.probe_ids = AsyncMock(
+            return_value={normalized: IdAccess(can_write=True, is_owner=True)},
+        )
         mock_repositories.context.delete_by_ids = AsyncMock(return_value=1)
 
         with patch('app.tools.context.delete.ensure_repositories', return_value=mock_repositories):
@@ -44,5 +52,6 @@ class TestContextIdNormalization:
                 thread_id=None,
             )
 
+            assert mock_repositories.context.probe_ids.await_args.args[0] == [normalized]
             mock_repositories.context.delete_by_ids.assert_awaited_once()
-            assert mock_repositories.context.delete_by_ids.await_args.args[0] == ['0190abcdef1234567890abcd00000d05']
+            assert mock_repositories.context.delete_by_ids.await_args.args[0] == [normalized]

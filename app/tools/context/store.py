@@ -80,12 +80,12 @@ async def store_context(
         ),
     ] = None,
     visibility: Annotated[
-        Literal['private', 'shared', 'public'] | None,
+        Literal['private', 'public'] | None,
         Field(
-            description='Access visibility for a newly stored entry: private (owner only), '
-            'shared (owner + explicit grants), public (any principal). Omitted uses the '
-            "server's configured default. Publishing as public may require a configured "
-            'role. Ignored when deduplication updates an existing entry.',
+            description='Access visibility for a newly stored entry: private (owner plus every '
+            "grantee), public (everyone). Omitted uses the server's configured default. "
+            'Publishing as public may require a configured role. Ignored when deduplication '
+            'updates an existing entry.',
         ),
     ] = None,
 ) -> StoreContextSuccessDict:
@@ -93,17 +93,21 @@ async def store_context(
 
     All agents working on the same task should use the same thread_id to share context.
 
-    Deduplication: if an entry with identical thread_id, source, and text already exists,
-    the existing entry is updated instead of creating a duplicate:
+    Deduplication: the candidate is the latest entry of the same thread_id and source
+    among the entries the caller may read. When the caller owns that entry and its text
+    is identical, the existing entry is updated instead of creating a duplicate:
     - metadata: New values override existing; omitting metadata preserves current values
     - tags: REPLACED with new list if provided; preserved if tags=None
     - images: REPLACED with new list if provided; preserved if images=None
     - visibility/ownership: NEVER changed by a deduplication update (a retransmit
       must not re-own or re-publish the existing row)
+    An identical candidate owned by another principal is never merged into: the store
+    inserts a new entry owned by the caller.
 
     Deduplication is suppressed when opposite-source entries (e.g., agent entries
-    for a user store) exist after the candidate duplicate. This preserves
-    chronological ordering for repeated identical messages in conversations.
+    for a user store) that the caller may read exist after the candidate duplicate.
+    This preserves chronological ordering for repeated identical messages in
+    conversations.
 
     Notes:
         - Tags are normalized to lowercase
@@ -135,11 +139,13 @@ async def store_context(
         if not text:
             raise ToolError('text cannot be empty or whitespace')
 
-        # Resolve the effective principal (verified token, or the configured
-        # default principal) and the visibility to stamp, then enforce the
+        # Resolve the effective principal (the verified jwt principal, or the
+        # configured default principal), the scope deduplication reads, merges
+        # and stamps under, and the visibility to stamp, then enforce the
         # publish gate on the EFFECTIVE value: a caller-omitted visibility that
         # defaults to 'public' is still a publish and still needs the role.
         principal = resolve_effective_principal()
+        scope = principal.access_scope()
         effective_visibility: str = (
             visibility if visibility is not None else settings.access_control.default_visibility
         )
@@ -212,6 +218,7 @@ async def store_context(
                 thread_id=thread_id,
                 source=source,
                 text_content=text,
+                scope=scope,
             )
             if duplicate_candidate is not None:
                 likely_duplicate_id = duplicate_candidate.context_id
@@ -291,7 +298,7 @@ async def store_context(
                         source=source,
                         content_type=content_type,
                         text_content=text,
-                        owner_id=principal.principal_id,
+                        scope=scope,
                         visibility=effective_visibility,
                         author_group_grants=author_group_grants,
                         metadata_str=metadata_str,

@@ -10,6 +10,7 @@ the compression provenance cache in ``compression_cache``.
 from typing import Any
 from typing import Literal
 
+from app.access_scope import Scope
 from app.repositories.embedding_repository.chunk_writes import ChunkWriteMixin
 from app.repositories.embedding_repository.compressed_search import CompressedSearchMixin
 from app.repositories.embedding_repository.fp32_search import Fp32SearchMixin
@@ -47,8 +48,10 @@ class EmbeddingRepository(
         metadata: dict[str, str | int | float | bool] | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
         explain_query: bool = False,
+        *,
+        scope: Scope,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """KNN search with optional filters including date range and metadata.
+        """KNN search over the entries the scope may read, with optional filters including date range and metadata.
 
         SQLite: Uses CTE-based pre-filtering with vec_distance_l2() function
         PostgreSQL: Uses direct JOIN with <-> operator for L2 distance
@@ -66,6 +69,8 @@ class EmbeddingRepository(
             metadata: Simple metadata filters (key=value equality)
             metadata_filters: Advanced metadata filters with operators
             explain_query: If True, include query execution plan in stats
+            scope: The caller's scope, forwarded to the fp32 or the compressed search;
+                only entries it may read are ranked.
 
         Returns:
             Tuple of (search results list, statistics dictionary)
@@ -89,6 +94,7 @@ class EmbeddingRepository(
                 metadata=metadata,
                 metadata_filters=metadata_filters,
                 explain_query=explain_query,
+                scope=scope,
             )
 
         return await self.search_fp32(
@@ -104,4 +110,5 @@ class EmbeddingRepository(
             metadata=metadata,
             metadata_filters=metadata_filters,
             explain_query=explain_query,
+            scope=scope,
         )

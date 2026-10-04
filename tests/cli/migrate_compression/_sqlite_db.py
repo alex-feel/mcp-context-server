@@ -17,6 +17,7 @@ import pytest
 from app.backends import create_backend
 from app.repositories import RepositoryContainer
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 
 
 def bootstrap_schema(path: Path) -> None:
@@ -136,7 +137,7 @@ def seed_fp32_database(
                 vec = rng.standard_normal(DIM).astype(np.float32)
                 vec /= np.linalg.norm(vec)
                 cid, _ = await repos.context.store_with_deduplication(
-                    owner_id='local',
+                    scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='stream-e2e',
                     source='user',

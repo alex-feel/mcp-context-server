@@ -29,6 +29,7 @@ from app.backends import create_backend
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.fts_repository import FtsRepository
+from tests.helpers import LOCAL_SCOPE
 from tests.helpers import store_single_chunk_embedding
 
 requires_sqlite_vec = pytest.mark.skipif(
@@ -91,7 +92,7 @@ class TestFtsTiedScoreOrdering:
         self, fts_tied_repos: RepositoryContainer,
     ) -> None:
         """All three documents score identically, so the id decides -- newest id first."""
-        results, _stats = await fts_tied_repos.fts.search(query='zulu', mode='match', limit=10)
+        results, _stats = await fts_tied_repos.fts.search(query='zulu', mode='match', limit=10, scope=LOCAL_SCOPE)
 
         scores = [row['score'] for row in results]
         assert len(set(scores)) == 1, 'seeded documents must tie for this test to mean anything'
@@ -102,12 +103,12 @@ class TestFtsTiedScoreOrdering:
         self, fts_tied_repos: RepositoryContainer,
     ) -> None:
         """Paging one tied document at a time yields the full set exactly once."""
-        unpaginated, _ = await fts_tied_repos.fts.search(query='zulu', mode='match', limit=10)
+        unpaginated, _ = await fts_tied_repos.fts.search(query='zulu', mode='match', limit=10, scope=LOCAL_SCOPE)
         expected = [row['id'] for row in unpaginated]
 
         paged: list[str] = []
         for offset in range(len(expected)):
-            page, _ = await fts_tied_repos.fts.search(query='zulu', mode='match', limit=1, offset=offset)
+            page, _ = await fts_tied_repos.fts.search(query='zulu', mode='match', limit=1, offset=offset, scope=LOCAL_SCOPE)
             assert len(page) == 1
             paged.append(page[0]['id'])
 
@@ -160,6 +161,7 @@ class TestSemanticTiedDistanceOrdering:
         results, _stats = await embedding_repo.search(
             query_embedding=[0.25] * embedding_dim,
             limit=10,
+            scope=LOCAL_SCOPE,
         )
 
         distances = [row['distance'] for row in results]
@@ -173,7 +175,7 @@ class TestSemanticTiedDistanceOrdering:
         """Paging one tied result at a time yields the full set exactly once."""
         embedding_repo = await self._seed_identical_embeddings(async_db_with_embeddings, embedding_dim)
 
-        unpaginated, _ = await embedding_repo.search(query_embedding=[0.25] * embedding_dim, limit=10)
+        unpaginated, _ = await embedding_repo.search(query_embedding=[0.25] * embedding_dim, limit=10, scope=LOCAL_SCOPE)
         expected = [row['id'] for row in unpaginated]
 
         paged: list[str] = []
@@ -182,6 +184,7 @@ class TestSemanticTiedDistanceOrdering:
                 query_embedding=[0.25] * embedding_dim,
                 limit=1,
                 offset=offset,
+                scope=LOCAL_SCOPE,
             )
             assert len(page) == 1
             paged.append(page[0]['id'])

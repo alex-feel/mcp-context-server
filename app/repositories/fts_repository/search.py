@@ -7,6 +7,9 @@ from typing import Any
 from typing import Literal
 from typing import cast
 
+from app.access_scope import AccessMode
+from app.access_scope import Scope
+from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
 from app.repositories.entry_filters import count_applied_filters
 from app.repositories.fts_repository.faults import FTS_UNPARSEABLE_QUERY_DETAIL
@@ -30,10 +33,14 @@ class FtsSearchMixin(BaseRepository):
     """Full-text search over context entries on SQLite FTS5 and PostgreSQL tsvector.
 
     ``search`` validates the query and filters, then runs the backend-specific
-    statement: FTS5 ``MATCH`` ranked by BM25 on SQLite, or a tsquery ranked by
-    ``ts_rank_cd`` on PostgreSQL. Each branch classifies execution failures into
-    client-query errors and genuine database faults, so a malformed query never
-    counts against the circuit breaker.
+    statement over the entries the caller may read: FTS5 ``MATCH`` ranked by BM25
+    on SQLite, or a tsquery ranked by ``ts_rank_cd`` on PostgreSQL. The read
+    predicate sits before the LIMIT and OFFSET on both, so an unreadable entry
+    never takes a rank position. BM25 draws on statistics of the whole FTS5 index,
+    so on SQLite the scores of readable entries also reflect entries the caller
+    cannot read, while ``ts_rank_cd`` scores each document on its own. Each branch
+    classifies execution failures into client-query errors and genuine database
+    faults, so a malformed query never counts against the circuit breaker.
     """
 
     async def search(
@@ -53,8 +60,10 @@ class FtsSearchMixin(BaseRepository):
         highlight: bool = False,
         language: str = 'english',
         explain_query: bool = False,
+        *,
+        scope: Scope,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Execute full-text search with optional filters.
+        """Execute full-text search over the entries the scope may read, with optional filters.
 
         SQLite: Uses FTS5 MATCH with BM25 scoring
         PostgreSQL: Uses tsvector with ts_rank_cd scoring
@@ -79,6 +88,8 @@ class FtsSearchMixin(BaseRepository):
                 stemming, so "running" matches "run"); any other value uses plain
                 'unicode61' (multilingual tokenization, no stemming).
             explain_query: If True, include query execution plan in stats
+            scope: The caller's scope, forwarded to the backend's executor; only
+                entries it may read match.
 
         Returns:
             Tuple of (search results list, statistics dictionary)
@@ -131,6 +142,7 @@ class FtsSearchMixin(BaseRepository):
                 highlight=highlight,
                 language=language,
                 explain_query=explain_query,
+                scope=scope,
             )
         # postgresql
         return await self._search_postgresql(
@@ -149,6 +161,7 @@ class FtsSearchMixin(BaseRepository):
             highlight=highlight,
             language=language,
             explain_query=explain_query,
+            scope=scope,
         )
 
     async def _search_sqlite(
@@ -168,8 +181,18 @@ class FtsSearchMixin(BaseRepository):
         highlight: bool,
         language: str = 'english',
         explain_query: bool = False,
+        *,
+        scope: Scope,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """SQLite FTS5 search implementation."""
+        """SQLite FTS5 search over the entries the scope may read.
+
+        The read predicate follows every client filter in the WHERE clause, ahead of
+        the MATCH expression, LIMIT and OFFSET, and the boolean-mode retry reuses the
+        same filter parameters, so it runs under the same scope.
+
+        Returns:
+            Tuple of (search results list, statistics dictionary).
+        """
         import time as time_module
 
         # Track metadata filter count for stats
@@ -285,6 +308,13 @@ class FtsSearchMixin(BaseRepository):
                 # Track metadata filter count for stats
                 metadata_filter_count = metadata_builder.get_filter_count()
 
+            # The caller's read predicate follows every client filter, so it shifts no
+            # filter placeholder and is never counted as a filter.
+            read = build_access_predicate(scope, mode=AccessMode.READ, backend_type='sqlite', outer='ce')
+            if read.sql:
+                filter_conditions.append(read.sql)
+                filter_params.extend(read.params)
+
             # An empty transformed query means every token sanitized away (operator/stopword
             # barewords). FTS5 `MATCH ''` is a syntax error and a literal-phrase fallback would
             # over-match (FTS5 keeps stopwords as tokens), so short-circuit to an empty result
@@ -362,7 +392,7 @@ class FtsSearchMixin(BaseRepository):
                 LIMIT ? OFFSET ?
             '''
 
-            # Combine params: filter_params + fts_query + limit + offset
+            # Combine params: filter_params (the read predicate's binds last), then fts_query, limit, offset
             params = [*filter_params, fts_query, limit, offset]
 
             try:
@@ -493,8 +523,18 @@ class FtsSearchMixin(BaseRepository):
         highlight: bool,
         language: str,
         explain_query: bool = False,
+        *,
+        scope: Scope,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """PostgreSQL tsvector search implementation."""
+        """PostgreSQL tsvector search over the entries the scope may read.
+
+        The read predicate follows every client filter inside the LIMITed inner
+        subquery, so the tsquery, LIMIT and OFFSET placeholders are numbered after
+        its binds and the outer re-sort only orders rows the scope may read.
+
+        Returns:
+            Tuple of (search results list, statistics dictionary).
+        """
         import time as time_module
 
         # Track metadata filter count for stats
@@ -619,6 +659,16 @@ class FtsSearchMixin(BaseRepository):
 
                 # Track metadata filter count for stats
                 metadata_filter_count = metadata_builder.get_filter_count()
+
+            # The caller's read predicate follows every client filter, so it shifts no
+            # filter placeholder and is never counted as a filter.
+            read = build_access_predicate(
+                scope, mode=AccessMode.READ, backend_type='postgresql', outer='ce', start=param_position,
+            )
+            if read.sql:
+                filter_conditions.append(read.sql)
+                filter_params.extend(read.params)
+                param_position += read.bind_count
 
             where_clause = ' AND '.join(filter_conditions)
 

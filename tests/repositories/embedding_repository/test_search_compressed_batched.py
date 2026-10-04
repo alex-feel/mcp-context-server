@@ -30,6 +30,7 @@ from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.settings import get_settings
+from tests.helpers import LOCAL_SCOPE
 
 DIM = 256
 SEED = 42
@@ -156,7 +157,7 @@ async def _seed_random_corpus(
         v = rng.standard_normal(DIM).astype(np.float32)
         v /= np.linalg.norm(v)
         cid, _ = await repos.context.store_with_deduplication(
-            owner_id='local',
+            scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t-batched',
             source='user',
@@ -215,6 +216,7 @@ async def test_search_compressed_invokes_provider_once_for_ip(
 
     results, stats = await repo.search_compressed(
         query_embedding=query.tolist(), limit=10,
+        scope=LOCAL_SCOPE,
     )
     assert ip_call_count == 1, (
         f'estimate_inner_product_sync was invoked {ip_call_count} times; '
@@ -251,6 +253,7 @@ async def test_search_compressed_invokes_provider_once_for_mse(
 
     results, stats = await repo.search_compressed(
         query_embedding=query.tolist(), limit=10,
+        scope=LOCAL_SCOPE,
     )
     assert decode_call_count == 1, (
         f'decode_sync was invoked {decode_call_count} times; the batched '
@@ -279,7 +282,7 @@ async def test_search_compressed_reads_all_candidates_across_batches(
     repo = EmbeddingRepository(backend)
     cids, query = await _seed_random_corpus(repos, repo, n=5, variant='ip', bits=4)
 
-    results, stats = await repo.search_compressed(query_embedding=query.tolist(), limit=10)
+    results, stats = await repo.search_compressed(query_embedding=query.tolist(), limit=10, scope=LOCAL_SCOPE)
 
     # Batch size 2 forces three IN-clause batches over the five candidate ids;
     # every compressed row must still be read and scored.
@@ -305,6 +308,7 @@ async def test_search_compressed_results_unchanged_after_batching(
 
     results, stats = await repo.search_compressed(
         query_embedding=query.tolist(), limit=100,
+        scope=LOCAL_SCOPE,
     )
     assert stats['rows_returned'] == len(cids)
 
@@ -385,4 +389,5 @@ async def test_search_compressed_storage_corruption_detection(
     with pytest.raises(RuntimeError, match='storage corruption'):
         await repo.search_compressed(
             query_embedding=query.tolist(), limit=10,
+            scope=LOCAL_SCOPE,
         )
