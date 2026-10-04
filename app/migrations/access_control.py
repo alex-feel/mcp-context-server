@@ -6,7 +6,9 @@ access-control lookup indexes, so a database created BEFORE these existed in
 the base schema gains them on an in-place upgrade. Mirrors the version-column
 migration: auto-applied, unconditional, and idempotent. Fresh databases (and
 migration-CLI targets, which build tables from the base schema) already carry
-everything, so this migration is a no-op there.
+the columns and the grants table; the ``context_entries`` access indexes are
+absent from the base schema, so on every database they come from this
+migration, together with the SQLite-only covering indexes.
 
 The ``visibility`` column accepts exactly two values: 'private' (readable by the
 owner and every grantee in ``context_entry_grants``) and 'public' (readable by
@@ -86,6 +88,26 @@ _INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_context_public ON context_entries(visibility) WHERE visibility = 'public'",
 )
 
+# SQLite-only covering indexes for statements carrying the READ predicate. Its
+# correlated EXISTS arm stops SQLite from answering the OR through separate index
+# lookups, so a scoped statement without an indexable client filter visits every
+# context_entries row; owner_id and visibility follow text_content in the row, so
+# reading them from the table walks each row's text overflow pages. Each index
+# holds every column such a statement reads -- the thread-led one, which also
+# carries content_type, for the thread and content-type aggregates and thread
+# filters; the source-led one for the source aggregate and source filters; the
+# id-led one for the counts and candidate scans -- so the scan reads index pages
+# only. PostgreSQL keeps large text out of line, so its row reads do not pay that
+# cost and it gets none of these.
+_SQLITE_COVERING_INDEX_STATEMENTS = (
+    (
+        'CREATE INDEX IF NOT EXISTS idx_context_access_thread '
+        'ON context_entries(thread_id, source, owner_id, visibility, id, content_type)'
+    ),
+    'CREATE INDEX IF NOT EXISTS idx_context_access_source ON context_entries(source, owner_id, visibility, id)',
+    'CREATE INDEX IF NOT EXISTS idx_context_access_id ON context_entries(id, owner_id, visibility)',
+)
+
 
 def _validated_default_principal() -> str:
     """Return the configured default principal, re-checked for DDL safety.
@@ -163,7 +185,7 @@ async def _apply_sqlite(backend: StorageBackend, default_principal: str) -> None
             )
             logger.info('Added visibility column to context_entries (SQLite)')
         conn.execute(_CREATE_GRANTS_TABLE_SQLITE)
-        for statement in _INDEX_STATEMENTS:
+        for statement in (*_INDEX_STATEMENTS, *_SQLITE_COVERING_INDEX_STATEMENTS):
             conn.execute(statement)
 
     await backend.execute_write(_migrate)

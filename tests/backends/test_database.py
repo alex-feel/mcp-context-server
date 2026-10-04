@@ -71,10 +71,12 @@ class TestDatabaseInitialization:
                 'idx_context_entries_dedup_hash',
                 # Grants-table indexes ride the base schema (their table is created
                 # complete by this same script). The context_entries access indexes
-                # (idx_context_owner, idx_context_owner_thread, idx_context_public)
-                # deliberately do NOT: on an existing pre-access-control database
-                # they would reference columns only apply_access_control_migration
-                # adds, crashing initialization before that migration can run.
+                # (idx_context_owner, idx_context_owner_thread, idx_context_public and
+                # the SQLite covering idx_context_access_thread, idx_context_access_source,
+                # idx_context_access_id) deliberately do NOT: on an existing
+                # pre-access-control database they would reference columns only
+                # apply_access_control_migration adds, crashing initialization before
+                # that migration can run.
                 'idx_grants_entry_principal',
                 'idx_grants_principal',
             }

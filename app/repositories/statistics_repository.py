@@ -173,8 +173,8 @@ class StatisticsRepository(BaseRepository):
 
         Every figure derived from stored entries -- the totals, the source and content-type
         breakdowns, the image, tag and thread counts and the two top-N lists -- counts only
-        the rows the READ predicate admits. Image and tag figures join their parent entry
-        and apply the predicate to it. The predicate filters rows before GROUP BY and LIMIT,
+        the rows the READ predicate admits. Image and tag figures count only the rows whose
+        parent entry the predicate admits. The predicate filters rows before GROUP BY and LIMIT,
         so each top-N list holds the scope's own top items. ``database_size_mb`` is the size
         of the whole database, the same for every scope.
 
@@ -203,8 +203,19 @@ class StatisticsRepository(BaseRepository):
         by_content_type_sql = (
             f'SELECT content_type, COUNT(*) AS count FROM context_entries{entry_filter} GROUP BY content_type'
         )
-        readable_images = f'image_attachments i JOIN context_entries ce ON ce.id = i.context_entry_id{parent_filter}'
-        readable_tags = f'tags t JOIN context_entries ce ON ce.id = t.context_entry_id{parent_filter}'
+        if backend_type == 'sqlite':
+            # SQLite looks a joined parent up through the UNIQUE index on id, which holds
+            # neither owner_id nor visibility, so each image or tag row would read its
+            # parent's table row and walk the text overflow pages stored before those
+            # columns. The id set of the readable parents comes from one scan of the
+            # covering idx_context_access_id instead, and image and tag rows are matched
+            # against it.
+            readable_parent_ids = f'SELECT ce.id FROM context_entries ce{parent_filter}'
+            readable_images = f'image_attachments i WHERE i.context_entry_id IN ({readable_parent_ids})'
+            readable_tags = f'tags t WHERE t.context_entry_id IN ({readable_parent_ids})'
+        else:
+            readable_images = f'image_attachments i JOIN context_entries ce ON ce.id = i.context_entry_id{parent_filter}'
+            readable_tags = f'tags t JOIN context_entries ce ON ce.id = t.context_entry_id{parent_filter}'
         images_sql = f'SELECT COUNT(*) AS count FROM {readable_images}'
         unique_tags_sql = f'SELECT COUNT(DISTINCT t.tag) AS count FROM {readable_tags}'
         threads_sql = f'SELECT COUNT(DISTINCT thread_id) AS count FROM context_entries{entry_filter}'
