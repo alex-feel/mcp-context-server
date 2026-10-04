@@ -19,6 +19,7 @@ from anyio import Path as AsyncPath
 from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
+from app.access_scope import build_readable_parent_predicate
 from app.backends.base import StorageBackend
 from app.ids import normalize_id
 from app.repositories._collation import byte_ordered_text
@@ -187,9 +188,7 @@ class StatisticsRepository(BaseRepository):
         """
         backend_type = self.backend.backend_type
         entries = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries')
-        parents = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
         entry_filter = entries.where_clause()
-        parent_filter = parents.where_clause()
 
         # The grouping key is the unique secondary sort key of each top-N list: without it
         # a tie in `count` leaves the LIMIT window computed over an undefined ordering, so
@@ -204,18 +203,22 @@ class StatisticsRepository(BaseRepository):
             f'SELECT content_type, COUNT(*) AS count FROM context_entries{entry_filter} GROUP BY content_type'
         )
         if backend_type == 'sqlite':
-            # SQLite looks a joined parent up through the UNIQUE index on id, which holds
-            # neither owner_id nor visibility, so each image or tag row would read its
-            # parent's table row and walk the text overflow pages stored before those
-            # columns. The id set of the readable parents comes from one scan of the
-            # covering idx_context_access_id instead, and image and tag rows are matched
-            # against it.
-            readable_parent_ids = f'SELECT ce.id FROM context_entries ce{parent_filter}'
-            readable_images = f'image_attachments i WHERE i.context_entry_id IN ({readable_parent_ids})'
-            readable_tags = f'tags t WHERE t.context_entry_id IN ({readable_parent_ids})'
+            # Image and tag rows are matched against the readable parent ids rather than
+            # joined to their parent rows (see build_readable_parent_predicate).
+            images = build_readable_parent_predicate(
+                scope, child_key='i.context_entry_id', parent_key='id', backend_type=backend_type,
+            )
+            tags = build_readable_parent_predicate(
+                scope, child_key='t.context_entry_id', parent_key='id', backend_type=backend_type,
+            )
+            readable_images = f'image_attachments i{images.where_clause()}'
+            readable_tags = f'tags t{tags.where_clause()}'
         else:
-            readable_images = f'image_attachments i JOIN context_entries ce ON ce.id = i.context_entry_id{parent_filter}'
-            readable_tags = f'tags t JOIN context_entries ce ON ce.id = t.context_entry_id{parent_filter}'
+            images = tags = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
+            readable_images = (
+                f'image_attachments i JOIN context_entries ce ON ce.id = i.context_entry_id{images.where_clause()}'
+            )
+            readable_tags = f'tags t JOIN context_entries ce ON ce.id = t.context_entry_id{tags.where_clause()}'
         images_sql = f'SELECT COUNT(*) AS count FROM {readable_images}'
         unique_tags_sql = f'SELECT COUNT(DISTINCT t.tag) AS count FROM {readable_tags}'
         threads_sql = f'SELECT COUNT(DISTINCT thread_id) AS count FROM context_entries{entry_filter}'
@@ -247,10 +250,10 @@ class StatisticsRepository(BaseRepository):
                 cursor.execute(by_content_type_sql, entries.params)
                 stats['by_content_type'] = {row['content_type']: row['count'] for row in cursor.fetchall()}
 
-                cursor.execute(images_sql, parents.params)
+                cursor.execute(images_sql, images.params)
                 stats['total_images'] = cursor.fetchone()['count']
 
-                cursor.execute(unique_tags_sql, parents.params)
+                cursor.execute(unique_tags_sql, tags.params)
                 stats['unique_tags'] = cursor.fetchone()['count']
 
                 cursor.execute(threads_sql, entries.params)
@@ -264,7 +267,7 @@ class StatisticsRepository(BaseRepository):
                     {'thread_id': row['thread_id'], 'count': row['count']} for row in cursor.fetchall()
                 ]
 
-                cursor.execute(top_tags_sql, parents.params)
+                cursor.execute(top_tags_sql, tags.params)
                 stats['top_tags'] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
 
                 stats['backend'] = 'sqlite'
@@ -284,15 +287,15 @@ class StatisticsRepository(BaseRepository):
                 rows = await conn.fetch(by_content_type_sql, *entries.params)
                 stats['by_content_type'] = {row['content_type']: row['count'] for row in rows}
 
-                stats['total_images'] = await conn.fetchval(images_sql, *parents.params)
-                stats['unique_tags'] = await conn.fetchval(unique_tags_sql, *parents.params)
+                stats['total_images'] = await conn.fetchval(images_sql, *images.params)
+                stats['unique_tags'] = await conn.fetchval(unique_tags_sql, *tags.params)
                 stats['total_threads'] = await conn.fetchval(threads_sql, *entries.params)
                 stats['avg_entries_per_thread'] = _to_float(await conn.fetchval(average_sql, *entries.params))
 
                 rows = await conn.fetch(most_active_sql, *entries.params)
                 stats['most_active_threads'] = [{'thread_id': row['thread_id'], 'count': row['count']} for row in rows]
 
-                rows = await conn.fetch(top_tags_sql, *parents.params)
+                rows = await conn.fetch(top_tags_sql, *tags.params)
                 stats['top_tags'] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
 
                 stats['backend'] = 'postgresql'

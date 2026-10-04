@@ -12,6 +12,9 @@ statement to the rows the scope may read, modify or owns:
   one of its groups.
 - ``OWNER``: the caller owns the row.
 
+:func:`build_readable_parent_predicate` renders the ``READ`` predicate for a child
+row instead: the child's key must name an entry the scope may read.
+
 A grant carries no visibility condition, so it is effective under either
 visibility, and a write grant implies read. Comparisons are exact and
 case-sensitive, matching how owner ids and grant principals are stored.
@@ -183,4 +186,45 @@ def build_access_predicate(
     return AccessPredicate(
         sql=f'({owner_arm}{public_arm} OR {grant_arm})',
         params=[principal, principal, groups_param],
+    )
+
+
+def build_readable_parent_predicate(
+    scope: Scope,
+    *,
+    child_key: str,
+    parent_key: str,
+    backend_type: str,
+    start: int = 1,
+) -> AccessPredicate:
+    """Build the predicate limiting child rows to those whose parent entry ``scope`` may read.
+
+    The predicate tests the child's key for membership in the keys of the readable
+    entries: ``<child_key> IN (SELECT ce.<parent_key> FROM context_entries ce WHERE <READ>)``.
+    SQLite statements use it in place of a join to each child's parent row. A join
+    looks each parent up by ``id`` or ``rowid_int``, and neither lookup holds
+    ``owner_id`` or ``visibility``, so every child row reads its parent's table row and
+    walks the text overflow pages stored before those columns; the key set instead comes
+    from one scan of a covering access index. The parameters are those of the ``READ``
+    predicate.
+
+    Args:
+        scope: The caller's scope; the system scope yields an empty predicate.
+        child_key: The child column holding the parent key, qualified by the child's
+            name or alias in the enclosing statement. It must be a trusted identifier,
+            never request data.
+        parent_key: The ``context_entries`` column ``child_key`` references, a trusted
+            identifier: ``id``, or ``rowid_int`` for the SQLite FTS index.
+        backend_type: ``'sqlite'`` or ``'postgresql'``, the backend's ``backend_type``.
+        start: The first PostgreSQL ``$n`` the predicate may use; ignored on SQLite.
+
+    Returns:
+        The predicate text and its parameters.
+    """
+    read = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce', start=start)
+    if not read.sql:
+        return read
+    return AccessPredicate(
+        sql=f'{child_key} IN (SELECT ce.{parent_key} FROM context_entries ce WHERE {read.sql})',
+        params=read.params,
     )

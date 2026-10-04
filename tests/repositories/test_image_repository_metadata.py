@@ -204,6 +204,39 @@ class TestPerImageMetadataValueFidelity:
         images = await repos.images.get_images_for_context(context_id)
         assert images[0].get('metadata') == ''
 
+    async def test_empty_mapping_metadata_round_trips(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """An empty mapping is stored as its JSON encoding and read back as an empty mapping.
+
+        Only an absent or ``None`` value stores SQL NULL; an empty mapping is a supplied value.
+        """
+        from app.repositories import RepositoryContainer
+
+        repos = RepositoryContainer(async_db_initialized)
+        context_id, _ = await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE,
+            visibility='private',
+            thread_id='image-metadata-empty-mapping-thread',
+            source='user',
+            content_type='multimodal',
+            text_content='Empty mapping per-image metadata',
+            metadata=None,
+        )
+
+        await repos.images.store_images(context_id, [self._image({})])
+
+        def _stored_metadata(conn: sqlite3.Connection) -> object:
+            row = conn.execute(
+                'SELECT image_metadata FROM image_attachments WHERE context_entry_id = ?', (context_id,),
+            ).fetchone()
+            return row[0]
+
+        assert await async_db_initialized.execute_read(_stored_metadata) == '{}'
+        images = await repos.images.get_images_for_context(context_id)
+        assert 'metadata' in images[0]
+        assert images[0]['metadata'] == {}
+
     async def test_absent_metadata_still_omits_the_key(
         self, async_db_initialized: StorageBackend,
     ) -> None:

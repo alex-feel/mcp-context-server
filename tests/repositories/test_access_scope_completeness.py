@@ -55,9 +55,9 @@ ROOT = Path(__file__).resolve().parents[2]
 APP = ROOT / 'app'
 
 CONTEXT_TABLE_SQL = re.compile(
-    r'\b(FROM|JOIN|INTO|UPDATE|TABLE)\s+(context_entries|context_entries_fts|context_entry_grants|tags'
-    r'|image_attachments|context_index_nodes|embedding_chunks|embedding_metadata|vec_context_embeddings'
-    r'|vec_context_embeddings_compressed)\b',
+    r'\b(FROM|JOIN|INTO|UPDATE|TABLE)\s+(context_entries|context_entries_fts|context_entries_fts_docsize'
+    r'|context_entry_grants|tags|image_attachments|context_index_nodes|embedding_chunks|embedding_metadata'
+    r'|vec_context_embeddings|vec_context_embeddings_compressed)\b',
     re.IGNORECASE,
 )
 
@@ -65,6 +65,9 @@ CONTEXT_TABLE_SQL = re.compile(
 # construction, and the one module outside them that emits SQL: the predicate builder.
 SQL_HOMES = frozenset({'repositories', 'migrations', 'cli', 'schemas'})
 PREDICATE_MODULE = 'access_scope.py'
+
+# The access-scope functions that turn a scope into a predicate.
+PREDICATE_BUILDERS = frozenset({'build_access_predicate', 'build_readable_parent_predicate'})
 
 # Helpers that build the access predicate for the method that hands them its scope.
 PREDICATE_HELPERS = frozenset({'_candidate_sql', '_interleave_sql', '_dedup_update_sql', '_build_context_filter_clause'})
@@ -463,7 +466,7 @@ def test_guarded_method_applies_the_access_predicate(key: str) -> None:
         return
     builds = any(
         isinstance(child, ast.Name | ast.Attribute)
-        and (child.id if isinstance(child, ast.Name) else child.attr) == 'build_access_predicate'
+        and (child.id if isinstance(child, ast.Name) else child.attr) in PREDICATE_BUILDERS
         for child in ast.walk(node)
     )
     helper_calls = [call for call in calls if _callee(call) in PREDICATE_HELPERS]

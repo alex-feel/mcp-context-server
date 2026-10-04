@@ -6,11 +6,23 @@ so a scoped statement without an indexable client filter visits every
 ``context_entries`` row, and ``owner_id``/``visibility`` sit after ``text_content`` in
 the row, so reading them from the table walks each row's text overflow pages. The
 SQLite covering access indexes the access-control migration provisions let these
-statements read index pages only. Each pin runs ``EXPLAIN QUERY PLAN`` on a database
-initialized the way server startup initializes it (base schema, then the migration)
-and requires every step that reads ``context_entries`` to use one of those indexes.
-The database carries no ``sqlite_stat1`` table, so the plans are the ones a database
-gets before any ``ANALYZE`` has run.
+statements read index pages only.
+
+The pins run on a database that the server's startup preparation (``prepare_database``)
+builds with embedding compression on, as it is by default, and that holds the
+access-scope seed rows. The database carries no ``sqlite_stat1`` table, so the plans are
+the ones a database gets before any ``ANALYZE`` has run.
+
+- ``get_statistics``: the tool runs with every block whose figures derive from stored
+  entries enabled, and the backend records every statement it executes. The plan of
+  each statement that names ``context_entries`` reads it, under its table name or the
+  ``ce`` alias, only through a covering access index; the one exception is the summary
+  count, which tests the ``summary`` column that no index carries. No statement that a
+  virtual table runs internally reads ``context_entries``: a query on the
+  external-content FTS table without ``MATCH`` passes through to ``context_entries`` and
+  reads each row's text, which ``EXPLAIN QUERY PLAN`` does not show.
+- The semantic-search candidate statement, with and without client filters, reads
+  ``context_entries`` only through a covering access index.
 """
 
 import re
@@ -19,22 +31,42 @@ from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
 
+import app.startup
+import app.tools
 from app.access_scope import AccessMode
 from app.access_scope import AccessScope
 from app.access_scope import build_access_predicate
 from app.backends import StorageBackend
-from app.backends import create_backend
-from app.migrations.access_control import apply_access_control_migration
-from app.repositories.statistics_repository import StatisticsRepository
-from app.startup import init_database
+from app.repositories import RepositoryContainer
+from tests.helpers import as_principal
+from tests.repositories._access_scope_layouts import sqlite_scoped_db
 
 # A plan step that reads context_entries, under its table name or the statistics alias.
 _ENTRY_STEP = re.compile(r'^(?:SCAN|SEARCH) (?:context_entries|ce)\b')
 _COVERING_ACCESS_INDEX = 'USING COVERING INDEX idx_context_access_'
+_NAMES_CONTEXT_ENTRIES = re.compile(r'\bcontext_entries\b')
+# The SQLite trace callback prefixes every statement a virtual table runs internally.
+_INTERNAL_STATEMENT = '-- '
+# The summary count tests the summary column, which no access index carries.
+_SUMMARY_COUNT = "summary IS NOT NULL AND summary != ''"
+# One marker per entry-derived figure of get_statistics: each must name a traced statement.
+_SCOPED_FIGURE_MARKERS = (
+    'SELECT COUNT(*) AS count FROM context_entries WHERE',
+    'GROUP BY source',
+    'GROUP BY content_type',
+    'GROUP BY thread_id',
+    'FROM image_attachments i',
+    'FROM tags t',
+    'FROM embedding_metadata em',
+    'FROM context_entries_fts',
+    'FROM context_index_nodes n',
+    _SUMMARY_COUNT,
+)
 
 _SCOPES = [
     pytest.param(AccessScope('local', frozenset()), id='principal-only'),
@@ -43,16 +75,12 @@ _SCOPES = [
 
 
 @pytest_asyncio.fixture
-async def startup_backend(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
-    """SQLite backend initialized like server startup: base schema, then the migration."""
-    backend = create_backend(backend_type='sqlite', db_path=str(tmp_path / 'test_access_plans.db'))
-    await backend.initialize()
-    try:
-        await init_database(backend=backend)
-        await apply_access_control_migration(backend)
-        yield backend
-    finally:
-        await backend.shutdown()
+async def startup_backend(
+    async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncGenerator[StorageBackend, None]:
+    """SQLite backend prepared by server startup with compression on and seeded with the access rows."""
+    async with sqlite_scoped_db(async_db_initialized, 'compressed', monkeypatch) as db:
+        yield db.backend
 
 
 async def _plan(backend: StorageBackend, sql: str, params: list[Any]) -> list[str]:
@@ -72,15 +100,28 @@ def _assert_entries_read_from_covering_index(sql: str, plan: list[str]) -> None:
     assert not uncovered, f'{sql!r} reads context_entries outside a covering access index: {plan}'
 
 
-async def _statistics_statements(
-    backend: StorageBackend, scope: AccessScope, monkeypatch: pytest.MonkeyPatch,
+def _statistics_settings() -> MagicMock:
+    """Tool settings with every block whose figures derive from stored entries enabled."""
+    settings = MagicMock()
+    settings.embedding.generation_enabled = True
+    settings.compression.enabled = True
+    settings.semantic_search.enabled = True
+    settings.fts.enabled = True
+    settings.summary.generation_enabled = True
+    settings.index_tree.node_summaries_enabled = True
+    settings.reranking.enabled = False
+    return settings
+
+
+async def _get_statistics_statements(
+    backend: StorageBackend, scope: AccessScope, db_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> list[str]:
-    """Run ``get_database_statistics`` and capture every statement it executed.
+    """Run the ``get_statistics`` tool as the scope's principal and capture every statement it executed.
 
     Returns:
-        The executed statements in order. The SQLite trace callback reports each one
-        with its bound values inlined, so each text is the exact statement the
-        repository ran.
+        The executed statements in order. The SQLite trace callback reports each one with
+        its bound values inlined, so each text is the exact statement that ran; a statement
+        a virtual table ran internally carries the ``-- `` prefix.
     """
     statements: list[str] = []
     execute_read = backend.execute_read
@@ -96,8 +137,15 @@ async def _statistics_statements(
         return await execute_read(_traced, *args, **kwargs)
 
     with monkeypatch.context() as patch:
+        patch.setattr(app.startup, '_backend', backend)
+        patch.setattr(app.startup, '_repositories', RepositoryContainer(backend))
+        patch.setattr(app.startup, '_summary_provider', MagicMock())
+        patch.setattr('app.tools.discovery.settings', _statistics_settings())
+        patch.setattr('app.tools.discovery.get_embedding_provider', MagicMock)
+        patch.setattr('app.tools.discovery.DB_PATH', db_path)
         patch.setattr(backend, 'execute_read', _tracing_execute_read)
-        await StatisticsRepository(backend).get_database_statistics(scope=scope)
+        with as_principal(scope.principal_id, groups=scope.groups):
+            await app.tools.get_statistics()
     return statements
 
 
@@ -106,20 +154,25 @@ class TestScopedStatementPlans:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('scope', _SCOPES)
-    async def test_statistics_statements_use_covering_access_indexes(
-        self, startup_backend: StorageBackend, scope: AccessScope, monkeypatch: pytest.MonkeyPatch,
+    async def test_get_statistics_statements_use_covering_access_indexes(
+        self,
+        startup_backend: StorageBackend,
+        scope: AccessScope,
+        temp_db_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Every get_statistics statement -- the totals, the source, content-type and
-        thread aggregates, and the image and tag figures -- reads context_entries from
-        a covering access index."""
-        statements = await _statistics_statements(startup_backend, scope, monkeypatch)
+        """Every statement get_statistics runs reads context_entries only through a covering
+        access index, except the summary count, and no virtual table reads it internally."""
+        statements = await _get_statistics_statements(startup_backend, scope, temp_db_path, monkeypatch)
+        direct = [statement for statement in statements if not statement.startswith(_INTERNAL_STATEMENT)]
+        internal = [statement for statement in statements if statement.startswith(_INTERNAL_STATEMENT)]
 
-        assert any(statement.startswith('SELECT COUNT(*) AS count FROM context_entries') for statement in statements)
-        assert any('GROUP BY source' in statement for statement in statements)
-        assert any('FROM tags t' in statement for statement in statements)
-        assert any('FROM image_attachments i' in statement for statement in statements)
-        for statement in statements:
-            _assert_entries_read_from_covering_index(statement, await _plan(startup_backend, statement, []))
+        for marker in _SCOPED_FIGURE_MARKERS:
+            assert any(marker in statement for statement in direct), f'no statement carries {marker!r}: {direct}'
+        assert [statement for statement in internal if _NAMES_CONTEXT_ENTRIES.search(statement)] == []
+        for statement in direct:
+            if _NAMES_CONTEXT_ENTRIES.search(statement) and _SUMMARY_COUNT not in statement:
+                _assert_entries_read_from_covering_index(statement, await _plan(startup_backend, statement, []))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('scope', _SCOPES)

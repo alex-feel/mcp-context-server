@@ -3,9 +3,11 @@
 Covers app.access_scope: the exact predicate text per mode, backend and outer
 qualifier; the parameter shape every predicate guarantees (a constant bind
 count, one group bind whatever the group count, contiguous PostgreSQL
-placeholders from ``start``); the empty SystemScope predicate; the scope value
-objects; which rows each predicate admits in a real SQLite database seeded with
-owners, visibilities and grants; and the module's standard-library-only imports.
+placeholders from ``start``); the empty SystemScope predicate; the
+readable-parent predicate that tests a child row's parent key for membership in
+the readable entries; the scope value objects; which rows each predicate admits
+in a real SQLite database seeded with owners, visibilities and grants; and the
+module's standard-library-only imports.
 """
 
 import ast
@@ -26,6 +28,7 @@ from app.access_scope import AccessPredicate
 from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
+from app.access_scope import build_readable_parent_predicate
 from app.backends import StorageBackend
 from app.ids import generate_id
 from tests.helpers import insert_grant
@@ -216,6 +219,61 @@ def test_predicate_parameter_shape(mode_name: str, backend_type: str, group_coun
 
 
 # ============================================================================
+# Readable-parent predicate
+# ============================================================================
+
+
+def test_readable_parent_predicate_exact_text() -> None:
+    """The child key is tested for membership in the keys of the entries the READ predicate admits."""
+    predicate = build_readable_parent_predicate(
+        BOB_TEAMS, child_key='t.context_entry_id', parent_key='id', backend_type='sqlite',
+    )
+
+    assert predicate.sql == (
+        "t.context_entry_id IN (SELECT ce.id FROM context_entries ce WHERE (ce.owner_id = ? OR ce.visibility = 'public' "
+        "OR EXISTS (SELECT 1 FROM context_entry_grants g WHERE g.context_entry_id = ce.id AND g.permission IN ('read', "
+        "'write') AND ((g.principal_type = 'user' AND g.principal_id = ?) OR (g.principal_type = 'group' AND "
+        'g.principal_id IN (SELECT value FROM json_each(?)))))))'
+    )
+    assert predicate.params == ['bob', 'bob', '["team-x", "team-y"]']
+    assert predicate.where_clause() == f' WHERE {predicate.sql}'
+    assert predicate.and_clause() == f' AND {predicate.sql}'
+
+
+@pytest.mark.parametrize(
+    ('backend_type', 'start', 'child_key', 'parent_key'),
+    [
+        pytest.param('sqlite', 1, 'd.id', 'rowid_int', id='sqlite-rowid_int'),
+        pytest.param('postgresql', 1, 'n.context_id', 'id', id='postgresql-start-1'),
+        pytest.param('postgresql', 4, 'i.context_entry_id', 'id', id='postgresql-start-4'),
+    ],
+)
+def test_readable_parent_predicate_wraps_the_read_predicate(
+    backend_type: str, start: int, child_key: str, parent_key: str,
+) -> None:
+    """The subquery carries the READ predicate on ``ce`` unchanged, with its parameters and numbering."""
+    read = build_access_predicate(BOB_TEAMS, mode=AccessMode.READ, backend_type=backend_type, outer='ce', start=start)
+
+    predicate = build_readable_parent_predicate(
+        BOB_TEAMS, child_key=child_key, parent_key=parent_key, backend_type=backend_type, start=start,
+    )
+
+    assert predicate.sql == f'{child_key} IN (SELECT ce.{parent_key} FROM context_entries ce WHERE {read.sql})'
+    assert predicate.params == read.params
+    assert predicate.bind_count == _EXPECTED_BINDS[AccessMode.READ]
+
+
+@pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
+def test_readable_parent_predicate_is_empty_for_the_system_scope(backend_type: str) -> None:
+    """The system scope admits every child row, so the predicate restricts nothing."""
+    predicate = build_readable_parent_predicate(
+        SYSTEM_SCOPE, child_key='t.context_entry_id', parent_key='id', backend_type=backend_type,
+    )
+
+    _assert_system_predicate(predicate)
+
+
+# ============================================================================
 # Scope value objects
 # ============================================================================
 
@@ -369,6 +427,45 @@ async def test_predicate_admits_rows_on_sqlite(
     await _seed(async_db_initialized)
 
     assert await _admitted(async_db_initialized, scope, mode, outer) == expected
+
+
+_READ_ADMISSION_CASES = [
+    pytest.param(case.values[0], case.values[2], id=case.id) for case in _ADMISSION_CASES if case.values[1] is AccessMode.READ
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('scope', 'expected'), _READ_ADMISSION_CASES)
+@pytest.mark.parametrize(
+    ('child_select', 'child_key', 'parent_key'),
+    [
+        pytest.param('SELECT t.tag FROM tags t', 't.context_entry_id', 'id', id='tags-by-id'),
+        pytest.param('SELECT x.text_content FROM context_entries x', 'x.rowid_int', 'rowid_int', id='rows-by-rowid_int'),
+    ],
+)
+async def test_readable_parent_predicate_admits_children_of_readable_rows(
+    async_db_initialized: StorageBackend,
+    scope: Scope,
+    expected: set[str],
+    child_select: str,
+    child_key: str,
+    parent_key: str,
+) -> None:
+    """A child row is admitted exactly when the READ predicate admits the entry its key names."""
+    ids = await _seed(async_db_initialized)
+
+    def _tag_every_entry(conn: sqlite3.Connection) -> None:
+        conn.executemany(
+            'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', [(entry_id, label) for label, entry_id in ids.items()],
+        )
+
+    await async_db_initialized.execute_write(_tag_every_entry)
+    predicate = build_readable_parent_predicate(scope, child_key=child_key, parent_key=parent_key, backend_type='sqlite')
+
+    def _select(conn: sqlite3.Connection) -> set[str]:
+        return {row[0] for row in conn.execute(f'{child_select}{predicate.where_clause()}', predicate.params).fetchall()}
+
+    assert await async_db_initialized.execute_read(_select) == expected
 
 
 @pytest.mark.asyncio

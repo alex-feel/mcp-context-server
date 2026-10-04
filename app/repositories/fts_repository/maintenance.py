@@ -8,6 +8,7 @@ from typing import cast
 from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
+from app.access_scope import build_readable_parent_predicate
 from app.repositories.base import BaseRepository
 from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
 
@@ -27,8 +28,11 @@ class FtsMaintenanceMixin(BaseRepository):
     async def get_statistics(self, *, scope: Scope) -> dict[str, Any]:
         """Get FTS index statistics over the entries the scope may read.
 
-        Both counts apply the READ predicate. The system scope counts every entry; the
-        FTS migration uses it to size its rebuild estimate outside any request.
+        Both counts apply the READ predicate. An entry counts as indexed when the FTS
+        index holds it: on SQLite the FTS5 index keeps a row for it in
+        ``context_entries_fts_docsize``, on PostgreSQL its tsvector is populated. The
+        system scope counts every entry; the FTS migration uses it to size its rebuild
+        estimate outside any request.
 
         Args:
             scope: The caller's scope, or the system scope.
@@ -51,14 +55,18 @@ class FtsMaintenanceMixin(BaseRepository):
             }
 
         if self.backend.backend_type == 'sqlite':
-            parents = build_access_predicate(scope, mode=AccessMode.READ, backend_type='sqlite', outer='ce')
-            indexed_sql = (
-                'SELECT COUNT(*) FROM context_entries_fts fts '
-                f'JOIN context_entries ce ON ce.rowid_int = fts.rowid{parents.where_clause()}'
+            # The FTS5 index keeps one context_entries_fts_docsize row per indexed entry,
+            # keyed by the entry's rowid_int. Counting the external-content
+            # context_entries_fts table itself without MATCH would pass through to
+            # context_entries and read every row's text. The rowids are matched against
+            # the readable entries (see build_readable_parent_predicate).
+            indexed = build_readable_parent_predicate(
+                scope, child_key='d.id', parent_key='rowid_int', backend_type='sqlite',
             )
+            indexed_sql = f'SELECT COUNT(*) FROM context_entries_fts_docsize d{indexed.where_clause()}'
 
             def _get_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
-                indexed_count = conn.execute(indexed_sql, parents.params).fetchone()[0]
+                indexed_count = conn.execute(indexed_sql, indexed.params).fetchone()[0]
                 total_count = conn.execute(total_sql, predicate.params).fetchone()[0]
                 return _figures(total_count, indexed_count, 'sqlite', 'fts5')
 
