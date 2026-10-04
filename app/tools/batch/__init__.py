@@ -6,6 +6,8 @@ This package contains tools for bulk context management:
 - update.py: update_context_batch, update multiple entries in one operation
 - delete.py: delete_context_batch, delete entries by various criteria
 - entry_validation.py: per-entry validation shared by the store and update tools
+- update_access.py: the update tool's write-access checks (pre-generation authorization of every
+  update, and the in-transaction re-probe that disambiguates a compare-and-set matching zero rows)
 
 Generation-First Transactional Integrity:
 The store and update tools implement atomic generation + data storage for batch operations.
