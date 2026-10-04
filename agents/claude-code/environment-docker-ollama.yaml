@@ -42,18 +42,24 @@ dependencies:
 
 # Environment variables
 os-env-variables:
-  # What belongs here is a variable some program OTHER than Claude Code reads. Claude
-  # Code's own settings (the `env` block under user-settings below) reach only the
-  # session's own process tree, so a consumer outside it -- a hook run by hand, a server
-  # started from a terminal -- would never see them.
+  # A base install writes this block to the OS environment (the Windows registry, the
+  # shell rc files on Unix) and deletes the OS-level variable a null entry names; an
+  # isolated install writes it to the profile's env loader files instead, a null entry
+  # as an unset line. Nothing this environment ships needs that reach: its hooks run
+  # inside a Claude Code session, which hands them the user-settings `env` block below,
+  # so the block holds only the transitional deletion of the one name that block carries.
 
-  # Enable the context-saver hooks' diagnostic logging so a failed store
-  # (for example, the context server still starting while Ollama pulls its
-  # embedding and summary models) is recorded in the hook log instead of
-  # failing silently. Log location: ~/.claude/hook_logs/user_prompt_context_saver.log
-  # Read by the hook script itself rather than by Claude Code, which is why it stays at
-  # the OS level: the same value then applies when the hook is run directly to debug it.
-  CLAUDE_HOOK_DEBUG_ENABLED: "1"
+  # TRANSITIONAL -- a deletion, not a setting. CLAUDE_HOOK_DEBUG_ENABLED is declared in
+  # the user-settings `env` block below, and this null removes the OS-level copy that an
+  # earlier base install of this environment wrote. It is spelled out rather than simply
+  # omitted because an omitted key leaves the stale OS value in place, where it is
+  # harmless inside a session but misleading to anyone reading
+  # `echo $CLAUDE_HOOK_DEBUG_ENABLED`.
+  #
+  # Retire it -- remove the null, and with it this block -- once every machine running
+  # this environment has completed one base install carrying it. A name parked here
+  # permanently also deletes the variable for anything else on the machine that sets it.
+  CLAUDE_HOOK_DEBUG_ENABLED: null
 
 # Skills for context management
 skills:
@@ -176,11 +182,12 @@ hooks:
 # to ~/.claude/settings.json; a root-level permissions key is not part of the
 # configuration schema and would be silently ignored at install time.
 user-settings:
-  # Claude-level environment variables. Claude Code applies this block by assigning it
-  # into its own process environment at startup, so a value here takes effect at the
-  # next session start instead of only in terminals opened after the install, and it
-  # wins over an OS-level variable of the same name. Values must be strings; an
-  # unquoted YAML integer is rejected rather than coerced.
+  # Claude-level environment variables. Claude Code assigns this block into its own
+  # process environment at startup, so a value here takes effect at the next session
+  # start instead of only in terminals opened after the install, every process the
+  # session starts -- the hooks below included -- inherits it, and it wins over an
+  # OS-level variable of the same name. Values must be strings; an unquoted YAML
+  # integer is rejected rather than coerced.
   env:
     # MCP server STARTUP budget in milliseconds (default 30000), not tool execution.
     # Raised so a slow uvx-spawned stdio server survives a cold start.
@@ -195,6 +202,13 @@ user-settings:
     # is not one of the spellings the documentation guarantees, so the documented one is
     # what is written here.
     ENABLE_TOOL_SEARCH: "true"
+
+    # Enable the context-saver hooks' diagnostic logging so a failed store (for example,
+    # the context server still starting while Ollama pulls its embedding and summary
+    # models) is recorded in the hook log instead of failing silently. Read by the hook
+    # script, which the session starts and which therefore inherits this block.
+    # Log location: ~/.claude/hook_logs/user_prompt_context_saver.log
+    CLAUDE_HOOK_DEBUG_ENABLED: "1"
 
   permissions:
     defaultMode: default
