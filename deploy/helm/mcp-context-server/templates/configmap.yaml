@@ -1,3 +1,4 @@
+{{- include "mcp-context-server.validateValues" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,6 +24,53 @@ data:
   POSTGRESQL_USER: {{ .Values.storage.postgresql.user | quote }}
   POSTGRESQL_DATABASE: {{ .Values.storage.postgresql.database | quote }}
   POSTGRESQL_SSL_MODE: {{ .Values.storage.postgresql.sslMode | quote }}
+  {{- with .Values.storage.postgresql.migration.user }}
+  POSTGRESQL_MIGRATION_USER: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  # Authentication, access control and row-level security: each variable renders only
+  # when its value is set, so the server default applies otherwise.
+  {{- with .Values.auth.provider }}
+  MCP_AUTH_PROVIDER: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.auth.clientId }}
+  MCP_AUTH_CLIENT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.auth.jwt.jwksUri }}
+  MCP_AUTH_JWT_JWKS_URI: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.auth.jwt.issuer }}
+  MCP_AUTH_JWT_ISSUER: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.auth.jwt.audience }}
+  MCP_AUTH_JWT_AUDIENCE: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.auth.jwt.algorithm }}
+  MCP_AUTH_JWT_ALGORITHM: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.auth.groupsClaim }}
+  MCP_AUTH_GROUPS_CLAIM: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.auth.rolesClaim }}
+  MCP_AUTH_ROLES_CLAIM: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.accessControl.defaultPrincipal }}
+  ACCESS_CONTROL_DEFAULT_PRINCIPAL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.accessControl.defaultVisibility }}
+  ACCESS_CONTROL_DEFAULT_VISIBILITY: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.accessControl.defaultGroupGrants }}
+  ACCESS_CONTROL_DEFAULT_GROUP_GRANTS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.accessControl.publishRole }}
+  ACCESS_CONTROL_PUBLISH_ROLE: {{ . | quote }}
+  {{- end }}
+  {{- if .Values.storage.postgresql.rls.enabled }}
+  ENABLE_POSTGRESQL_RLS: "true"
+  {{- end }}
+  {{- with .Values.storage.postgresql.rls.policyRole }}
+  POSTGRESQL_RLS_POLICY_ROLE: {{ . | quote }}
   {{- end }}
   # Search features. The search.*.enabled booleans map to the server's tri-state
   # toggles: true -> "auto" (register the tool when its prerequisites are present),
