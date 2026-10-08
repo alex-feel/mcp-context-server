@@ -15,10 +15,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from typing import get_args
+from typing import get_origin
 
 import pytest
 from jsonschema import Draft7Validator
 from jsonschema.exceptions import ValidationError
+from pydantic import BaseModel
+from pydantic import SecretStr
+from pydantic.fields import FieldInfo
+
+from app.settings import AppSettings
 
 # Path to local server.json file (relative to repository root)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -71,6 +78,64 @@ def format_validation_error(error: ValidationError) -> str:
     """
     path = ' -> '.join(str(p) for p in error.absolute_path) if error.absolute_path else '(root)'
     return f'Path: {path}\n  Error: {error.message}'
+
+
+def _extract_model_types(annotation: object) -> list[type[BaseModel]]:
+    """Extract all BaseModel subclasses from a type annotation.
+
+    Handles direct types, ``X | None`` and ``Union`` types, and nested generics such
+    as ``list[SomeSettings]``.
+
+    Returns:
+        List of BaseModel subclasses found in the annotation.
+    """
+    if get_origin(annotation) is not None:
+        result: list[type[BaseModel]] = []
+        for arg in get_args(annotation):
+            if arg is not type(None):
+                result.extend(_extract_model_types(arg))
+        return result
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return [annotation]
+    return []
+
+
+def _holds_secret(annotation: object) -> bool:
+    """Report whether a field annotation is ``SecretStr`` or a union that contains it.
+
+    Returns:
+        True when the annotation is SecretStr or contains it as a union member.
+    """
+    return annotation is SecretStr or SecretStr in get_args(annotation)
+
+
+def collect_settings_env_fields(
+    settings_cls: type[BaseModel],
+    visited: set[type[BaseModel]] | None = None,
+) -> dict[str, FieldInfo]:
+    """Map every environment-variable alias in a settings class hierarchy to its field.
+
+    Traverses the settings class and every nested BaseModel subclass reachable through
+    its field annotations (optional and union types included), so a new nested
+    settings class is covered without maintenance. The visited set stops recursion on
+    circular references.
+
+    Returns:
+        Mapping of environment variable alias to the pydantic field that declares it.
+    """
+    if visited is None:
+        visited = set()
+    if settings_cls in visited:
+        return {}
+    visited.add(settings_cls)
+
+    fields: dict[str, FieldInfo] = {}
+    for field_info in settings_cls.model_fields.values():
+        if field_info.alias:
+            fields[field_info.alias] = field_info
+        for nested_type in _extract_model_types(field_info.annotation):
+            fields.update(collect_settings_env_fields(nested_type, visited))
+    return fields
 
 
 class TestServerJsonExists:
@@ -218,107 +283,7 @@ class TestServerJsonSchemaValidation:
         and any future additions). This ensures server.json stays in sync with application
         configuration without manual maintenance.
         """
-        import types
-        from typing import ClassVar
-        from typing import Union
-        from typing import get_args
-        from typing import get_origin
-        from typing import get_type_hints
-
-        from pydantic import BaseModel
-
-        from app.settings import AppSettings
-
-        def _extract_model_types(annotation: type | object) -> list[type[BaseModel]]:
-            """Extract all BaseModel subclasses from a type annotation.
-
-            Handles:
-            - Direct types: SomeSettings -> [SomeSettings]
-            - Union types: SomeSettings | None -> [SomeSettings]
-            - typing.Union: Union[SomeSettings, Other] -> [SomeSettings, Other] (if BaseModel)
-            - Nested generics: list[SomeSettings] -> [SomeSettings]
-            - ClassVar: ClassVar[...] -> [] (skipped)
-
-            Returns:
-                List of BaseModel subclasses found in the annotation.
-            """
-            origin = get_origin(annotation)
-
-            # Skip ClassVar fields (like model_config)
-            if origin is ClassVar:
-                return []
-
-            # Handle Union types (including Python 3.10+ X | Y syntax)
-            if origin is Union or origin is types.UnionType:
-                result: list[type[BaseModel]] = []
-                for arg in get_args(annotation):
-                    if arg is type(None):
-                        continue  # Skip NoneType
-                    result.extend(_extract_model_types(arg))
-                return result
-
-            # Handle other generic types (list[T], dict[K,V], etc.)
-            if origin is not None:
-                result = []
-                for arg in get_args(annotation):
-                    result.extend(_extract_model_types(arg))
-                return result
-
-            # Direct type - check if it's a BaseModel subclass
-            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-                return [annotation]
-
-            return []
-
-        def collect_all_env_aliases(
-            settings_cls: type[BaseModel],
-            visited: set[type[BaseModel]] | None = None,
-        ) -> set[str]:
-            """Recursively collect all environment variable aliases from a settings class.
-
-            This function traverses the settings class and all nested BaseModel subclasses
-            to find all fields with environment variable aliases. It handles:
-            - Direct class fields with aliases
-            - Nested settings classes (fields typed as BaseModel subclasses)
-            - Optional/Union types (e.g., SomeSettings | None)
-            - Circular references (via visited set)
-
-            Returns:
-                Set of environment variable alias names found in the settings class hierarchy.
-            """
-            if visited is None:
-                visited = set()
-
-            # Prevent infinite recursion on circular references
-            if settings_cls in visited:
-                return set()
-            visited.add(settings_cls)
-
-            aliases: set[str] = set()
-
-            # Collect aliases from this class's fields
-            for field_info in settings_cls.model_fields.values():
-                if field_info.alias:
-                    aliases.add(field_info.alias)
-
-            # Resolve type annotations (resolves string-form/forward references too)
-            try:
-                hints = get_type_hints(settings_cls)
-            except Exception:
-                # If type hints can't be resolved, fall back to just this class
-                return aliases
-
-            # Check each field's type for nested settings classes
-            for annotation in hints.values():
-                nested_types = _extract_model_types(annotation)
-                for nested_type in nested_types:
-                    if nested_type not in visited:
-                        aliases.update(collect_all_env_aliases(nested_type, visited))
-
-            return aliases
-
-        # Automatically collect all env vars from AppSettings and ALL nested classes
-        settings_env_vars = collect_all_env_aliases(AppSettings)
+        settings_env_vars = set(collect_settings_env_fields(AppSettings))
 
         # Get env vars from server.json
         server_json_env_vars = {
@@ -334,6 +299,31 @@ class TestServerJsonSchemaValidation:
                 f'Environment variables defined in app.settings but missing from server.json:\n'
                 f'{sorted(missing)}',
             )
+
+    def test_server_json_secret_flags_match_settings(
+        self,
+        server_json_content: dict[str, Any],
+    ) -> None:
+        """Verify every package marks exactly the SecretStr-typed settings variables as secret.
+
+        The MCP Registry schema asks clients to handle a variable flagged ``isSecret`` as a
+        secret, so a credential field added to app.settings without the flag reaches clients
+        as an ordinary value, and a flag on a plain setting hides a value that is not secret.
+        """
+        secret_env_vars = {
+            alias
+            for alias, field_info in collect_settings_env_fields(AppSettings).items()
+            if _holds_secret(field_info.annotation)
+        }
+        for i, pkg in enumerate(server_json_content.get('packages', [])):
+            registry_type = pkg.get('registryType', f'package-{i}')
+            flagged = {env['name'] for env in pkg.get('environmentVariables', []) if env.get('isSecret')}
+            if flagged != secret_env_vars:
+                pytest.fail(
+                    f'isSecret flags in the {registry_type} package differ from the SecretStr settings:\n'
+                    f'  missing isSecret: {sorted(secret_env_vars - flagged)}\n'
+                    f'  isSecret on a non-secret setting: {sorted(flagged - secret_env_vars)}',
+                )
 
     def test_all_packages_have_identical_environment_variables(
         self,

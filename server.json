@@ -270,6 +270,20 @@
           "name": "POSTGRESQL_PASSWORD"
         },
         {
+          "description": "PostgreSQL role that owns the tables. Schema setup and migrations connect with the request connection settings (POSTGRESQL_CONNECTION_STRING or the component fields) and this user in place of the request user; unset keeps the request user. Required when ENABLE_POSTGRESQL_RLS=true",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_MIGRATION_USER"
+        },
+        {
+          "description": "Password for POSTGRESQL_MIGRATION_USER, used in place of the request password on the schema setup and migration connection; unset keeps the request password",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "POSTGRESQL_MIGRATION_PASSWORD"
+        },
+        {
           "description": "PostgreSQL database name",
           "isRequired": false,
           "format": "string",
@@ -1146,6 +1160,22 @@
           "format": "string",
           "isSecret": false,
           "name": "ACCESS_CONTROL_PUBLISH_ROLE"
+        },
+        {
+          "description": "Also enforce the access model in PostgreSQL through row-level security. Requires STORAGE_BACKEND=postgresql and POSTGRESQL_MIGRATION_USER naming the role that owns the tables; requests must connect as a different role that is a member of POSTGRESQL_RLS_POLICY_ROLE and neither superuser nor BYPASSRLS. Default false.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_POSTGRESQL_RLS",
+          "default": "false"
+        },
+        {
+          "description": "NOLOGIN PostgreSQL role the row-level security policies apply to. The operator creates it and grants it to the request login role; the server grants it the table privileges. 1-63 characters from a-z 0-9 _, not starting with a digit. Default mcp_context_request.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_RLS_POLICY_ROLE",
+          "default": "mcp_context_request"
         },
         {
           "description": "Custom server instructions text. Overrides built-in default. Set to empty string to disable.",
@@ -1462,6 +1492,20 @@
           "name": "POSTGRESQL_PASSWORD"
         },
         {
+          "description": "PostgreSQL role that owns the tables. Schema setup and migrations connect with the request connection settings (POSTGRESQL_CONNECTION_STRING or the component fields) and this user in place of the request user; unset keeps the request user. Required when ENABLE_POSTGRESQL_RLS=true",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_MIGRATION_USER"
+        },
+        {
+          "description": "Password for POSTGRESQL_MIGRATION_USER, used in place of the request password on the schema setup and migration connection; unset keeps the request password",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "POSTGRESQL_MIGRATION_PASSWORD"
+        },
+        {
           "description": "PostgreSQL database name",
           "isRequired": false,
           "format": "string",
@@ -2338,6 +2382,22 @@
           "format": "string",
           "isSecret": false,
           "name": "ACCESS_CONTROL_PUBLISH_ROLE"
+        },
+        {
+          "description": "Also enforce the access model in PostgreSQL through row-level security. Requires STORAGE_BACKEND=postgresql and POSTGRESQL_MIGRATION_USER naming the role that owns the tables; requests must connect as a different role that is a member of POSTGRESQL_RLS_POLICY_ROLE and neither superuser nor BYPASSRLS. Default false.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_POSTGRESQL_RLS",
+          "default": "false"
+        },
+        {
+          "description": "NOLOGIN PostgreSQL role the row-level security policies apply to. The operator creates it and grants it to the request login role; the server grants it the table privileges. 1-63 characters from a-z 0-9 _, not starting with a digit. Default mcp_context_request.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_RLS_POLICY_ROLE",
+          "default": "mcp_context_request"
         },
         {
           "description": "Custom server instructions text. Overrides built-in default. Set to empty string to disable.",

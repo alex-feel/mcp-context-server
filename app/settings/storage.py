@@ -148,6 +148,23 @@ class StorageSettings(BaseSettings):
     postgresql_user: str = Field(default='postgres', alias='POSTGRESQL_USER')
     postgresql_password: SecretStr = Field(default=SecretStr('postgres'), alias='POSTGRESQL_PASSWORD')
     postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')
+    # No effective-credential property: with POSTGRESQL_CONNECTION_STRING the request
+    # credentials live inside the secret, so the backend factory applies the migration
+    # credentials over the connection settings field by field.
+    postgresql_migration_user: str | None = Field(
+        default=None,
+        alias='POSTGRESQL_MIGRATION_USER',
+        description='PostgreSQL role that owns the tables. Schema setup and migrations connect with '
+                    'the request connection settings (POSTGRESQL_CONNECTION_STRING or the component '
+                    'fields) and this user in place of the request user; unset keeps the request user. '
+                    'Required when ENABLE_POSTGRESQL_RLS=true',
+    )
+    postgresql_migration_password: SecretStr | None = Field(
+        default=None,
+        alias='POSTGRESQL_MIGRATION_PASSWORD',
+        description='Password for POSTGRESQL_MIGRATION_USER, used in place of the request password on '
+                    'the schema setup and migration connection; unset keeps the request password',
+    )
 
     # PostgreSQL connection pool settings. ge bounds mirror the SQLite pool
     # fields, and validate_pool_min_not_above_max below enforces min <= max:
