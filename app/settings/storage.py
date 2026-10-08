@@ -310,7 +310,10 @@ class StorageSettings(BaseSettings):
     metadata_index_sync_mode: Literal['strict', 'auto', 'warn', 'additive'] = Field(
         default='additive',
         alias='METADATA_INDEX_SYNC_MODE',
-        description='How to handle index mismatches: strict (fail), auto (sync), warn (log), additive (add missing only)',
+        description=(
+            'How to handle index mismatches: strict (fail), auto (sync), warn (log), '
+            'additive (add missing and rebuild drifted, never drop)'
+        ),
     )
 
     @property

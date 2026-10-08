@@ -341,14 +341,14 @@ class TestTypedIndexedMetadataCastCompatibility:
     """A typed indexed metadata field is validated before any generation runs.
 
     METADATA_INDEXED_FIELDS supports integer/boolean/float type hints, and on
-    PostgreSQL each becomes a hard cast inside the field's expression index
-    (``((metadata->>'priority')::INTEGER)``), evaluated on every INSERT. Without a
-    boundary check, a cast-incompatible value pays the full embedding + summary +
-    compression pass and then aborts the transaction with a raw driver error that
-    charges the circuit breaker for what is purely client input -- while the
-    identical request stores fine on SQLite, whose json_extract index applies no
-    cast. The four write tools refuse it at the boundary, so both backends behave
-    identically.
+    PostgreSQL an integer or boolean hint becomes a hard cast inside the field's
+    expression index (``((metadata->>'priority')::INTEGER)``), evaluated on every
+    INSERT. Without a boundary check, a cast-incompatible value pays the full
+    embedding + summary + compression pass and then aborts the transaction with a raw
+    driver error that charges the circuit breaker for what is purely client input --
+    while the identical request stores fine on SQLite, whose json_extract index
+    applies no cast. The four write tools refuse it at the boundary, so both backends
+    behave identically.
     """
 
     @pytest.fixture(autouse=True)

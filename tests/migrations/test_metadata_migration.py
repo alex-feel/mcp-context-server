@@ -69,12 +69,22 @@ class TestSQLGeneration:
         assert '::BOOLEAN' in sql
 
     def test_generate_create_index_postgresql_float(self) -> None:
-        """Test PostgreSQL CREATE INDEX SQL generation for float type."""
+        """A float field indexes the total numeric accessor over JSON numbers only.
+
+        The indexed expression is the exact accessor the numeric filters compare, so the
+        index serves them, and the predicate is the filters' own number guard, so the
+        planner can prove it from their WHERE clause. No stored value can make an INSERT
+        fail on the index, because the cast runs only for a JSON number.
+        """
+        from app.metadata_sql import pg_number_guard
+        from app.metadata_sql import pg_numeric_accessor
         from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('score', 'float')
         assert 'CREATE INDEX IF NOT EXISTS "idx_metadata_score"' in sql
-        assert '::NUMERIC' in sql
+        assert f'(({pg_numeric_accessor("score")}))' in sql
+        assert sql.rstrip().endswith(f'WHERE {pg_number_guard("score")};')
+        assert "(metadata->>'score')::NUMERIC))" not in sql
 
     def test_generate_create_index_postgresql_quotes_mixed_case_identifier(self) -> None:
         """A mixed-case field yields a quoted, case-preserved index identifier on PostgreSQL.

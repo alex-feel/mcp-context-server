@@ -4,6 +4,8 @@ import pytest
 
 from app.metadata_sql import _FLOAT8_OVERFLOW
 from app.metadata_sql import _FLOAT8_TINY
+from app.metadata_sql import pg_numeric_accessor
+from app.metadata_sql import pg_total_numeric
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.query_builder import MetadataQueryBuilder
@@ -22,16 +24,17 @@ class TestMetadataQueryBuilder:
     def test_pg_numeric_guards_number_type(self, operator: MetadataOperator) -> None:
         """Numeric operators are number-typed-only on PostgreSQL: an explicit
         ``jsonb_typeof(...) = 'number'`` AND-guard excludes every non-number value
-        (text/bool/json-null/absent), so the query never aborts and a non-number never
-        matches. There is no ``ELSE 0`` coercion (that diverged from SQLite for booleans
-        and numeric-prefix strings); both backends use the same number-only contract."""
+        (text/bool/json-null/absent), so a non-number never matches, and the stored value is
+        read through the total accessor, so no stored value can make the query abort. There is
+        no ``ELSE 0`` coercion (it would diverge from SQLite for booleans and numeric-prefix
+        strings); both backends use the same number-only contract."""
         builder = MetadataQueryBuilder(backend_type='postgresql')
         builder.add_advanced_filter(
             MetadataFilter(key='priority', operator=operator, value=5),
         )
         clause, _params = builder.build_where_clause()
         assert "jsonb_typeof(metadata->'priority') = 'number'" in clause
-        assert '::NUMERIC' in clause
+        assert pg_numeric_accessor('priority') in clause
         assert 'ELSE 0' not in clause
         assert '::DOUBLE PRECISION' not in clause
 
@@ -65,7 +68,7 @@ class TestMetadataQueryBuilder:
         """On PostgreSQL a FLOAT param reproduces SQLite's exact integer/double comparison:
         the exact-NUMERIC compare is kept only for stored values that are integral AND provably
         int-origin (not equal to their nearest double's shortest round-trip decimal, probed via
-        ``(stored::float8)::NUMERIC``); everything else -- fractional, or integral values that ARE
+        ``(stored::float8)::text::NUMERIC``); everything else -- fractional, or integral values that ARE
         the canonical form of some double (every float stores as its shortest repr, so above 2**53
         the stored NUMERIC differs from the double's exact value) -- compares double-vs-double
         (both snapped to float8). The stored side is never down-cast through DOUBLE PRECISION
@@ -82,7 +85,7 @@ class TestMetadataQueryBuilder:
         assert 'trunc(' in fclause
         assert '::float8' in fclause
         assert '::float8)::text::NUMERIC' in fclause
-        assert ')::NUMERIC' in fclause
+        assert pg_numeric_accessor('score') in fclause
         assert '::DOUBLE PRECISION' not in fclause
         assert '::float8::numeric' not in fclause
         assert '::float8)::NUMERIC' not in fclause
@@ -91,7 +94,7 @@ class TestMetadataQueryBuilder:
         ibuilder.add_advanced_filter(MetadataFilter(key='score', operator=operator, value=5))
         iclause, _ = ibuilder.build_where_clause()
         # Integer param: exact NUMERIC, no integrality CASE, no float8, no DOUBLE PRECISION.
-        assert ')::NUMERIC' in iclause
+        assert pg_numeric_accessor('score') in iclause
         assert 'trunc(' not in iclause
         assert '::float8' not in iclause
         assert '::DOUBLE PRECISION' not in iclause
@@ -111,7 +114,7 @@ class TestMetadataQueryBuilder:
         assert '::DOUBLE PRECISION' not in eq_clause
         assert '::float8::numeric' not in eq_clause
         assert 'trunc(' in eq_clause
-        assert ')::NUMERIC' in eq_clause
+        assert pg_numeric_accessor('n') in eq_clause
 
         # IN with a float member: same per-member integrality CASE, no stored-side truncation.
         in_b = MetadataQueryBuilder(backend_type='postgresql')
@@ -128,7 +131,7 @@ class TestMetadataQueryBuilder:
         assert '::DOUBLE PRECISION' not in simple_clause
         assert '::float8::numeric' not in simple_clause
         assert 'trunc(' in simple_clause
-        assert ')::NUMERIC' in simple_clause
+        assert pg_numeric_accessor('n') in simple_clause
 
     @pytest.mark.parametrize('bad', [float('nan'), float('inf'), float('-inf')])
     def test_non_finite_filter_value_rejected(self, bad: float) -> None:
@@ -246,7 +249,7 @@ class TestMetadataQueryBuilder:
         fclause, fparams = fb.build_where_clause()
         assert 'jsonb_array_elements' in fclause
         assert "jsonb_typeof(elem) = 'number'" in fclause
-        assert "(elem #>> '{}')::NUMERIC" in fclause
+        assert pg_total_numeric('elem', "elem #>> '{}'") in fclause
         assert '@>' not in fclause
         # The numeric member is bound as the raw float, not json.dumps text.
         assert fparams == [3.602879701896397e16]

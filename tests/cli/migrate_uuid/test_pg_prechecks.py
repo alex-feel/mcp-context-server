@@ -292,7 +292,48 @@ class TestIndexedMetadataFields:
         column, reason = found
         assert column == 'metadata.priority'
         assert 'not a valid integer' in reason
+        assert 'the PostgreSQL expression index evaluates that cast on every INSERT' in reason
         assert 'skipped' in reason
+
+    def test_float_field_holding_a_non_number_is_flagged_by_its_declared_type(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-number under a float-typed field loses its row because of the declared type.
+
+        The float index casts JSON numbers only, so the target could store the value;
+        the row is skipped because the running server refuses a value that is not a
+        float under a field declared float, and the reason says so instead of citing
+        an index cast.
+
+        Args:
+            monkeypatch: Used to configure a float-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'score:float')
+        get_settings.cache_clear()
+
+        found = first_pg_unindexable_metadata_field(json.dumps({'score': 'high'}))
+
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.score'
+        assert 'not a valid float' in reason
+        assert 'METADATA_INDEXED_FIELDS declares the field float' in reason
+        assert 'expression index' not in reason
+        assert 'skipped' in reason
+
+    def test_float_field_holding_a_number_passes(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A JSON number and a numeric string under a float-typed field migrate untouched.
+
+        Args:
+            monkeypatch: Used to configure a float-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'score:float')
+        get_settings.cache_clear()
+
+        assert first_pg_unindexable_metadata_field(json.dumps({'score': 3.5})) is None
+        assert first_pg_unindexable_metadata_field(json.dumps({'score': '3.5'})) is None
 
     def test_typed_field_holding_a_castable_value_passes(
         self, monkeypatch: pytest.MonkeyPatch,

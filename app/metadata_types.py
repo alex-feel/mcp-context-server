@@ -69,7 +69,7 @@ MAX_METADATA_BIND_PARAMS = 30_000
 # event-loop time to build and full parse+plan time on every call, because a statement
 # this large also exceeds asyncpg's cacheable-statement size. The largest legal
 # combination under the current caps (100 filters times 100 float IN members, with
-# ordinary short keys) builds roughly 0.6 MB, so this budget leaves meaningful headroom
+# ordinary short keys) builds roughly 0.65 MB, so this budget leaves meaningful headroom
 # for longer key paths while bounding the pathological cases (very long key paths, or a
 # future expression change that grows the per-filter SQL). Exceeding it raises
 # ValueError from the builder, which every construction site routes into the
@@ -242,10 +242,16 @@ _PG_NUMERIC_RE = re.compile(
 )
 
 # The METADATA_INDEXED_FIELDS type hints app/migrations/metadata.py turns into a hard
-# SQL cast inside the PostgreSQL expression index. 'string' adds no cast, and
-# 'array'/'object' build no expression index at all (the always-present GIN index
-# serves them), so neither can fail a cast.
-_PG_CAST_HINTS = frozenset({'integer', 'boolean', 'float'})
+# SQL cast of the stored text inside the PostgreSQL expression index
+# (``((metadata->>'<field>')::INTEGER)``), mapped to that cast. PostgreSQL evaluates
+# the cast on every INSERT, so a value it rejects aborts the write.
+PG_INDEX_TEXT_CASTS: dict[str, str] = {'integer': '::INTEGER', 'boolean': '::BOOLEAN'}
+
+# The type hints whose values must parse as the declared type. 'float' indexes JSON
+# numbers only, through a cast that never fails, and its values are held to the
+# declared type all the same. 'string' declares no type, and 'array'/'object' build no
+# expression index at all (the always-present GIN index serves them).
+_PG_CAST_HINTS = frozenset({*PG_INDEX_TEXT_CASTS, 'float'})
 
 
 def _truncate_for_message(text: str, limit: int = 60) -> str:
@@ -298,22 +304,25 @@ def _pg_integer_input(candidate: str) -> tuple[bool, int | None]:
 
 
 def pg_indexed_cast_error(field: str, value: object, type_hint: str) -> str | None:
-    """Return an error message when a value cannot survive its index's SQL cast.
+    """Return an error message when a value does not parse as its indexed field's declared type.
 
-    A ``METADATA_INDEXED_FIELDS`` entry may carry a type hint, and on PostgreSQL
-    ``integer``/``boolean``/``float`` become a hard cast inside the expression index
-    (``((metadata->>'<field>')::INTEGER)`` and siblings). PostgreSQL evaluates an
+    A ``METADATA_INDEXED_FIELDS`` entry may declare a type hint, and a value stored
+    under an ``integer``/``boolean``/``float`` field must parse as that type on both
+    backends. For ``integer`` and ``boolean`` the type is also a hard cast inside the
+    PostgreSQL expression index (:data:`PG_INDEX_TEXT_CASTS`). PostgreSQL evaluates an
     expression index ON INSERT, so a value that satisfies the index's
     ``IS NOT NULL`` predicate but does not survive the cast aborts the write with a
     raw driver error -- after a full generation pass, inside the transaction, and
     charging the circuit breaker -- while SQLite's uncast ``json_extract`` index
-    stores the identical value happily. Validating here at the write boundary makes
+    stores the identical value happily. The ``float`` index casts JSON numbers only
+    and accepts every stored value, so there the declared type alone is the reason a
+    value that is not a number is refused. Validating here at the write boundary makes
     both backends accept and reject identically, before any generation runs.
 
-    The checks mirror PostgreSQL's own input parsers applied to the TEXT rendering
-    ``->>`` produces, so a value PostgreSQL would accept is not refused: a JSON
-    string ``"5"`` renders as ``5`` and casts fine, whereas a JSON number ``5.5``
-    renders as ``5.5`` and does not cast to INTEGER.
+    The checks mirror PostgreSQL's own INTEGER, BOOLEAN and NUMERIC input parsers
+    applied to the TEXT rendering ``->>`` produces, so a value PostgreSQL would accept
+    is not refused: a JSON string ``"5"`` renders as ``5`` and parses as an integer,
+    whereas a JSON number ``5.5`` renders as ``5.5`` and does not.
 
     Args:
         field: The metadata key, used in the message.
@@ -321,13 +330,13 @@ def pg_indexed_cast_error(field: str, value: object, type_hint: str) -> str | No
         type_hint: The configured type hint for the field.
 
     Returns:
-        An error message when the value cannot be cast, or None when it can (or when
-        the hint produces no cast).
+        An error message when the value does not parse as the declared type, or None
+        when it does (or when the hint declares no type).
     """
     if type_hint not in _PG_CAST_HINTS:
         return None
-    # A JSON null renders as SQL NULL, which the index's own
-    # ``WHERE metadata->>'<field>' IS NOT NULL`` predicate excludes, so no cast runs.
+    # A JSON null stores no value: it renders as SQL NULL, which every typed index's
+    # predicate excludes, so no cast runs and no type applies.
     if value is None:
         return None
 
@@ -368,9 +377,9 @@ def pg_indexed_cast_error(field: str, value: object, type_hint: str) -> str | No
     if type_hint == 'boolean':
         return None if candidate.lower() in _PG_BOOLEAN_LITERALS else invalid
 
-    # 'float' -> ::NUMERIC. NUMERIC accepts every INTEGER literal form as well, including
-    # the non-decimal bases, so the integer grammar is consulted before declaring the
-    # value invalid ('0x10'::numeric is 16 on PostgreSQL 16+).
+    # 'float' follows NUMERIC input, which accepts every INTEGER literal form as well,
+    # including the non-decimal bases, so the integer grammar is consulted before
+    # declaring the value invalid ('0x10'::numeric is 16 on PostgreSQL 16+).
     if _PG_NUMERIC_RE.match(candidate) or candidate.lower() in _PG_NUMERIC_SPECIALS:
         return None
     return None if _pg_integer_input(candidate)[0] else invalid

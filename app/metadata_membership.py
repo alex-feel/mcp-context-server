@@ -12,6 +12,7 @@ from app.metadata_sql import pg_ci
 from app.metadata_sql import pg_int_origin_probe
 from app.metadata_sql import pg_json_accessor
 from app.metadata_sql import pg_number_guard
+from app.metadata_sql import pg_numeric_accessor
 from app.metadata_sql import pg_safe_float8
 from app.metadata_sql import pg_text_accessor
 from app.metadata_sql import pg_text_guard
@@ -112,23 +113,24 @@ class MembershipConditionsMixin:
                 # (pg_int_origin_probe) and the double fallback (pg_safe_float8, which
                 # inlines two long decimal literals) depend only on the STORED value, not on
                 # the member, so the whole member list rides ONE discriminator with an IN list
-                # on each arm. Rebuilding the discriminator per member made the generated
-                # statement text grow by kilobytes per FLOAT member while the bind count grew
-                # by one, so a fully cap-legal request (100 filters x 100 float members) built
-                # tens of megabytes of SQL on PostgreSQL and kilobytes on SQLite.
+                # on each arm. A discriminator per member would grow the generated statement
+                # text by kilobytes per FLOAT member while the bind count grew by one, so a
+                # fully cap-legal request (100 filters x 100 float members) would build tens of
+                # megabytes of SQL on PostgreSQL.
                 # INT and FLOAT members stay separated because their semantics differ: an int
                 # param compares exact NUMERIC for EVERY stored value, while a float param
                 # takes the discriminator (see pg_numeric_compare).
-                # Wrap the whole OR-group in an explicit jsonb_typeof = 'number' boolean guard
-                # (pg_number_guard), mirroring SQLite's sqlite_number_guard AND-form: an
-                # explicit boolean guard (rather than a value-or-NULL accessor) is required for
-                # NOT_IN, which is `present AND NOT match` -- for a present NON-number stored
-                # value a NULL match would make NOT NULL stay NULL and drop the row on
-                # PostgreSQL, while SQLite's explicit FALSE guard yields NOT FALSE -> TRUE and
-                # KEEPS it. The guard forces a deterministic FALSE for a non-number on BOTH
-                # backends, so IN and NOT_IN agree.
+                # The stored value is read through the total accessor (pg_numeric_accessor),
+                # which is NULL for a non-number, so no stored value can make the group raise.
+                # The whole OR-group is also wrapped in an explicit jsonb_typeof = 'number'
+                # boolean guard (pg_number_guard), mirroring SQLite's sqlite_number_guard
+                # AND-form, because NOT_IN is `present AND NOT match`: for a present NON-number
+                # stored value the accessor's NULL match would make NOT NULL stay NULL and drop
+                # the row on PostgreSQL, while SQLite's explicit FALSE guard yields
+                # NOT FALSE -> TRUE and KEEPS it. The guard forces a deterministic FALSE for a
+                # non-number on BOTH backends, so IN and NOT_IN agree.
                 num_guard = pg_number_guard(key_path)
-                num = f'({acc})::NUMERIC'
+                num = pg_numeric_accessor(key_path)
                 int_placeholders: list[str] = []
                 float_placeholders: list[str] = []
                 for m in numeric_members:

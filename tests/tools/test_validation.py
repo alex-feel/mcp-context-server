@@ -322,11 +322,14 @@ class TestImageCountLimitToolSchema:
 class TestIndexedValueCastCompatibility:
     """A typed METADATA_INDEXED_FIELDS entry is validated at the write boundary.
 
-    An ``integer``/``boolean``/``float`` type hint becomes a hard SQL cast inside
-    the PostgreSQL expression index, which PostgreSQL evaluates on INSERT. Without a
-    boundary check a cast-incompatible value passed every guard, paid the full
-    generation pass, and then aborted the transaction with a raw driver error --
-    while storing happily on SQLite, whose json_extract index applies no cast.
+    A value under an ``integer``/``boolean``/``float`` field must parse as the
+    declared type on both backends. An ``integer`` or ``boolean`` type hint is also a
+    hard SQL cast inside the PostgreSQL expression index, which PostgreSQL evaluates on
+    INSERT, so without the boundary check such a value would pass every guard, pay the
+    full generation pass, and then abort the transaction with a raw driver error --
+    while storing happily on SQLite, whose json_extract index applies no cast. The
+    ``float`` index casts JSON numbers only, so a non-number under a float field is
+    refused for its declared type alone.
     """
 
     @pytest.fixture

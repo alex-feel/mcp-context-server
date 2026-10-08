@@ -153,13 +153,14 @@ async def update_context(
         # idx_tags_tag inside the transaction, after a wasted generation pass.
         reject_oversized_tags(tags)
 
-        # Reject an over-long or cast-incompatible value under an INDEXED metadata key,
-        # in both the replacement and the merge-patch form: each lands in that field's
-        # expression btree index (idx_metadata_<field>), whose index-tuple ceiling --
-        # and, for a typed field, whose SQL cast -- aborts the UPDATE inside the
-        # transaction where SQLite stores it. thread_id is immutable on this path, so
-        # only metadata is checked. Runs in the input-validation phase, alongside the
-        # tag caps and before any database work.
+        # Reject an over-long value, or one that does not parse as its field's declared
+        # type, under an INDEXED metadata key, in both the replacement and the
+        # merge-patch form: each lands in that field's expression btree index
+        # (idx_metadata_<field>), whose index-tuple ceiling -- and, for an integer or
+        # boolean field, whose SQL cast -- aborts the UPDATE inside the transaction
+        # where SQLite stores it. thread_id is immutable on this path, so only
+        # metadata is checked. Runs in the input-validation phase, alongside the tag
+        # caps and before any database work.
         for meta_value in (metadata, metadata_patch):
             reject_invalid_indexed_values(metadata=meta_value)
 

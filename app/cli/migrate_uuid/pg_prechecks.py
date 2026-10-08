@@ -8,6 +8,7 @@ import json
 from collections.abc import Iterable
 from typing import cast
 
+from app.metadata_types import PG_INDEX_TEXT_CASTS
 from app.metadata_types import non_finite_metadata_error
 from app.metadata_types import pg_indexed_cast_error
 from app.metadata_types import pg_indexed_metadata_text
@@ -182,28 +183,30 @@ def first_pg_unindexable_column(
 
 
 def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str, str] | None:
-    """Return the first indexed metadata field a PostgreSQL target cannot index, else None.
+    """Return the first indexed metadata field whose value a PostgreSQL target refuses, else None.
 
     A ``METADATA_INDEXED_FIELDS`` key gets an expression btree index
-    ``idx_metadata_<field>`` on ``context_entries((metadata->>'<field>'))``
-    (app.migrations.metadata), evaluated on every INSERT. SQLite's equivalent
-    ``json_extract`` index has neither a size limit nor a cast, so a source can hold a
-    value the target cannot index at all -- aborting the whole run when the target
-    already carries the index, or breaking the target's first server startup (which
-    creates the index) when the CLI initialized the target itself. Both ways that
-    happens are checked, in the order they would fail:
+    ``idx_metadata_<field>`` on ``context_entries`` (app.migrations.metadata),
+    evaluated on every INSERT. SQLite's equivalent ``json_extract`` index has neither
+    a size limit nor a cast, so a source can hold a value the target cannot index at
+    all -- aborting the whole run when the target already carries the index, or
+    breaking the target's first server startup (which creates the index) when the CLI
+    initialized the target itself -- or a value of another type than the field
+    declares, which the running server refuses to store. Each is checked, in the
+    order it would fail:
 
     * WIDTH, for a ``string``-typed field, whose TEXT btree entry is bounded by the
       index-tuple ceiling that also bounds thread_id and tags. The width is measured on
       the text the expression YIELDS (:func:`~app.metadata_types.pg_indexed_metadata_text`),
       so a list or object is measured as the whole serialized JSON ``->>`` renders it as.
-    * CAST COMPATIBILITY, for an ``integer``/``boolean``/``float``-typed field, whose
-      index expression carries a hard SQL cast the value must survive. This is the same
-      check the write boundary applies
+    * DECLARED TYPE, for an ``integer``/``boolean``/``float``-typed field, whose value
+      must parse as that type. This is the same check the write boundary applies
       (:func:`~app.metadata_types.pg_indexed_cast_error`), so a value the running server
       would refuse to store is a value the migration refuses to import -- SQLite happily
-      holds ``{"priority": "high"}`` under an integer-typed field, and the cast is where
-      that stops being portable.
+      holds ``{"priority": "high"}`` under an integer-typed field. For ``integer`` and
+      ``boolean`` the target's index expression also carries a hard SQL cast the value
+      would fail on INSERT, and the skip reason says so; the ``float`` index casts JSON
+      numbers only, so its skip reason names the declared type.
 
     ``array``/``object``-typed fields are exempt from both: they build no expression
     index at all, being served by the always-present jsonb_path_ops GIN index, which
@@ -241,12 +244,18 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
             continue
         cast_error = pg_indexed_cast_error(key, value, type_hint)
         if cast_error is not None:
+            cause = (
+                'the PostgreSQL expression index evaluates that cast on every INSERT while '
+                'SQLite indexes the value uncast'
+                if type_hint in PG_INDEX_TEXT_CASTS
+                else f'METADATA_INDEXED_FIELDS declares the field {type_hint}, and the server '
+                f'refuses such a value on both backends'
+            )
             return (
                 f'metadata.{key}',
                 (
-                    f'{cast_error}; the PostgreSQL expression index evaluates that cast on every '
-                    f'INSERT while SQLite indexes the value uncast, so this row is skipped -- '
-                    f'correct the value in the source database and rerun to migrate it'
+                    f'{cast_error}; {cause}, so this row is skipped -- correct the value in the '
+                    f'source database and rerun to migrate it'
                 ),
             )
     return None

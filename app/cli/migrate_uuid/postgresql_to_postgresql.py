@@ -277,9 +277,11 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 # PostgreSQL base schema (a database this CLI initialized has none until
                 # its first server startup), so a PostgreSQL SOURCE can legitimately hold
                 # a value the TARGET's idx_metadata_<field> cannot index -- an oversized
-                # one, or one the index's cast rejects. Unchecked, that value aborts the
-                # INSERT mid-transaction and rolls the whole run back with a raw driver
-                # error naming no source row. thread_id and tags need no equivalent check
+                # one, or one an integer or boolean index's cast rejects. Unchecked, that
+                # value aborts the INSERT mid-transaction and rolls the whole run back
+                # with a raw driver error naming no source row. The same check skips a
+                # value that does not parse as a float-typed field's declared type, which
+                # the server refuses to store. thread_id and tags need no equivalent check
                 # here: their indexes ARE in the base schema, so the source could not have
                 # stored a value that breaches them. Checked unconditionally so --dry-run
                 # surfaces the row too.

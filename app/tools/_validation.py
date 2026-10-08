@@ -126,11 +126,12 @@ def indexed_value_error(
     thread_id: str | None = None,
     metadata: object = None,
 ) -> str | None:
-    """Return an error message when a client value cannot survive its index.
+    """Return an error message when a client value breaches its index or its declared type.
 
-    Two dimensions, both of which make PostgreSQL reject INSIDE the store
-    transaction -- after a full generation pass, and while charging the circuit
-    breaker -- what SQLite stores happily:
+    Two dimensions, checked here so both backends accept and reject identically
+    before any generation runs. A breached length or index cast would otherwise make
+    PostgreSQL reject INSIDE the store transaction -- after a full generation pass,
+    and while charging the circuit breaker -- what SQLite stores happily:
 
     * LENGTH. ``tags`` is not the only write-path value PostgreSQL indexes with a
       btree whose index-tuple ceiling (~2704 bytes) rejects an oversized entry.
@@ -143,16 +144,21 @@ def indexed_value_error(
       renders a list or object as its whole serialized JSON, so a container under an
       indexed key is indexed at full width and an inspection restricted to strings
       lets it through to abort the INSERT.
-    * CAST COMPATIBILITY. A ``METADATA_INDEXED_FIELDS`` entry configured with an
-      ``integer``/``boolean``/``float`` type hint puts a hard SQL cast in that
-      expression index, evaluated on every INSERT (see :func:`~app.metadata_types.pg_indexed_cast_error`).
+    * DECLARED TYPE. A value stored under a ``METADATA_INDEXED_FIELDS`` entry
+      configured with an ``integer``/``boolean``/``float`` type hint must parse as
+      that type (see :func:`~app.metadata_types.pg_indexed_cast_error`). For
+      ``integer`` and ``boolean`` the type is a hard SQL cast in that expression
+      index, evaluated on every INSERT; the ``float`` index casts JSON numbers only,
+      so a value that is not a number is refused for the declared type alone.
 
     Values under NON-indexed metadata keys are deliberately not capped or type-checked:
     jsonb imposes no such limit and the always-present GIN index uses
     ``jsonb_path_ops``, which hashes its entries. The same reasoning exempts an
     ``array``/``object``-typed indexed field, which builds no expression index at all
-    and is served by that GIN index, and an ``integer``/``boolean``/``float`` field,
-    whose index datum is the fixed-width cast result rather than the source text.
+    and is served by that GIN index, an ``integer``/``boolean`` field, whose index
+    datum is the fixed-width cast result rather than the source text, and a ``float``
+    field, whose index holds the NUMERIC value of a JSON number rather than the
+    source text.
     Only the top level of ``metadata`` is inspected, because ``metadata->>'<field>'``
     addresses top-level keys only.
 
@@ -200,10 +206,10 @@ def entry_boundary_error(
 
     The single chokepoint the UNTYPED batch paths use where the typed single-entry
     tools rely on their wire schema plus the individual raising guards. It bundles
-    both families of "SQLite accepts it, PostgreSQL rejects it" input so the batch
-    loops carry one call instead of a long boolean chain: PostgreSQL-unstorable
-    strings (embedded NUL, unpaired UTF-16 surrogate) and the length caps plus cast
-    compatibility of the values that land in a PostgreSQL btree index.
+    the checks that keep both backends accepting and rejecting identically so the
+    batch loops carry one call instead of a long boolean chain: PostgreSQL-unstorable
+    strings (embedded NUL, unpaired UTF-16 surrogate) and the length caps plus
+    declared types of the values that land in a PostgreSQL btree index.
 
     Every argument is optional so a call site passes only the fields that shape
     exists (``update`` has no ``thread_id``; ``store`` has no ``metadata_patch``).
@@ -236,7 +242,7 @@ def reject_invalid_indexed_values(
     thread_id: str | None = None,
     metadata: object = None,
 ) -> None:
-    """Raise ``ToolError`` when an indexed client value cannot survive its index.
+    """Raise ``ToolError`` when an indexed client value breaches its index or its declared type.
 
     The raising wrapper used by the single-entry tools; the batch tools call
     :func:`indexed_value_error` directly so they can record a per-entry failure
@@ -247,8 +253,8 @@ def reject_invalid_indexed_values(
         metadata: The client-supplied metadata mapping, or None when absent.
 
     Raises:
-        ToolError: When an indexed value exceeds its length cap or cannot be cast
-            to its configured index type.
+        ToolError: When an indexed value exceeds its length cap or does not parse
+            as its field's declared type.
     """
     message = indexed_value_error(thread_id=thread_id, metadata=metadata)
     if message is not None:

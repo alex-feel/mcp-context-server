@@ -187,9 +187,10 @@ async def store_context(
         # Reject an over-long thread_id or indexed metadata value for the same reason,
         # and at the same point: each also lands in a PostgreSQL btree index whose
         # index-tuple ceiling aborts the INSERT inside the transaction where SQLite
-        # stores the identical value. The same guard rejects a value that cannot
-        # survive the SQL cast a typed METADATA_INDEXED_FIELDS entry puts inside its
-        # expression index, which PostgreSQL evaluates on every INSERT.
+        # stores the identical value. The same guard rejects a value that does not
+        # parse as the type a typed METADATA_INDEXED_FIELDS entry declares; for an
+        # integer or boolean field that type is a cast inside its expression index,
+        # which PostgreSQL evaluates on every INSERT.
         reject_invalid_indexed_values(thread_id=thread_id, metadata=metadata)
 
         # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===

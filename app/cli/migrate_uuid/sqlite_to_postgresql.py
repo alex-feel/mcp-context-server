@@ -181,7 +181,8 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     # bound into the target is inspected too: every
                     # METADATA_INDEXED_FIELDS key is indexed by the expression index
                     # idx_metadata_<field>, under the same btree ceiling for a
-                    # string-typed field and under a hard SQL cast for a typed one.
+                    # string-typed field, and a typed one holds only values of its
+                    # declared type (a hard SQL cast for integer and boolean).
                     unstorable = first_pg_unindexable_column(
                         (('thread_id', row_thread_id, PG_MAX_INDEXED_THREAD_ID_BYTES),),
                     ) or first_pg_unindexable_metadata_field(rewritten_metadata)

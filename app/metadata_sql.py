@@ -170,6 +170,40 @@ def pg_json_accessor(key_path: str) -> str:
     return f"metadata->'{key_path}'"
 
 
+def pg_total_numeric(json_expr: str, text_expr: str) -> str:
+    """``NUMERIC`` value of a stored JSON value, or NULL when it is not a JSON number.
+
+    The only way generated SQL reads a stored value as a number. A JSON number's text
+    form always parses as ``NUMERIC``, while any other stored value (text, boolean,
+    JSON null, an object, an array, an absent key) would make a bare ``::NUMERIC`` cast
+    raise. PostgreSQL does not define the order in which it evaluates the operands of
+    AND and OR (the planner orders qualifications by cost and folds constants), so a
+    type guard ANDed beside a bare cast does not keep the cast from running. ``CASE``
+    does fix the order: the cast runs only for a JSON number, so the expression is
+    total over every stored value.
+
+    Args:
+        json_expr: A SQL expression yielding the stored value as JSONB.
+        text_expr: A SQL expression yielding the same value as TEXT.
+
+    Returns:
+        A ``NUMERIC``-typed SQL expression that is NULL for every non-number.
+    """
+    return f"(CASE WHEN jsonb_typeof({json_expr}) = 'number' THEN ({text_expr})::NUMERIC END)"
+
+
+def pg_numeric_accessor(key_path: str) -> str:
+    """Total ``NUMERIC`` accessor for a metadata key, NULL unless the key holds a JSON number.
+
+    Args:
+        key_path: Dot-separated key WITHOUT the ``$.`` JSONPath prefix.
+
+    Returns:
+        A ``NUMERIC``-typed SQL expression over the metadata column (see :func:`pg_total_numeric`).
+    """
+    return pg_total_numeric(pg_json_accessor(key_path), pg_text_accessor(key_path))
+
+
 def normalize_value(value: str | float | bool | None, *, backend_type: str) -> str | int | float | None:
     """Normalize value for SQL comparison based on backend type.
 
@@ -255,9 +289,10 @@ def pg_numeric_compare(num: str, sql_op: str, placeholder: str, value: float) ->
       round-trip decimal of its nearest double. Everything else (fractional, out-of-int64, or
       an integral value that IS a double's canonical decimal form) is compared double-vs-double
       via ``safe_float8`` on both sides. The probe MUST route through ``::text``: ``float8out``
-      emits the shortest round-trip decimal (Ryu, PostgreSQL 12+; the app pins
-      ``extra_float_digits`` in ``server_settings`` so a cluster override cannot revert it to
-      ``%.15g`` and misclassify), while the direct ``float8::NUMERIC`` cast rounds to ~15
+      emits the shortest round-trip decimal (Ryu, PostgreSQL 12+; every connection runs
+      ``SET extra_float_digits = 1`` through ``session_guc_set_statements`` in
+      ``app/backends/postgresql_backend/session.py``, so a cluster or role default cannot revert
+      it to ``%.15g`` and misclassify), while the direct ``float8::NUMERIC`` cast rounds to ~15
       digits. The int64 guard and ``safe_float8`` are load-bearing: the exact-form probe casts
       to ``float8`` and would raise 22003 on a stored value at/beyond the float8 overflow
       threshold (``_FLOAT8_OVERFLOW`` = 2**1024 - 2**970), so it runs ONLY in the within-int64
@@ -270,11 +305,10 @@ def pg_numeric_compare(num: str, sql_op: str, placeholder: str, value: float) ->
       symmetric low-magnitude band -- a nonzero NUMERIC of magnitude <= ``_FLOAT8_TINY`` (2**-1075,
       the round-to-zero boundary) -- to 0, because such a value underflows to 0.0 when cast and
       PostgreSQL raises 22003 while SQLite reads it as 0.0, so clamping restores both parity and
-      the no-abort contract. A
-      stored ``0.3`` still equals a ``0.3`` param, a stored integer ``2**53+1`` is never
-      collapsed onto a ``2**53`` param, a stored ``float(2**55)`` matches its own value, an
-      out-of-int64 integer compares by double (matching SQLite), and a 309-digit integer no
-      longer aborts the query.
+      the no-abort contract. A stored ``0.3`` equals a ``0.3`` param, a stored integer
+      ``2**53+1`` is never collapsed onto a ``2**53`` param, a stored ``float(2**55)`` matches its
+      own value, an out-of-int64 integer compares by double (matching SQLite), and a 309-digit
+      integer never aborts the query.
 
     Known irreducible residuals (no faithful SQL reconstruction exists):
     - FLOAT param: an in-int64 INT-origin stored value that happens to equal the canonical
@@ -301,7 +335,8 @@ def pg_numeric_compare(num: str, sql_op: str, placeholder: str, value: float) ->
       it is retained; the divergence is a narrow, host-dependent residual.
 
     Args:
-        num: A SQL expression yielding the stored value as ``NUMERIC``.
+        num: A total SQL expression yielding the stored value as ``NUMERIC``, NULL for a
+            non-number (:func:`pg_total_numeric`).
         sql_op: The comparison operator (``=``, ``!=``, ``>``, ``>=``, ``<``, ``<=``).
         placeholder: The bound-parameter placeholder for this comparison.
         value: The numeric filter param (int or float; bool handled separately upstream).
@@ -340,11 +375,12 @@ def pg_int_origin_probe(num: str) -> str:
     short-circuit) guarantees that. Emitting the probe as ONE boolean expression lets the
     caller reference the expensive ``safe_float8`` fallback ONCE instead of once per
     comparison arm, which keeps the generated statement text small (see
-    ``MAX_METADATA_CLAUSE_CHARS``). A NULL stored value yields FALSE here and takes the
-    double branch, the same outcome the nested-CASE form produced.
+    ``MAX_METADATA_CLAUSE_CHARS``). A NULL (a stored value that is not a JSON number)
+    yields FALSE here and takes the double branch, where it compares as NULL.
 
     Args:
-        num: A SQL expression yielding the stored value as ``NUMERIC``.
+        num: A total SQL expression yielding the stored value as ``NUMERIC``, NULL for a
+            non-number (:func:`pg_total_numeric`).
 
     Returns:
         A boolean SQL expression selecting the exact-``NUMERIC`` comparison.
@@ -366,10 +402,11 @@ def pg_safe_float8(num: str) -> str:
     literals ONCE per filter.
 
     Args:
-        num: A SQL expression yielding the stored value as ``NUMERIC``.
+        num: A total SQL expression yielding the stored value as ``NUMERIC``, NULL for a
+            non-number (:func:`pg_total_numeric`).
 
     Returns:
-        A ``float8``-typed SQL expression for the stored value.
+        A ``float8``-typed SQL expression for the stored value, NULL for a non-number.
     """
     return (
         f"CASE WHEN {num} >= {_FLOAT8_OVERFLOW} THEN 'infinity'::float8 "
@@ -383,9 +420,9 @@ def pg_safe_float8(num: str) -> str:
 def pg_numeric_body(key_path: str, sql_op: str, placeholder: str, value: float) -> str:
     """PostgreSQL scalar numeric comparison body (without the JSON-number type guard).
 
-    Thin wrapper: builds the ``NUMERIC`` accessor for ``key_path`` and delegates to
-    :func:`pg_numeric_compare`, the shared exact/double discriminator also used by
-    ``array_contains`` numeric members.
+    Thin wrapper: builds the total ``NUMERIC`` accessor for ``key_path``
+    (:func:`pg_numeric_accessor`) and delegates to :func:`pg_numeric_compare`, the shared
+    exact/double discriminator also used by ``array_contains`` numeric members.
 
     Args:
         key_path: The metadata key path (without the leading ``$.``).
@@ -394,9 +431,10 @@ def pg_numeric_body(key_path: str, sql_op: str, placeholder: str, value: float) 
         value: The numeric filter param (int or float; bool handled separately upstream).
 
     Returns:
-        A boolean SQL expression comparing the stored number to the param.
+        A boolean SQL expression comparing the stored number to the param, NULL for a
+        stored non-number.
     """
-    num = f'({pg_text_accessor(key_path)})::NUMERIC'
+    num = pg_numeric_accessor(key_path)
     return pg_numeric_compare(num, sql_op, placeholder, value)
 
 
@@ -405,11 +443,13 @@ def pg_number_guard(key_path: str) -> str:
 
     Parity counterpart of :func:`sqlite_number_guard`: ``jsonb_typeof(...) = 'number'`` is
     true only for a JSON number, so a non-number value -- text, boolean, JSON null, or an
-    absent key -- never matches any numeric operator and the query never aborts on a
-    ``(metadata->>'k')::NUMERIC`` of non-numeric text. Paired with :func:`pg_numeric_body`
-    (which assumes a JSON number) as an explicit ``guard AND body``; the explicit boolean guard
-    (rather than a value-or-NULL accessor) keeps NOT_IN's ``present AND NOT match``
-    deterministic for a present non-number on BOTH backends.
+    absent key -- never matches any numeric operator. Paired with :func:`pg_numeric_body` as
+    an explicit ``guard AND body``. The guard does not keep the query from aborting:
+    PostgreSQL does not define the order in which it evaluates the operands of AND, so
+    totality comes from the accessor (:func:`pg_total_numeric`), which reads a non-number as
+    NULL. The explicit boolean guard keeps NOT_IN's ``present AND NOT match`` deterministic
+    for a present non-number on BOTH backends: the guard is FALSE where the accessor's NULL
+    would leave the negated match NULL and drop the row on PostgreSQL only.
 
     Args:
         key_path: The metadata key path (without the leading ``$.``).
