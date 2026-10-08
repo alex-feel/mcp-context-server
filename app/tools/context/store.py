@@ -10,6 +10,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
 from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
 from app.metadata_types import non_finite_metadata_error
@@ -145,7 +146,7 @@ async def store_context(
         # publish gate on the EFFECTIVE value: a caller-omitted visibility that
         # defaults to 'public' is still a publish and still needs the role.
         principal = resolve_effective_principal()
-        scope = principal.access_scope()
+        scope = resolve_write_scope(principal)
         effective_visibility: str = (
             visibility if visibility is not None else settings.access_control.default_visibility
         )

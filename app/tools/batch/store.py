@@ -12,6 +12,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
 from app.errors import format_exception_message
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -97,7 +98,7 @@ async def store_context_batch(
         # under, and the author-group grant policy; the publish gate is then
         # enforced per entry on each entry's EFFECTIVE visibility.
         principal = resolve_effective_principal()
-        scope = principal.access_scope()
+        scope = resolve_write_scope(principal)
         author_group_grants: frozenset[str] = (
             principal.groups
             if settings.access_control.default_group_grants == 'author_groups'

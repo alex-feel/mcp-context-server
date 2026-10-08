@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 # ACCESS_CONTROL_DEFAULT_PRINCIPAL ('local'), which carries no groups.
 LOCAL_SCOPE = AccessScope('local', frozenset())
 
+# The scope the write tools build for that request: with ACCESS_CONTROL_PUBLISH_ROLE
+# unset any caller may publish, so resolve_write_scope sets may_publish.
+LOCAL_WRITE_SCOPE = AccessScope('local', frozenset(), may_publish=True)
+
 
 def is_ollama_model_available(
     model: str | None = None,

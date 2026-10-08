@@ -28,8 +28,8 @@ See also:
     - app.auth.simple_token: SimpleTokenVerifier implementation
     - app.auth.claims: IdP-agnostic claim extraction helpers
     - app.auth.principal: per-request RequestPrincipal resolution
-    - app.auth.access: effective-principal and access-scope resolution and the
-      publish gate (the scope types live in app.access_scope)
+    - app.auth.access: effective-principal, access-scope and write-scope
+      resolution and the publish gate (the scope types live in app.access_scope)
     - app.settings.auth.AuthSettings: Authentication configuration
     - FastMCP authentication docs: https://gofastmcp.com/servers/auth
 """
@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING
 
 from app.auth.access import resolve_access_scope
 from app.auth.access import resolve_effective_principal
+from app.auth.access import resolve_write_scope
 from app.auth.access import visibility_denied_reason
 from app.auth.principal import RequestPrincipal
 from app.auth.principal import resolve_request_principal
@@ -62,6 +63,7 @@ __all__ = [
     'resolve_access_scope',
     'resolve_effective_principal',
     'resolve_request_principal',
+    'resolve_write_scope',
     'visibility_denied_reason',
 ]
 

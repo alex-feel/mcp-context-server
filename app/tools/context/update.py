@@ -9,6 +9,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
 from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
@@ -170,7 +171,7 @@ async def update_context(
         # entry exists: prefix resolution and the probe below see only the entries
         # the caller may read, and the publish gate needs the caller's roles.
         principal = resolve_effective_principal()
-        scope = principal.access_scope()
+        scope = resolve_write_scope(principal)
 
         # Boundary normalization: accept full hex (32 or 36 chars) or 8-31 char hex prefix
         try:

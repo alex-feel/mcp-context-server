@@ -190,7 +190,7 @@ class TestBatchStoreScope:
                 atomic=atomic,
             )
 
-        expected = AccessScope('bob', frozenset({'team-x'}))
+        expected = AccessScope('bob', frozenset({'team-x'}), may_publish=True)
         precheck_call = precheck.await_args
         store_call = store.await_args
         assert result['results'][0]['success'] is True

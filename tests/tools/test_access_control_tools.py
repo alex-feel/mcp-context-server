@@ -6,12 +6,14 @@ matches another principal's entry), the publish gate on both
 store and update, the owner-only visibility change on update_context /
 update_context_batch (reachable only for entries the caller may read; another
 principal's private entry is not found), the not-authorized denial for an entry
-the caller may read but not modify, author-group grant stamping, and the
+the caller may read but not modify, author-group grant stamping, the
+publish permission the four write tools carry in their scope, and the
 invariant that owner_id is never a tool parameter.
 """
 
 import inspect
 import sqlite3
+from typing import Any
 from typing import get_args
 from unittest.mock import AsyncMock
 from unittest.mock import patch
@@ -20,6 +22,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import app.startup
+from app.access_scope import AccessScope
 from app.auth.principal import RequestPrincipal
 from app.settings import get_settings
 from tests.helpers import as_principal
@@ -558,3 +561,64 @@ class TestAuthorGroupGrants:
         assert backend is not None
         grants = await read_grants(backend, result['context_id'])
         assert grants == []
+
+
+# The ContextRepository method each write tool hands its scope to first.
+_WRITE_TOOL_SEAMS = {
+    'store_context': 'store_with_deduplication',
+    'store_context_batch': 'store_with_deduplication',
+    'update_context': 'check_entry_exists',
+    'update_context_batch': 'check_entry_exists',
+}
+
+
+async def _invoke_write_tool(tool: str, target_id: str) -> None:
+    from app.tools.batch.store import store_context_batch
+    from app.tools.batch.update import update_context_batch
+    from app.tools.context.store import store_context
+    from app.tools.context.update import update_context
+
+    if tool == 'store_context':
+        await store_context(thread_id='write-scope', source='agent', text='write-scope store')
+    elif tool == 'store_context_batch':
+        await store_context_batch(entries=[{'thread_id': 'write-scope', 'source': 'agent', 'text': 'write-scope batch'}])
+    elif tool == 'update_context':
+        await update_context(context_id=target_id, text='write-scope update')
+    else:
+        await update_context_batch(updates=[{'context_id': target_id, 'text': 'write-scope batch update'}])
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestWriteScopePublishPermission:
+    """The four write tools run under resolve_write_scope, whose scope carries the caller's publish permission."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('roles', [frozenset({'publisher'}), frozenset[str]()], ids=['publisher', 'no-role'])
+    @pytest.mark.parametrize('tool', sorted(_WRITE_TOOL_SEAMS))
+    async def test_write_tool_scope_carries_the_publish_permission(
+        self, tool: str, roles: frozenset[str], monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With a publish role configured, the scope reaching the repository says whether the caller holds it."""
+        from app.repositories.context_repository import ContextRepository
+        from app.tools.context.store import store_context
+
+        seam = _WRITE_TOOL_SEAMS[tool]
+        original = getattr(ContextRepository, seam)
+        scopes: list[AccessScope] = []
+
+        async def _spy(self: ContextRepository, *args: Any, **kwargs: Any) -> object:
+            scopes.append(kwargs['scope'])
+            return await original(self, *args, **kwargs)
+
+        monkeypatch.setenv('ACCESS_CONTROL_PUBLISH_ROLE', 'publisher')
+        get_settings.cache_clear()
+        try:
+            with as_principal('alice', groups=['team-x'], roles=roles):
+                target = await store_context(thread_id='write-scope', source='agent', text=f'{tool} target')
+                with patch.object(ContextRepository, seam, _spy):
+                    await _invoke_write_tool(tool, target['context_id'])
+        finally:
+            get_settings.cache_clear()
+
+        assert scopes
+        assert set(scopes) == {AccessScope('alice', frozenset({'team-x'}), may_publish=bool(roles))}

@@ -21,6 +21,7 @@ from app.repositories.context_repository.records import EntryProbe
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.startup import ensure_repositories
 from tests.helpers import LOCAL_SCOPE
+from tests.helpers import LOCAL_WRITE_SCOPE
 from tests.helpers import preserve_summary_state
 
 store_context = app.tools.store_context
@@ -178,7 +179,7 @@ class TestSummaryStoreWithMocks:
             source='agent',
             content_type='text',
             text_content=long_text,
-            scope=LOCAL_SCOPE,
+            scope=LOCAL_WRITE_SCOPE,
             visibility='private',
             metadata=None,
             summary='Generated summary',

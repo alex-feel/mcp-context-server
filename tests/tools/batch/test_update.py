@@ -10,7 +10,7 @@ from fastmcp.exceptions import ToolError
 
 from app.access_scope import Scope
 from app.repositories.context_repository.records import EntryProbe
-from tests.helpers import LOCAL_SCOPE
+from tests.helpers import LOCAL_WRITE_SCOPE
 from tests.tools.batch._mocks import make_mock_txn
 
 
@@ -345,7 +345,7 @@ class TestUpdateBatchSiblingNotDropped:
         exists_results = [EntryProbe(True, 'user', 0, 'local', True), EntryProbe(False, None, None, None, False)]
 
         async def exists_side_effect(_context_id: str, *, scope: Scope) -> EntryProbe:
-            assert scope == LOCAL_SCOPE
+            assert scope == LOCAL_WRITE_SCOPE
             return exists_results.pop(0)
 
         with (
