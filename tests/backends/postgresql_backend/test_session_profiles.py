@@ -1,4 +1,4 @@
-"""Tests for app/backends/postgresql_backend/session_profiles.py and the write paths that bind through it."""
+"""Tests for app/backends/postgresql_backend/session_profiles.py and the entry points that bind through it."""
 
 import contextlib
 from collections.abc import AsyncIterator
@@ -13,6 +13,7 @@ import pytest
 from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessScope
 from app.backends.base import MAINTENANCE
+from app.backends.base import ROUTABLE_TABLES
 from app.backends.base import BackendAccess
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.backends.postgresql_backend.session_profiles import SessionProfile
@@ -23,12 +24,11 @@ ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True)
 
 
 class RecordingProfile:
-    """A session profile that records each bind into a shared event log."""
+    """A session profile that records each bind and relation request into a shared event log."""
 
-    wraps_reads = False
-
-    def __init__(self, events: list[tuple[str, object]]) -> None:
+    def __init__(self, events: list[tuple[str, object]], *, wraps_reads: bool = False) -> None:
         self._events = events
+        self.wraps_reads = wraps_reads
 
     def session_statements(self) -> list[str]:
         return []
@@ -36,6 +36,10 @@ class RecordingProfile:
     async def bind(self, conn: 'asyncpg.pool.PoolConnectionProxy[asyncpg.Record]', access: BackendAccess) -> None:
         self._events.append(('bind', access))
         self._events.append(('bind-connection', conn))
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        self._events.append(('relation', (table, alias)))
+        return f'recorded:{table}:{alias}'
 
 
 def _recording_connection(events: list[tuple[str, object]]) -> MagicMock:
@@ -103,6 +107,26 @@ class TestUnboundProfile:
 
     def test_satisfies_the_session_profile_protocol(self) -> None:
         assert isinstance(UnboundProfile(), SessionProfile)
+
+    @pytest.mark.parametrize('table', sorted(ROUTABLE_TABLES))
+    def test_relation_named_by_its_own_alias_is_the_bare_table(self, table: str) -> None:
+        assert UnboundProfile().readable_relation(table, alias=table) == table
+
+    @pytest.mark.parametrize('table', sorted(ROUTABLE_TABLES))
+    def test_relation_with_a_distinct_alias_keeps_the_alias(self, table: str) -> None:
+        assert UnboundProfile().readable_relation(table, alias='ce') == f'{table} ce'
+
+    @pytest.mark.parametrize(
+        'table', ['context_entry_grants', 'context_entries_fts', 'compression_metadata', 'CONTEXT_ENTRIES'],
+    )
+    def test_table_outside_the_routable_set_is_refused(self, table: str) -> None:
+        with pytest.raises(ValueError, match='routable'):
+            UnboundProfile().readable_relation(table, alias='ce')
+
+    @pytest.mark.parametrize('alias', ['', 'CE', '1ce', 'ce x', 'ce;', 'ce\n'])
+    def test_malformed_alias_is_refused(self, alias: str) -> None:
+        with pytest.raises(ValueError, match='alias'):
+            UnboundProfile().readable_relation('context_entries', alias=alias)
 
 
 class TestExecuteWriteBinding:
@@ -184,3 +208,82 @@ class TestBeginTransactionBinding:
             pass
 
         conn.execute.assert_not_awaited()
+
+
+class TestExecuteReadBinding:
+    """execute_read hands the caller's identity to the profile, inside a transaction only when the profile wraps reads."""
+
+    @pytest.mark.asyncio
+    async def test_wrapping_profile_binds_first_inside_a_transaction(self) -> None:
+        events: list[tuple[str, object]] = []
+        backend = _backend(RecordingProfile(events, wraps_reads=True))
+        conn = _recording_connection(events)
+        _serve_connections(backend, [conn])
+
+        async def operation(_conn: object, value: str) -> str:
+            events.append(('operation', value))
+            return value
+
+        result = await backend.execute_read(operation, 'read', access_scope=ALICE)
+
+        assert result == 'read'
+        assert events == [
+            ('begin', None), ('bind', ALICE), ('bind-connection', conn), ('operation', 'read'), ('commit', None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_non_wrapping_profile_runs_the_read_as_issued(self) -> None:
+        events: list[tuple[str, object]] = []
+        backend = _backend(RecordingProfile(events))
+        _serve_connections(backend, [_recording_connection(events)])
+
+        async def operation(_conn: object) -> str:
+            events.append(('operation', None))
+            return 'read'
+
+        assert await backend.execute_read(operation, access_scope=ALICE) == 'read'
+        assert events == [('operation', None)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('access', [ALICE, SYSTEM_SCOPE, MAINTENANCE], ids=['request', 'system', 'maintenance'])
+    async def test_unbound_profile_issues_no_statement(self, access: BackendAccess) -> None:
+        backend = _backend(UnboundProfile())
+        conn = _recording_connection([])
+        _serve_connections(backend, [conn])
+
+        async def operation(_conn: object) -> str:
+            return 'read'
+
+        assert await backend.execute_read(operation, access_scope=access) == 'read'
+        conn.transaction.assert_not_called()
+        conn.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_access_scope_never_reaches_the_operation(self) -> None:
+        backend = _backend(UnboundProfile())
+        _serve_connections(backend, [_recording_connection([])])
+        received: dict[str, object] = {}
+
+        async def operation(_conn: object, **kwargs: object) -> None:
+            received.update(kwargs)
+
+        await backend.execute_read(operation, access_scope=MAINTENANCE, marker='kept')
+
+        assert received == {'marker': 'kept'}
+
+
+class TestReadableRelation:
+    """The backend names a readable relation through its profile."""
+
+    def test_backend_delegates_to_its_profile(self) -> None:
+        events: list[tuple[str, object]] = []
+        backend = _backend(RecordingProfile(events))
+
+        assert backend.readable_relation('context_entries', alias='ce') == 'recorded:context_entries:ce'
+        assert events == [('relation', ('context_entries', 'ce'))]
+
+    def test_unbound_backend_renders_the_base_form(self) -> None:
+        backend = _backend(UnboundProfile())
+
+        assert backend.readable_relation('context_entries', alias='context_entries') == 'context_entries'
+        assert backend.readable_relation('tags', alias='t') == 'tags t'

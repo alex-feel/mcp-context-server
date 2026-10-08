@@ -211,7 +211,7 @@ async def _bind_on_reader(backend: StorageBackend, count: int) -> None:
     def _read(conn: sqlite3.Connection) -> None:
         conn.execute(_select_binds(count), [0] * count).fetchone()
 
-    await backend.execute_read(_read)
+    await backend.execute_read(_read, access_scope=MAINTENANCE)
 
 
 async def _bind_on_writer(backend: StorageBackend, count: int) -> None:

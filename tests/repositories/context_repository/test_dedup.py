@@ -105,7 +105,8 @@ class TestContextRepositoryDeduplication:
             return str(row[0])
 
         # The newer text's hash survives untouched.
-        assert await repos.context.backend.execute_read(_hash_now) == compute_content_hash('Newer text')
+        hash_now = await repos.context.backend.execute_read(_hash_now, access_scope=MAINTENANCE)
+        assert hash_now == compute_content_hash('Newer text')
 
     @pytest.mark.asyncio
     async def test_deduplication_different_content(

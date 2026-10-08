@@ -220,12 +220,15 @@ class ImageRepository(BaseRepository):
         self,
         context_id: str,
         include_data: bool = True,
+        *,
+        scope: BackendAccess,
     ) -> list[ImageDict]:
         """Get all images for a specific context entry.
 
         Args:
             context_id: ID of the context entry
             include_data: Whether to include the actual image data
+            scope: The identity the read runs as.
 
         Returns:
             List of image dictionaries
@@ -269,7 +272,7 @@ class ImageRepository(BaseRepository):
                     images.append(img_data)
                 return images
 
-            return await self.backend.execute_read(_get_images_sqlite)
+            return await self.backend.execute_read(_get_images_sqlite, access_scope=scope)
 
         # postgresql
 
@@ -308,9 +311,15 @@ class ImageRepository(BaseRepository):
                 images.append(img_data)
             return images
 
-        return await self.backend.execute_read(_get_images_postgresql)
+        return await self.backend.execute_read(_get_images_postgresql, access_scope=scope)
 
-    async def count_images_for_context(self, context_id: str, txn: 'TransactionContext | None' = None) -> int:
+    async def count_images_for_context(
+        self,
+        context_id: str,
+        txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
+    ) -> int:
         """Count the number of images for a context entry.
 
         Args:
@@ -319,6 +328,8 @@ class ImageRepository(BaseRepository):
                 transaction's own connection instead of acquiring a second pooled
                 connection, avoiding a nested pool acquire while a transaction
                 connection is already held (PostgreSQL pool-starvation hazard).
+            scope: The identity a standalone read runs as; a count on ``txn`` runs as the
+                identity its transaction bound.
 
         Returns:
             Number of images attached to the context
@@ -335,7 +346,7 @@ class ImageRepository(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_count_images_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_count_images_sqlite)
+            return await self.backend.execute_read(_count_images_sqlite, access_scope=scope)
 
         # postgresql
 
@@ -346,7 +357,7 @@ class ImageRepository(BaseRepository):
 
         if txn is not None:
             return await _count_images_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_count_images_postgresql)
+        return await self.backend.execute_read(_count_images_postgresql, access_scope=scope)
 
     async def replace_images_for_context(
         self,

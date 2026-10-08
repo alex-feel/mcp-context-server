@@ -15,6 +15,7 @@ import pytest
 
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.errors import ConfigurationError
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
@@ -57,7 +58,7 @@ async def test_sqlite_migration_refuses_first_time_with_populated_fp32(
     def _survives(conn: sqlite3.Connection) -> int:
         return int(conn.execute('SELECT COUNT(*) FROM vec_context_embeddings').fetchone()[0])
 
-    assert await backend.execute_read(_survives) == 1
+    assert await backend.execute_read(_survives, access_scope=MAINTENANCE) == 1
 
 
 @pytest.mark.asyncio
@@ -107,7 +108,7 @@ async def test_sqlite_migration_proceeds_with_populated_fp32_when_provenance_pre
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_exists) is False
+    assert await backend.execute_read(_exists, access_scope=MAINTENANCE) is False
 
 
 @pytest.mark.asyncio
@@ -186,15 +187,17 @@ class _FakeProbeBackend:
     def __init__(self, conn: _FakeVecConnection) -> None:
         self._conn = conn
 
-    async def execute_read(self, operation: Callable[[Any], bool]) -> bool:
+    async def execute_read(self, operation: Callable[[Any], bool], *, access_scope: BackendAccess) -> bool:
         """Run the probe callable against the fake connection.
 
         Args:
             operation: The probe closure.
+            access_scope: The identity the read runs as; the fake binds nothing.
 
         Returns:
             Whatever the closure returns.
         """
+        _ = access_scope
         return operation(self._conn)
 
 

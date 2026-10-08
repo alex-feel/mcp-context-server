@@ -232,7 +232,7 @@ async def store_context(
         run_embedding = False
         if get_embedding_provider() is not None:
             if likely_duplicate_id is not None:
-                run_embedding = not await repos.embeddings.exists(likely_duplicate_id)
+                run_embedding = not await repos.embeddings.exists(likely_duplicate_id, scope=scope)
                 if not run_embedding:
                     logger.debug(
                         'Pre-check: skipping embedding generation for likely duplicate '

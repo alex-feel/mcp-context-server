@@ -544,7 +544,7 @@ async def navigate_context(
 
             # Stored per-node summaries are fetched by id and do NOT depend on the
             # parse, so they are loaded before the CPU-bound parse + serialize block.
-            stored_nodes = await repos.index_nodes.get_nodes_for_context(resolved_id)
+            stored_nodes = await repos.index_nodes.get_nodes_for_context(resolved_id, scope=scope)
             version_after = (await repos.context.check_entry_exists(resolved_id, scope=scope)).version
             if version_after == version_before:
                 break

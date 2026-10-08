@@ -587,7 +587,7 @@ class TestDeduplication:
         )
         assert was_updated is True
         await repos.tags.replace_tags_for_context(context_id, ['c', 'd'], scope=LOCAL_SCOPE)
-        tags = await repos.tags.get_tags_for_context(context_id)
+        tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
         assert sorted(tags) == ['c', 'd']
 
     async def test_tags_preserved_when_none_during_dedup(self, repos: RepositoryContainer) -> None:
@@ -608,5 +608,5 @@ class TestDeduplication:
         )
         assert was_updated is True
         # Don't call any tag function (simulating tags=None from tool layer)
-        tags = await repos.tags.get_tags_for_context(context_id)
+        tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
         assert tags == ['existing']

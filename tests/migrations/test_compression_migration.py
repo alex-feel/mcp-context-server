@@ -48,7 +48,7 @@ async def test_sqlite_migration_creates_tables(
             present[name] = cur.fetchone() is not None
         return present
 
-    found = await backend.execute_read(_check)
+    found = await backend.execute_read(_check, access_scope=MAINTENANCE)
     assert found == {
         'vec_context_embeddings_compressed': True,
         'compression_metadata': True,
@@ -74,7 +74,7 @@ async def test_sqlite_migration_skips_when_disabled(
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_check) is False
+    assert await backend.execute_read(_check, access_scope=MAINTENANCE) is False
 
 
 @pytest.mark.asyncio
@@ -96,7 +96,7 @@ async def test_sqlite_migration_is_idempotent(
         )
         return int(cur.fetchone()[0])
 
-    assert await backend.execute_read(_count) == 2
+    assert await backend.execute_read(_count, access_scope=MAINTENANCE) == 2
 
 
 @pytest.mark.asyncio
@@ -172,4 +172,4 @@ async def test_sqlite_migration_drops_legacy_vec_table(
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_exists) is False
+    assert await backend.execute_read(_exists, access_scope=MAINTENANCE) is False

@@ -191,7 +191,7 @@ class TestExecuteReadControlFlowAccounting:
                 raise ControlFlowError('client-input validation rejection')
 
             with pytest.raises(ControlFlowError):
-                await backend.execute_read(_reject)
+                await backend.execute_read(_reject, access_scope=MAINTENANCE)
             assert backend.metrics.failed_queries == 0
             assert backend.circuit_breaker.failures == 0
         finally:
@@ -206,7 +206,7 @@ class TestExecuteReadControlFlowAccounting:
                 raise ValueError('genuine read fault')
 
             with pytest.raises(ValueError, match='genuine read fault'):
-                await backend.execute_read(_fail)
+                await backend.execute_read(_fail, access_scope=MAINTENANCE)
             assert backend.metrics.failed_queries == 1
         finally:
             await backend.shutdown()
@@ -298,7 +298,7 @@ class TestExecuteReadLockedRetry:
 
         try:
             monkeypatch.setattr(asyncio, 'sleep', _recording_sleep)
-            result = await backend.execute_read(_locked_twice_then_ok)
+            result = await backend.execute_read(_locked_twice_then_ok, access_scope=MAINTENANCE)
             monkeypatch.setattr(asyncio, 'sleep', real_sleep)
 
             assert result == 'ok'
@@ -331,7 +331,7 @@ class TestExecuteReadLockedRetry:
         try:
             monkeypatch.setattr(asyncio, 'sleep', _recording_sleep)
             with pytest.raises(sqlite3.OperationalError, match='database is locked'):
-                await backend.execute_read(_always_locked)
+                await backend.execute_read(_always_locked, access_scope=MAINTENANCE)
             monkeypatch.setattr(asyncio, 'sleep', real_sleep)
 
             # N attempts have N - 1 inter-attempt gaps; the exhausted final attempt

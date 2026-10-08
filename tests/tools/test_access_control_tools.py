@@ -24,6 +24,7 @@ from fastmcp.exceptions import ToolError
 import app.startup
 from app.access_scope import AccessScope
 from app.auth.principal import RequestPrincipal
+from app.backends.base import MAINTENANCE
 from app.settings import get_settings
 from tests.helpers import as_principal
 from tests.helpers import insert_grant
@@ -50,7 +51,7 @@ async def _read_owner_visibility(context_id: str) -> tuple[str, str]:
         assert row is not None
         return row[0], row[1]
 
-    return await backend.execute_read(_read)
+    return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
 
 async def _read_text(context_id: str) -> str:
@@ -62,7 +63,7 @@ async def _read_text(context_id: str) -> str:
         assert row is not None
         return str(row[0])
 
-    return await backend.execute_read(_read)
+    return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
 
 @pytest.mark.usefixtures('initialized_server')

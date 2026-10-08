@@ -142,7 +142,7 @@ async def apply_fts_migration(
 
     try:
         # Check if FTS is already initialized
-        fts_exists = await fts_repo.is_available()
+        fts_exists = await fts_repo.is_available(scope=MAINTENANCE)
 
         if fts_exists:
             # FTS exists - check if tokenizer/language matches current settings
@@ -168,7 +168,7 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
 
     if backend_type == 'sqlite':
         # Check current tokenizer
-        current_tokenizer = await fts_repo.get_current_tokenizer()
+        current_tokenizer = await fts_repo.get_current_tokenizer(scope=MAINTENANCE)
         desired_tokenizer = await fts_repo.get_desired_tokenizer(settings.fts.language)
 
         if current_tokenizer != desired_tokenizer:
@@ -208,7 +208,7 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
 
     else:  # postgresql
         # Check current language
-        current_language = await fts_repo.get_current_language()
+        current_language = await fts_repo.get_current_language(scope=MAINTENANCE)
         desired_language = settings.fts.language
 
         if current_language and current_language != desired_language:

@@ -8,14 +8,17 @@ repositories and server components.
 The protocol uses @runtime_checkable to enable isinstance() checks and TypeVar
 for generic operation signatures that preserve return types.
 
-Every write entry point takes the identity it runs as through a required
-keyword-only ``access_scope``: a request scope, the system scope, or
-:data:`MAINTENANCE` for the migrations, startup and command-line paths that run
-outside any request. A backend that enforces access in the database binds that
-identity before the operation runs; one that enforces access only in the
-application layer accepts and discards it.
+Every entry point takes the identity it runs as through a required keyword-only
+``access_scope``: a request scope, the system scope, or :data:`MAINTENANCE` for the
+migrations, startup and command-line paths that run outside any request. A backend
+that enforces access in the database binds that identity before the operation runs;
+one that enforces access only in the application layer accepts and discards it.
+
+A plain read names each table it selects from through ``readable_relation``, so a
+backend can substitute a relation that applies its access rules to the same rows.
 """
 
+import re
 from collections.abc import Awaitable
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
@@ -46,6 +49,43 @@ class MaintenanceAccess:
 MAINTENANCE = MaintenanceAccess()
 
 type BackendAccess = Scope | MaintenanceAccess
+
+# The tables a plain read names through ``readable_relation``: the context table and every
+# child table that references it. The grants table is absent because only the access
+# predicate reads it, by its own name.
+ROUTABLE_TABLES = frozenset({
+    'context_entries',
+    'tags',
+    'image_attachments',
+    'embedding_metadata',
+    'embedding_chunks',
+    'vec_context_embeddings',
+    'vec_context_embeddings_compressed',
+    'context_index_nodes',
+})
+
+_RELATION_ALIAS = re.compile(r'[a-z_][a-z0-9_]*')
+
+
+def base_relation(table: str, *, alias: str) -> str:
+    """Render the relation a plain read names ``table`` by when no access view replaces it.
+
+    Args:
+        table: A routable table.
+        alias: The name the statement qualifies the table's columns with; the table's own
+            name when the statement uses no alias.
+
+    Returns:
+        ``table`` when ``alias`` is the table's own name, otherwise ``'<table> <alias>'``.
+
+    Raises:
+        ValueError: If ``table`` is not routable or ``alias`` is not a lowercase identifier.
+    """
+    if table not in ROUTABLE_TABLES:
+        raise ValueError(f'{table!r} is not a routable table')
+    if _RELATION_ALIAS.fullmatch(alias) is None:
+        raise ValueError(f'{alias!r} is not a valid relation alias')
+    return table if alias == table else f'{table} {alias}'
 
 
 @runtime_checkable
@@ -102,6 +142,7 @@ class StorageBackend(Protocol):
     - Lifecycle management (initialize, shutdown)
     - Connection management (get_connection)
     - Operation execution (execute_write, execute_read)
+    - Read routing (readable_relation)
     - Health monitoring (get_metrics, backend_type)
 
     Example Implementation:
@@ -130,10 +171,15 @@ class StorageBackend(Protocol):
                 async with self.get_connection(readonly=False) as conn:
                     return operation(conn, *args, **kwargs)
 
-            async def execute_read(self, operation: Callable[..., T], *args, **kwargs) -> T:
-                # Execute read operation
+            async def execute_read(
+                self, operation: Callable[..., T], *args, access_scope: BackendAccess, **kwargs,
+            ) -> T:
+                # Execute read operation as the given identity
                 async with self.get_connection(readonly=True) as conn:
                     return operation(conn, *args, **kwargs)
+
+            def readable_relation(self, table: str, *, alias: str) -> str:
+                return base_relation(table, alias=alias)
 
             def get_metrics(self) -> dict[str, Any]:
                 return {
@@ -360,6 +406,7 @@ class StorageBackend(Protocol):
         self,
         operation: Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -368,6 +415,7 @@ class StorageBackend(Protocol):
         self,
         operation: Callable[..., T],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -375,6 +423,7 @@ class StorageBackend(Protocol):
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T:
         """
@@ -390,6 +439,8 @@ class StorageBackend(Protocol):
                       SQLite backend expects sync callable: Callable[..., T]
                       PostgreSQL backend expects async callable: Callable[..., Awaitable[T]]
             *args: Positional arguments to pass to operation
+            access_scope: The identity the read runs as. The backend consumes it;
+                it never reaches ``operation``.
             **kwargs: Keyword arguments to pass to operation
 
         Returns:
@@ -399,11 +450,14 @@ class StorageBackend(Protocol):
             - Uses connection from reader pool
             - No retry logic needed (reads don't cause locks)
             - Load balancing across multiple readers
+            - Discards access_scope: access is enforced in the application layer
             - Expects sync callable: operation(conn, *args, **kwargs) -> T
 
         For PostgreSQL:
             - Uses connection from pool
-            - Can use read replicas if configured
+            - When the session profile wraps reads, runs the operation inside a
+              transaction whose first statement binds access_scope; otherwise runs
+              it as issued
             - Expects async callable: await operation(conn, *args, **kwargs) -> T
 
         Example (SQLite - sync):
@@ -414,7 +468,7 @@ class StorageBackend(Protocol):
                 )
                 return cursor.fetchone()
 
-            entry = await backend.execute_read(get_context_by_id, 123)
+            entry = await backend.execute_read(get_context_by_id, 123, access_scope=scope)
 
         Example (PostgreSQL - async):
             async def get_context_by_id(conn, context_id):
@@ -424,7 +478,43 @@ class StorageBackend(Protocol):
                 )
                 return row
 
-            entry = await backend.execute_read(get_context_by_id, 123)
+            entry = await backend.execute_read(get_context_by_id, 123, access_scope=scope)
+        """
+        ...
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name the relation a plain read selects ``table``'s rows from.
+
+        A plain read is a SELECT that writes nothing and takes no row lock. It names each
+        routable table it reads through this method, and qualifies the table's columns
+        and its access predicate with ``alias``. Name resolution is the same in every
+        form: the base form keeps the alias (``context_entries ce``), and a backend that
+        reads through an access view names the view under the same alias
+        (``<view> AS ce``).
+
+        Args:
+            table: A routable table (:data:`ROUTABLE_TABLES`).
+            alias: The name the statement qualifies the table's columns with; the table's
+                own name when the statement uses no alias.
+
+        Returns:
+            The FROM or JOIN item to place in the statement.
+
+        Raises:
+            ValueError: If ``table`` is not routable or ``alias`` is not a lowercase
+                identifier.
+
+        For SQLite:
+            - Always the base form (:func:`base_relation`): access is enforced in the
+              application layer
+
+        For PostgreSQL:
+            - Delegates to the session profile, which maps a table to its access view
+              or renders the base form
+
+        Example:
+            relation = backend.readable_relation('context_entries', alias='ce')
+            sql = f'SELECT ce.id FROM {relation} WHERE ce.thread_id = ?'
         """
         ...
 

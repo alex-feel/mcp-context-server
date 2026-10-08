@@ -109,7 +109,7 @@ async def cleanup_embeddings_for_delete(
     # Gate on whether the embedding tables were ever PROVISIONED, NOT on the
     # runtime ENABLE_EMBEDDING_GENERATION toggle: a prior session may have
     # written embeddings a now-disabled toggle would skip cleaning.
-    if not await repos.embeddings.embedding_tables_exist(txn=txn):
+    if not await repos.embeddings.embedding_tables_exist(txn=txn, scope=scope):
         return
     try:
         await repos.embeddings.delete_all_chunks_bulk(context_ids, txn=txn, scope=scope)

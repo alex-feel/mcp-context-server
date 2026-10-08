@@ -84,7 +84,7 @@ async def _columns(backend: StorageBackend) -> list[str]:
         cursor = conn.execute('PRAGMA table_info(context_entries)')
         return [row[1] for row in cursor.fetchall()]
 
-    return await backend.execute_read(_check)
+    return await backend.execute_read(_check, access_scope=MAINTENANCE)
 
 
 async def _table_exists(backend: StorageBackend, table: str) -> bool:
@@ -94,7 +94,7 @@ async def _table_exists(backend: StorageBackend, table: str) -> bool:
         )
         return cursor.fetchone() is not None
 
-    return await backend.execute_read(_check)
+    return await backend.execute_read(_check, access_scope=MAINTENANCE)
 
 
 async def _index_names(backend: StorageBackend) -> set[str]:
@@ -102,7 +102,7 @@ async def _index_names(backend: StorageBackend) -> set[str]:
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
         return {row[0] for row in cursor.fetchall()}
 
-    return await backend.execute_read(_check)
+    return await backend.execute_read(_check, access_scope=MAINTENANCE)
 
 
 @pytest_asyncio.fixture
@@ -178,7 +178,7 @@ class TestAccessControlMigration:
             row = cursor.fetchone()
             return (row[0], row[1]) if row else None
 
-        stamped = await backend_pre_migration.execute_read(_read)
+        stamped = await backend_pre_migration.execute_read(_read, access_scope=MAINTENANCE)
         assert stamped == (get_settings().access_control.default_principal, 'private')
 
     @pytest.mark.asyncio

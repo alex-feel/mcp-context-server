@@ -84,7 +84,7 @@ async def _tag_rows(backend: StorageBackend, context_entry_id: str) -> list[str]
         )
         return [str(row[0]) for row in cursor.fetchall()]
 
-    return await backend.execute_read(_read)
+    return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
 
 @pytest_asyncio.fixture

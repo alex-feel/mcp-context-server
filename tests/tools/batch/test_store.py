@@ -121,9 +121,9 @@ class TestBatchStoreResponseParity:
             mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
 
             # For entry 2 (deduplicated), embeddings already exist.
-            # Accept the optional txn kwarg the store path passes.
-            async def mock_embedding_exists(context_id, txn=None):
-                _ = txn
+            # Accept the optional txn and the scope the store path passes.
+            async def mock_embedding_exists(context_id, txn=None, *, scope):
+                _ = txn, scope
                 return context_id == 101  # entry 2 has existing embeddings
 
             mock_repos.embeddings.exists = AsyncMock(side_effect=mock_embedding_exists)

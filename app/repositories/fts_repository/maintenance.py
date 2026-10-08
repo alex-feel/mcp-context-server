@@ -71,7 +71,7 @@ class FtsMaintenanceMixin(BaseRepository):
                 total_count = conn.execute(total_sql, predicate.params).fetchone()[0]
                 return _figures(total_count, indexed_count, 'sqlite', 'fts5')
 
-            return await self.backend.execute_read(_get_stats_sqlite)
+            return await self.backend.execute_read(_get_stats_sqlite, access_scope=scope)
 
         # postgresql: an entry is indexed once its tsvector is populated
         indexed_sql = (
@@ -83,9 +83,9 @@ class FtsMaintenanceMixin(BaseRepository):
             total_count = await conn.fetchval(total_sql, *predicate.params)
             return _figures(total_count, indexed_count, 'postgresql', 'tsvector')
 
-        return await self.backend.execute_read(cast(Any, _get_stats_postgresql))
+        return await self.backend.execute_read(cast(Any, _get_stats_postgresql), access_scope=scope)
 
-    async def is_available(self) -> bool:
+    async def is_available(self, *, scope: BackendAccess) -> bool:
         """Check if FTS functionality is available.
 
         Both probes test the ABSENCE CONDITION directly and let every operational fault
@@ -97,6 +97,9 @@ class FtsMaintenanceMixin(BaseRepository):
         migrations" instruction for a self-clearing transient. Neither handler was needed for
         its stated purpose either: ``sqlite_master`` always exists and yields ZERO ROWS for a
         missing table, and ``to_regclass`` yields NULL (never an error) for a missing relation.
+
+        Args:
+            scope: The identity the probe runs as.
 
         Returns:
             True if FTS is properly configured and available
@@ -111,7 +114,7 @@ class FtsMaintenanceMixin(BaseRepository):
                 )
                 return cursor.fetchone() is not None
 
-            return await self.backend.execute_read(_check_sqlite)
+            return await self.backend.execute_read(_check_sqlite, access_scope=scope)
 
         # postgresql
         async def _check_postgresql(conn: 'asyncpg.Connection') -> bool:
@@ -139,13 +142,16 @@ class FtsMaintenanceMixin(BaseRepository):
             )
             return bool(result)
 
-        return await self.backend.execute_read(cast(Any, _check_postgresql))
+        return await self.backend.execute_read(cast(Any, _check_postgresql), access_scope=scope)
 
-    async def get_current_tokenizer(self) -> str | None:
+    async def get_current_tokenizer(self, *, scope: BackendAccess) -> str | None:
         """Get the current FTS5 tokenizer from SQLite (SQLite only).
 
         Parses the sqlite_master table to extract the tokenizer definition
         from the FTS5 virtual table creation SQL.
+
+        Args:
+            scope: The identity the read runs as.
 
         Returns:
             The tokenizer string (e.g., 'unicode61' or 'porter unicode61'),
@@ -180,13 +186,16 @@ class FtsMaintenanceMixin(BaseRepository):
 
             return 'unicode61'  # Default fallback
 
-        return await self.backend.execute_read(_get_tokenizer)
+        return await self.backend.execute_read(_get_tokenizer, access_scope=scope)
 
-    async def get_current_language(self) -> str | None:
+    async def get_current_language(self, *, scope: BackendAccess) -> str | None:
         """Get the current FTS language from PostgreSQL tsvector column (PostgreSQL only).
 
         Queries pg_attrdef to decompile the GENERATED ALWAYS AS expression
         and extracts the language parameter from to_tsvector().
+
+        Args:
+            scope: The identity the read runs as.
 
         Returns:
             The language string (e.g., 'english', 'german'),
@@ -222,7 +231,7 @@ class FtsMaintenanceMixin(BaseRepository):
 
             return 'english'  # Default fallback
 
-        return await self.backend.execute_read(cast(Any, _get_language))
+        return await self.backend.execute_read(cast(Any, _get_language), access_scope=scope)
 
     async def get_desired_tokenizer(self, language: str) -> str:
         """Determine the desired SQLite FTS5 tokenizer based on language setting.
@@ -258,7 +267,7 @@ class FtsMaintenanceMixin(BaseRepository):
         if self.backend.backend_type != 'sqlite':
             raise RuntimeError('migrate_tokenizer is only supported for SQLite backend')
 
-        old_tokenizer = await self.get_current_tokenizer()
+        old_tokenizer = await self.get_current_tokenizer(scope=scope)
 
         def _migrate_tokenizer(conn: sqlite3.Connection) -> dict[str, Any]:
             # Count entries for statistics
@@ -353,7 +362,7 @@ class FtsMaintenanceMixin(BaseRepository):
         from app.settings import get_settings
 
         migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
-        old_language = await self.get_current_language()
+        old_language = await self.get_current_language(scope=scope)
 
         async def _migrate_language(conn: 'asyncpg.Connection') -> dict[str, Any]:
             # Raise the transaction-scoped statement_timeout to the migration budget and

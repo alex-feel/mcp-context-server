@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.migrations._pg_ddl import fetchval_migration
 from app.migrations._pg_ddl import migration_statement_timeout_ms
 from app.settings import get_settings
@@ -88,7 +89,7 @@ async def table_exists(
             )
             return cursor.fetchone() is not None
 
-        return await backend.execute_read(_check)
+        return await backend.execute_read(_check, access_scope=MAINTENANCE)
 
     async def _check_pg(conn: asyncpg.Connection) -> bool:
         result = await conn.fetchval(
@@ -97,7 +98,7 @@ async def table_exists(
         )
         return bool(result)
 
-    return await backend.execute_read(cast(Any, _check_pg))
+    return await backend.execute_read(cast(Any, _check_pg), access_scope=MAINTENANCE)
 
 
 async def count_table(backend: StorageBackend, table_name: str) -> int:
@@ -125,7 +126,7 @@ async def count_table(backend: StorageBackend, table_name: str) -> int:
             cursor = conn.execute(f'SELECT COUNT(*) FROM {safe}')
             return int(cursor.fetchone()[0])
 
-        return await backend.execute_read(_count)
+        return await backend.execute_read(_count, access_scope=MAINTENANCE)
 
     migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
 
@@ -137,7 +138,7 @@ async def count_table(backend: StorageBackend, table_name: str) -> int:
             )
         return int(result or 0)
 
-    return await backend.execute_read(cast(Any, _count_pg))
+    return await backend.execute_read(cast(Any, _count_pg), access_scope=MAINTENANCE)
 
 
 async def raise_pg_migration_budget(

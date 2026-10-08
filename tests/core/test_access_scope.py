@@ -468,7 +468,7 @@ async def _admitted(backend: StorageBackend, scope: Scope, mode: AccessMode, out
     def _select(conn: sqlite3.Connection) -> set[str]:
         return {row[0] for row in conn.execute(query, ('scope-thread', *predicate.params)).fetchall()}
 
-    return await backend.execute_read(_select)
+    return await backend.execute_read(_select, access_scope=MAINTENANCE)
 
 
 _ALL_LABELS = {
@@ -564,7 +564,7 @@ async def test_readable_parent_predicate_admits_children_of_readable_rows(
     def _select(conn: sqlite3.Connection) -> set[str]:
         return {row[0] for row in conn.execute(f'{child_select}{predicate.where_clause()}', predicate.params).fetchall()}
 
-    assert await async_db_initialized.execute_read(_select) == expected
+    assert await async_db_initialized.execute_read(_select, access_scope=MAINTENANCE) == expected
 
 
 @pytest.mark.asyncio

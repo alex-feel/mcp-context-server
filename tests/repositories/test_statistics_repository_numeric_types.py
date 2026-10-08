@@ -15,6 +15,7 @@ from typing import cast
 import pytest
 
 from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.repositories.statistics_repository import StatisticsRepository
 from app.repositories.statistics_repository import _to_float
@@ -84,7 +85,8 @@ class _PgStubBackend:
     def __init__(self, avg_value: Decimal | None) -> None:
         self._conn = _PgStubConnection(avg_value)
 
-    async def execute_read(self, operation: Callable[[Any], Awaitable[T]]) -> T:
+    async def execute_read(self, operation: Callable[[Any], Awaitable[T]], *, access_scope: BackendAccess) -> T:
+        _ = access_scope
         return await operation(self._conn)
 
 

@@ -167,7 +167,7 @@ class TestTagRepositoryTransaction:
         await repos.tags.store_tags(context_id, ['tag1', 'tag2'], txn=None, scope=LOCAL_SCOPE)
 
         # Verify tags were stored
-        tags = await repos.tags.get_tags_for_context(context_id)
+        tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
         assert set(tags) == {'tag1', 'tag2'}
 
     @pytest.mark.asyncio
@@ -193,7 +193,7 @@ class TestTagRepositoryTransaction:
             await repos.tags.store_tags(context_id, ['txn-tag1', 'txn-tag2'], txn=txn, scope=MAINTENANCE)
 
         # Verify tags persisted after commit
-        tags = await repos.tags.get_tags_for_context(context_id)
+        tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
         assert set(tags) == {'txn-tag1', 'txn-tag2'}
 
     @pytest.mark.asyncio
@@ -220,7 +220,7 @@ class TestTagRepositoryTransaction:
             await repos.tags.replace_tags_for_context(context_id, ['new-tag1', 'new-tag2'], txn=txn, scope=MAINTENANCE)
 
         # Verify replacement persisted
-        tags = await repos.tags.get_tags_for_context(context_id)
+        tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
         assert set(tags) == {'new-tag1', 'new-tag2'}
 
 
@@ -250,7 +250,7 @@ class TestImageRepositoryTransaction:
         await repos.images.store_images(context_id, [sample_image_data], txn=None, scope=LOCAL_SCOPE)
 
         # Verify image was stored
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 1
         assert images[0].get('mime_type') == 'image/png'
 
@@ -278,7 +278,7 @@ class TestImageRepositoryTransaction:
             await repos.images.store_images(context_id, [sample_image_data], txn=txn, scope=MAINTENANCE)
 
         # Verify image persisted after commit
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 1
 
 
@@ -312,7 +312,7 @@ class TestMultiRepositoryTransaction:
         entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
-        tags = await repos.tags.get_tags_for_context(context_id)
+        tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
         assert set(tags) == {'atomic', 'test'}
 
     @pytest.mark.asyncio
@@ -346,10 +346,10 @@ class TestMultiRepositoryTransaction:
         entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1
 
-        tags = await repos.tags.get_tags_for_context(context_id)
+        tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
         assert set(tags) == {'multimodal', 'atomic'}
 
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 1
 
     @pytest.mark.asyncio
@@ -423,7 +423,7 @@ class TestRepositoryMethodsWithoutTransaction:
         await repos.tags.store_tags(context_id, ['compat'], scope=LOCAL_SCOPE)
         await repos.tags.replace_tags_for_context(context_id, ['replaced'], scope=LOCAL_SCOPE)
 
-        tags = await repos.tags.get_tags_for_context(context_id)
+        tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
         assert tags == ['replaced']
 
         # ImageRepository methods (create multimodal entry for images)
@@ -438,7 +438,7 @@ class TestRepositoryMethodsWithoutTransaction:
         await repos.images.store_images(mm_id, [sample_image_data], scope=LOCAL_SCOPE)
         await repos.images.replace_images_for_context(mm_id, [sample_image_data], scope=LOCAL_SCOPE)
 
-        images = await repos.images.get_images_for_context(mm_id)
+        images = await repos.images.get_images_for_context(mm_id, scope=LOCAL_SCOPE)
         assert len(images) == 1
 
         # Cleanup
@@ -495,8 +495,8 @@ class TestTxnAwareReadsUseTransactionConnection:
             guard = AsyncMock(side_effect=AssertionError('acquired a second connection'))
             with patch.object(backend, 'execute_read', new=guard):
                 content_type = await repos.context.get_content_type(context_id, txn=txn, scope=LOCAL_SCOPE)
-                image_count = await repos.images.count_images_for_context(context_id, txn=txn)
-                embedding_exists = await repos.embeddings.exists(context_id, txn=txn)
+                image_count = await repos.images.count_images_for_context(context_id, txn=txn, scope=LOCAL_SCOPE)
+                embedding_exists = await repos.embeddings.exists(context_id, txn=txn, scope=LOCAL_SCOPE)
 
         assert content_type == 'text'
         assert image_count == 0
@@ -517,4 +517,4 @@ class TestTxnAwareReadsUseTransactionConnection:
             text_content='pool read target', metadata=None,
         )
         assert await repos.context.get_content_type(context_id, scope=LOCAL_SCOPE) == 'text'
-        assert await repos.images.count_images_for_context(context_id) == 0
+        assert await repos.images.count_images_for_context(context_id, scope=LOCAL_SCOPE) == 0

@@ -201,7 +201,7 @@ class TestContentHashMigration:
                 cursor = conn.execute('PRAGMA table_info(context_entries)')
                 return [row[1] for row in cursor.fetchall()]
 
-            columns = await backend.execute_read(_check)
+            columns = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert 'content_hash' in columns
         finally:
             await backend.shutdown()
@@ -235,7 +235,7 @@ class TestContentHashMigration:
                 cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
                 return [row[0] for row in cursor.fetchall()]
 
-            indexes = await backend.execute_read(_check_index)
+            indexes = await backend.execute_read(_check_index, access_scope=MAINTENANCE)
             assert 'idx_context_entries_dedup_hash' in indexes
         finally:
             await backend.shutdown()
@@ -271,7 +271,7 @@ class TestContentHashMigration:
                 cursor = conn.execute('PRAGMA table_info(context_entries)')
                 return [row[1] for row in cursor.fetchall()]
 
-            columns = await backend.execute_read(_check)
+            columns = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert columns.count('content_hash') == 1
         finally:
             await backend.shutdown()
@@ -286,7 +286,7 @@ class TestContentHashMigration:
             cursor = conn.execute('PRAGMA table_info(context_entries)')
             return [row[1] for row in cursor.fetchall()]
 
-        columns = await backend.execute_read(_check)
+        columns = await backend.execute_read(_check, access_scope=MAINTENANCE)
         assert 'content_hash' in columns
 
     @pytest.mark.asyncio
@@ -302,7 +302,7 @@ class TestContentHashMigration:
             cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
             return [row[0] for row in cursor.fetchall()]
 
-        indexes = await backend.execute_read(_check_index)
+        indexes = await backend.execute_read(_check_index, access_scope=MAINTENANCE)
         assert 'idx_context_entries_dedup_hash' in indexes
 
 
@@ -336,7 +336,7 @@ class TestHashStoredOnInsert:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        stored_hash = await backend.execute_read(_read_hash)
+        stored_hash = await backend.execute_read(_read_hash, access_scope=MAINTENANCE)
         assert stored_hash == compute_content_hash(text)
 
     async def test_hash_updated_on_dedup(
@@ -367,7 +367,7 @@ class TestHashStoredOnInsert:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        stored_hash = await backend.execute_read(_read_hash)
+        stored_hash = await backend.execute_read(_read_hash, access_scope=MAINTENANCE)
         assert stored_hash == compute_content_hash(text)
 
 
@@ -468,7 +468,7 @@ class TestNullHashFallback:
             row = cursor.fetchone()
             return row[0] is None
 
-        assert await backend_pre_migration.execute_read(_check_null) is True
+        assert await backend_pre_migration.execute_read(_check_null, access_scope=MAINTENANCE) is True
 
         # store_with_deduplication with same text should detect duplicate via fallback
         context_id, was_updated = await repos_pre_migration.context.store_with_deduplication(
@@ -565,7 +565,7 @@ class TestHashRecomputationOnUpdate:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        stored_hash = await backend.execute_read(_read_hash)
+        stored_hash = await backend.execute_read(_read_hash, access_scope=MAINTENANCE)
         assert stored_hash == compute_content_hash(new_text)
         assert stored_hash != compute_content_hash(original_text)
 
@@ -597,7 +597,7 @@ class TestHashRecomputationOnUpdate:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        stored_hash = await backend.execute_read(_read_hash)
+        stored_hash = await backend.execute_read(_read_hash, access_scope=MAINTENANCE)
         assert stored_hash == expected_hash
 
     async def test_dedup_works_after_text_update(

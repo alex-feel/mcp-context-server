@@ -13,6 +13,7 @@ import sqlite3
 import pytest
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
 from tests.conftest import requires_sqlite_vec
@@ -59,7 +60,7 @@ async def test_compression_skips_fp32_vec_provisioning_across_restart(
         return {row[0] for row in cur.fetchall()}
 
     await _run_startup_sequence()
-    tables = await backend.execute_read(_tables)
+    tables = await backend.execute_read(_tables, access_scope=MAINTENANCE)
     assert 'vec_context_embeddings' not in tables  # fp32 vec0 table NOT created
     assert 'embedding_metadata' in tables          # required by the compressed write path
     assert 'embedding_chunks' in tables            # SQLite 1:N bridge, preserved
@@ -68,7 +69,7 @@ async def test_compression_skips_fp32_vec_provisioning_across_restart(
 
     # Simulated restart: the fp32 table must STILL be absent (no reappearance).
     await _run_startup_sequence()
-    tables_after = await backend.execute_read(_tables)
+    tables_after = await backend.execute_read(_tables, access_scope=MAINTENANCE)
     assert 'vec_context_embeddings' not in tables_after
 
 
@@ -97,7 +98,7 @@ async def test_no_compression_creates_fp32_vec_table(
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_exists) is True
+    assert await backend.execute_read(_exists, access_scope=MAINTENANCE) is True
 
 
 @pytest.mark.asyncio
@@ -135,7 +136,7 @@ async def test_semantic_migration_under_compression_does_not_require_sqlite_vec(
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(lambda c: _table_exists(c, 'embedding_metadata')) is True
+    assert await backend.execute_read(lambda c: _table_exists(c, 'embedding_metadata'), access_scope=MAINTENANCE) is True
 
     # Now flip to compression ON + generation OFF (the infra-present fallthrough
     # fires because embedding_metadata exists), and simulate sqlite-vec NOT
@@ -150,7 +151,7 @@ async def test_semantic_migration_under_compression_does_not_require_sqlite_vec(
 
     # Must NOT raise despite sqlite-vec being unavailable (no vec0 DDL to run).
     await apply_semantic_search_migration(backend=backend)
-    assert await backend.execute_read(lambda c: _table_exists(c, 'embedding_metadata')) is True
+    assert await backend.execute_read(lambda c: _table_exists(c, 'embedding_metadata'), access_scope=MAINTENANCE) is True
 
 
 @pytest.mark.asyncio
@@ -197,7 +198,7 @@ async def test_sqlite_fp32_reprovisioned_after_compression_off_flip_generation_o
     _rebind_settings()
     await apply_semantic_search_migration(backend=backend)
     await apply_chunking_migration(backend=backend)
-    assert await backend.execute_read(_fp32_exists) is True
+    assert await backend.execute_read(_fp32_exists, access_scope=MAINTENANCE) is True
 
     # Phase 2: generation off + compression on -> the table swap removes the
     # empty fp32 table and provisions the compressed schema.
@@ -206,7 +207,7 @@ async def test_sqlite_fp32_reprovisioned_after_compression_off_flip_generation_o
     monkeypatch.setenv('COMPRESSION_SEED', '42')
     _rebind_settings()
     await apply_compression_migration(backend=backend)
-    assert await backend.execute_read(_fp32_exists) is False
+    assert await backend.execute_read(_fp32_exists, access_scope=MAINTENANCE) is False
 
     # Phase 3: bare compression-off flip (generation still off; no provenance
     # row, so no disable-direction guard) -> the semantic and chunking
@@ -217,4 +218,4 @@ async def test_sqlite_fp32_reprovisioned_after_compression_off_flip_generation_o
     await apply_semantic_search_migration(backend=backend)
     await apply_chunking_migration(backend=backend)
     await apply_compression_migration(backend=backend)
-    assert await backend.execute_read(_fp32_exists) is True
+    assert await backend.execute_read(_fp32_exists, access_scope=MAINTENANCE) is True

@@ -340,7 +340,7 @@ class ContextSearchMixin(BaseRepository):
                 # Return list of rows and statistics
                 return list(rows), stats
 
-            return await self.backend.execute_read(_search_sqlite)
+            return await self.backend.execute_read(_search_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _search_postgresql(conn: 'asyncpg.Connection') -> tuple[list[Any], dict[str, Any]]:
@@ -403,7 +403,7 @@ class ContextSearchMixin(BaseRepository):
             # Return list of rows and statistics
             return list(rows), stats
 
-        return await self.backend.execute_read(_search_postgresql)
+        return await self.backend.execute_read(_search_postgresql, access_scope=scope)
 
     async def grep_scan_text_contents(
         self,
@@ -557,7 +557,7 @@ class ContextSearchMixin(BaseRepository):
                         break
                 return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'sqlite'}
 
-            return await self.backend.execute_read(_scan_sqlite)
+            return await self.backend.execute_read(_scan_sqlite, access_scope=scope)
 
         async def _scan_postgresql(conn: 'asyncpg.Connection') -> tuple[list[tuple[str, str]], dict[str, Any]]:
             out: list[tuple[str, str]] = []
@@ -632,4 +632,4 @@ class ContextSearchMixin(BaseRepository):
                     break
             return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'postgresql'}
 
-        return await self.backend.execute_read(_scan_postgresql)
+        return await self.backend.execute_read(_scan_postgresql, access_scope=scope)

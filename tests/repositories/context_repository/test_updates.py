@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from app.access_scope import AccessScope
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -142,7 +143,7 @@ class TestContextRepositoryVersionCAS:
             assert row is not None
             return str(row['text_content']), int(row['version'])
 
-        return await context_repo.backend.execute_read(_select)
+        return await context_repo.backend.execute_read(_select, access_scope=MAINTENANCE)
 
     @pytest.mark.asyncio
     async def test_initial_version_is_zero(

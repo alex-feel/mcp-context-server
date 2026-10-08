@@ -319,7 +319,7 @@ class Fp32SearchMixin(BaseRepository):
 
                 return results, stats
 
-            return await self.backend.execute_read(_search_sqlite)
+            return await self.backend.execute_read(_search_sqlite, access_scope=scope)
 
         # postgresql
         async def _search_postgresql(
@@ -545,4 +545,4 @@ class Fp32SearchMixin(BaseRepository):
 
             return results, stats
 
-        return await self.backend.execute_read(_search_postgresql)
+        return await self.backend.execute_read(_search_postgresql, access_scope=scope)

@@ -15,6 +15,7 @@ from typing import cast
 import pytest
 
 from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.backends.sqlite_backend import SQLiteBackend
 from app.compression.provenance import read_compression_metadata
 from app.compression.types import CompressionMetadata
@@ -77,6 +78,7 @@ async def test_propagates_other_missing_table_errors(
         async def _spy_execute_read(
             callback: object,
             *args: object,
+            access_scope: BackendAccess,
             **kwargs: object,
         ) -> object:
             nonlocal callback_invoked
@@ -87,7 +89,7 @@ async def test_propagates_other_missing_table_errors(
                 fake_conn = _RaisingConnection()
                 return cast(Any, callback)(fake_conn)
 
-            return await original_execute_read(_wrapped, *args, **kwargs)
+            return await original_execute_read(_wrapped, *args, access_scope=access_scope, **kwargs)
 
         monkeypatch.setattr(backend, 'execute_read', _spy_execute_read)
 

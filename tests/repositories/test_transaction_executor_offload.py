@@ -377,7 +377,7 @@ class TestTransactionExecutorOffload:
             completed['value'] = value
             return value
 
-        task = asyncio.create_task(backend.execute_read(_slow_read))
+        task = asyncio.create_task(backend.execute_read(_slow_read, access_scope=MAINTENANCE))
         await asyncio.to_thread(started.wait, 10)
         task.cancel()
         # The drain holds the cancellation open while the query runs.

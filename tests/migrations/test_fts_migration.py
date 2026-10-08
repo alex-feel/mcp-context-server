@@ -83,14 +83,14 @@ class TestApplyFtsMigration:
                 fts_repo = FtsRepository(backend)
 
                 # Check FTS not available yet
-                fts_available_before = await fts_repo.is_available()
+                fts_available_before = await fts_repo.is_available(scope=MAINTENANCE)
                 assert fts_available_before is False
 
                 # Apply migration
                 await apply_fts_migration(backend=backend)
 
                 # Check FTS is now available
-                fts_available_after = await fts_repo.is_available()
+                fts_available_after = await fts_repo.is_available(scope=MAINTENANCE)
                 assert fts_available_after is True
             finally:
                 await backend.shutdown()
@@ -130,15 +130,15 @@ class TestApplyFtsMigration:
         await backend.initialize()
         try:
             fts_repo = FtsRepository(backend)
-            assert await fts_repo.is_available() is False
+            assert await fts_repo.is_available(scope=MAINTENANCE) is False
 
             # ENABLE_FTS=false: a normal migration is a no-op.
             await fts_module.apply_fts_migration(backend=backend)
-            assert await fts_repo.is_available() is False
+            assert await fts_repo.is_available(scope=MAINTENANCE) is False
 
             # force=True provisions FTS regardless of the disabled toggle.
             await fts_module.apply_fts_migration(backend=backend, force=True)
-            assert await fts_repo.is_available() is True
+            assert await fts_repo.is_available(scope=MAINTENANCE) is True
         finally:
             await backend.shutdown()
 
@@ -256,7 +256,7 @@ class TestApplyFtsMigration:
                 fts_repo = FtsRepository(backend)
 
                 # Verify FTS exists with unicode61
-                current_tokenizer = await fts_repo.get_current_tokenizer()
+                current_tokenizer = await fts_repo.get_current_tokenizer(scope=MAINTENANCE)
                 assert current_tokenizer is not None
                 assert 'unicode61' in current_tokenizer
 
@@ -264,7 +264,7 @@ class TestApplyFtsMigration:
                 await apply_fts_migration(backend=backend)
 
                 # Verify tokenizer changed to porter
-                new_tokenizer = await fts_repo.get_current_tokenizer()
+                new_tokenizer = await fts_repo.get_current_tokenizer(scope=MAINTENANCE)
                 assert new_tokenizer is not None
                 assert 'porter' in new_tokenizer
             finally:

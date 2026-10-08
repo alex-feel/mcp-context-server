@@ -351,7 +351,7 @@ class TestExecuteReadControlFlowMetricsExemption:
             raise ControlFlowError('client input invalid')
 
         with pytest.raises(ControlFlowError):
-            await backend.execute_read(operation)
+            await backend.execute_read(operation, access_scope=MAINTENANCE)
 
         assert backend.metrics.failed_queries == 0
 
@@ -364,7 +364,7 @@ class TestExecuteReadControlFlowMetricsExemption:
             raise RuntimeError('db fault')
 
         with pytest.raises(RuntimeError, match='db fault'):
-            await backend.execute_read(operation)
+            await backend.execute_read(operation, access_scope=MAINTENANCE)
 
         assert backend.metrics.failed_queries == 1
 
@@ -465,7 +465,7 @@ class TestReleaseFailureAccounting:
         async def _read(_conn: object) -> str:
             return 'rows'
 
-        assert await backend.execute_read(_read) == 'rows'
+        assert await backend.execute_read(_read, access_scope=MAINTENANCE) == 'rows'
         assert backend.circuit_breaker.failures == 1
         assert backend.metrics.failed_queries == 1
 

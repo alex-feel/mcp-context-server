@@ -105,7 +105,7 @@ class ContextReadMixin(BaseRepository):
                     rows.sort(key=operator.itemgetter('created_at', 'id'), reverse=True)
                 return rows
 
-            return await self.backend.execute_read(_fetch_sqlite)
+            return await self.backend.execute_read(_fetch_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _fetch_postgresql(conn: 'asyncpg.Connection') -> list[Any]:
@@ -117,7 +117,7 @@ class ContextReadMixin(BaseRepository):
                 rows.sort(key=operator.itemgetter('created_at', 'id'), reverse=True)
             return rows
 
-        return await self.backend.execute_read(_fetch_postgresql)
+        return await self.backend.execute_read(_fetch_postgresql, access_scope=scope)
 
     async def check_entry_exists(self, context_id: str, *, scope: Scope) -> EntryProbe:
         """Check whether the scope may read a context entry and return its source, version, owner and write access.
@@ -171,7 +171,7 @@ class ContextReadMixin(BaseRepository):
                     bool(row['can_write']),
                 )
 
-            return await self.backend.execute_read(_check_exists_sqlite)
+            return await self.backend.execute_read(_check_exists_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _check_exists_postgresql(conn: 'asyncpg.Connection') -> EntryProbe:
@@ -186,7 +186,7 @@ class ContextReadMixin(BaseRepository):
                 bool(row['can_write']),
             )
 
-        return await self.backend.execute_read(_check_exists_postgresql)
+        return await self.backend.execute_read(_check_exists_postgresql, access_scope=scope)
 
     async def probe_ids(
         self,
@@ -255,7 +255,7 @@ class ContextReadMixin(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_probe_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_probe_sqlite)
+            return await self.backend.execute_read(_probe_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _probe_postgresql(conn: 'asyncpg.Connection') -> dict[str, IdAccess]:
@@ -270,7 +270,7 @@ class ContextReadMixin(BaseRepository):
 
         if txn is not None:
             return await _probe_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_probe_postgresql)
+        return await self.backend.execute_read(_probe_postgresql, access_scope=scope)
 
     async def entry_exists(
         self,
@@ -335,7 +335,7 @@ class ContextReadMixin(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_entry_exists_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_entry_exists_sqlite)
+            return await self.backend.execute_read(_entry_exists_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _entry_exists_postgresql(conn: 'asyncpg.Connection') -> bool:
@@ -344,7 +344,7 @@ class ContextReadMixin(BaseRepository):
 
         if txn is not None:
             return await _entry_exists_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_entry_exists_postgresql)
+        return await self.backend.execute_read(_entry_exists_postgresql, access_scope=scope)
 
     async def get_content_type(
         self,
@@ -385,7 +385,7 @@ class ContextReadMixin(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_get_content_type_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_get_content_type_sqlite)
+            return await self.backend.execute_read(_get_content_type_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _get_content_type_postgresql(conn: 'asyncpg.Connection') -> str | None:
@@ -394,7 +394,7 @@ class ContextReadMixin(BaseRepository):
 
         if txn is not None:
             return await _get_content_type_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_get_content_type_postgresql)
+        return await self.backend.execute_read(_get_content_type_postgresql, access_scope=scope)
 
     async def find_ids_by_prefix(self, prefix: str, limit: int = 2, *, scope: Scope) -> list[str]:
         """Find the IDs of entries the scope may read that begin with the given prefix.
@@ -441,7 +441,7 @@ class ContextReadMixin(BaseRepository):
                 )
                 return [row['id'] for row in cursor.fetchall()]
 
-            return await self.backend.execute_read(_find_sqlite)
+            return await self.backend.execute_read(_find_sqlite, access_scope=scope)
 
         # PostgreSQL: id is a uuid column; canonical text form contains hyphens
         # which are absent from the user-supplied hex prefix. REPLACE() removes
@@ -463,4 +463,4 @@ class ContextReadMixin(BaseRepository):
             # context_id on both backends (mirrors grep_scan_text_contents).
             return [normalize_id(str(row['id'])) for row in rows]
 
-        return await self.backend.execute_read(_find_postgresql)
+        return await self.backend.execute_read(_find_postgresql, access_scope=scope)

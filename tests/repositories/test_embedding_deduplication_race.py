@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from tests.helpers import LOCAL_SCOPE
 
 # Conditional skip marker for tests requiring sqlite-vec package
@@ -85,7 +86,7 @@ class TestStoreContextEmbeddingDeduplication:
             context_id = result1['context_id']
 
             # Verify embeddings were created
-            embedding_exists = await repos.embeddings.exists(context_id)
+            embedding_exists = await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE)
             assert embedding_exists is True, 'Embeddings should exist after first store'
 
             # Second store - identical content triggers deduplication
@@ -126,7 +127,7 @@ class TestStoreContextEmbeddingDeduplication:
         )
 
         # Verify no embeddings exist
-        embedding_exists = await repos.embeddings.exists(context_id)
+        embedding_exists = await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE)
         assert embedding_exists is False, 'Pre-condition: no embeddings should exist'
 
         mock_provider = _make_mock_embedding_provider(embedding_dim)
@@ -151,7 +152,7 @@ class TestStoreContextEmbeddingDeduplication:
             assert result['context_id'] == context_id, 'Should return same context_id'
 
             # Verify embeddings were created (even though entry was deduplicated)
-            embedding_exists = await repos.embeddings.exists(context_id)
+            embedding_exists = await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE)
             assert embedding_exists is True, 'Embeddings should be created for dedup entry without embeddings'
 
     @requires_sqlite_vec
@@ -186,7 +187,7 @@ class TestStoreContextEmbeddingDeduplication:
             assert result['success'] is True
             context_id = result['context_id']
 
-            embedding_exists = await repos.embeddings.exists(context_id)
+            embedding_exists = await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE)
             assert embedding_exists is True, 'New entries should always have embeddings created'
 
 
@@ -239,8 +240,8 @@ class TestBatchStoreEmbeddingDeduplication:
             assert context_id_b is not None
 
             # Verify embeddings were created
-            assert await repos.embeddings.exists(context_id_a) is True
-            assert await repos.embeddings.exists(context_id_b) is True
+            assert await repos.embeddings.exists(context_id_a, scope=LOCAL_SCOPE) is True
+            assert await repos.embeddings.exists(context_id_b, scope=LOCAL_SCOPE) is True
 
             # Second batch store - identical content
             # Without the fix this would raise a constraint violation on embeddings
@@ -286,7 +287,7 @@ class TestBatchStoreEmbeddingDeduplication:
         await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model', scope=LOCAL_SCOPE)
 
         # Verify embedding exists
-        assert await repos.embeddings.exists(context_id) is True
+        assert await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE) is True
 
         mock_provider = _make_mock_embedding_provider(embedding_dim)
         mock_chunking = _make_mock_chunking_service()
@@ -377,13 +378,13 @@ class TestEmbeddingRepositoryUpsert:
         chunk_emb1 = ChunkEmbedding(embedding=[0.1] * embedding_dim, start_index=0, end_index=12)
         await repos.embeddings.store_chunked(context_id, [chunk_emb1], 'model-v1', scope=LOCAL_SCOPE)
 
-        assert await repos.embeddings.exists(context_id) is True
+        assert await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE) is True
 
         # Second store with upsert=True - should succeed (delete-then-insert)
         chunk_emb2 = ChunkEmbedding(embedding=[0.2] * embedding_dim, start_index=0, end_index=12)
         await repos.embeddings.store_chunked(context_id, [chunk_emb2], 'model-v2', upsert=True, scope=LOCAL_SCOPE)
 
-        assert await repos.embeddings.exists(context_id) is True
+        assert await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE) is True
 
     @requires_sqlite_vec
     async def test_store_chunked_upsert_updates_model_and_dimensions(
@@ -419,7 +420,7 @@ class TestEmbeddingRepositoryUpsert:
             row = cursor.fetchone()
             return row[0]
 
-        model_name = await backend.execute_read(_check_model_v1)
+        model_name = await backend.execute_read(_check_model_v1, access_scope=MAINTENANCE)
         assert model_name == 'model-v1'
 
         # UPSERT with model-v2
@@ -435,7 +436,7 @@ class TestEmbeddingRepositoryUpsert:
             row = cursor.fetchone()
             return row[0]
 
-        model_name = await backend.execute_read(_check_model_v2)
+        model_name = await backend.execute_read(_check_model_v2, access_scope=MAINTENANCE)
         assert model_name == 'model-v2'
 
     @requires_sqlite_vec
@@ -481,7 +482,7 @@ class TestEmbeddingRepositoryUpsert:
             chunk_count = cursor.fetchone()[0]
             return metadata_count, chunk_count
 
-        metadata_count, chunk_count = await backend.execute_read(_check_initial_counts)
+        metadata_count, chunk_count = await backend.execute_read(_check_initial_counts, access_scope=MAINTENANCE)
         assert metadata_count == 2
         assert chunk_count == 2
 
@@ -508,7 +509,7 @@ class TestEmbeddingRepositoryUpsert:
             chunk_count = cursor.fetchone()[0]
             return metadata_count, chunk_count
 
-        metadata_count, chunk_count = await backend.execute_read(_check_updated_counts)
+        metadata_count, chunk_count = await backend.execute_read(_check_updated_counts, access_scope=MAINTENANCE)
         assert metadata_count == 3
         assert chunk_count == 3
 
@@ -538,7 +539,7 @@ class TestEmbeddingExistsMethod:
             metadata=None,
         )
 
-        result = await repos.embeddings.exists(context_id)
+        result = await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE)
         assert result is False
 
     @requires_sqlite_vec
@@ -566,5 +567,5 @@ class TestEmbeddingExistsMethod:
         chunk_emb = ChunkEmbedding(embedding=[0.1] * embedding_dim, start_index=0, end_index=13)
         await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model', scope=LOCAL_SCOPE)
 
-        result = await repos.embeddings.exists(context_id)
+        result = await repos.embeddings.exists(context_id, scope=LOCAL_SCOPE)
         assert result is True

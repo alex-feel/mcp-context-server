@@ -134,11 +134,12 @@ class TagRepository(BaseRepository):
             else:
                 await self.backend.execute_write(cast(Any, _store_tags_postgresql), access_scope=scope)
 
-    async def get_tags_for_context(self, context_id: str) -> list[str]:
+    async def get_tags_for_context(self, context_id: str, *, scope: BackendAccess) -> list[str]:
         """Get all tags for a specific context entry.
 
         Args:
             context_id: ID of the context entry
+            scope: The identity the read runs as.
 
         Returns:
             List of tags associated with the context entry, byte-ordered
@@ -155,7 +156,7 @@ class TagRepository(BaseRepository):
                 cursor.execute(query, (context_id,))
                 return [row['tag'] for row in cursor.fetchall()]
 
-            return await self.backend.execute_read(_get_tags_sqlite)
+            return await self.backend.execute_read(_get_tags_sqlite, access_scope=scope)
 
         # postgresql
 
@@ -165,7 +166,7 @@ class TagRepository(BaseRepository):
             rows = await conn.fetch(query, context_id)
             return [row['tag'] for row in rows]
 
-        return await self.backend.execute_read(_get_tags_postgresql)
+        return await self.backend.execute_read(_get_tags_postgresql, access_scope=scope)
 
     async def replace_tags_for_context(
         self,

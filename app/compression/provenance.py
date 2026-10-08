@@ -83,7 +83,7 @@ async def read_compression_metadata(
                 return None
             return (row[0], int(row[1]), row[2], int(row[3]), int(row[4]), row[5])
 
-        row = await backend.execute_read(_read_sqlite)
+        row = await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
     else:
 
         async def _read_pg(
@@ -131,7 +131,7 @@ async def read_compression_metadata(
                 record['codebook_fingerprint'],
             )
 
-        row = await backend.execute_read(cast(Any, _read_pg))
+        row = await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)
 
     if row is None:
         return None

@@ -148,13 +148,13 @@ async def _count_owned(backend: StorageBackend, principal_id: str) -> int:
             ).fetchone()
             return int(row[0])
 
-        return await backend.execute_read(_count_sqlite)
+        return await backend.execute_read(_count_sqlite, access_scope=MAINTENANCE)
 
     async def _count_pg(conn: asyncpg.Connection) -> int:
         value = await conn.fetchval('SELECT COUNT(*) FROM context_entries WHERE owner_id = $1', principal_id)
         return int(value)
 
-    count: int = await backend.execute_read(cast(Any, _count_pg))
+    count: int = await backend.execute_read(cast(Any, _count_pg), access_scope=MAINTENANCE)
     return count
 
 

@@ -456,7 +456,7 @@ class ContextDedupMixin(BaseRepository):
                     summary=cast(str | None, row['summary']),
                 )
 
-            return await self.backend.execute_read(_check_sqlite)
+            return await self.backend.execute_read(_check_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _check_postgresql(conn: 'asyncpg.Connection') -> DuplicateCandidate | None:
@@ -474,4 +474,4 @@ class ContextDedupMixin(BaseRepository):
                 summary=cast(str | None, row['summary']),
             )
 
-        return await self.backend.execute_read(_check_postgresql)
+        return await self.backend.execute_read(_check_postgresql, access_scope=scope)

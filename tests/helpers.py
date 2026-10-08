@@ -375,10 +375,10 @@ async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[
             rows = conn.execute(_READ_GRANTS_SQL.format(placeholder='?'), (context_id,)).fetchall()
             return [(row[0], row[1], row[2], row[3]) for row in rows]
 
-        return await backend.execute_read(_read_sqlite)
+        return await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
 
     async def _read_postgresql(conn: 'asyncpg.Connection') -> list[tuple[str, str, str, str]]:
         rows = await conn.fetch(_READ_GRANTS_SQL.format(placeholder='$1'), context_id)
         return [(row[0], row[1], row[2], row[3]) for row in rows]
 
-    return await backend.execute_read(_read_postgresql)
+    return await backend.execute_read(_read_postgresql, access_scope=MAINTENANCE)

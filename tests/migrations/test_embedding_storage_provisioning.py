@@ -130,7 +130,9 @@ class TestEmbeddingStorageDecoupledFromSearchTool:
 
                             return vec_table, chunks_table, chunk_columns, metadata_columns
 
-                        vec_table, chunks_table, chunk_columns, metadata_columns = await backend.execute_read(_inspect)
+                        vec_table, chunks_table, chunk_columns, metadata_columns = await backend.execute_read(
+                            _inspect, access_scope=MAINTENANCE,
+                        )
 
                         # The fp32 vector table exists despite the search tool being off.
                         assert vec_table, 'vec_context_embeddings must exist when embedding generation is on'

@@ -60,8 +60,9 @@ class PostgreSQLBackendCore:
 
         self.connection_string = connection_string
 
-        # How every transaction presents the caller's identity to the database: the
-        # write entry points hand each transaction's access scope to profile.bind.
+        # How every transaction presents the caller's identity to the database and which
+        # relation each plain read names: the entry points hand each transaction's access
+        # scope to profile.bind, and readable_relation asks the profile.
         self._profile = profile
 
         # Explicit pgvector-provisioning override. The migration CLI knows

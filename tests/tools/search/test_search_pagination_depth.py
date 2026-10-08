@@ -18,6 +18,7 @@ import app.tools.search.fts as search_fts
 import app.tools.search.hybrid as search_hybrid
 import app.tools.search.limits as search_limits
 import app.tools.search.semantic as search_semantic
+from app.backends.base import BackendAccess
 
 CORPUS_SIZE = 25
 
@@ -84,16 +85,17 @@ class _ReverseReranker:
 
 
 class _FakeTagsRepo:
-    async def get_tags_for_context(self, context_id: str) -> list[str]:
+    async def get_tags_for_context(self, context_id: str, *, scope: BackendAccess) -> list[str]:
         """Return no tags.
 
         Args:
             context_id: Unused.
+            scope: Unused.
 
         Returns:
             An empty tag list.
         """
-        del context_id
+        del context_id, scope
         return []
 
 

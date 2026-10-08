@@ -11,6 +11,7 @@ from fastmcp.exceptions import ToolError
 
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummaries
@@ -231,7 +232,7 @@ class TestNavigateNodeSummaries:
         real_get_nodes = repos.index_nodes.get_nodes_for_context
         update_committed = False
 
-        async def racing_get_nodes(context_id: str) -> StoredNodeSummaries:
+        async def racing_get_nodes(context_id: str, *, scope: BackendAccess) -> StoredNodeSummaries:
             # First node read: commit a text-change update (new text, bumped
             # version, replaced node rows, same-second updated_at) between
             # navigate's text read and its node read, then serve the NEW rows.
@@ -254,7 +255,7 @@ class TestNavigateNodeSummaries:
                         node_summary='New section abstract.', char_start=0, char_end=15,
                     ),
                 ], scope=MAINTENANCE)
-            return await real_get_nodes(context_id)
+            return await real_get_nodes(context_id, scope=scope)
 
         with patch.object(repos.index_nodes, 'get_nodes_for_context', racing_get_nodes):
             result = await navigate_as_dict(context_id=cid, include_node_summaries=True)

@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -189,7 +190,7 @@ class TestEmbeddingRepository:
         embedding_repo = EmbeddingRepository(backend)
 
         # Check non-existent ID
-        exists = await embedding_repo.exists(generate_id())
+        exists = await embedding_repo.exists(generate_id(), scope=LOCAL_SCOPE)
         assert exists is False
 
     @requires_sqlite_vec
@@ -489,15 +490,15 @@ class TestBulkChunkCleanup:
             ).fetchone()[0]
             return int(gone_meta), int(gone_chunks), int(survivor_chunks)
 
-        gone_meta, gone_chunks, survivor_chunks = await backend.execute_read(_counts)
+        gone_meta, gone_chunks, survivor_chunks = await backend.execute_read(_counts, access_scope=MAINTENANCE)
         assert gone_meta == 0
         assert gone_chunks == 0
         assert survivor_chunks == 2
 
         # The survivor's vectors are still reachable, so the vec0 delete was scoped.
-        assert await embedding_repo.exists(survivor) is True
+        assert await embedding_repo.exists(survivor, scope=LOCAL_SCOPE) is True
         for context_id in removed:
-            assert await embedding_repo.exists(context_id) is False
+            assert await embedding_repo.exists(context_id, scope=LOCAL_SCOPE) is False
 
     @requires_sqlite_vec
     async def test_bulk_delete_of_an_empty_list_is_a_no_op(
@@ -552,4 +553,4 @@ class TestBulkChunkCleanup:
 
         assert await embedding_repo.delete_all_chunks_bulk(padded, scope=LOCAL_SCOPE) == 3
         for context_id in stored_ids:
-            assert await embedding_repo.exists(context_id) is False
+            assert await embedding_repo.exists(context_id, scope=LOCAL_SCOPE) is False

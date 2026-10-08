@@ -504,7 +504,7 @@ class FtsSearchMixin(BaseRepository):
 
             return results, stats
 
-        return await self.backend.execute_read(_search_sqlite_inner)
+        return await self.backend.execute_read(_search_sqlite_inner, access_scope=scope)
 
     async def _search_postgresql(
         self,
@@ -795,4 +795,4 @@ class FtsSearchMixin(BaseRepository):
 
             return results, stats
 
-        return await self.backend.execute_read(cast(Any, _search_postgresql_inner))
+        return await self.backend.execute_read(cast(Any, _search_postgresql_inner), access_scope=scope)

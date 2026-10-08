@@ -11,6 +11,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.cli._backend import make_backend
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
@@ -213,7 +214,7 @@ async def _read_fp32_probe(
                 ))
             return rows
 
-        return await backend.execute_read(_read)
+        return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
     async def _read_pg(
         conn: asyncpg.Connection,
@@ -235,4 +236,4 @@ async def _read_fp32_probe(
             ))
         return out
 
-    return await backend.execute_read(cast(Any, _read_pg))
+    return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)

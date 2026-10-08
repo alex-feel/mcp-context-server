@@ -1,7 +1,9 @@
-"""Pooled connection access and the read and write entry points of the PostgreSQL backend.
+"""Pooled connection access, the read and write entry points and the readable relations of the PostgreSQL backend.
 
 Every operation acquires through ``get_connection``, which applies the circuit breaker and
-its fault accounting; ``execute_write`` adds the retry loop and the per-write transaction.
+its fault accounting; ``execute_write`` adds the retry loop and the per-write transaction,
+and ``execute_read`` runs inside a transaction that binds the caller's identity when the
+session profile wraps reads. ``readable_relation`` names relations through the profile.
 """
 
 import asyncio
@@ -34,7 +36,7 @@ T = TypeVar('T')
 
 
 class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
-    """Acquire pooled connections with breaker accounting, and run reads and retried writes."""
+    """Acquire pooled connections with breaker accounting, run reads and retried writes, and name relations."""
 
     @asynccontextmanager
     async def get_connection(
@@ -451,6 +453,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -459,6 +462,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., T],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -466,6 +470,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T:
         """Execute a read operation with proper connection handling.
@@ -475,6 +480,9 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                       Signature: async def operation(conn: asyncpg.Connection, *args, **kwargs) -> T
                       Note: Although protocol accepts sync or async, PostgreSQLBackend only uses async.
             *args: Positional arguments to pass to operation
+            access_scope: The identity the read runs as. When the session profile wraps
+                reads, it is bound as the first statement of the transaction the read
+                runs in; it never reaches ``operation``.
             **kwargs: Keyword arguments to pass to operation
 
         Returns:
@@ -483,6 +491,11 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         Note:
             PostgreSQLBackend expects ASYNC callables (not sync). The operation is executed
             with await.
+
+            A transaction-local identity expires with the statement that sets it unless a
+            transaction holds it, so a profile that binds reads runs each read inside one
+            transaction: the bind and every statement of the callable share it. A profile
+            that does not wrap reads runs the callable as issued, with no transaction.
 
             Every fault raised by the read callable propagates unchanged; failure
             ACCOUNTING belongs to the enclosing ``get_connection`` body arms, which
@@ -496,6 +509,23 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         async with self.get_connection(readonly=True) as conn:
             # Cast to async callable since PostgreSQLBackend only uses async operations
             async_operation = cast(Callable[..., Awaitable[T]], operation)
-            result = await async_operation(conn, *args, **kwargs)
+            if self._profile.wraps_reads:
+                async with conn.transaction():
+                    await self._profile.bind(conn, access_scope)
+                    result = await async_operation(conn, *args, **kwargs)
+            else:
+                result = await async_operation(conn, *args, **kwargs)
             self.metrics.total_queries += 1
             return result
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name the relation a plain read selects ``table``'s rows from, as the session profile decides.
+
+        Args:
+            table: A routable table.
+            alias: The name the statement qualifies the table's columns with.
+
+        Returns:
+            The FROM or JOIN item the profile renders.
+        """
+        return self._profile.readable_relation(table, alias=alias)

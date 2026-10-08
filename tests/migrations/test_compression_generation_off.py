@@ -49,7 +49,7 @@ async def test_sqlite_migration_skips_when_generation_disabled_and_schema_absent
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_check) is False
+    assert await backend.execute_read(_check, access_scope=MAINTENANCE) is False
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_sqlite_migration_maintains_existing_schema_when_generation_disabl
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_check) is True
+    assert await backend.execute_read(_check, access_scope=MAINTENANCE) is True
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_sqlite_migration_provisions_schema_for_embedding_infra_generation
         row = cur.fetchone()
         return int(row[0])
 
-    assert await backend.execute_read(_both_tables) == 2
+    assert await backend.execute_read(_both_tables, access_scope=MAINTENANCE) == 2
 
 
 @pytest.mark.asyncio
@@ -162,4 +162,4 @@ async def test_sqlite_migration_stays_clean_after_zero_data_decompress_generatio
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_payload_exists) is False
+    assert await backend.execute_read(_payload_exists, access_scope=MAINTENANCE) is False

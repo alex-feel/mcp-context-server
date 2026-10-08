@@ -26,6 +26,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.backends.base import BackendAccess
 from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
@@ -148,7 +149,7 @@ async def test_store_chunked_routes_to_compressed_when_enabled(
             for r in cur.fetchall()
         ]
 
-    rows = await compressed_backend.execute_read(_read)
+    rows = await compressed_backend.execute_read(_read, access_scope=MAINTENANCE)
     assert rows == [
         (0, 0, 100, b'PAYLOAD-0'),
         (1, 100, 200, b'PAYLOAD-1'),
@@ -209,7 +210,7 @@ async def test_delete_all_chunks_cleans_compressed_table_when_enabled(
         ).fetchone()[0]
         return (int(c1), int(c2))
 
-    rows, meta = await compressed_backend.execute_read(_counts)
+    rows, meta = await compressed_backend.execute_read(_counts, access_scope=MAINTENANCE)
     assert rows == 0
     assert meta == 0
 
@@ -241,7 +242,7 @@ async def test_compressed_round_trip_payload_bytes(
             (cid,),
         ).fetchone()[0])
 
-    stored_payload = await compressed_backend.execute_read(_read)
+    stored_payload = await compressed_backend.execute_read(_read, access_scope=MAINTENANCE)
     assert stored_payload == payload
 
 
@@ -285,7 +286,7 @@ async def test_compressed_store_preserves_chunk_boundaries(
         )
         return [(int(r[0]), int(r[1]), int(r[2])) for r in cur.fetchall()]
 
-    assert await compressed_backend.execute_read(_read) == [
+    assert await compressed_backend.execute_read(_read, access_scope=MAINTENANCE) == [
         (0, 10, 42),
         (1, 100, 215),
     ]
@@ -318,7 +319,7 @@ async def test_compressed_chunk_count_per_context(
         )
         return [int(r[0]) for r in cur.fetchall()]
 
-    assert await compressed_backend.execute_read(_read) == list(range(n))
+    assert await compressed_backend.execute_read(_read, access_scope=MAINTENANCE) == list(range(n))
 
 
 @pytest.mark.asyncio
@@ -355,7 +356,7 @@ async def test_upsert_replaces_existing_compressed_chunks(
             ).fetchall()
         ]
 
-    assert await compressed_backend.execute_read(_read) == [b'NEW0']
+    assert await compressed_backend.execute_read(_read, access_scope=MAINTENANCE) == [b'NEW0']
 
 
 @pytest.mark.asyncio
@@ -456,7 +457,9 @@ async def test_bulk_delete_compressed_uses_multi_row_statements(
         ).fetchone()[0]
         return int(gone_payloads), int(gone_meta), int(survivor_payloads), int(survivor_meta)
 
-    gone_payloads, gone_meta, survivor_payloads, survivor_meta = await compressed_backend.execute_read(_counts)
+    gone_payloads, gone_meta, survivor_payloads, survivor_meta = await compressed_backend.execute_read(
+        _counts, access_scope=MAINTENANCE,
+    )
     assert gone_payloads == 0
     assert gone_meta == 0
     assert survivor_payloads == 2
@@ -487,7 +490,7 @@ async def test_bulk_delete_compressed_chunks_beyond_the_bind_parameter_limit(
 
     assert await repo.delete_all_chunks_bulk(padded, scope=LOCAL_SCOPE) == 3
     for cid in stored_ids:
-        assert await repo.exists(cid) is False
+        assert await repo.exists(cid, scope=LOCAL_SCOPE) is False
 
 
 @pytest.mark.asyncio

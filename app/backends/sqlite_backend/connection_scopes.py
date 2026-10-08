@@ -1,8 +1,10 @@
-"""Connection scopes and the read entry point of the SQLite backend.
+"""Connection scopes, the read entry point and the readable relations of the SQLite backend.
 
 ``get_connection`` yields a per-use reader or the shared writer under circuit-breaker
 accounting; ``execute_read`` runs a read callable on a fresh reader and retries the
-self-clearing lock-contention family with exponential backoff.
+self-clearing lock-contention family with exponential backoff; ``readable_relation``
+names every routable table by itself, because SQLite enforces access in the
+application layer only.
 """
 
 import asyncio
@@ -19,6 +21,8 @@ from typing import cast
 from typing import overload
 
 from app.backends._executor import run_in_executor_uninterruptible
+from app.backends.base import BackendAccess
+from app.backends.base import base_relation
 from app.backends.sqlite_backend.connections import SQLiteConnectionsMixin
 from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.errors import ControlFlowError
@@ -31,7 +35,7 @@ T = TypeVar('T')
 
 
 class SQLiteConnectionScopeMixin(SQLiteConnectionsMixin):
-    """Yield reader and writer connection scopes with breaker accounting, and run retried reads."""
+    """Yield reader and writer connection scopes with breaker accounting, run retried reads, and name relations."""
 
     @asynccontextmanager
     async def get_connection(
@@ -195,6 +199,7 @@ class SQLiteConnectionScopeMixin(SQLiteConnectionsMixin):
         self,
         operation: Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -203,6 +208,7 @@ class SQLiteConnectionScopeMixin(SQLiteConnectionsMixin):
         self,
         operation: Callable[..., T],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -210,6 +216,7 @@ class SQLiteConnectionScopeMixin(SQLiteConnectionsMixin):
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T:
         """
@@ -220,6 +227,8 @@ class SQLiteConnectionScopeMixin(SQLiteConnectionsMixin):
                       Signature: operation(conn: sqlite3.Connection, *args, **kwargs) -> T
                       Note: Although protocol accepts sync or async, SQLiteBackend only uses sync.
             *args: Additional arguments for the operation
+            access_scope: The identity the read runs as. SQLite enforces access in the
+                application layer only, so it is accepted and discarded.
             **kwargs: Additional keyword arguments for the operation
 
         Returns:
@@ -245,6 +254,7 @@ class SQLiteConnectionScopeMixin(SQLiteConnectionsMixin):
             never charges the failed_queries metric or the breaker; only a genuine
             fault does.
         """
+        _ = access_scope
         last_locked_error: sqlite3.OperationalError | None = None
         for attempt in range(self.retry_config.max_retries):
             try:
@@ -319,3 +329,15 @@ class SQLiteConnectionScopeMixin(SQLiteConnectionsMixin):
             # of the in-flight statement or crashes the interpreter. The drain lets
             # the query finish before the connection is closed.
             return await run_in_executor_uninterruptible(loop, _execute)
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name ``table`` by itself: SQLite enforces access in the application layer only.
+
+        Args:
+            table: A routable table.
+            alias: The name the statement qualifies the table's columns with.
+
+        Returns:
+            The base form of the relation (:func:`app.backends.base.base_relation`).
+        """
+        return base_relation(table, alias=alias)

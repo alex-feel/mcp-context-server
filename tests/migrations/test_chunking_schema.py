@@ -164,7 +164,7 @@ class TestChunkingMigrationIntegration:
                     ''')
                     return cursor.fetchone()[0]
 
-                chunk_count = await backend.execute_read(_count_chunks)
+                chunk_count = await backend.execute_read(_count_chunks, access_scope=MAINTENANCE)
                 assert chunk_count == 3, 'Should have 3 chunks for context_id=1'
 
             finally:
@@ -245,7 +245,7 @@ class TestChunkingMigrationIntegration:
                     cursor = conn.execute('SELECT COUNT(*) FROM embedding_chunks')
                     return cursor.fetchone()[0]
 
-                chunk_count = await backend.execute_read(_count_chunks)
+                chunk_count = await backend.execute_read(_count_chunks, access_scope=MAINTENANCE)
                 assert chunk_count == 0, 'Chunks should be deleted when context is deleted (CASCADE)'
 
             finally:

@@ -475,7 +475,7 @@ async def execute_store_in_transaction(
 
         should_store = True
         if was_updated:
-            embedding_exists = await repos.embeddings.exists(context_id, txn=txn)
+            embedding_exists = await repos.embeddings.exists(context_id, txn=txn, scope=scope)
             should_store = not embedding_exists
             if not should_store:
                 logger.debug(
@@ -709,7 +709,7 @@ async def execute_update_in_transaction(
     # the timestamp is stamped EXPLICITLY (touch_updated_at) instead of rewriting an
     # unrelated column back to its own value just to carry the stamp along.
     if images is None and updated_fields:
-        image_count = await repos.images.count_images_for_context(context_id, txn=txn)
+        image_count = await repos.images.count_images_for_context(context_id, txn=txn, scope=scope)
         current_content_type = 'multimodal' if image_count > 0 else 'text'
         stored_content_type = await repos.context.get_content_type(context_id, scope=scope, txn=txn)
         if stored_content_type is None:
@@ -740,7 +740,7 @@ async def execute_update_in_transaction(
             scope=scope,
         )
         updated_fields.append('embedding')
-    elif text is not None and await repos.embeddings.embedding_tables_exist(txn=txn):
+    elif text is not None and await repos.embeddings.embedding_tables_exist(txn=txn, scope=scope):
         # Text changed but embeddings were NOT regenerated (no embedding provider at
         # update time -- generation disabled/absent). The stored chunks describe the
         # REPLACED text, so DELETE them rather than leave stale vectors that semantic

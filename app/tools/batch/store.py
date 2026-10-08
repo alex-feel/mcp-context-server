@@ -202,7 +202,7 @@ async def store_context_batch(
             # Embedding task (with pre-check optimization)
             if embedding_provider is not None:
                 if likely_duplicate_id is not None:
-                    has_embeddings = await repos.embeddings.exists(likely_duplicate_id)
+                    has_embeddings = await repos.embeddings.exists(likely_duplicate_id, scope=scope)
                     if has_embeddings:
                         logger.debug(
                             'Pre-check: skipping embedding generation for likely duplicate '

@@ -11,6 +11,7 @@ import pytest
 
 from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessScope
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -393,7 +394,10 @@ class TestContextRepositorySearch:
 
         async def _execute_read(
             closure: Callable[[object], Awaitable[tuple[list[object], dict[str, object]]]],
+            *,
+            access_scope: BackendAccess,
         ) -> tuple[list[object], dict[str, object]]:
+            _ = access_scope
             return await closure(object())
 
         pg_backend.execute_read = _execute_read
@@ -428,7 +432,8 @@ def _recording_postgresql_repo(rows: list[object]) -> tuple[ContextRepository, l
     pg_backend = Mock()
     pg_backend.backend_type = 'postgresql'
 
-    async def _execute_read(closure: Callable[[object], Awaitable[object]]) -> object:
+    async def _execute_read(closure: Callable[[object], Awaitable[object]], *, access_scope: BackendAccess) -> object:
+        _ = access_scope
         return await closure(_RecordingConnection())
 
     pg_backend.execute_read = _execute_read

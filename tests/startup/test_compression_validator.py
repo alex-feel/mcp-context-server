@@ -165,7 +165,7 @@ async def test_returns_early_when_disabled(
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_table_exists) is False
+    assert await backend.execute_read(_table_exists, access_scope=MAINTENANCE) is False
 
 
 @pytest.mark.asyncio
@@ -206,7 +206,7 @@ async def test_bootstrap_inserts_provenance_row(
         assert row is not None
         return (row[0], int(row[1]), row[2], int(row[3]), int(row[4]))
 
-    provider, bits, variant, seed, dim = await backend.execute_read(_read)
+    provider, bits, variant, seed, dim = await backend.execute_read(_read, access_scope=MAINTENANCE)
     assert provider == 'turboquant'
     assert bits == 4
     assert variant == 'ip'
@@ -542,7 +542,7 @@ async def test_generation_disabled_without_row_skips_seeding(
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_table_exists) is False
+    assert await backend.execute_read(_table_exists, access_scope=MAINTENANCE) is False
 
 
 @pytest.mark.asyncio

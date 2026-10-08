@@ -211,6 +211,7 @@ async def _apply_chunking_migration_with_backend(
         # Check if already applied
         already_applied = await manager.execute_read(
             cast(Any, _check_chunking_migration_applied_postgresql),
+            access_scope=MAINTENANCE,
         )
 
         # Early return if migration already applied (avoid unnecessary SQL execution)
@@ -276,7 +277,7 @@ async def _apply_chunking_migration_with_backend(
 
     else:  # sqlite
         # Check if already applied
-        already_applied = await manager.execute_read(_check_chunking_migration_applied_sqlite)
+        already_applied = await manager.execute_read(_check_chunking_migration_applied_sqlite, access_scope=MAINTENANCE)
 
         def _apply_sqlite(conn: sqlite3.Connection) -> None:
             # Check if embedding_metadata table exists before migration

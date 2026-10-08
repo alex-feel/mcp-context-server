@@ -9,6 +9,7 @@ from typing import cast
 from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
+from app.backends.base import BackendAccess
 from app.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -29,7 +30,13 @@ class EmbeddingInventoryMixin(BaseRepository):
     compression mode uses, which covers every entry.
     """
 
-    async def exists(self, context_id: str, txn: 'TransactionContext | None' = None) -> bool:
+    async def exists(
+        self,
+        context_id: str,
+        txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
+    ) -> bool:
         """Check if embedding exists for context entry.
 
         Args:
@@ -38,6 +45,8 @@ class EmbeddingInventoryMixin(BaseRepository):
                 transaction's own connection instead of acquiring a second pooled
                 connection, avoiding a nested pool acquire while a transaction
                 connection is already held (PostgreSQL pool-starvation hazard).
+            scope: The identity a standalone read runs as; a check on ``txn`` runs as the
+                identity its transaction bound.
 
         Returns:
             True if embedding exists, False otherwise
@@ -52,7 +61,7 @@ class EmbeddingInventoryMixin(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_exists_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_exists_sqlite)
+            return await self.backend.execute_read(_exists_sqlite, access_scope=scope)
 
         # postgresql
         async def _exists_postgresql(conn: 'asyncpg.Connection') -> bool:
@@ -62,9 +71,9 @@ class EmbeddingInventoryMixin(BaseRepository):
 
         if txn is not None:
             return await _exists_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_exists_postgresql)
+        return await self.backend.execute_read(_exists_postgresql, access_scope=scope)
 
-    async def embedding_tables_exist(self, txn: 'TransactionContext | None' = None) -> bool:
+    async def embedding_tables_exist(self, txn: 'TransactionContext | None' = None, *, scope: BackendAccess) -> bool:
         """Check whether the embedding_metadata table exists (table-safe).
 
         Unlike :meth:`exists`, this never raises when embedding storage was never
@@ -76,6 +85,8 @@ class EmbeddingInventoryMixin(BaseRepository):
         Args:
             txn: Optional transaction context. When provided the check runs on the
                 transaction's own connection.
+            scope: The identity a standalone read runs as; a check on ``txn`` runs as the
+                identity its transaction bound.
 
         Returns:
             True if the embedding_metadata table is present, False otherwise.
@@ -91,7 +102,7 @@ class EmbeddingInventoryMixin(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_tables_exist_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_tables_exist_sqlite)
+            return await self.backend.execute_read(_tables_exist_sqlite, access_scope=scope)
 
         # postgresql: to_regclass resolves via the connection's search_path and returns
         # NULL for a missing relation (no UndefinedTableError).
@@ -100,7 +111,7 @@ class EmbeddingInventoryMixin(BaseRepository):
 
         if txn is not None:
             return await _tables_exist_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(cast(Any, _tables_exist_postgresql))
+        return await self.backend.execute_read(cast(Any, _tables_exist_postgresql), access_scope=scope)
 
     async def get_statistics(self, *, scope: Scope) -> dict[str, Any]:
         """Get embedding statistics, chunk information included, over the entries the scope may read.
@@ -152,7 +163,7 @@ class EmbeddingInventoryMixin(BaseRepository):
                     conn.execute(chunks_sql, parents.params).fetchone()[0],
                 )
 
-            return await self.backend.execute_read(_get_stats_sqlite)
+            return await self.backend.execute_read(_get_stats_sqlite, access_scope=scope)
 
         # postgresql
         async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
@@ -162,9 +173,9 @@ class EmbeddingInventoryMixin(BaseRepository):
                 await conn.fetchval(chunks_sql, *parents.params),
             )
 
-        return await self.backend.execute_read(_get_stats_postgresql)
+        return await self.backend.execute_read(_get_stats_postgresql, access_scope=scope)
 
-    async def get_embeddings_size(self) -> tuple[float, bool]:
+    async def get_embeddings_size(self, *, scope: BackendAccess) -> tuple[float, bool]:
         """Get the storage size of embedding vector payloads in megabytes.
 
         The returned size covers only the vector payload table that is active
@@ -180,6 +191,9 @@ class EmbeddingInventoryMixin(BaseRepository):
         Any failure (for example a missing table) is logged and reported as a
         zero size so that statistics never fail because of this sub-block.
 
+        Args:
+            scope: The identity the read runs as.
+
         Returns:
             Tuple of (size in megabytes rounded to two places, estimated flag).
             The estimated flag is ``True`` only for the SQLite fp32 estimate.
@@ -187,16 +201,16 @@ class EmbeddingInventoryMixin(BaseRepository):
         try:
             backend_type = self.backend.backend_type
             if backend_type == 'sqlite':
-                return await self._get_embeddings_size_sqlite()
+                return await self._get_embeddings_size_sqlite(scope=scope)
             if backend_type == 'postgresql':
-                return await self._get_embeddings_size_postgresql()
+                return await self._get_embeddings_size_postgresql(scope=scope)
             logger.warning('Unknown backend type %r; embeddings_size_mb reported as 0.0', backend_type)
         except Exception as e:
             logger.warning('Failed to compute embeddings size: %s', e)
         return 0.0, False
 
-    async def _get_embeddings_size_sqlite(self) -> tuple[float, bool]:
-        """Get embedding payload size for SQLite (dbstat-free)."""
+    async def _get_embeddings_size_sqlite(self, *, scope: BackendAccess) -> tuple[float, bool]:
+        """Get embedding payload size for SQLite (dbstat-free), reading as ``scope``."""
         from app.settings import get_settings
 
         if get_settings().compression.enabled:
@@ -207,7 +221,7 @@ class EmbeddingInventoryMixin(BaseRepository):
                 )
                 return int(cursor.fetchone()['size_bytes'])
 
-            size_bytes = await self.backend.execute_read(_read_compressed_size)
+            size_bytes = await self.backend.execute_read(_read_compressed_size, access_scope=scope)
             return round(float(size_bytes) / (1024 * 1024), 2), False
 
         # Deterministic fp32 estimate: chunks * dimensions * 4 bytes per float.
@@ -217,11 +231,11 @@ class EmbeddingInventoryMixin(BaseRepository):
             )
             return int(cursor.fetchone()['size_bytes'])
 
-        size_bytes = await self.backend.execute_read(_read_estimate_size)
+        size_bytes = await self.backend.execute_read(_read_estimate_size, access_scope=scope)
         return round(float(size_bytes) / (1024 * 1024), 2), True
 
-    async def _get_embeddings_size_postgresql(self) -> tuple[float, bool]:
-        """Get embedding payload size for PostgreSQL (on-disk relation size)."""
+    async def _get_embeddings_size_postgresql(self, *, scope: BackendAccess) -> tuple[float, bool]:
+        """Get embedding payload size for PostgreSQL (on-disk relation size), reading as ``scope``."""
         from app.settings import get_settings
 
         active_table = (
@@ -237,5 +251,5 @@ class EmbeddingInventoryMixin(BaseRepository):
             )
             return int(row['size_bytes']) if row else 0
 
-        size_bytes = await self.backend.execute_read(_read_relation_size)
+        size_bytes = await self.backend.execute_read(_read_relation_size, access_scope=scope)
         return round(float(size_bytes) / (1024 * 1024), 2), False

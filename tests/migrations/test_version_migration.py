@@ -58,7 +58,7 @@ async def _columns(backend: StorageBackend) -> list[str]:
         cursor = conn.execute('PRAGMA table_info(context_entries)')
         return [row[1] for row in cursor.fetchall()]
 
-    return await backend.execute_read(_check)
+    return await backend.execute_read(_check, access_scope=MAINTENANCE)
 
 
 @pytest_asyncio.fixture
@@ -121,7 +121,7 @@ class TestVersionMigration:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        assert await backend_pre_migration.execute_read(_read_version) == 0
+        assert await backend_pre_migration.execute_read(_read_version, access_scope=MAINTENANCE) == 0
 
     @pytest.mark.asyncio
     async def test_preexisting_row_backfills_default_zero(self, backend_pre_migration: StorageBackend) -> None:
@@ -151,7 +151,7 @@ class TestVersionMigration:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        assert await backend_pre_migration.execute_read(_read_version) == 0
+        assert await backend_pre_migration.execute_read(_read_version, access_scope=MAINTENANCE) == 0
 
     @pytest.mark.asyncio
     async def test_migration_idempotent(self, backend_pre_migration: StorageBackend) -> None:

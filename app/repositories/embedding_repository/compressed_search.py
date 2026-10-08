@@ -280,6 +280,7 @@ class CompressedSearchMixin(BaseRepository):
 
             candidate_ids, meta_count, query_plan = await self.backend.execute_read(
                 _candidates_sqlite,
+                access_scope=scope,
             )
         else:
             async def _candidates_pg(
@@ -411,6 +412,7 @@ class CompressedSearchMixin(BaseRepository):
 
             candidate_ids, meta_count, query_plan = await self.backend.execute_read(
                 cast(Any, _candidates_pg),
+                access_scope=scope,
             )
 
         filter_count += meta_count
@@ -448,7 +450,7 @@ class CompressedSearchMixin(BaseRepository):
                     )
                 return rows
 
-            payload_rows = await self.backend.execute_read(_read_compressed_sqlite)
+            payload_rows = await self.backend.execute_read(_read_compressed_sqlite, access_scope=scope)
         else:
             async def _read_compressed_pg(
                 conn: 'asyncpg.Connection',
@@ -483,7 +485,7 @@ class CompressedSearchMixin(BaseRepository):
                     return await asyncio.to_thread(_build_rows)
                 return _build_rows()
 
-            payload_rows = await self.backend.execute_read(cast(Any, _read_compressed_pg))
+            payload_rows = await self.backend.execute_read(cast(Any, _read_compressed_pg), access_scope=scope)
 
         if not payload_rows:
             stats = {
@@ -627,7 +629,7 @@ class CompressedSearchMixin(BaseRepository):
                     out.update({str(dict(r)['id']): dict(r) for r in cursor.fetchall()})
                 return out
 
-            hydrated = await self.backend.execute_read(_hydrate_sqlite)
+            hydrated = await self.backend.execute_read(_hydrate_sqlite, access_scope=scope)
         else:
             hydrate_read = build_access_predicate(
                 scope, mode=AccessMode.READ, backend_type='postgresql', outer='context_entries', start=2,
@@ -645,7 +647,7 @@ class CompressedSearchMixin(BaseRepository):
                 )
                 return {str(dict(r)['id']): dict(r) for r in rows}
 
-            hydrated = await self.backend.execute_read(cast(Any, _hydrate_pg))
+            hydrated = await self.backend.execute_read(cast(Any, _hydrate_pg), access_scope=scope)
 
         results: list[dict[str, Any]] = []
         for context_id, (dist, start_index, end_index) in page:

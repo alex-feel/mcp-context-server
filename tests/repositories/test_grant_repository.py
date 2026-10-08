@@ -88,4 +88,4 @@ class TestStoreGroupReadGrants:
             )
             return int(cursor.fetchone()[0])
 
-        assert await async_db_initialized.execute_read(_count) == 0
+        assert await async_db_initialized.execute_read(_count, access_scope=MAINTENANCE) == 0

@@ -271,7 +271,7 @@ async def fts_search_raw(
         raise ToolError('FTS migration in progress. Please retry shortly.')
 
     # Check if FTS is properly initialized
-    if not await repos.fts.is_available():
+    if not await repos.fts.is_available(scope=scope):
         raise ToolError(
             'FTS index not found. The database may need migration. '
             'Restart the server with ENABLE_FTS=true to apply migrations.',

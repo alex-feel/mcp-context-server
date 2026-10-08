@@ -10,6 +10,7 @@ from typing import cast
 import pytest
 
 from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.repositories.statistics_repository import StatisticsRepository
 from tests.helpers import LOCAL_SCOPE
@@ -148,15 +149,17 @@ class _SqlRecordingPgBackend:
     def __init__(self) -> None:
         self.connection = _SqlRecordingPgConnection()
 
-    async def execute_read(self, operation: Callable[[Any], Awaitable[T]]) -> T:
+    async def execute_read(self, operation: Callable[[Any], Awaitable[T]], *, access_scope: BackendAccess) -> T:
         """Run the repository's async closure against the recording connection.
 
         Args:
             operation: The async closure the repository passes to the backend.
+            access_scope: The identity the read runs as; the fake binds nothing.
 
         Returns:
             Whatever the closure returns.
         """
+        _ = access_scope
         return await operation(self.connection)
 
 

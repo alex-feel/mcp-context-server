@@ -328,7 +328,7 @@ async def test_search_compressed_results_unchanged_after_batching(
         )
         return [(str(r[0]), bytes(r[1])) for r in cur.fetchall()]
 
-    rows = await backend.execute_read(_read_payloads)
+    rows = await backend.execute_read(_read_payloads, access_scope=MAINTENANCE)
     per_row_distances_by_ctx: dict[str, float] = {}
     for ctx_id, payload_bytes in rows:
         d = -float(

@@ -94,7 +94,7 @@ def create_backend(
 
     # backend_type == 'postgresql'
     # Create PostgreSQL backend; the application predicate is the whole access control,
-    # so its transactions bind no identity.
+    # so its transactions bind no identity and its reads name the base tables.
     return PostgreSQLBackend(
         connection_string=connection_string,
         provision_vector=provision_vector,

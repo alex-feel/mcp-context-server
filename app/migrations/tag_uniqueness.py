@@ -84,13 +84,13 @@ async def _unique_tag_index_exists(backend: StorageBackend) -> bool:
             )
             return cursor.fetchone() is not None
 
-        return await backend.execute_read(_probe_sqlite)
+        return await backend.execute_read(_probe_sqlite, access_scope=MAINTENANCE)
 
     async def _probe_pg(conn: asyncpg.Connection) -> bool:
         exists = await conn.fetchval("SELECT to_regclass('idx_tags_entry_tag') IS NOT NULL")
         return bool(exists)
 
-    return await backend.execute_read(cast(Any, _probe_pg))
+    return await backend.execute_read(cast(Any, _probe_pg), access_scope=MAINTENANCE)
 
 
 async def apply_tag_uniqueness_migration(backend: StorageBackend) -> None:

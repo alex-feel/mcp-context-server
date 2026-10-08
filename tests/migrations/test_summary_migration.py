@@ -56,7 +56,7 @@ class TestApplySummaryMigration:
                 cursor = conn.execute('PRAGMA table_info(context_entries)')
                 return [row[1] for row in cursor.fetchall()]
 
-            columns = await backend.execute_read(_check)
+            columns = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert 'summary' in columns
         finally:
             await backend.shutdown()
@@ -91,7 +91,7 @@ class TestApplySummaryMigration:
                 cursor = conn.execute('PRAGMA table_info(context_entries)')
                 return [row[1] for row in cursor.fetchall()]
 
-            columns = await backend.execute_read(_check)
+            columns = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert 'summary' in columns
         finally:
             await backend.shutdown()
@@ -134,7 +134,7 @@ class TestApplySummaryMigration:
                 row = cursor.fetchone()
                 return row['summary'] if row else 'NOT_FOUND'
 
-            summary_value = await backend.execute_read(_check)
+            summary_value = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert summary_value is None
         finally:
             await backend.shutdown()
@@ -175,7 +175,7 @@ class TestApplySummaryMigration:
                 row = cursor.fetchone()
                 return row['summary'] if row else None
 
-            actual_summary = await backend.execute_read(_check)
+            actual_summary = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert actual_summary == expected_summary
         finally:
             await backend.shutdown()

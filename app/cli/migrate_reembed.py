@@ -272,7 +272,7 @@ async def _find_all_entries(backend: StorageBackend) -> list[tuple[str, str]]:
             )
             return [(str(r[0]), str(r[1])) for r in cursor.fetchall()]
 
-        return await backend.execute_read(_read_sqlite)
+        return await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
 
     async def _read_pg(conn: asyncpg.Connection) -> list[tuple[str, str]]:
         rows = await conn.fetch(
@@ -281,7 +281,7 @@ async def _find_all_entries(backend: StorageBackend) -> list[tuple[str, str]]:
         )
         return [(str(r['id']), str(r['text_content'])) for r in rows]
 
-    return await backend.execute_read(cast(Any, _read_pg))
+    return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)
 
 
 __all__ = ['run_reembed']

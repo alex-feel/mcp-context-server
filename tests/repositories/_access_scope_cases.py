@@ -385,7 +385,7 @@ class ScopedDb:
             def _fetch_sqlite(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
                 return [tuple(row) for row in conn.execute(sql, tuple(params)).fetchall()]
 
-            return await self.backend.execute_read(_fetch_sqlite)
+            return await self.backend.execute_read(_fetch_sqlite, access_scope=MAINTENANCE)
 
         native_sql = _numbered_placeholders(sql)
 
@@ -393,7 +393,7 @@ class ScopedDb:
             rows = await conn.fetch(native_sql, *params)
             return [tuple(_plain(value) for value in row) for row in rows]
 
-        return await self.backend.execute_read(_fetch_postgresql)
+        return await self.backend.execute_read(_fetch_postgresql, access_scope=MAINTENANCE)
 
     async def execute(self, sql: str, params: Sequence[object] = ()) -> None:
         """Run one write statement on either backend, such as backdating or re-publishing a row.

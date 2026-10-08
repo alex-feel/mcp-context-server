@@ -42,6 +42,7 @@ from app.access_scope import AccessMode
 from app.access_scope import AccessScope
 from app.access_scope import build_access_predicate
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.repositories import RepositoryContainer
 from tests.helpers import as_principal
 from tests.repositories._access_scope_layouts import sqlite_scoped_db
@@ -89,7 +90,7 @@ async def _plan(backend: StorageBackend, sql: str, params: list[Any]) -> list[st
     def _explain(conn: sqlite3.Connection) -> list[str]:
         return [str(row[3]) for row in conn.execute(f'EXPLAIN QUERY PLAN {sql}', params).fetchall()]
 
-    return await backend.execute_read(_explain)
+    return await backend.execute_read(_explain, access_scope=MAINTENANCE)
 
 
 def _assert_entries_read_from_covering_index(sql: str, plan: list[str]) -> None:

@@ -15,6 +15,7 @@ import pytest_asyncio
 import app.migrations.index_tree as index_tree_module
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.migrations.index_tree import apply_index_tree_migration
 from app.settings import get_settings
 
@@ -44,7 +45,7 @@ async def _table_exists(backend: StorageBackend) -> bool:
         )
         return cursor.fetchone() is not None
 
-    return await backend.execute_read(_check)
+    return await backend.execute_read(_check, access_scope=MAINTENANCE)
 
 
 class TestIndexTreeMigration:
@@ -83,7 +84,7 @@ class TestIndexTreeMigration:
             cursor = conn.execute('PRAGMA table_info(context_index_nodes)')
             return {row[1] for row in cursor.fetchall()}
 
-        columns = await backend.execute_read(_columns)
+        columns = await backend.execute_read(_columns, access_scope=MAINTENANCE)
         assert {'context_id', 'node_id', 'level', 'ordinal', 'title', 'node_summary', 'char_start', 'char_end'} <= columns
 
 

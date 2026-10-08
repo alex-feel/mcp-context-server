@@ -35,6 +35,7 @@ import pytest
 
 import app.backends.sqlite_backend as sqlite_backend_module
 import app.backends.sqlite_backend.connections as connections_module
+from app.backends.base import MAINTENANCE
 from app.backends.sqlite_backend import SQLiteBackend
 from app.backends.sqlite_backend.connections import ManagedConnection
 from app.settings import get_settings
@@ -179,7 +180,7 @@ class TestReaderPathUnderJournalModeDrift:
                 return int(row[0])
 
             for _ in range(backend.circuit_breaker.failure_threshold + 2):
-                assert await backend.execute_read(_count) == 0
+                assert await backend.execute_read(_count, access_scope=MAINTENANCE) == 0
 
             assert backend.circuit_breaker.failures == 0
             assert backend.metrics.failed_queries == 0

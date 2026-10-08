@@ -133,7 +133,7 @@ class StatisticsRepository(BaseRepository):
 
                 return threads
 
-            return await self.backend.execute_read(_list_threads_sqlite)
+            return await self.backend.execute_read(_list_threads_sqlite, access_scope=scope)
 
         # postgresql
 
@@ -167,7 +167,7 @@ class StatisticsRepository(BaseRepository):
 
             return threads
 
-        return await self.backend.execute_read(_list_threads_postgresql)
+        return await self.backend.execute_read(_list_threads_postgresql, access_scope=scope)
 
     async def get_database_statistics(self, db_path: Path | None = None, *, scope: Scope) -> dict[str, Any]:
         """Get database statistics over the entries the scope may read.
@@ -273,7 +273,7 @@ class StatisticsRepository(BaseRepository):
                 stats['backend'] = 'sqlite'
                 return stats
 
-            stats = await self.backend.execute_read(_get_stats_sqlite)
+            stats = await self.backend.execute_read(_get_stats_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
@@ -301,7 +301,7 @@ class StatisticsRepository(BaseRepository):
                 stats['backend'] = 'postgresql'
                 return stats
 
-            stats = await self.backend.execute_read(_get_stats_postgresql)
+            stats = await self.backend.execute_read(_get_stats_postgresql, access_scope=scope)
 
         if backend_type == 'sqlite':
             # SQLite size is the on-disk size of the database file. This excludes
@@ -323,7 +323,7 @@ class StatisticsRepository(BaseRepository):
                 row = await conn.fetchrow('SELECT pg_database_size(current_database()) AS db_size')
                 return row['db_size'] if row else None
 
-            size_bytes = await self.backend.execute_read(_get_db_size_postgresql)
+            size_bytes = await self.backend.execute_read(_get_db_size_postgresql, access_scope=scope)
             if size_bytes is not None:
                 stats['database_size_mb'] = round(float(size_bytes) / (1024 * 1024), 2)
         else:
@@ -365,7 +365,7 @@ class StatisticsRepository(BaseRepository):
                 summary_count = cursor.execute(summary_sql, predicate.params).fetchone()['count']
                 return _figures(summary_count, total_entries)
 
-            return await self.backend.execute_read(_get_summary_stats_sqlite)
+            return await self.backend.execute_read(_get_summary_stats_sqlite, access_scope=scope)
 
         # postgresql
 
@@ -374,4 +374,4 @@ class StatisticsRepository(BaseRepository):
             summary_count = await conn.fetchval(summary_sql, *predicate.params)
             return _figures(summary_count, total_entries)
 
-        return await self.backend.execute_read(_get_summary_stats_postgresql)
+        return await self.backend.execute_read(_get_summary_stats_postgresql, access_scope=scope)

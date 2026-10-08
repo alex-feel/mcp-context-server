@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.repositories.fts_repository import FtsRepository
 
 
@@ -40,13 +42,14 @@ class TestFtsIsAvailablePropagatesOperationalFaults:
         class _Backend:
             backend_type = 'sqlite'
 
-            async def execute_read(self, operation: Callable[[object], bool]) -> bool:
+            async def execute_read(self, operation: Callable[[object], bool], *, access_scope: BackendAccess) -> bool:
+                _ = access_scope
                 return operation(_LockedConnection())
 
         repo = FtsRepository(cast(StorageBackend, _Backend()))
 
         with pytest.raises(sqlite3.OperationalError, match='database is locked'):
-            await repo.is_available()
+            await repo.is_available(scope=MAINTENANCE)
 
     @pytest.mark.asyncio
     async def test_sqlite_probe_reports_absent_table_as_false(self) -> None:
@@ -67,12 +70,13 @@ class TestFtsIsAvailablePropagatesOperationalFaults:
         class _Backend:
             backend_type = 'sqlite'
 
-            async def execute_read(self, operation: Callable[[object], bool]) -> bool:
+            async def execute_read(self, operation: Callable[[object], bool], *, access_scope: BackendAccess) -> bool:
+                _ = access_scope
                 return operation(_Connection())
 
         repo = FtsRepository(cast(StorageBackend, _Backend()))
 
-        assert await repo.is_available() is False
+        assert await repo.is_available(scope=MAINTENANCE) is False
 
     @pytest.mark.asyncio
     async def test_postgresql_probe_error_propagates(self) -> None:
@@ -90,13 +94,16 @@ class TestFtsIsAvailablePropagatesOperationalFaults:
         class _Backend:
             backend_type = 'postgresql'
 
-            async def execute_read(self, operation: Callable[[object], Awaitable[bool]]) -> bool:
+            async def execute_read(
+                self, operation: Callable[[object], Awaitable[bool]], *, access_scope: BackendAccess,
+            ) -> bool:
+                _ = access_scope
                 return await operation(_BrokenConnection())
 
         repo = FtsRepository(cast(StorageBackend, _Backend()))
 
         with pytest.raises(OSError, match='connection reset by peer'):
-            await repo.is_available()
+            await repo.is_available(scope=MAINTENANCE)
 
     @pytest.mark.asyncio
     async def test_postgresql_probe_reports_absent_column_as_false(self) -> None:
@@ -114,12 +121,15 @@ class TestFtsIsAvailablePropagatesOperationalFaults:
         class _Backend:
             backend_type = 'postgresql'
 
-            async def execute_read(self, operation: Callable[[object], Awaitable[bool]]) -> bool:
+            async def execute_read(
+                self, operation: Callable[[object], Awaitable[bool]], *, access_scope: BackendAccess,
+            ) -> bool:
+                _ = access_scope
                 return await operation(_Connection())
 
         repo = FtsRepository(cast(StorageBackend, _Backend()))
 
-        assert await repo.is_available() is False
+        assert await repo.is_available(scope=MAINTENANCE) is False
 
     def test_is_available_pg_probe_is_schema_aware(self) -> None:
         """The PG availability probe resolves context_entries via search_path.
@@ -197,7 +207,7 @@ class TestFtsTokenizerSelection:
         backend.execute_read = AsyncMock(return_value=None)
         repo = FtsRepository(backend)
 
-        tokenizer = await repo.get_current_tokenizer()
+        tokenizer = await repo.get_current_tokenizer(scope=MAINTENANCE)
         assert tokenizer is None
 
     @pytest.mark.asyncio
@@ -207,7 +217,7 @@ class TestFtsTokenizerSelection:
         backend.backend_type = 'postgresql'
         repo = FtsRepository(backend)
 
-        tokenizer = await repo.get_current_tokenizer()
+        tokenizer = await repo.get_current_tokenizer(scope=MAINTENANCE)
         assert tokenizer is None
 
 
@@ -233,7 +243,7 @@ class TestFtsLanguageDetection:
         backend.backend_type = 'sqlite'
         repo = FtsRepository(backend)
 
-        language = await repo.get_current_language()
+        language = await repo.get_current_language(scope=MAINTENANCE)
         assert language is None
 
     @pytest.mark.asyncio
@@ -247,5 +257,5 @@ class TestFtsLanguageDetection:
         backend.execute_read = AsyncMock(return_value=None)
         repo = FtsRepository(backend)
 
-        language = await repo.get_current_language()
+        language = await repo.get_current_language(scope=MAINTENANCE)
         assert language is None

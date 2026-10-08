@@ -238,7 +238,7 @@ class ContextDeleteMixin(BaseRepository):
                     matched.extend(str(row[0]) for row in cursor.fetchall())
                 return matched
 
-            return await self.backend.execute_read(_select_ids_sqlite)
+            return await self.backend.execute_read(_select_ids_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _select_ids_postgresql(conn: 'asyncpg.Connection') -> list[str]:
@@ -249,4 +249,4 @@ class ContextDeleteMixin(BaseRepository):
                 matched.extend(normalize_id(str(row['id'])) for row in await conn.fetch(query, *params))
             return matched
 
-        return await self.backend.execute_read(_select_ids_postgresql)
+        return await self.backend.execute_read(_select_ids_postgresql, access_scope=scope)

@@ -11,6 +11,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend.session import apply_session_gucs
 from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
 from app.cli._backend import make_backend
@@ -380,7 +381,7 @@ async def _read_compressed_probe(
                 for r in cur.fetchall()
             ]
 
-        return await backend.execute_read(_read)
+        return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
     async def _read_pg(
         conn: asyncpg.Connection,
@@ -401,4 +402,4 @@ async def _read_compressed_probe(
             for r in rows
         ]
 
-    return await backend.execute_read(cast(Any, _read_pg))
+    return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)

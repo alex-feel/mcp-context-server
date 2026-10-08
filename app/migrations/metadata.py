@@ -153,7 +153,7 @@ async def _get_existing_metadata_indexes(backend: StorageBackend) -> tuple[set[s
                         simple_indexes.add(field)
             return simple_indexes, orphan_compound_indexes
 
-        return await backend.execute_read(_query_sqlite_indexes)
+        return await backend.execute_read(_query_sqlite_indexes, access_scope=MAINTENANCE)
 
     # postgresql
 
@@ -186,7 +186,7 @@ async def _get_existing_metadata_indexes(backend: StorageBackend) -> tuple[set[s
                     simple_indexes.add(field)
         return simple_indexes, orphan_compound_indexes
 
-    return await backend.execute_read(cast(Any, _query_postgresql_indexes))
+    return await backend.execute_read(cast(Any, _query_postgresql_indexes), access_scope=MAINTENANCE)
 
 
 async def _create_metadata_index(backend: StorageBackend, field: str, type_hint: str) -> None:

@@ -153,7 +153,7 @@ class TestSqliteChargedFailureMetrics:
                 raise ValueError('permission denied for table context_entries')
 
             with pytest.raises(ValueError, match='permission denied'):
-                await backend.execute_read(_fail)
+                await backend.execute_read(_fail, access_scope=MAINTENANCE)
             _charged(backend, 'permission denied')
         finally:
             await backend.shutdown()
@@ -349,7 +349,7 @@ class TestPostgresqlChargedFailureMetrics:
             raise RuntimeError('permission denied for table context_entries')
 
         with pytest.raises(RuntimeError, match='permission denied'):
-            await backend.execute_read(_fail)
+            await backend.execute_read(_fail, access_scope=MAINTENANCE)
 
         _charged(backend, 'permission denied')
 
@@ -362,7 +362,7 @@ class TestPostgresqlChargedFailureMetrics:
             raise ControlFlowError('invalid metadata filter')
 
         with pytest.raises(ControlFlowError):
-            await backend.execute_read(_reject)
+            await backend.execute_read(_reject, access_scope=MAINTENANCE)
 
         assert backend.circuit_breaker.failures == 0
         assert backend.metrics.failed_queries == 0

@@ -138,7 +138,7 @@ class TestConnectionUriEncoding:
                 row = conn.execute('SELECT 1').fetchone()
                 return int(row[0])
 
-            assert await backend.execute_read(_select_one) == 1
+            assert await backend.execute_read(_select_one, access_scope=MAINTENANCE) == 1
         finally:
             await backend.shutdown()
 
