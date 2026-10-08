@@ -7,6 +7,12 @@ yields the connection string, then tears the container down with
 the fixture skips cleanly so the test session keeps running on machines
 without Docker.
 
+Every compose call names a project derived from this checkout's repository
+root (:func:`_project_name_for`), so test sessions in two checkouts of the
+repository (separate clones or linked working trees) each run their own
+container and never bring down each other's. The compose file's ``name:``
+line serves manual ``docker compose`` use only; ``-p`` overrides it.
+
 Credentials (``mcp_test:mcp_test``) are throwaway: the container exposes
 no listening interface beyond loopback for the test session lifetime and
 its data directory is mounted on tmpfs.
@@ -16,6 +22,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import hashlib
 import os
 import shutil
 import socket
@@ -33,14 +40,46 @@ import pytest
 import pytest_asyncio
 
 COMPOSE_FILE = Path(__file__).parent / 'docker-compose.test.yml'
-PROJECT_NAME = 'mcp-context-server-test-pg'
+
+
+def _project_name_for(root: Path) -> str:
+    """Return the compose project name for the checkout rooted at ``root``.
+
+    The suffix is the first 8 hex characters of the SHA-256 of the resolved
+    root path, so the name is stable for one checkout, differs between
+    checkouts, and stays a valid compose project name (lowercase letters,
+    digits and dashes).
+
+    Args:
+        root: The resolved repository root of the checkout.
+
+    Returns:
+        ``mcp-context-server-test-pg-`` followed by the 8-character suffix.
+    """
+    digest = hashlib.sha256(str(root).encode()).hexdigest()
+    return f'mcp-context-server-test-pg-{digest[:8]}'
+
+
+PROJECT_NAME = _project_name_for(Path(__file__).resolve().parents[3])
 
 _NON_DEFAULT_SCHEMA = 'mcp_test'
 NON_DEFAULT_SCHEMA = _NON_DEFAULT_SCHEMA  # public re-export for tests
 
 
+def _compose_command(*args: str) -> list[str]:
+    """Return the ``docker compose`` argv for ``args`` on this checkout's test project.
+
+    Args:
+        *args: The compose subcommand and its options.
+
+    Returns:
+        The argv naming the checkout's project and the test compose file.
+    """
+    return ['docker', 'compose', '-p', PROJECT_NAME, '-f', str(COMPOSE_FILE), *args]
+
+
 def _force_cleanup() -> None:
-    """Best-effort idempotent removal of the postgres test container and volumes.
+    """Best-effort idempotent removal of this checkout's postgres test container and volumes.
 
     Skips silently if docker CLI is not on PATH (CI environments without
     docker, fresh developer machines, etc.). Catches all subprocess errors
@@ -52,12 +91,7 @@ def _force_cleanup() -> None:
         return
     try:
         result = subprocess.run(
-            [
-                'docker', 'compose',
-                '-p', PROJECT_NAME,
-                '-f', str(COMPOSE_FILE),
-                'down', '-v', '--remove-orphans',
-            ],
+            _compose_command('down', '-v', '--remove-orphans'),
             capture_output=True, text=True, timeout=60, check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -141,12 +175,7 @@ def _wait_for_health(timeout_s: float = 60.0) -> None:
     while time.time() < deadline:
         try:
             result = subprocess.run(
-                [
-                    'docker', 'compose',
-                    '-p', PROJECT_NAME,
-                    '-f', str(COMPOSE_FILE),
-                    'ps', '--format', '{{.Health}}',
-                ],
+                _compose_command('ps', '--format', '{{.Health}}'),
                 capture_output=True, text=True, check=False, timeout=5,
             )
         except subprocess.TimeoutExpired as exc:
@@ -205,12 +234,7 @@ def pg_test_url() -> Iterator[str]:
     env = {**os.environ, 'MCP_PG_TEST_PORT': str(port)}
 
     up_result = subprocess.run(
-        [
-            'docker', 'compose',
-            '-p', PROJECT_NAME,
-            '-f', str(COMPOSE_FILE),
-            'up', '-d', '--wait',
-        ],
+        _compose_command('up', '-d', '--wait'),
         env=env, capture_output=True, text=True, check=False,
     )
     if up_result.returncode != 0:
