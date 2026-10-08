@@ -20,7 +20,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from app.backends.sqlite_backend import SQLiteBackend
 from app.errors import ControlFlowError
 
@@ -93,7 +95,7 @@ class TestSqliteChargedFailureMetrics:
         backend = await _sqlite_backend(tmp_path / 'txn_metrics.db')
         try:
             with pytest.raises(sqlite3.OperationalError, match='disk I/O error'):
-                async with backend.begin_transaction():
+                async with backend.begin_transaction(access_scope=MAINTENANCE):
                     raise sqlite3.OperationalError('disk I/O error')
             _charged(backend, 'disk I/O error')
         finally:
@@ -190,7 +192,7 @@ class TestSqliteChargedFailureMetrics:
                 raise ValueError('constraint machinery exploded')
 
             with pytest.raises(ValueError, match='constraint machinery exploded'):
-                await backend.execute_write(_fail)
+                await backend.execute_write(_fail, access_scope=MAINTENANCE)
             _charged(backend, 'constraint machinery exploded')
         finally:
             await backend.shutdown()
@@ -201,7 +203,7 @@ class TestSqliteChargedFailureMetrics:
         backend = await _sqlite_backend(tmp_path / 'cf_metrics.db')
         try:
             with pytest.raises(ControlFlowError):
-                async with backend.begin_transaction():
+                async with backend.begin_transaction(access_scope=MAINTENANCE):
                     raise ControlFlowError('optimistic concurrency conflict')
             assert backend.circuit_breaker.failures == 0
             assert backend.metrics.failed_queries == 0
@@ -314,6 +316,7 @@ class TestPostgresqlChargedFailureMetrics:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
         backend._shutdown = False
 
@@ -398,6 +401,7 @@ class TestCrossBackendMetricsContract:
         """PostgreSQL reports the same two contract keys."""
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
         pool = MagicMock()
         pool.get_size = MagicMock(return_value=4)
@@ -423,6 +427,7 @@ class TestCrossBackendMetricsContract:
 
         postgres_backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
         pool = MagicMock()
         pool.get_size = MagicMock(return_value=1)

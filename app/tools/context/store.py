@@ -293,7 +293,7 @@ async def store_context(
 
         while True:
             try:
-                async with backend.begin_transaction() as txn:
+                async with backend.begin_transaction(access_scope=scope) as txn:
                     context_id, was_updated, embedding_stored = await execute_store_in_transaction(
                         repos, txn,
                         thread_id=thread_id,

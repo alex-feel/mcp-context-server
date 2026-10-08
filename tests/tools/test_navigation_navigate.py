@@ -10,6 +10,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummaries
@@ -112,7 +113,7 @@ class TestNavigateNodeSummaries:
                 node_summary='Covers the details.',
                 char_start=details['char_start'], char_end=details['char_end'],
             ),
-        ])
+        ], scope=MAINTENANCE)
 
         enriched = await navigate_as_dict(context_id=cid, include_node_summaries=True)
         assert enriched['root']['children'][0]['children'][0]['summary'] == 'Covers the details.'
@@ -145,7 +146,7 @@ class TestNavigateNodeSummaries:
                 node_summary='Section abstract from before the cap.',
                 char_start=section['char_start'], char_end=section['char_end'],
             ),
-        ])
+        ], scope=MAINTENANCE)
 
         enriched = await navigate_as_dict(context_id=cid, include_node_summaries=True)
         node = enriched['root']['children'][0]
@@ -198,7 +199,7 @@ class TestNavigateNodeSummaries:
                 node_summary='Short section abstract.',
                 char_start=short_node['char_start'], char_end=short_node['char_end'],
             ),
-        ])
+        ], scope=MAINTENANCE)
 
         enriched = await navigate_as_dict(context_id=cid, include_node_summaries=True)
         enriched_long, enriched_short = enriched['root']['children']
@@ -225,7 +226,7 @@ class TestNavigateNodeSummaries:
                 node_id='old', level=1, ordinal=1, title='Old',
                 node_summary='Old section abstract.', char_start=0, char_end=15,
             ),
-        ])
+        ], scope=MAINTENANCE)
 
         real_get_nodes = repos.index_nodes.get_nodes_for_context
         update_committed = False
@@ -246,13 +247,13 @@ class TestNavigateNodeSummaries:
                         ('# New\nnew body\n', context_id),
                     )
 
-                await nav_backend.execute_write(_commit_update)
+                await nav_backend.execute_write(_commit_update, access_scope=MAINTENANCE)
                 await repos.index_nodes.replace_nodes_for_context(context_id, [
                     IndexNodeRow(
                         node_id='new', level=1, ordinal=1, title='New',
                         node_summary='New section abstract.', char_start=0, char_end=15,
                     ),
-                ])
+                ], scope=MAINTENANCE)
             return await real_get_nodes(context_id)
 
         with patch.object(repos.index_nodes, 'get_nodes_for_context', racing_get_nodes):
@@ -272,7 +273,7 @@ class TestNavigateNodeSummaries:
                 node_id='intro/details', level=2, ordinal=1, title='Details',
                 node_summary='Covers the details.', char_start=0, char_end=10,
             ),
-        ])
+        ], scope=MAINTENANCE)
         # Default include_node_summaries=False: descendant summaries stay None.
         result = await navigate_as_dict(context_id=cid)
         assert result['root']['children'][0]['children'][0]['summary'] is None

@@ -17,6 +17,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend.session import quote_pg_identifier
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
@@ -325,7 +326,7 @@ async def _apply_migration_with_backend(
             # Execute migration (vec0 module loaded above when the script needs it)
             conn.executescript(migration_sql)
 
-        await manager.execute_write(_apply_migration_sqlite)
+        await manager.execute_write(_apply_migration_sqlite, access_scope=MAINTENANCE)
     else:  # postgresql
 
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
@@ -380,7 +381,7 @@ async def _apply_migration_with_backend(
                 if stmt and not stmt.startswith('--'):
                     await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-        await manager.execute_write(cast(Any, _apply_migration_postgresql))
+        await manager.execute_write(cast(Any, _apply_migration_postgresql), access_scope=MAINTENANCE)
 
     # Check table existence (not row existence) to determine if migration was applied
     if not table_exists:
@@ -492,7 +493,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend) -> None:
                 if stmt and not stmt.startswith('--'):
                     await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-        await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
+        await backend.execute_write(cast(Any, _apply_jsonb_merge_patch), access_scope=MAINTENANCE)
 
         # Verify function was actually created after migration
         verification_result = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
@@ -585,7 +586,7 @@ async def apply_function_search_path_migration(backend: StorageBackend) -> None:
                 if stmt and not stmt.startswith('--'):
                     await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-        await backend.execute_write(cast(Any, _apply_search_path_fix))
+        await backend.execute_write(cast(Any, _apply_search_path_fix), access_scope=MAINTENANCE)
         logger.info('Applied function search_path security fix for PostgreSQL')
     except Exception as e:
         logger.error(f'Failed to apply function search_path migration: {e}')

@@ -12,6 +12,7 @@ import pytest
 import pytest_asyncio
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 
 # ============================================================================
 # SQL Generation Tests
@@ -152,7 +153,7 @@ class TestIndexDetection:
         def apply_schema(conn: sqlite3.Connection) -> None:
             conn.executescript(schema_sql)
 
-        await backend.execute_write(apply_schema)
+        await backend.execute_write(apply_schema, access_scope=MAINTENANCE)
 
         # Provision the default scalar metadata indexes so detection tests
         # observe the same set as a running server whose startup called
@@ -222,7 +223,7 @@ class TestIndexDetection:
                 )
             ''')
 
-        await backend.execute_write(create_table)
+        await backend.execute_write(create_table, access_scope=MAINTENANCE)
 
         existing, orphan_compound = await _get_existing_metadata_indexes(backend)
         assert existing == set()
@@ -263,7 +264,7 @@ class TestIndexDetection:
                 ON context_entries(thread_id, json_extract(metadata, '$.status'))
             ''')
 
-        await backend.execute_write(setup_with_compound_index)
+        await backend.execute_write(setup_with_compound_index, access_scope=MAINTENANCE)
 
         existing, orphan_compound = await _get_existing_metadata_indexes(backend)
 
@@ -305,7 +306,7 @@ class TestIndexCreation:
                 )
             ''')
 
-        await backend.execute_write(create_table)
+        await backend.execute_write(create_table, access_scope=MAINTENANCE)
 
         yield backend
 

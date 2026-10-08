@@ -7,6 +7,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.cli.migrate_compression import storage
 from app.cli.migrate_compression.decompress_empty import execute_decompress_empty
 from app.cli.migrate_compression.storage import list_to_fp32_blob_sqlite
@@ -90,7 +91,7 @@ async def _execute_decompress_sqlite(
     """
     batch_size = storage.MIGRATION_BATCH_SIZE
 
-    async with backend.begin_transaction() as txn:
+    async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
         conn = cast(sqlite3.Connection, txn.connection)
 
         # Recreate the fp32 virtual table (idempotent).
@@ -232,7 +233,7 @@ async def _execute_decompress_postgresql(
     batch_size = storage.MIGRATION_BATCH_SIZE
     migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
 
-    async with backend.begin_transaction() as txn:
+    async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
         conn = cast('asyncpg.Connection', txn.connection)
         # Raise this transaction's statement budget so the heavy vec-table DDL below
         # (the HNSW CREATE INDEX / DROP TABLE) and the streamed batch reads run under the

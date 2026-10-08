@@ -14,6 +14,7 @@ from typing import cast
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.base import StorageBackend
 from app.repositories.statistics_repository import StatisticsRepository
 from app.repositories.statistics_repository import _to_float
@@ -216,7 +217,7 @@ class TestSqliteTruthinessAlignment:
                 "VALUES ('0190abcdef1234567890abcd0000aa03', 't2', 'user', 'text', 'C', 'local')",
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         stats = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         avg = stats['avg_entries_per_thread']

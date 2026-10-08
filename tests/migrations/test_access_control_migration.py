@@ -33,6 +33,8 @@ import pytest_asyncio
 import app.migrations.access_control as access_control_module
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.sqlite_target import initialize_target_sqlite
 from app.errors import ConfigurationError
@@ -165,7 +167,7 @@ class TestAccessControlMigration:
                 (legacy_id,),
             )
 
-        await backend_pre_migration.execute_write(_insert_legacy)
+        await backend_pre_migration.execute_write(_insert_legacy, access_scope=MAINTENANCE)
 
         await apply_access_control_migration(backend_pre_migration)
 
@@ -196,7 +198,7 @@ class TestAccessControlMigration:
             )
 
         with pytest.raises(sqlite3.IntegrityError):
-            await backend_pre_migration.execute_write(_insert_bad)
+            await backend_pre_migration.execute_write(_insert_bad, access_scope=MAINTENANCE)
 
     @pytest.mark.parametrize(
         ('visibility', 'accepted'),
@@ -299,7 +301,7 @@ class TestAccessControlMigration:
         def _reapply(conn: sqlite3.Connection) -> None:
             conn.executescript(schema_sql)
 
-        await backend_pre_migration.execute_write(_reapply)
+        await backend_pre_migration.execute_write(_reapply, access_scope=MAINTENANCE)
 
         # The old table is untouched (no access columns yet)...
         assert 'owner_id' not in await _columns(backend_pre_migration)
@@ -335,7 +337,8 @@ class _PostgreSQLDDLRecorder:
 
     backend_type = 'postgresql'
 
-    async def execute_write(self, operation: Callable[[object], Awaitable[None]]) -> None:
+    async def execute_write(self, operation: Callable[[object], Awaitable[None]], *, access_scope: BackendAccess) -> None:
+        _ = access_scope
         await operation(object())
 
 

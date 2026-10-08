@@ -24,6 +24,7 @@ import pytest
 from pydantic import ValidationError
 
 import app.tools
+from app.backends.base import BackendAccess
 from app.repositories.context_repository.records import EntryProbe
 from app.settings.summary import SummarySettings
 from app.startup import ensure_repositories
@@ -87,8 +88,9 @@ class TestMinContentLengthSettings:
 
 
 @asynccontextmanager
-async def _mock_begin_transaction() -> AsyncGenerator[Mock, None]:
+async def _mock_begin_transaction(*, access_scope: BackendAccess) -> AsyncGenerator[Mock, None]:
     """Mock async context manager for begin_transaction."""
+    _ = access_scope
     txn = Mock()
     txn.backend_type = 'sqlite'
     txn.connection = Mock()

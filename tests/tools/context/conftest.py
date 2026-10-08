@@ -27,7 +27,8 @@ def mock_repositories():
     mock_backend = Mock()
 
     @asynccontextmanager
-    async def mock_begin_transaction():
+    async def mock_begin_transaction(*, access_scope):
+        _ = access_scope
         txn = Mock()
         txn.backend_type = 'sqlite'
         txn.connection = Mock()

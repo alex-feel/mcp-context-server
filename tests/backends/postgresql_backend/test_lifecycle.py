@@ -14,6 +14,7 @@ import asyncpg
 import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 
 
 class TestInitializeErrorClassification:
@@ -47,6 +48,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -67,6 +69,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -86,6 +89,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -105,6 +109,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:wrong@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -124,6 +129,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/nonexistent',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -154,6 +160,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -183,6 +190,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb?sslmode=bogus',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -209,6 +217,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb?sslmode=bogus',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -240,6 +249,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@[[::1]]:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -291,6 +301,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -321,6 +332,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -341,6 +353,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -360,6 +373,7 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
 
         with (
@@ -391,6 +405,7 @@ class TestProvisionVectorOverride:
         backend = PostgreSQLBackend(
             connection_string='postgresql://u:p@localhost:5432/db',
             provision_vector=provision_vector,
+            profile=UnboundProfile(),
         )
         resolve = AsyncMock(return_value=True)
         ensure = AsyncMock()

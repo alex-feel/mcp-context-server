@@ -189,6 +189,7 @@ async def test_search_compressed_recall_postgresql(
                         ),
                     ],
                     model='test-model',
+                    scope=LOCAL_SCOPE,
                 )
 
         # Background documents.
@@ -219,6 +220,7 @@ async def test_search_compressed_recall_postgresql(
                     ),
                 ],
                 model='test-model',
+                scope=LOCAL_SCOPE,
             )
 
         overlaps: list[float] = []

@@ -297,7 +297,7 @@ async def update_context(
 
         while True:
             try:
-                async with backend.begin_transaction() as txn:
+                async with backend.begin_transaction(access_scope=scope) as txn:
                     updated_fields, _ = await execute_update_in_transaction(
                         repos, txn,
                         context_id=context_id,

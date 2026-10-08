@@ -17,6 +17,7 @@ from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessMode
 from app.access_scope import AccessScope
 from app.access_scope import Scope
+from app.backends.base import MAINTENANCE
 from app.backends.base import StorageBackend
 from tests.conftest import requires_sqlite_vec
 from tests.repositories._access_scope_cases import READABLE
@@ -219,7 +220,7 @@ async def _bind_on_writer(backend: StorageBackend, count: int) -> None:
     def _write(conn: sqlite3.Connection) -> None:
         conn.execute(_select_binds(count), [0] * count).fetchone()
 
-    await backend.execute_write(_write)
+    await backend.execute_write(_write, access_scope=MAINTENANCE)
 
 
 async def _assert_capped(backend: StorageBackend) -> None:

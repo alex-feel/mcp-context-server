@@ -394,7 +394,7 @@ async def test_get_statistics_with_compression_sqlite(
             _make_compressed_chunk(j, f'P{i}-{j}'.encode())
             for j in range(chunks_per_entry)
         ]
-        await repo.store_chunked(cid, chunks, model='test-model')
+        await repo.store_chunked(cid, chunks, model='test-model', scope=LOCAL_SCOPE)
 
     stats = await repo.get_statistics(scope=LOCAL_SCOPE)
 
@@ -463,13 +463,14 @@ class TestBulkChunkCleanup:
                     ),
                 ],
                 model='test-model',
+                scope=LOCAL_SCOPE,
             )
             stored_ids.append(context_id)
 
         removed = stored_ids[:3]
         survivor = stored_ids[3]
 
-        deleted = await embedding_repo.delete_all_chunks_bulk(removed)
+        deleted = await embedding_repo.delete_all_chunks_bulk(removed, scope=LOCAL_SCOPE)
         assert deleted == 6  # two chunks per removed entry
 
         def _counts(conn: sqlite3.Connection) -> tuple[int, int, int]:
@@ -506,7 +507,7 @@ class TestBulkChunkCleanup:
         from app.repositories.embedding_repository import EmbeddingRepository
 
         embedding_repo = EmbeddingRepository(async_db_with_embeddings)
-        assert await embedding_repo.delete_all_chunks_bulk([]) == 0
+        assert await embedding_repo.delete_all_chunks_bulk([], scope=LOCAL_SCOPE) == 0
 
     @requires_sqlite_vec
     async def test_bulk_delete_chunks_a_list_beyond_the_bind_parameter_limit(
@@ -541,6 +542,7 @@ class TestBulkChunkCleanup:
                     ),
                 ],
                 model='test-model',
+                scope=LOCAL_SCOPE,
             )
             stored_ids.append(context_id)
 
@@ -548,6 +550,6 @@ class TestBulkChunkCleanup:
         # chunk boundary the repository applies.
         padded = stored_ids + [generate_id() for _ in range(1200)]
 
-        assert await embedding_repo.delete_all_chunks_bulk(padded) == 3
+        assert await embedding_repo.delete_all_chunks_bulk(padded, scope=LOCAL_SCOPE) == 3
         for context_id in stored_ids:
             assert await embedding_repo.exists(context_id) is False

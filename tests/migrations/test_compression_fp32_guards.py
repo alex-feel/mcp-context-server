@@ -14,6 +14,7 @@ from typing import cast
 import pytest
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.errors import ConfigurationError
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
@@ -48,7 +49,7 @@ async def test_sqlite_migration_refuses_first_time_with_populated_fp32(
             (b'\x00\x01\x02\x03',),
         )
 
-    await backend.execute_write(_create_populated_legacy)
+    await backend.execute_write(_create_populated_legacy, access_scope=MAINTENANCE)
 
     with pytest.raises(ConfigurationError, match='mcp-context-server-migrate'):
         await apply_compression_migration(backend=backend)
@@ -81,7 +82,7 @@ async def test_sqlite_migration_proceeds_with_populated_fp32_when_provenance_pre
             ('turboquant', 4, 'ip', 42, 1024),
         )
 
-    await backend.execute_write(_insert_provenance)
+    await backend.execute_write(_insert_provenance, access_scope=MAINTENANCE)
 
     def _create_populated_legacy(conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -93,7 +94,7 @@ async def test_sqlite_migration_proceeds_with_populated_fp32_when_provenance_pre
             (b'\x00\x01\x02\x03',),
         )
 
-    await backend.execute_write(_create_populated_legacy)
+    await backend.execute_write(_create_populated_legacy, access_scope=MAINTENANCE)
 
     # Must not raise: the provenance row proves the compressed table is the
     # authoritative store, so the stray fp32 table is dropped.
@@ -133,7 +134,7 @@ async def test_sqlite_migration_refuses_generation_off_flip_over_populated_fp32(
             "VALUES ('abc', x'00')",
         )
 
-    await backend.execute_write(_seed_fp32)
+    await backend.execute_write(_seed_fp32, access_scope=MAINTENANCE)
 
     enable_compression(monkeypatch)
     monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')

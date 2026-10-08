@@ -16,6 +16,7 @@ import pytest
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.migrations.summary import apply_summary_migration
 from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
@@ -121,7 +122,7 @@ class TestApplySummaryMigration:
                 )
                 return new_id
 
-            entry_id = await backend.execute_write(_insert)
+            entry_id = await backend.execute_write(_insert, access_scope=MAINTENANCE)
             assert len(entry_id) == 32
 
             # Verify summary is NULL
@@ -164,7 +165,7 @@ class TestApplySummaryMigration:
                 )
                 return new_id
 
-            entry_id = await backend.execute_write(_insert)
+            entry_id = await backend.execute_write(_insert, access_scope=MAINTENANCE)
 
             def _check(conn: sqlite3.Connection) -> str | None:
                 conn.row_factory = sqlite3.Row

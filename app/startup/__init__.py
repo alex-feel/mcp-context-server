@@ -44,6 +44,7 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.embeddings import EmbeddingProvider
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
@@ -228,7 +229,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                     # Single executescript to create all objects atomically
                     conn.executescript(schema_sql)
 
-                await backend.execute_write(_init_schema_sqlite)
+                await backend.execute_write(_init_schema_sqlite, access_scope=MAINTENANCE)
             else:  # postgresql
                 migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
@@ -285,7 +286,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                                 logger.error('Statement: %s...', stmt[:200])
                                 raise
 
-                await backend.execute_write(cast(Any, _init_schema_postgresql))
+                await backend.execute_write(cast(Any, _init_schema_postgresql), access_scope=MAINTENANCE)
             logger.info(f'Database schema initialized successfully ({backend.backend_type})')
         else:
             # Backward compatibility: create temporary backend for tests
@@ -297,7 +298,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                     def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
                         conn.executescript(schema_sql)
 
-                    await temp_manager.execute_write(_init_schema_sqlite)
+                    await temp_manager.execute_write(_init_schema_sqlite, access_scope=MAINTENANCE)
                 else:  # postgresql
                     migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
@@ -348,7 +349,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                                     logger.error('Statement: %s...', stmt[:200])
                                     raise
 
-                    await temp_manager.execute_write(cast(Any, _init_schema_postgresql))
+                    await temp_manager.execute_write(cast(Any, _init_schema_postgresql), access_scope=MAINTENANCE)
                 logger.info(f'Database schema initialized successfully ({temp_manager.backend_type})')
             finally:
                 # Always shutdown to stop background tasks and close connections

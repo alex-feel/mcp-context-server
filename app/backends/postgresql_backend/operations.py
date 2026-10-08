@@ -18,6 +18,7 @@ from typing import overload
 
 import asyncpg
 
+from app.backends.base import BackendAccess
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
 from app.backends.postgresql_backend.acquire_faults import track_acquire
 from app.backends.postgresql_backend.core import PostgreSQLBackendCore
@@ -233,6 +234,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         validate_connection: bool = False,
         **kwargs: Any,
     ) -> T: ...
@@ -242,6 +244,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., T],
         *args: Any,
+        access_scope: BackendAccess,
         validate_connection: bool = False,
         **kwargs: Any,
     ) -> T: ...
@@ -250,6 +253,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         validate_connection: bool = False,
         **kwargs: Any,
     ) -> T:
@@ -259,6 +263,9 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
             operation: Async callable that performs the write operation.
                       Signature: async def operation(conn: asyncpg.Connection, *args, **kwargs) -> T
             *args: Positional arguments to pass to operation
+            access_scope: The identity the write runs as, handed to the session profile as
+                the first statement of every attempt's transaction; it never reaches
+                ``operation``.
             validate_connection: If True, validate connection state before operation.
                                 Use for batch operations that are sensitive to protocol state.
             **kwargs: Keyword arguments to pass to operation
@@ -317,6 +324,9 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                             )
 
                         async with conn.transaction():
+                            # Every attempt holds a fresh connection and transaction, so the
+                            # identity is bound again before the operation runs.
+                            await self._profile.bind(conn, access_scope)
                             # Cast to async callable since PostgreSQLBackend only uses async operations
                             async_operation = cast(Callable[..., Awaitable[T]], operation)
                             result = await async_operation(conn, *args, **kwargs)

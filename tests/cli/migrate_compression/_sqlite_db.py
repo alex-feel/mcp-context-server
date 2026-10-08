@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.repositories import RepositoryContainer
 from app.settings import get_settings
 from tests.helpers import LOCAL_SCOPE
@@ -171,7 +172,7 @@ def seed_fp32_database(
                         (context_id, 'test-model', DIM, 1),
                     )
 
-                await backend.execute_write(_write_chunk)
+                await backend.execute_write(_write_chunk, access_scope=MAINTENANCE)
         finally:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(backend.shutdown(), timeout=10.0)

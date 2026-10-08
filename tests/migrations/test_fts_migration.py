@@ -9,6 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
+
 
 class TestApplyFtsMigration:
     """Tests for apply_fts_migration()."""
@@ -191,9 +194,11 @@ class TestApplyFtsMigration:
         fts_repo.get_current_language = AsyncMock(return_value='german')
         fts_repo.get_statistics = AsyncMock(return_value={'total_entries': 42})
         records_counted: list[int | None] = []
+        migrated_as: list[BackendAccess] = []
 
-        async def _migrate(_target: str) -> dict[str, object]:
+        async def _migrate(_target: str, *, scope: BackendAccess) -> dict[str, object]:
             records_counted.append(fts_module.get_fts_migration_status().records_count)
+            migrated_as.append(scope)
             return {
                 'entries_migrated': 42, 'old_tokenizer': 'unicode61', 'new_tokenizer': 'porter unicode61',
                 'old_language': 'german', 'new_language': 'english',
@@ -211,6 +216,7 @@ class TestApplyFtsMigration:
 
         fts_repo.get_statistics.assert_awaited_once_with(scope=SYSTEM_SCOPE)
         assert records_counted == [42]
+        assert migrated_as == [MAINTENANCE]
 
     @pytest.mark.asyncio
     async def test_tokenizer_migration_detection(self, tmp_path: Path) -> None:

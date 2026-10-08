@@ -7,6 +7,13 @@ repositories and server components.
 
 The protocol uses @runtime_checkable to enable isinstance() checks and TypeVar
 for generic operation signatures that preserve return types.
+
+Every write entry point takes the identity it runs as through a required
+keyword-only ``access_scope``: a request scope, the system scope, or
+:data:`MAINTENANCE` for the migrations, startup and command-line paths that run
+outside any request. A backend that enforces access in the database binds that
+identity before the operation runs; one that enforces access only in the
+application layer accepts and discards it.
 """
 
 from collections.abc import Awaitable
@@ -15,10 +22,30 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any
 from typing import Protocol
 from typing import TypeVar
+from typing import final
 from typing import overload
 from typing import runtime_checkable
 
+from app.access_scope import Scope
+
 T = TypeVar('T')
+
+
+@final
+class MaintenanceAccess:
+    """The identity of schema maintenance, startup and command-line work outside any request.
+
+    It carries no principal and is never built from request data. Only migrations,
+    startup, the command-line tools and the compression provenance run as it; the
+    tools and repositories always run as the caller.
+    """
+
+    __slots__ = ()
+
+
+MAINTENANCE = MaintenanceAccess()
+
+type BackendAccess = Scope | MaintenanceAccess
 
 
 @runtime_checkable
@@ -33,7 +60,7 @@ class TransactionContext(Protocol):
     the begin_transaction() context manager, not by TransactionContext itself.
 
     Example Usage:
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=scope) as txn:
             # For PostgreSQL: txn.connection is asyncpg.Connection
             # For SQLite: txn.connection is sqlite3.Connection
 
@@ -96,8 +123,10 @@ class StorageBackend(Protocol):
                 finally:
                     await self.pool.release(conn)
 
-            async def execute_write(self, operation: Callable[..., T], *args, **kwargs) -> T:
-                # Execute write operation with retry logic
+            async def execute_write(
+                self, operation: Callable[..., T], *args, access_scope: BackendAccess, **kwargs,
+            ) -> T:
+                # Execute write operation with retry logic as the given identity
                 async with self.get_connection(readonly=False) as conn:
                     return operation(conn, *args, **kwargs)
 
@@ -237,6 +266,7 @@ class StorageBackend(Protocol):
         self,
         operation: Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -245,6 +275,7 @@ class StorageBackend(Protocol):
         self,
         operation: Callable[..., T],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -252,6 +283,7 @@ class StorageBackend(Protocol):
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T:
         """
@@ -268,6 +300,8 @@ class StorageBackend(Protocol):
                       SQLite backend expects sync callable: Callable[..., T]
                       PostgreSQL backend expects async callable: Callable[..., Awaitable[T]]
             *args: Positional arguments to pass to operation
+            access_scope: The identity the write runs as. The backend consumes it;
+                it never reaches ``operation``.
             **kwargs: Keyword arguments to pass to operation
 
         Returns:
@@ -278,11 +312,14 @@ class StorageBackend(Protocol):
             - Uses single writer connection
             - Retries on transient errors (SQLITE_BUSY, SQLITE_LOCKED)
             - Circuit breaker prevents cascading failures
+            - Discards access_scope: access is enforced in the application layer
             - Expects sync callable: operation(conn, *args, **kwargs) -> T
 
         For PostgreSQL:
             - Uses connection from pool
             - Wraps in transaction
+            - Binds access_scope through the session profile as the first statement
+              of every attempt's transaction
             - Retries on connection errors
             - Expects async callable: await operation(conn, *args, **kwargs) -> T
 
@@ -301,7 +338,7 @@ class StorageBackend(Protocol):
                 )
                 return new_id
 
-            context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123')
+            context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123', access_scope=scope)
 
         Example (PostgreSQL - async):
             from app.ids import generate_id
@@ -314,7 +351,7 @@ class StorageBackend(Protocol):
                 )
                 return new_id
 
-            context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123')
+            context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123', access_scope=scope)
         """
         ...
 
@@ -391,7 +428,7 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def begin_transaction(self) -> AbstractAsyncContextManager['TransactionContext']:
+    def begin_transaction(self, *, access_scope: BackendAccess) -> AbstractAsyncContextManager['TransactionContext']:
         """Begin a database transaction that can span multiple operations.
 
         This method returns an async context manager that yields a TransactionContext.
@@ -404,6 +441,9 @@ class StorageBackend(Protocol):
         For single operations, continue using execute_write() which handles
         transactions automatically.
 
+        Args:
+            access_scope: The identity every operation in the transaction runs as.
+
         Yields:
             TransactionContext with access to the connection and backend_type
 
@@ -411,11 +451,13 @@ class StorageBackend(Protocol):
             - Acquires writer connection with exclusive lock
             - Begins deferred transaction implicitly
             - Commits on context exit, rollbacks on exception
+            - Discards access_scope: access is enforced in the application layer
             - Operations must be SYNC callables
 
         For PostgreSQL:
             - Acquires connection from pool
             - Begins transaction via asyncpg transaction context manager
+            - Binds access_scope through the session profile before the body runs
             - Commits on context exit, rollbacks on exception
             - Operations must be ASYNC callables
 
@@ -427,14 +469,14 @@ class StorageBackend(Protocol):
             embedding = await embedding_provider.embed_query(text)
 
             # All DB operations in single atomic transaction
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=scope) as txn:
                 context_id = await _store_context(txn, text, metadata)
                 await _store_tags(txn, context_id, tags)
                 await _store_embedding(txn, context_id, embedding)
                 # COMMIT happens here only if ALL succeed
 
         Example (Rollback Scenario):
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=scope) as txn:
                 context_id = await _store_context(txn, ...)
                 await _store_tags(txn, context_id, tags)
                 # If this raises, context + tags are rolled back

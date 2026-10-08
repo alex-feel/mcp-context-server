@@ -1,0 +1,186 @@
+"""Tests for app/backends/postgresql_backend/session_profiles.py and the write paths that bind through it."""
+
+import contextlib
+from collections.abc import AsyncIterator
+from typing import Any
+from typing import cast
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+
+import asyncpg
+import pytest
+
+from app.access_scope import SYSTEM_SCOPE
+from app.access_scope import AccessScope
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
+from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session_profiles import SessionProfile
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
+from tests.backends.postgresql_backend._builders import fast_retries
+
+ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True)
+
+
+class RecordingProfile:
+    """A session profile that records each bind into a shared event log."""
+
+    wraps_reads = False
+
+    def __init__(self, events: list[tuple[str, object]]) -> None:
+        self._events = events
+
+    def session_statements(self) -> list[str]:
+        return []
+
+    async def bind(self, conn: 'asyncpg.pool.PoolConnectionProxy[asyncpg.Record]', access: BackendAccess) -> None:
+        self._events.append(('bind', access))
+        self._events.append(('bind-connection', conn))
+
+
+def _recording_connection(events: list[tuple[str, object]]) -> MagicMock:
+    """Build a connection whose transaction context records its begin and end."""
+
+    @contextlib.asynccontextmanager
+    async def _transaction() -> AsyncIterator[None]:
+        events.append(('begin', None))
+        yield None
+        events.append(('commit', None))
+
+    conn = MagicMock()
+    conn.transaction = MagicMock(side_effect=_transaction)
+    conn.execute = AsyncMock()
+    conn.fetch = AsyncMock()
+    conn.fetchrow = AsyncMock()
+    conn.fetchval = AsyncMock()
+    return conn
+
+
+def _backend(profile: SessionProfile) -> PostgreSQLBackend:
+    """Build a non-shut-down backend over ``profile`` without a pool."""
+    backend = PostgreSQLBackend(
+        connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        profile=profile,
+    )
+    backend._shutdown = False
+    return backend
+
+
+def _serve_connections(backend: PostgreSQLBackend, connections: list[MagicMock]) -> None:
+    """Hand the connections out in order, both to ``get_connection`` and to the pool."""
+    queue = list(connections)
+
+    @contextlib.asynccontextmanager
+    async def _acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        yield queue.pop(0)
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=_acquire)
+    backend._pool = pool
+    cast(Any, backend).get_connection = _acquire
+
+
+class TestUnboundProfile:
+    """The profile of a request backend without row-level security changes nothing."""
+
+    def test_wraps_no_reads_and_sets_no_session_state(self) -> None:
+        profile = UnboundProfile()
+
+        assert profile.wraps_reads is False
+        assert profile.session_statements() == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('access', [ALICE, SYSTEM_SCOPE, MAINTENANCE], ids=['request', 'system', 'maintenance'])
+    async def test_bind_issues_no_statement(self, access: BackendAccess) -> None:
+        conn = _recording_connection([])
+
+        await UnboundProfile().bind(conn, access)
+
+        conn.execute.assert_not_awaited()
+        conn.fetch.assert_not_awaited()
+        conn.fetchrow.assert_not_awaited()
+        conn.fetchval.assert_not_awaited()
+
+    def test_satisfies_the_session_profile_protocol(self) -> None:
+        assert isinstance(UnboundProfile(), SessionProfile)
+
+
+class TestExecuteWriteBinding:
+    """execute_write binds the caller's identity first inside every attempt's transaction."""
+
+    @pytest.mark.asyncio
+    async def test_binds_before_the_operation_inside_the_transaction(self) -> None:
+        events: list[tuple[str, object]] = []
+        backend = _backend(RecordingProfile(events))
+        conn = _recording_connection(events)
+        _serve_connections(backend, [conn])
+
+        async def operation(_conn: object, value: str) -> str:
+            events.append(('operation', value))
+            return value
+
+        result = await backend.execute_write(operation, 'written', access_scope=ALICE)
+
+        assert result == 'written'
+        assert events == [
+            ('begin', None), ('bind', ALICE), ('bind-connection', conn), ('operation', 'written'), ('commit', None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_access_scope_never_reaches_the_operation(self) -> None:
+        backend = _backend(UnboundProfile())
+        _serve_connections(backend, [_recording_connection([])])
+        received: dict[str, object] = {}
+
+        async def operation(_conn: object, **kwargs: object) -> None:
+            received.update(kwargs)
+
+        await backend.execute_write(operation, access_scope=MAINTENANCE, marker='kept')
+
+        assert received == {'marker': 'kept'}
+
+    @pytest.mark.asyncio
+    async def test_retry_binds_again_on_the_fresh_connection(self) -> None:
+        events: list[tuple[str, object]] = []
+        backend = _backend(RecordingProfile(events))
+        fast_retries(backend)
+        first, second = _recording_connection(events), _recording_connection(events)
+        _serve_connections(backend, [first, second])
+        attempts = {'n': 0}
+
+        async def operation(_conn: object) -> str:
+            attempts['n'] += 1
+            if attempts['n'] == 1:
+                raise asyncpg.exceptions.ConnectionDoesNotExistError('connection dropped')
+            return 'done'
+
+        assert await backend.execute_write(operation, access_scope=ALICE) == 'done'
+        assert [connection for kind, connection in events if kind == 'bind-connection'] == [first, second]
+        assert [access for kind, access in events if kind == 'bind'] == [ALICE, ALICE]
+
+
+class TestBeginTransactionBinding:
+    """begin_transaction binds the caller's identity before the body runs."""
+
+    @pytest.mark.asyncio
+    async def test_binds_first_inside_the_transaction(self) -> None:
+        events: list[tuple[str, object]] = []
+        backend = _backend(RecordingProfile(events))
+        conn = _recording_connection(events)
+        _serve_connections(backend, [conn])
+
+        async with backend.begin_transaction(access_scope=ALICE) as txn:
+            events.append(('body', txn.connection))
+
+        assert events == [('begin', None), ('bind', ALICE), ('bind-connection', conn), ('body', conn), ('commit', None)]
+
+    @pytest.mark.asyncio
+    async def test_unbound_profile_adds_no_statement(self) -> None:
+        backend = _backend(UnboundProfile())
+        conn = _recording_connection([])
+        _serve_connections(backend, [conn])
+
+        async with backend.begin_transaction(access_scope=MAINTENANCE):
+            pass
+
+        conn.execute.assert_not_awaited()

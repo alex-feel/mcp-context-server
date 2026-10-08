@@ -24,6 +24,7 @@ from numpy.typing import NDArray
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository import EmbeddingRepository
@@ -178,6 +179,7 @@ async def _seed_random_corpus(
                 ),
             ],
             model='test-model',
+            scope=LOCAL_SCOPE,
         )
     return cids, query
 
@@ -384,7 +386,7 @@ async def test_search_compressed_storage_corruption_detection(
             (mse_payload,),
         )
 
-    await backend.execute_write(_overwrite_one)
+    await backend.execute_write(_overwrite_one, access_scope=MAINTENANCE)
 
     with pytest.raises(RuntimeError, match='storage corruption'):
         await repo.search_compressed(

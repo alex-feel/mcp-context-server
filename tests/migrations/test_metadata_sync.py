@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.settings.storage import StorageSettings
 
 # ============================================================================
@@ -45,7 +46,7 @@ class TestSyncModes:
                 )
             ''')
 
-        await backend.execute_write(create_table)
+        await backend.execute_write(create_table, access_scope=MAINTENANCE)
 
         yield backend
 
@@ -263,7 +264,7 @@ class TestMetadataIndexingIntegration:
                 )
             ''')
 
-        await backend.execute_write(create_table)
+        await backend.execute_write(create_table, access_scope=MAINTENANCE)
 
         with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string', 'agent_name': 'string'}
@@ -338,7 +339,7 @@ class TestMixedCaseFieldReconciliation:
                 )
             ''')
 
-        await backend.execute_write(create_table)
+        await backend.execute_write(create_table, access_scope=MAINTENANCE)
 
         yield backend
 
@@ -434,7 +435,7 @@ class TestBaseSchemaHasNoMetadataIndexes:
         def apply_schema(conn: sqlite3.Connection) -> None:
             conn.executescript(schema_sql)
 
-        await backend.execute_write(apply_schema)
+        await backend.execute_write(apply_schema, access_scope=MAINTENANCE)
 
         # The base schema declares no metadata expression index; the sync layer has
         # not run yet, so detection must report an empty set.
@@ -463,7 +464,7 @@ class TestBaseSchemaHasNoMetadataIndexes:
         def apply_schema(conn: sqlite3.Connection) -> None:
             conn.executescript(schema_sql)
 
-        await backend.execute_write(apply_schema)
+        await backend.execute_write(apply_schema, access_scope=MAINTENANCE)
 
         # Fresh schema starts with no metadata indexes.
         existing, _ = await _get_existing_metadata_indexes(backend)

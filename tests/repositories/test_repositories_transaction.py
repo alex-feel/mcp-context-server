@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from tests.helpers import LOCAL_SCOPE
 
 if TYPE_CHECKING:
@@ -59,7 +60,7 @@ class TestContextRepositoryTransaction:
         """Test store_with_deduplication works with transaction context."""
         backend, repos = backend_with_repos
 
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
             context_id, was_updated = await repos.context.store_with_deduplication(
                 scope=LOCAL_SCOPE,
                 visibility='private',
@@ -98,7 +99,7 @@ class TestContextRepositoryTransaction:
         )
 
         # Delete within transaction
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
             deleted_count = await repos.context.delete_by_ids([context_id], scope=LOCAL_SCOPE, txn=txn)
             assert deleted_count == 1
 
@@ -125,7 +126,7 @@ class TestContextRepositoryTransaction:
         )
 
         # Update within transaction
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
             success, updated_fields = await repos.context.update_context_entry(
                 context_id=context_id,
                 text_content='Updated content',
@@ -163,7 +164,7 @@ class TestTagRepositoryTransaction:
         )
 
         # Store tags without transaction
-        await repos.tags.store_tags(context_id, ['tag1', 'tag2'], txn=None)
+        await repos.tags.store_tags(context_id, ['tag1', 'tag2'], txn=None, scope=LOCAL_SCOPE)
 
         # Verify tags were stored
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -188,8 +189,8 @@ class TestTagRepositoryTransaction:
         )
 
         # Store tags within transaction
-        async with backend.begin_transaction() as txn:
-            await repos.tags.store_tags(context_id, ['txn-tag1', 'txn-tag2'], txn=txn)
+        async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
+            await repos.tags.store_tags(context_id, ['txn-tag1', 'txn-tag2'], txn=txn, scope=MAINTENANCE)
 
         # Verify tags persisted after commit
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -212,11 +213,11 @@ class TestTagRepositoryTransaction:
             content_type='text',
             text_content='Test content',
         )
-        await repos.tags.store_tags(context_id, ['old-tag1', 'old-tag2'])
+        await repos.tags.store_tags(context_id, ['old-tag1', 'old-tag2'], scope=LOCAL_SCOPE)
 
         # Replace tags within transaction
-        async with backend.begin_transaction() as txn:
-            await repos.tags.replace_tags_for_context(context_id, ['new-tag1', 'new-tag2'], txn=txn)
+        async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
+            await repos.tags.replace_tags_for_context(context_id, ['new-tag1', 'new-tag2'], txn=txn, scope=MAINTENANCE)
 
         # Verify replacement persisted
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -246,7 +247,7 @@ class TestImageRepositoryTransaction:
         )
 
         # Store image without transaction
-        await repos.images.store_images(context_id, [sample_image_data], txn=None)
+        await repos.images.store_images(context_id, [sample_image_data], txn=None, scope=LOCAL_SCOPE)
 
         # Verify image was stored
         images = await repos.images.get_images_for_context(context_id)
@@ -273,8 +274,8 @@ class TestImageRepositoryTransaction:
         )
 
         # Store image within transaction
-        async with backend.begin_transaction() as txn:
-            await repos.images.store_images(context_id, [sample_image_data], txn=txn)
+        async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
+            await repos.images.store_images(context_id, [sample_image_data], txn=txn, scope=MAINTENANCE)
 
         # Verify image persisted after commit
         images = await repos.images.get_images_for_context(context_id)
@@ -292,7 +293,7 @@ class TestMultiRepositoryTransaction:
         """Test atomic commit of context entry with tags."""
         backend, repos = backend_with_repos
 
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
             # Store context
             context_id, _ = await repos.context.store_with_deduplication(
                 scope=LOCAL_SCOPE,
@@ -305,7 +306,7 @@ class TestMultiRepositoryTransaction:
             )
 
             # Store tags in same transaction
-            await repos.tags.store_tags(context_id, ['atomic', 'test'], txn=txn)
+            await repos.tags.store_tags(context_id, ['atomic', 'test'], txn=txn, scope=LOCAL_SCOPE)
 
         # Both should be committed
         entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
@@ -323,7 +324,7 @@ class TestMultiRepositoryTransaction:
         """Test atomic commit of context entry with tags and images."""
         backend, repos = backend_with_repos
 
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
             # Store context
             context_id, _ = await repos.context.store_with_deduplication(
                 scope=LOCAL_SCOPE,
@@ -336,10 +337,10 @@ class TestMultiRepositoryTransaction:
             )
 
             # Store tags
-            await repos.tags.store_tags(context_id, ['multimodal', 'atomic'], txn=txn)
+            await repos.tags.store_tags(context_id, ['multimodal', 'atomic'], txn=txn, scope=LOCAL_SCOPE)
 
             # Store image
-            await repos.images.store_images(context_id, [sample_image_data], txn=txn)
+            await repos.images.store_images(context_id, [sample_image_data], txn=txn, scope=LOCAL_SCOPE)
 
         # All should be committed
         entries = await repos.context.get_by_ids([context_id], scope=LOCAL_SCOPE)
@@ -363,7 +364,7 @@ class TestMultiRepositoryTransaction:
         initial_count = 0
 
         try:
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
                 # Store context - this should succeed
                 context_id, _ = await repos.context.store_with_deduplication(
                     scope=LOCAL_SCOPE,
@@ -376,7 +377,7 @@ class TestMultiRepositoryTransaction:
                 )
 
                 # Store tags - this should succeed
-                await repos.tags.store_tags(context_id, ['rollback'], txn=txn)
+                await repos.tags.store_tags(context_id, ['rollback'], txn=txn, scope=LOCAL_SCOPE)
 
                 # Force an error to trigger rollback
                 raise ValueError('Simulated error for rollback test')
@@ -419,8 +420,8 @@ class TestRepositoryMethodsWithoutTransaction:
         assert success is True
 
         # TagRepository methods
-        await repos.tags.store_tags(context_id, ['compat'])
-        await repos.tags.replace_tags_for_context(context_id, ['replaced'])
+        await repos.tags.store_tags(context_id, ['compat'], scope=LOCAL_SCOPE)
+        await repos.tags.replace_tags_for_context(context_id, ['replaced'], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert tags == ['replaced']
@@ -434,8 +435,8 @@ class TestRepositoryMethodsWithoutTransaction:
             content_type='multimodal',
             text_content='Multimodal compat test',
         )
-        await repos.images.store_images(mm_id, [sample_image_data])
-        await repos.images.replace_images_for_context(mm_id, [sample_image_data])
+        await repos.images.store_images(mm_id, [sample_image_data], scope=LOCAL_SCOPE)
+        await repos.images.replace_images_for_context(mm_id, [sample_image_data], scope=LOCAL_SCOPE)
 
         images = await repos.images.get_images_for_context(mm_id)
         assert len(images) == 1
@@ -479,7 +480,7 @@ class TestTxnAwareReadsUseTransactionConnection:
                 ')',
             )
 
-        await backend.execute_write(_create_embedding_metadata)
+        await backend.execute_write(_create_embedding_metadata, access_scope=MAINTENANCE)
 
         context_id, _ = await repos.context.store_with_deduplication(
             scope=LOCAL_SCOPE,
@@ -488,7 +489,7 @@ class TestTxnAwareReadsUseTransactionConnection:
             text_content='txn read target', metadata=None,
         )
 
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
             # Any pool-acquiring read fails loudly; the txn-aware reads must use the
             # transaction connection instead, so execute_read is never called.
             guard = AsyncMock(side_effect=AssertionError('acquired a second connection'))

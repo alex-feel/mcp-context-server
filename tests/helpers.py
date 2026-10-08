@@ -24,6 +24,7 @@ from unittest.mock import patch
 from pydantic import ValidationError as PydanticValidationError
 
 from app.access_scope import AccessScope
+from app.backends.base import MAINTENANCE
 
 if TYPE_CHECKING:
     import asyncpg
@@ -127,7 +128,7 @@ async def store_single_chunk_embedding(
     from app.repositories.embedding_repository.records import ChunkEmbedding
 
     chunk = ChunkEmbedding(embedding=embedding, start_index=0, end_index=0)
-    await repo.store_chunked(context_id, [chunk], model)
+    await repo.store_chunked(context_id, [chunk], model, scope=LOCAL_SCOPE)
 
 
 @contextmanager
@@ -348,13 +349,13 @@ async def insert_grant(
         def _insert_sqlite(conn: sqlite3.Connection) -> None:
             conn.execute(f'INSERT INTO context_entry_grants {_INSERT_GRANT_COLUMNS} VALUES (?, ?, ?, ?, ?)', values)
 
-        await backend.execute_write(_insert_sqlite)
+        await backend.execute_write(_insert_sqlite, access_scope=MAINTENANCE)
         return
 
     async def _insert_postgresql(conn: 'asyncpg.Connection') -> None:
         await conn.execute(f'INSERT INTO context_entry_grants {_INSERT_GRANT_COLUMNS} VALUES ($1, $2, $3, $4, $5)', *values)
 
-    await backend.execute_write(_insert_postgresql)
+    await backend.execute_write(_insert_postgresql, access_scope=MAINTENANCE)
 
 
 async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[str, str, str, str]]:

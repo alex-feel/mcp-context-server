@@ -179,7 +179,7 @@ class ContextUpdateMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_update_entry_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_update_entry_sqlite)
+            return await self.backend.execute_write(_update_entry_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _update_entry_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, list[str]]:
@@ -201,7 +201,7 @@ class ContextUpdateMixin(BaseRepository):
 
         if txn:
             return await _update_entry_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(_update_entry_postgresql)
+        return await self.backend.execute_write(_update_entry_postgresql, access_scope=scope)
 
     async def touch_updated_at(
         self,
@@ -252,7 +252,7 @@ class ContextUpdateMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_touch_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_touch_sqlite)
+            return await self.backend.execute_write(_touch_sqlite, access_scope=scope)
 
         postgresql_query = (
             f'UPDATE context_entries SET updated_at = CURRENT_TIMESTAMP '
@@ -265,7 +265,7 @@ class ContextUpdateMixin(BaseRepository):
 
         if txn:
             return await _touch_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(cast(Any, _touch_postgresql))
+        return await self.backend.execute_write(cast(Any, _touch_postgresql), access_scope=scope)
 
     async def update_content_type(
         self,
@@ -309,7 +309,7 @@ class ContextUpdateMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_update_content_type_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_update_content_type_sqlite)
+            return await self.backend.execute_write(_update_content_type_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _update_content_type_postgresql(conn: 'asyncpg.Connection') -> bool:
@@ -319,7 +319,7 @@ class ContextUpdateMixin(BaseRepository):
 
         if txn:
             return await _update_content_type_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(_update_content_type_postgresql)
+        return await self.backend.execute_write(_update_content_type_postgresql, access_scope=scope)
 
     async def patch_metadata(
         self,
@@ -417,7 +417,7 @@ class ContextUpdateMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_patch_metadata_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_patch_metadata_sqlite)
+            return await self.backend.execute_write(_patch_metadata_sqlite, access_scope=scope)
 
         # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function
         async def _patch_metadata_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, list[str]]:
@@ -475,4 +475,4 @@ class ContextUpdateMixin(BaseRepository):
 
         if txn:
             return await _patch_metadata_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(_patch_metadata_postgresql)
+        return await self.backend.execute_write(_patch_metadata_postgresql, access_scope=scope)

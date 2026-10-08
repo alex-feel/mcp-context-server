@@ -25,6 +25,8 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.ids import generate_id
 from app.migrations.tag_uniqueness import apply_tag_uniqueness_migration
 
@@ -159,7 +161,7 @@ class TestTagUniquenessMigration:
             )
 
         with pytest.raises(sqlite3.IntegrityError):
-            await backend_with_duplicate_tags.execute_write(_insert_duplicate)
+            await backend_with_duplicate_tags.execute_write(_insert_duplicate, access_scope=MAINTENANCE)
 
     @pytest.mark.asyncio
     async def test_migration_is_idempotent(
@@ -188,9 +190,11 @@ class TestTagUniquenessMigration:
         write_calls: list[Callable[[sqlite3.Connection], object]] = []
         original_execute_write = backend_with_duplicate_tags.execute_write
 
-        async def _spying_execute_write(operation: Callable[[sqlite3.Connection], object]) -> object:
+        async def _spying_execute_write(
+            operation: Callable[[sqlite3.Connection], object], *, access_scope: BackendAccess,
+        ) -> object:
             write_calls.append(operation)
-            return await original_execute_write(operation)
+            return await original_execute_write(operation, access_scope=access_scope)
 
         monkeypatch.setattr(backend_with_duplicate_tags, 'execute_write', _spying_execute_write)
 

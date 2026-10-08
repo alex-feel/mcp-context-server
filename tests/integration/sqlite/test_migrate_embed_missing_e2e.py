@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.cli.migrate_compression.compress import run_compress
 from app.cli.migrate_embeddings import run_embed_missing
 from app.embeddings.base import EmbeddingProvider
@@ -459,7 +460,7 @@ def test_compress_then_embed_missing_composed(
                         (context_id, 'test-model', DIM, 1),
                     )
 
-                await backend.execute_write(_write_chunk)
+                await backend.execute_write(_write_chunk, access_scope=MAINTENANCE)
 
             missing: list[str] = []
             for i in range(2):

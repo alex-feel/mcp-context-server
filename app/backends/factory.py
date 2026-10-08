@@ -11,6 +11,7 @@ from typing import Literal
 
 from app.backends.base import StorageBackend
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from app.backends.sqlite_backend import SQLiteBackend
 from app.settings import get_settings
 
@@ -92,8 +93,10 @@ def create_backend(
         return SQLiteBackend(db_path=db_path)
 
     # backend_type == 'postgresql'
-    # Create PostgreSQL backend
+    # Create PostgreSQL backend; the application predicate is the whole access control,
+    # so its transactions bind no identity.
     return PostgreSQLBackend(
         connection_string=connection_string,
         provision_vector=provision_vector,
+        profile=UnboundProfile(),
     )

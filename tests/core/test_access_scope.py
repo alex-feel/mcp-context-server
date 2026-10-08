@@ -34,6 +34,7 @@ from app.access_scope import build_access_predicate
 from app.access_scope import build_policy_predicate
 from app.access_scope import build_readable_parent_predicate
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from tests.helpers import insert_grant
 from tests.helpers import read_grants
@@ -434,7 +435,7 @@ async def _insert_entry(backend: StorageBackend, label: str, owner_id: str, visi
             (context_id, label, owner_id, visibility),
         )
 
-    await backend.execute_write(_insert)
+    await backend.execute_write(_insert, access_scope=MAINTENANCE)
     return context_id
 
 
@@ -557,7 +558,7 @@ async def test_readable_parent_predicate_admits_children_of_readable_rows(
             'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', [(entry_id, label) for label, entry_id in ids.items()],
         )
 
-    await async_db_initialized.execute_write(_tag_every_entry)
+    await async_db_initialized.execute_write(_tag_every_entry, access_scope=MAINTENANCE)
     predicate = build_readable_parent_predicate(scope, child_key=child_key, parent_key=parent_key, backend_type='sqlite')
 
     def _select(conn: sqlite3.Connection) -> set[str]:

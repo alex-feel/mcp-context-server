@@ -10,6 +10,7 @@ import sqlite3
 import pytest
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
 from tests.helpers import enable_compression
@@ -103,7 +104,7 @@ async def test_sqlite_migration_provisions_schema_for_embedding_infra_generation
             'context_id TEXT PRIMARY KEY, chunk_count INTEGER, dimensions INTEGER)',
         )
 
-    await backend.execute_write(_seed_embedding_metadata)
+    await backend.execute_write(_seed_embedding_metadata, access_scope=MAINTENANCE)
 
     enable_compression(monkeypatch)
     monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
@@ -145,7 +146,7 @@ async def test_sqlite_migration_stays_clean_after_zero_data_decompress_generatio
         conn.execute('DROP TABLE IF EXISTS vec_context_embeddings_compressed')
         conn.execute('DELETE FROM compression_metadata WHERE id = 1')
 
-    await backend.execute_write(_zero_data_decompress)
+    await backend.execute_write(_zero_data_decompress, access_scope=MAINTENANCE)
 
     monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
     get_settings.cache_clear()

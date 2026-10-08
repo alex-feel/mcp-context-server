@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app.backends.base import BackendAccess
 from app.repositories.base import BaseRepository
 from app.repositories.embedding_repository.records import SQLITE_IN_CLAUSE_BATCH
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -36,6 +37,7 @@ class ChunkWriteMixin(BaseRepository):
         model: str,
         txn: 'TransactionContext | None' = None,
         *,
+        scope: BackendAccess,
         upsert: bool = False,
     ) -> None:
         """Store multiple chunk embeddings with boundaries for a context entry atomically.
@@ -55,6 +57,8 @@ class ChunkWriteMixin(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
             upsert: If True, delete existing embeddings before storing new ones.
                 Use this for defense-in-depth when deduplication is possible.
                 Default is False for backward compatibility.
@@ -72,14 +76,14 @@ class ChunkWriteMixin(BaseRepository):
         from app.settings import get_settings
         if get_settings().compression.enabled:
             await self._store_chunked_compressed(
-                context_id, chunk_embeddings, model, txn=txn, upsert=upsert,
+                context_id, chunk_embeddings, model, txn=txn, scope=scope, upsert=upsert,
             )
             return
 
         # Defense-in-depth: if upsert enabled, delete existing embeddings first
         # This ensures idempotency - calling multiple times produces same result
         if upsert:
-            deleted_count = await self.delete_all_chunks(context_id, txn=txn)
+            deleted_count = await self.delete_all_chunks(context_id, txn=txn, scope=scope)
             if deleted_count > 0:
                 logger.debug(
                     f'UPSERT mode: deleted {deleted_count} existing chunk embeddings '
@@ -132,7 +136,7 @@ class ChunkWriteMixin(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_store_chunked_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_store_chunked_sqlite)
+                await self.backend.execute_write(_store_chunked_sqlite, access_scope=scope)
             logger.debug(f'Stored {chunk_count} chunk embeddings for context {context_id} (SQLite)')
 
         else:  # postgresql
@@ -157,7 +161,7 @@ class ChunkWriteMixin(BaseRepository):
             if txn:
                 await _store_chunked_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
-                await self.backend.execute_write(cast(Any, _store_chunked_postgresql))
+                await self.backend.execute_write(cast(Any, _store_chunked_postgresql), access_scope=scope)
             logger.debug(f'Stored {chunk_count} chunk embeddings for context {context_id} (PostgreSQL)')
 
     async def _store_chunked_compressed(
@@ -167,6 +171,7 @@ class ChunkWriteMixin(BaseRepository):
         model: str,
         txn: 'TransactionContext | None' = None,
         *,
+        scope: BackendAccess,
         upsert: bool = False,
     ) -> None:
         """Persist compressed chunk payloads to vec_context_embeddings_compressed.
@@ -182,6 +187,8 @@ class ChunkWriteMixin(BaseRepository):
             model: Embedding model name (recorded in embedding_metadata).
             txn: Optional transaction context for atomic multi-repository
                 operations.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
             upsert: If True, delete existing compressed rows for the context
                 before writing the new ones (defense-in-depth idempotency).
 
@@ -202,7 +209,7 @@ class ChunkWriteMixin(BaseRepository):
             )
 
         if upsert:
-            deleted = await self._delete_all_chunks_compressed(context_id, txn=txn)
+            deleted = await self._delete_all_chunks_compressed(context_id, txn=txn, scope=scope)
             if deleted > 0:
                 logger.debug(
                     'UPSERT mode: deleted %d compressed chunks for context %s',
@@ -247,7 +254,7 @@ class ChunkWriteMixin(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_store_compressed_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_store_compressed_sqlite)
+                await self.backend.execute_write(_store_compressed_sqlite, access_scope=scope)
             logger.debug(
                 f'Stored {chunk_count} compressed chunks for context '
                 f'{context_id} (SQLite)',
@@ -281,7 +288,7 @@ class ChunkWriteMixin(BaseRepository):
         if txn:
             await _store_compressed_pg(cast('asyncpg.Connection', txn.connection))
         else:
-            await self.backend.execute_write(cast(Any, _store_compressed_pg))
+            await self.backend.execute_write(cast(Any, _store_compressed_pg), access_scope=scope)
         logger.debug(
             f'Stored {chunk_count} compressed chunks for context '
             f'{context_id} (PostgreSQL)',
@@ -291,6 +298,8 @@ class ChunkWriteMixin(BaseRepository):
         self,
         context_id: str,
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> int:
         """Delete compressed chunk rows + embedding_metadata for a context.
 
@@ -298,6 +307,8 @@ class ChunkWriteMixin(BaseRepository):
             context_id: ID of the context entry.
             txn: Optional transaction context for atomic multi-repository
                 operations.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
 
         Returns:
             Number of compressed chunk rows deleted.
@@ -328,7 +339,7 @@ class ChunkWriteMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_delete_compressed_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_delete_compressed_sqlite)
+            return await self.backend.execute_write(_delete_compressed_sqlite, access_scope=scope)
 
         # postgresql
         async def _delete_compressed_pg(conn: 'asyncpg.Connection') -> int:
@@ -352,12 +363,14 @@ class ChunkWriteMixin(BaseRepository):
 
         if txn:
             return await _delete_compressed_pg(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(cast(Any, _delete_compressed_pg))
+        return await self.backend.execute_write(cast(Any, _delete_compressed_pg), access_scope=scope)
 
     async def _delete_all_chunks_compressed_bulk(
         self,
         context_ids: list[str],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> int:
         """Delete compressed chunk rows + embedding_metadata for many contexts on SQLite.
 
@@ -372,6 +385,8 @@ class ChunkWriteMixin(BaseRepository):
             context_ids: The ids whose compressed embedding rows must be removed.
             txn: Optional transaction context so the cleanup commits with the row
                 delete. When None, each slice runs as its own write.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
 
         Returns:
             Number of compressed chunk rows deleted.
@@ -403,7 +418,7 @@ class ChunkWriteMixin(BaseRepository):
                     _delete_compressed_chunk_sqlite, cast(sqlite3.Connection, txn.connection),
                 )
             else:
-                deleted_total += await self.backend.execute_write(_delete_compressed_chunk_sqlite)
+                deleted_total += await self.backend.execute_write(_delete_compressed_chunk_sqlite, access_scope=scope)
 
         logger.debug(
             f'Deleted {deleted_total} compressed chunk embeddings for {len(context_ids)} contexts (SQLite bulk)',
@@ -414,6 +429,8 @@ class ChunkWriteMixin(BaseRepository):
         self,
         context_id: str,
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> int:
         """Delete all chunk embeddings for a context entry.
 
@@ -429,6 +446,8 @@ class ChunkWriteMixin(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
 
         Returns:
             Number of chunk embeddings deleted
@@ -437,7 +456,7 @@ class ChunkWriteMixin(BaseRepository):
         # cleanup, upsert, and full delete paths all reach the right table).
         from app.settings import get_settings
         if get_settings().compression.enabled:
-            return await self._delete_all_chunks_compressed(context_id, txn=txn)
+            return await self._delete_all_chunks_compressed(context_id, txn=txn, scope=scope)
 
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
@@ -480,7 +499,7 @@ class ChunkWriteMixin(BaseRepository):
                     _delete_all_chunks_sqlite, cast(sqlite3.Connection, txn.connection),
                 )
             else:
-                deleted_count = await self.backend.execute_write(_delete_all_chunks_sqlite)
+                deleted_count = await self.backend.execute_write(_delete_all_chunks_sqlite, access_scope=scope)
             logger.debug(f'Deleted {deleted_count} chunk embeddings for context {context_id} (SQLite)')
             return deleted_count
 
@@ -513,7 +532,7 @@ class ChunkWriteMixin(BaseRepository):
         if txn:
             deleted_count = await _delete_all_chunks_postgresql(cast('asyncpg.Connection', txn.connection))
         else:
-            deleted_count = await self.backend.execute_write(cast(Any, _delete_all_chunks_postgresql))
+            deleted_count = await self.backend.execute_write(cast(Any, _delete_all_chunks_postgresql), access_scope=scope)
         logger.debug(f'Deleted {deleted_count} chunk embeddings for context {context_id} (PostgreSQL)')
         return deleted_count
 
@@ -521,6 +540,8 @@ class ChunkWriteMixin(BaseRepository):
         self,
         context_ids: list[str],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> int:
         """Delete chunk embeddings for many context entries in bounded multi-row statements.
 
@@ -550,6 +571,8 @@ class ChunkWriteMixin(BaseRepository):
             context_ids: The ids whose embedding rows must be removed.
             txn: Optional transaction context so the cleanup commits with the row
                 delete. When None, each chunk runs as its own write.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
 
         Returns:
             Number of chunk embedding rows deleted.
@@ -562,11 +585,11 @@ class ChunkWriteMixin(BaseRepository):
         if backend_type != 'sqlite':
             total = 0
             for context_id in context_ids:
-                total += await self.delete_all_chunks(context_id, txn=txn)
+                total += await self.delete_all_chunks(context_id, txn=txn, scope=scope)
             return total
 
         if get_settings().compression.enabled:
-            return await self._delete_all_chunks_compressed_bulk(context_ids, txn=txn)
+            return await self._delete_all_chunks_compressed_bulk(context_ids, txn=txn, scope=scope)
 
         deleted_total = 0
         for start in range(0, len(context_ids), SQLITE_IN_CLAUSE_BATCH):
@@ -605,7 +628,7 @@ class ChunkWriteMixin(BaseRepository):
                     _delete_chunk_sqlite, cast(sqlite3.Connection, txn.connection),
                 )
             else:
-                deleted_total += await self.backend.execute_write(_delete_chunk_sqlite)
+                deleted_total += await self.backend.execute_write(_delete_chunk_sqlite, access_scope=scope)
 
         logger.debug(
             f'Deleted {deleted_total} chunk embeddings for {len(context_ids)} contexts (SQLite bulk)',

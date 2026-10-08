@@ -283,7 +283,7 @@ class TestBatchStoreEmbeddingDeduplication:
             metadata=None,
         )
         chunk_emb = ChunkEmbedding(embedding=[0.1] * embedding_dim, start_index=0, end_index=16)
-        await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model')
+        await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model', scope=LOCAL_SCOPE)
 
         # Verify embedding exists
         assert await repos.embeddings.exists(context_id) is True
@@ -343,11 +343,11 @@ class TestEmbeddingRepositoryUpsert:
 
         # First store - should succeed
         chunk_emb = ChunkEmbedding(embedding=[0.1] * embedding_dim, start_index=0, end_index=12)
-        await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model')
+        await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model', scope=LOCAL_SCOPE)
 
         # Second store with upsert=False (default) - should raise IntegrityError
         with pytest.raises(sqlite3.IntegrityError, match='UNIQUE constraint failed'):
-            await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model', upsert=False)
+            await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model', upsert=False, scope=LOCAL_SCOPE)
 
     @requires_sqlite_vec
     async def test_store_chunked_upsert_true_succeeds_on_duplicate(
@@ -375,13 +375,13 @@ class TestEmbeddingRepositoryUpsert:
 
         # First store
         chunk_emb1 = ChunkEmbedding(embedding=[0.1] * embedding_dim, start_index=0, end_index=12)
-        await repos.embeddings.store_chunked(context_id, [chunk_emb1], 'model-v1')
+        await repos.embeddings.store_chunked(context_id, [chunk_emb1], 'model-v1', scope=LOCAL_SCOPE)
 
         assert await repos.embeddings.exists(context_id) is True
 
         # Second store with upsert=True - should succeed (delete-then-insert)
         chunk_emb2 = ChunkEmbedding(embedding=[0.2] * embedding_dim, start_index=0, end_index=12)
-        await repos.embeddings.store_chunked(context_id, [chunk_emb2], 'model-v2', upsert=True)
+        await repos.embeddings.store_chunked(context_id, [chunk_emb2], 'model-v2', upsert=True, scope=LOCAL_SCOPE)
 
         assert await repos.embeddings.exists(context_id) is True
 
@@ -408,7 +408,7 @@ class TestEmbeddingRepositoryUpsert:
 
         # First store with model-v1
         chunk_emb1 = ChunkEmbedding(embedding=[0.1] * embedding_dim, start_index=0, end_index=12)
-        await repos.embeddings.store_chunked(context_id, [chunk_emb1], 'model-v1')
+        await repos.embeddings.store_chunked(context_id, [chunk_emb1], 'model-v1', scope=LOCAL_SCOPE)
 
         # Check initial metadata
         def _check_model_v1(conn: sqlite3.Connection) -> str:
@@ -424,7 +424,7 @@ class TestEmbeddingRepositoryUpsert:
 
         # UPSERT with model-v2
         chunk_emb2 = ChunkEmbedding(embedding=[0.2] * embedding_dim, start_index=0, end_index=12)
-        await repos.embeddings.store_chunked(context_id, [chunk_emb2], 'model-v2', upsert=True)
+        await repos.embeddings.store_chunked(context_id, [chunk_emb2], 'model-v2', upsert=True, scope=LOCAL_SCOPE)
 
         # Check updated metadata
         def _check_model_v2(conn: sqlite3.Connection) -> str:
@@ -464,7 +464,7 @@ class TestEmbeddingRepositoryUpsert:
             ChunkEmbedding(embedding=[0.1] * embedding_dim, start_index=0, end_index=50),
             ChunkEmbedding(embedding=[0.2] * embedding_dim, start_index=50, end_index=100),
         ]
-        await repos.embeddings.store_chunked(context_id, chunks_v1, 'model')
+        await repos.embeddings.store_chunked(context_id, chunks_v1, 'model', scope=LOCAL_SCOPE)
 
         # Check initial chunk count
         def _check_initial_counts(conn: sqlite3.Connection) -> tuple[int, int]:
@@ -491,7 +491,7 @@ class TestEmbeddingRepositoryUpsert:
             ChunkEmbedding(embedding=[0.4] * embedding_dim, start_index=33, end_index=66),
             ChunkEmbedding(embedding=[0.5] * embedding_dim, start_index=66, end_index=100),
         ]
-        await repos.embeddings.store_chunked(context_id, chunks_v2, 'model', upsert=True)
+        await repos.embeddings.store_chunked(context_id, chunks_v2, 'model', upsert=True, scope=LOCAL_SCOPE)
 
         # Check updated chunk count
         def _check_updated_counts(conn: sqlite3.Connection) -> tuple[int, int]:
@@ -564,7 +564,7 @@ class TestEmbeddingExistsMethod:
 
         # Store embedding
         chunk_emb = ChunkEmbedding(embedding=[0.1] * embedding_dim, start_index=0, end_index=13)
-        await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model')
+        await repos.embeddings.store_chunked(context_id, [chunk_emb], 'test-model', scope=LOCAL_SCOPE)
 
         result = await repos.embeddings.exists(context_id)
         assert result is True

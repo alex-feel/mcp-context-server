@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import asyncpg
 
+from app.backends.base import BackendAccess
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
 from app.backends.postgresql_backend.acquire_faults import track_acquire
 from app.backends.postgresql_backend.core import PostgreSQLBackendCore
@@ -48,7 +49,7 @@ class PostgreSQLTransactionMixin(PostgreSQLBackendCore):
     """Run several operations atomically in one transaction on one pooled connection."""
 
     @asynccontextmanager
-    async def begin_transaction(self) -> AsyncGenerator[PostgreSQLTransactionContext, None]:
+    async def begin_transaction(self, *, access_scope: BackendAccess) -> AsyncGenerator[PostgreSQLTransactionContext, None]:
         """Begin an atomic transaction spanning multiple operations.
 
         This method acquires a connection from the pool and begins a transaction.
@@ -60,8 +61,12 @@ class PostgreSQLTransactionMixin(PostgreSQLBackendCore):
         Transaction semantics:
         - Uses asyncpg's native transaction context manager
         - Default isolation level: READ COMMITTED
+        - The session profile binds ``access_scope`` before the body runs
         - On successful context exit: COMMIT
         - On exception: ROLLBACK
+
+        Args:
+            access_scope: The identity every operation in the transaction runs as.
 
         Yields:
             PostgreSQLTransactionContext with the asyncpg connection
@@ -86,7 +91,7 @@ class PostgreSQLTransactionMixin(PostgreSQLBackendCore):
             caller into a retry that writes it again.
 
         Example:
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=scope) as txn:
                 conn = txn.connection
                 # All operations use same connection, same transaction
                 row = await conn.fetchrow(
@@ -130,6 +135,8 @@ class PostgreSQLTransactionMixin(PostgreSQLBackendCore):
 
                     try:
                         async with conn.transaction():
+                            # A bind failure takes the same arms as a body failure.
+                            await self._profile.bind(conn, access_scope)
                             yield txn_context
                             # Body succeeded; asyncpg COMMITs on exiting this inner context.
                         # Reaching here means the COMMIT itself also succeeded.

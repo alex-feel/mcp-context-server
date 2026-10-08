@@ -190,7 +190,7 @@ class TestSemanticSearchTagsFilter:
             text_content='Entry with python tag',
             metadata=None,
         )
-        await repos.tags.store_tags(id1, ['python'])
+        await repos.tags.store_tags(id1, ['python'], scope=LOCAL_SCOPE)
         await store_single_chunk_embedding(embedding_repo, id1, [0.1] * embedding_dim)
 
         id2, _ = await repos.context.store_with_deduplication(
@@ -202,7 +202,7 @@ class TestSemanticSearchTagsFilter:
             text_content='Entry with javascript tag',
             metadata=None,
         )
-        await repos.tags.store_tags(id2, ['javascript'])
+        await repos.tags.store_tags(id2, ['javascript'], scope=LOCAL_SCOPE)
         await store_single_chunk_embedding(embedding_repo, id2, [0.2] * embedding_dim)
 
         id3, _ = await repos.context.store_with_deduplication(
@@ -214,7 +214,7 @@ class TestSemanticSearchTagsFilter:
             text_content='Entry with no matching tags',
             metadata=None,
         )
-        await repos.tags.store_tags(id3, ['rust'])
+        await repos.tags.store_tags(id3, ['rust'], scope=LOCAL_SCOPE)
         await store_single_chunk_embedding(embedding_repo, id3, [0.3] * embedding_dim)
 
         # Search with tags filter (OR logic)
@@ -257,7 +257,7 @@ class TestSemanticSearchTagsFilter:
                 metadata=None,
             )
             tag = 'important' if i == 0 else f'other-{i}'
-            await repos.tags.store_tags(ctx_id, [tag])
+            await repos.tags.store_tags(ctx_id, [tag], scope=LOCAL_SCOPE)
             await store_single_chunk_embedding(embedding_repo, ctx_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for only 'important' tagged entries
@@ -295,7 +295,7 @@ class TestSemanticSearchTagsFilter:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await repos.tags.store_tags(ctx_id, [f'tag-{i}'])
+            await repos.tags.store_tags(ctx_id, [f'tag-{i}'], scope=LOCAL_SCOPE)
             await store_single_chunk_embedding(embedding_repo, ctx_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with empty tags list
@@ -334,7 +334,7 @@ class TestSemanticSearchTagsFilter:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await repos.tags.store_tags(ctx_id, [f'tag-{i}'])
+            await repos.tags.store_tags(ctx_id, [f'tag-{i}'], scope=LOCAL_SCOPE)
             await store_single_chunk_embedding(embedding_repo, ctx_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with tags=None
@@ -371,7 +371,7 @@ class TestSemanticSearchTagsFilter:
             text_content='Python programming',
             metadata=None,
         )
-        await repos.tags.store_tags(target_id, ['python'])
+        await repos.tags.store_tags(target_id, ['python'], scope=LOCAL_SCOPE)
         await store_single_chunk_embedding(embedding_repo, target_id, [0.1] * embedding_dim)
 
         # Create non-matching: wrong source
@@ -384,7 +384,7 @@ class TestSemanticSearchTagsFilter:
             text_content='Python from agent',
             metadata=None,
         )
-        await repos.tags.store_tags(wrong_source_id, ['python'])
+        await repos.tags.store_tags(wrong_source_id, ['python'], scope=LOCAL_SCOPE)
         await store_single_chunk_embedding(embedding_repo, wrong_source_id, [0.2] * embedding_dim)
 
         # Create non-matching: wrong tag
@@ -397,7 +397,7 @@ class TestSemanticSearchTagsFilter:
             text_content='JavaScript user entry',
             metadata=None,
         )
-        await repos.tags.store_tags(wrong_tag_id, ['javascript'])
+        await repos.tags.store_tags(wrong_tag_id, ['javascript'], scope=LOCAL_SCOPE)
         await store_single_chunk_embedding(embedding_repo, wrong_tag_id, [0.3] * embedding_dim)
 
         # Search with combined filters

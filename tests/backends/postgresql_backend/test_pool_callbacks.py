@@ -18,6 +18,7 @@ import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 
 
 class TestSetupPoolConnectionTimeout:
@@ -163,6 +164,7 @@ class TestPgvectorInitCallbackClassification:
         """
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
         monkeypatch.setattr(backend, '_resolve_provision_vector', AsyncMock(return_value=True))
         monkeypatch.setattr(backend, '_ensure_pgvector_extension', AsyncMock())

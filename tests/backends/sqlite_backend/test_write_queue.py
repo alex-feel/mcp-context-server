@@ -21,6 +21,10 @@ from typing import cast
 
 import pytest
 
+from app.access_scope import SYSTEM_SCOPE
+from app.access_scope import AccessScope
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.backends.sqlite_backend import SQLiteBackend
 from app.backends.sqlite_backend.write_queue import WriteRequest
 
@@ -127,7 +131,7 @@ class TestWriteQueueHandoffWindow:
                 row = cursor.fetchone()
                 return int(row[0])
 
-            assert await backend.execute_write(_operation) == 42
+            assert await backend.execute_write(_operation, access_scope=MAINTENANCE) == 42
         finally:
             await backend.shutdown()
 
@@ -188,5 +192,26 @@ class TestWriteQueueHandoffWindow:
 
             assert future.done()
             assert future.cancelled()
+        finally:
+            await backend.shutdown()
+
+
+class TestAccessScopeDiscard:
+    """SQLite enforces access in the application layer, so the write path accepts and drops the identity."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'access',
+        [AccessScope('alice', frozenset({'team-x'}), may_publish=True), SYSTEM_SCOPE, MAINTENANCE],
+        ids=['request', 'system', 'maintenance'],
+    )
+    async def test_access_scope_never_reaches_the_operation(self, tmp_path: Path, access: BackendAccess) -> None:
+        backend = await _initialized_backend(tmp_path / 'write_queue_access.db')
+        try:
+
+            def _operation(_conn: sqlite3.Connection, **kwargs: object) -> dict[str, object]:
+                return dict(kwargs)
+
+            assert await backend.execute_write(_operation, access_scope=access, marker='kept') == {'marker': 'kept'}
         finally:
             await backend.shutdown()

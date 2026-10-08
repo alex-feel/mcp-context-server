@@ -163,6 +163,7 @@ async def compressed_corpus_backend(
                     ),
                 ],
                 model='test-model',
+                scope=LOCAL_SCOPE,
             )
 
     # Background documents (unit-random; should not appear in top-K).
@@ -194,6 +195,7 @@ async def compressed_corpus_backend(
                 ),
             ],
             model='test-model',
+            scope=LOCAL_SCOPE,
         )
 
     docs_arr = np.stack(docs).astype(np.float32)

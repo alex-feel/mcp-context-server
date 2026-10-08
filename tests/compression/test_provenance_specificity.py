@@ -14,6 +14,7 @@ from typing import cast
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.sqlite_backend import SQLiteBackend
 from app.compression.provenance import read_compression_metadata
 from app.compression.types import CompressionMetadata
@@ -141,7 +142,7 @@ async def test_reads_none_fingerprint_when_column_missing(
                 "VALUES (1, 'turboquant', 4, 'ip', 0, 1024)",
             )
 
-        await backend.execute_write(_create_pre_fingerprint)
+        await backend.execute_write(_create_pre_fingerprint, access_scope=MAINTENANCE)
 
         result = await read_compression_metadata(backend)
         assert isinstance(result, CompressionMetadata)

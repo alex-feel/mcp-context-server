@@ -9,6 +9,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.repositories import RepositoryContainer
 from app.repositories.statistics_repository import StatisticsRepository
 from app.schemas import load_schema
@@ -71,7 +72,7 @@ async def stats_test_db(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
     def _init_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(schema_sql)
 
-    await backend.execute_write(_init_schema)
+    await backend.execute_write(_init_schema, access_scope=MAINTENANCE)
 
     yield backend
 

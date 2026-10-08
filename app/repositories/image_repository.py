@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 from app.types import ImageDict
@@ -118,6 +119,8 @@ class ImageRepository(BaseRepository):
         context_id: str,
         images: list[dict[str, Any]],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Store multiple image attachments for a context entry.
 
@@ -128,6 +131,8 @@ class ImageRepository(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
@@ -171,7 +176,7 @@ class ImageRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_store_images_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_store_images_sqlite)
+                await self.backend.execute_write(_store_images_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _store_images_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -209,7 +214,7 @@ class ImageRepository(BaseRepository):
             if txn:
                 await _store_images_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
-                await self.backend.execute_write(cast(Any, _store_images_postgresql))
+                await self.backend.execute_write(cast(Any, _store_images_postgresql), access_scope=scope)
 
     async def get_images_for_context(
         self,
@@ -348,6 +353,8 @@ class ImageRepository(BaseRepository):
         context_id: str,
         images: list[dict[str, Any]],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Replace all images for a context entry.
 
@@ -362,6 +369,8 @@ class ImageRepository(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
@@ -408,7 +417,7 @@ class ImageRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_replace_images_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_replace_images_sqlite)
+                await self.backend.execute_write(_replace_images_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _replace_images_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -448,4 +457,4 @@ class ImageRepository(BaseRepository):
             if txn:
                 await _replace_images_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
-                await self.backend.execute_write(cast(Any, _replace_images_postgresql))
+                await self.backend.execute_write(cast(Any, _replace_images_postgresql), access_scope=scope)

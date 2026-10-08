@@ -54,6 +54,8 @@ async def cleanup_embeddings_for_delete(
     repos: 'RepositoryContainer',
     txn: 'TransactionContext',
     context_ids: list[str],
+    *,
+    scope: AccessScope,
 ) -> None:
     """Delete FK-less SQLite embedding rows for entries about to be removed.
 
@@ -98,6 +100,7 @@ async def cleanup_embeddings_for_delete(
         repos: Repository container.
         txn: The open transaction that will also issue the row delete.
         context_ids: The exact ids the delete will remove.
+        scope: The caller's scope, which the transaction already runs as.
     """
     if not context_ids or txn.backend_type != 'sqlite':
         return
@@ -109,7 +112,7 @@ async def cleanup_embeddings_for_delete(
     if not await repos.embeddings.embedding_tables_exist(txn=txn):
         return
     try:
-        await repos.embeddings.delete_all_chunks_bulk(context_ids, txn=txn)
+        await repos.embeddings.delete_all_chunks_bulk(context_ids, txn=txn, scope=scope)
     except Exception as exc:
         if is_sqlite_locked_error(exc):
             raise
@@ -169,7 +172,7 @@ async def delete_entries_with_cleanup(
     attempt = 0
     while True:
         try:
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=scope) as txn:
                 access = await repos.context.probe_ids(context_ids, scope=scope, txn=txn)
                 deletable = [i for i in context_ids if i in access and access[i].is_owner]
                 if refuse_unauthorized:
@@ -178,7 +181,7 @@ async def delete_entries_with_cleanup(
                         raise EntryNotAuthorizedError(denied, action='delete')
                 if not deletable:
                     return 0
-                await cleanup_embeddings_for_delete(repos, txn, deletable)
+                await cleanup_embeddings_for_delete(repos, txn, deletable, scope=scope)
                 return await repos.context.delete_by_ids(deletable, scope=scope, txn=txn)
         except Exception as exc:
             if is_connection_error(exc) and attempt < max_retries:

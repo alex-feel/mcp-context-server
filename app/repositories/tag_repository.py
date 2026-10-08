@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.models import normalize_tag_list
 from app.repositories._collation import byte_ordered_text
@@ -91,6 +92,8 @@ class TagRepository(BaseRepository):
         context_id: str,
         tags: list[str],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Store normalized tags for a context entry.
 
@@ -101,6 +104,8 @@ class TagRepository(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
         normalized_tags = self.normalize_tags(tags)
@@ -116,7 +121,7 @@ class TagRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_store_tags_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_store_tags_sqlite)
+                await self.backend.execute_write(_store_tags_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _store_tags_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -127,7 +132,7 @@ class TagRepository(BaseRepository):
             if txn:
                 await _store_tags_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
-                await self.backend.execute_write(cast(Any, _store_tags_postgresql))
+                await self.backend.execute_write(cast(Any, _store_tags_postgresql), access_scope=scope)
 
     async def get_tags_for_context(self, context_id: str) -> list[str]:
         """Get all tags for a specific context entry.
@@ -167,6 +172,8 @@ class TagRepository(BaseRepository):
         context_id: str,
         tags: list[str],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Replace all tags for a context entry.
 
@@ -181,6 +188,8 @@ class TagRepository(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
         normalized_tags = self.normalize_tags(tags)
@@ -200,7 +209,7 @@ class TagRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_replace_tags_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_replace_tags_sqlite)
+                await self.backend.execute_write(_replace_tags_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _replace_tags_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -214,4 +223,4 @@ class TagRepository(BaseRepository):
             if txn:
                 await _replace_tags_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
-                await self.backend.execute_write(cast(Any, _replace_tags_postgresql))
+                await self.backend.execute_write(cast(Any, _replace_tags_postgresql), access_scope=scope)

@@ -15,6 +15,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from app.access_scope import AccessMode
+from app.backends.base import MAINTENANCE
 from app.repositories.context_repository.records import IdAccess
 from app.settings import get_settings
 from tests.helpers import LOCAL_SCOPE
@@ -42,12 +43,13 @@ class _FakeTransactionalBackend:
         self.transactions: list[_FakeDeleteTransaction] = []
 
     @asynccontextmanager
-    async def begin_transaction(self):
+    async def begin_transaction(self, *, access_scope):
         """Yield a fake transaction and record it for assertions.
 
         Yields:
             The fake transaction context handed to the tool body.
         """
+        _ = access_scope
         txn = _FakeDeleteTransaction(self.backend_type)
         self.transactions.append(txn)
         yield txn
@@ -105,7 +107,7 @@ class TestBatchDeleteEmbeddingCleanup:
             # transaction: a per-entry loop would cost one write round trip per matched
             # row and hold the single SQLite writer for the entire scan.
             txn = mock_backend.transactions[0]
-            mock_repos.embeddings.delete_all_chunks_bulk.assert_awaited_once_with(snapshot, txn=txn)
+            mock_repos.embeddings.delete_all_chunks_bulk.assert_awaited_once_with(snapshot, txn=txn, scope=LOCAL_SCOPE)
 
             # A thread delete names no ids, so it snapshots only the caller's own rows.
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
@@ -338,7 +340,7 @@ class TestBatchDeleteEmbeddingCleanup:
                 [(cid, thread, 'user', 'text', f'chunk entry {i}') for i, cid in enumerate(ids)],
             )
 
-        await repos.context.backend.execute_write(_bulk_insert)
+        await repos.context.backend.execute_write(_bulk_insert, access_scope=MAINTENANCE)
 
         # Focus on the chunked delete: skip the per-id embedding cleanup loop.
         with patch.object(

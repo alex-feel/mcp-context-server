@@ -14,6 +14,7 @@ import asyncpg
 
 from app.backends.postgresql_backend.resilience import CircuitBreaker
 from app.backends.postgresql_backend.resilience import RetryConfig
+from app.backends.postgresql_backend.session_profiles import SessionProfile
 from app.settings import get_settings
 
 settings = get_settings()
@@ -33,9 +34,9 @@ class ConnectionMetrics:
 class PostgreSQLBackendCore:
     """Instance state and shared accounting of the PostgreSQL backend.
 
-    Owns the connection string, retry configuration, pool, circuit breaker and metrics that
-    the provisioning, lifecycle, operations and transaction mixins share, plus the
-    charged-failure bookkeeping and the published metrics.
+    Owns the connection string, retry configuration, session profile, pool, circuit breaker
+    and metrics that the provisioning, lifecycle, operations and transaction mixins share,
+    plus the charged-failure bookkeeping and the published metrics.
     """
 
     # Pgpool-II detection result (set during initialize() by _detect_pgpool_ii())
@@ -50,12 +51,18 @@ class PostgreSQLBackendCore:
         connection_string: str | None = None,
         retry_config: RetryConfig | None = None,
         provision_vector: bool | None = None,
+        *,
+        profile: SessionProfile,
     ) -> None:
         # Build connection string from settings if not provided
         if connection_string is None:
             connection_string = self._build_connection_string()
 
         self.connection_string = connection_string
+
+        # How every transaction presents the caller's identity to the database: the
+        # write entry points hand each transaction's access scope to profile.bind.
+        self._profile = profile
 
         # Explicit pgvector-provisioning override. The migration CLI knows
         # up front whether the target will carry the fp32 vector layout

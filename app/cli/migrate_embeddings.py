@@ -34,6 +34,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.cli._backend import make_backend
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
@@ -201,13 +202,14 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
                 if chunk_embeddings is None:
                     continue
 
-                async with backend.begin_transaction() as txn:
+                async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                     await repos.embeddings.store_chunked(
                         context_id=entry_id,
                         chunk_embeddings=chunk_embeddings,
                         model=model,
                         txn=txn,
                         upsert=False,
+                        scope=MAINTENANCE,
                     )
                 succeeded += 1
 

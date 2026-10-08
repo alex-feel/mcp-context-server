@@ -44,6 +44,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.cli._backend import make_backend
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
@@ -213,14 +214,15 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
                 # never left without embeddings: delete_all_chunks removes the
                 # old vectors + embedding_metadata, store_chunked writes the
                 # new ones (and the new model_name).
-                async with backend.begin_transaction() as txn:
-                    await repos.embeddings.delete_all_chunks(entry_id, txn=txn)
+                async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
+                    await repos.embeddings.delete_all_chunks(entry_id, txn=txn, scope=MAINTENANCE)
                     await repos.embeddings.store_chunked(
                         context_id=entry_id,
                         chunk_embeddings=chunk_embeddings,
                         model=configured_model,
                         txn=txn,
                         upsert=False,
+                        scope=MAINTENANCE,
                     )
                 succeeded += 1
 

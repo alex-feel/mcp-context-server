@@ -84,6 +84,7 @@ config_logger(_test_settings.logging.level)
 import app.startup
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.settings import AppSettings
 
 # ============================================================================
@@ -200,8 +201,9 @@ def create_mock_backend_with_transaction_support() -> MagicMock:
     mock_backend = MagicMock()
 
     @asynccontextmanager
-    async def mock_begin_transaction():
+    async def mock_begin_transaction(*, access_scope):
         """Mock async context manager for begin_transaction."""
+        _ = access_scope
         txn = MagicMock()
         txn.backend_type = 'sqlite'
         txn.connection = MagicMock()
@@ -644,7 +646,7 @@ async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[StorageBack
     def _init_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(schema_sql)
 
-    await backend.execute_write(_init_schema)
+    await backend.execute_write(_init_schema, access_scope=MAINTENANCE)
 
     try:
         yield backend
@@ -719,7 +721,7 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     def _init_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(schema_sql)
 
-    await backend.execute_write(_init_schema)
+    await backend.execute_write(_init_schema, access_scope=MAINTENANCE)
 
     # Ensure the fixture dependency is satisfied
     assert mock_server_dependencies is None
@@ -810,7 +812,7 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
     def _init_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(schema_sql)
 
-    await backend.execute_write(_init_schema)
+    await backend.execute_write(_init_schema, access_scope=MAINTENANCE)
 
     # Apply semantic search migration with correct dimension
     semantic_migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search_sqlite.sql'
@@ -850,7 +852,7 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
         if 'chunk_count' not in columns:
             conn.execute('ALTER TABLE embedding_metadata ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1')
 
-    await backend.execute_write(_apply_migrations)
+    await backend.execute_write(_apply_migrations, access_scope=MAINTENANCE)
 
     try:
         yield backend

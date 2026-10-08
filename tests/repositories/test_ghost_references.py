@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from tests.helpers import LOCAL_SCOPE
@@ -73,7 +74,7 @@ class TestGhostReferencesNotRewritten:
             thread_id='t', source='user', content_type='text',
             text_content='Old content', metadata=None,
         )
-        async with repos.context.backend.begin_transaction() as txn:
+        async with repos.context.backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
             success, _ = await repos.context.update_context_entry(
                 context_id=original_id,
                 text_content=GHOST_TEXT,
@@ -99,7 +100,7 @@ class TestGhostReferencesNotRewritten:
                 (new_id, 't', 'user', 'text', 'irrelevant', GHOST_TEXT),
             )
 
-        await repos.context.backend.execute_write(_insert)
+        await repos.context.backend.execute_write(_insert, access_scope=MAINTENANCE)
 
         entries = await repos.context.get_by_ids([new_id], scope=LOCAL_SCOPE)
         assert len(entries) == 1

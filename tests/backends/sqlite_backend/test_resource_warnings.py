@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.backends.sqlite_backend import SQLiteBackend
 
 
@@ -66,7 +67,7 @@ class TestResourceWarningDetection:
         async with manager.get_connection(readonly=True) as conn:
             conn.execute('SELECT 1')
 
-        await manager.execute_write(lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'))
+        await manager.execute_write(lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'), access_scope=MAINTENANCE)
 
         # Shutdown should close all connections
         await manager.shutdown()
@@ -95,7 +96,7 @@ class TestResourceWarningDetection:
 
         # Simulate error during write
         with contextlib.suppress(sqlite3.OperationalError):
-            await manager.execute_write(lambda conn: conn.execute('INVALID SQL'))
+            await manager.execute_write(lambda conn: conn.execute('INVALID SQL'), access_scope=MAINTENANCE)
 
         # Shutdown should still close all connections
         await manager.shutdown()
@@ -144,7 +145,9 @@ class TestResourceWarningDetection:
         write_tasks = []
         for i in range(5):
             task = asyncio.create_task(
-                manager.execute_write(lambda conn, idx=i: conn.execute(f'CREATE TABLE test_{idx} (id INTEGER)')),
+                manager.execute_write(
+                    lambda conn, idx=i: conn.execute(f'CREATE TABLE test_{idx} (id INTEGER)'), access_scope=MAINTENANCE,
+                ),
             )
             write_tasks.append(task)
 
@@ -181,7 +184,7 @@ class TestResourceWarningDetection:
         # Force circuit breaker to open by causing failures
         for _ in range(3):
             with contextlib.suppress(Exception):
-                await manager.execute_write(lambda conn: conn.execute('INVALID SQL'))
+                await manager.execute_write(lambda conn: conn.execute('INVALID SQL'), access_scope=MAINTENANCE)
 
         # Circuit should be open now
         assert manager.circuit_breaker.is_open()
@@ -211,6 +214,7 @@ class TestResourceWarningDetection:
         # Create schema
         await manager.execute_write(
             lambda conn: conn.execute('CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)'),
+            access_scope=MAINTENANCE,
         )
 
         # Create operation functions with explicit manager parameter
@@ -221,6 +225,7 @@ class TestResourceWarningDetection:
         async def write_op(mgr: StorageBackend, idx: int) -> None:
             await mgr.execute_write(
                 lambda conn: conn.execute('INSERT OR REPLACE INTO test (id, value) VALUES (?, ?)', (idx, f'value_{idx}')),
+                access_scope=MAINTENANCE,
             )
 
         # Run many concurrent operations
@@ -294,7 +299,7 @@ class TestResourceWarningDetection:
             async with manager.get_connection(readonly=True) as conn:
                 conn.execute('SELECT 1')
 
-            await manager.execute_write(lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'))
+            await manager.execute_write(lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'), access_scope=MAINTENANCE)
 
             # Shutdown
             await manager.shutdown()
@@ -355,13 +360,16 @@ class TestResourceWarningDetection:
         # Create schema
         await manager.execute_write(
             lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'),
+            access_scope=MAINTENANCE,
         )
 
         # Add many writes to queue without waiting
         write_futures = []
         for i in range(10):
             future = asyncio.create_task(
-                manager.execute_write(lambda conn, idx=i: conn.execute(f'INSERT INTO test VALUES ({idx})')),
+                manager.execute_write(
+                    lambda conn, idx=i: conn.execute(f'INSERT INTO test VALUES ({idx})'), access_scope=MAINTENANCE,
+                ),
             )
             write_futures.append(future)
 
@@ -397,6 +405,7 @@ class TestResourceWarningDetection:
 
         await manager.execute_write(
             lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'),
+            access_scope=MAINTENANCE,
         )
 
         started = threading.Event()
@@ -407,7 +416,7 @@ class TestResourceWarningDetection:
             conn.execute('INSERT INTO test VALUES (42)')
             return 42
 
-        caller = asyncio.create_task(manager.execute_write(slow_insert))
+        caller = asyncio.create_task(manager.execute_write(slow_insert, access_scope=MAINTENANCE))
         # Wait until the write is genuinely executing in the executor thread.
         for _ in range(200):
             if started.is_set():
@@ -465,7 +474,7 @@ class TestResourceWarningDetection:
         assert not processor.done(), 'processor must survive the done-future resolution'
 
         # With the breaker closed again the queue must still service writes.
-        result = await manager.execute_write(lambda conn: conn.execute('SELECT 42').fetchone()[0])
+        result = await manager.execute_write(lambda conn: conn.execute('SELECT 42').fetchone()[0], access_scope=MAINTENANCE)
         assert result == 42
 
         await manager.shutdown()
@@ -486,6 +495,7 @@ class TestResourceWarningDetection:
 
         await manager.execute_write(
             lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'),
+            access_scope=MAINTENANCE,
         )
 
         started = threading.Event()
@@ -495,7 +505,7 @@ class TestResourceWarningDetection:
             time.sleep(0.3)
             conn.execute('INSERT INTO test VALUES (1)')
 
-        caller = asyncio.create_task(manager.execute_write(slow_insert))
+        caller = asyncio.create_task(manager.execute_write(slow_insert, access_scope=MAINTENANCE))
         for _ in range(200):
             if started.is_set():
                 break

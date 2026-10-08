@@ -138,8 +138,8 @@ class TestContextRepositorySearch:
             text_content='Tagged 2',
         )
 
-        await repos.tags.store_tags(ctx_id1, ['important', 'review'])
-        await repos.tags.store_tags(ctx_id2, ['other'])
+        await repos.tags.store_tags(ctx_id1, ['important', 'review'], scope=LOCAL_SCOPE)
+        await repos.tags.store_tags(ctx_id2, ['other'], scope=LOCAL_SCOPE)
 
         rows, stats = await repos.context.search_contexts(tags=['important'], scope=LOCAL_SCOPE)
 
@@ -320,7 +320,7 @@ class TestContextRepositorySearch:
             text_content='counted entry',
             metadata=json.dumps({'project': 'p'}),
         )
-        await repos.tags.store_tags(context_id, ['x'])
+        await repos.tags.store_tags(context_id, ['x'], scope=LOCAL_SCOPE)
 
         _rows, stats = await repos.context.search_contexts(
             thread_id='count_thread',

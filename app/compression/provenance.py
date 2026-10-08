@@ -18,6 +18,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.compression.types import CompressionMetadata
 
 
@@ -169,7 +170,7 @@ async def insert_compression_metadata(
                 (meta.provider, meta.bits, meta.variant, meta.seed, meta.dim, meta.codebook_fingerprint),
             )
 
-        await backend.execute_write(_ins_sqlite)
+        await backend.execute_write(_ins_sqlite, access_scope=MAINTENANCE)
     else:
 
         async def _ins_pg(conn: asyncpg.Connection) -> None:
@@ -185,7 +186,7 @@ async def insert_compression_metadata(
                 meta.codebook_fingerprint,
             )
 
-        await backend.execute_write(cast(Any, _ins_pg))
+        await backend.execute_write(cast(Any, _ins_pg), access_scope=MAINTENANCE)
 
 
 # NOTE: there is intentionally no delete helper here. The --decompress CLI

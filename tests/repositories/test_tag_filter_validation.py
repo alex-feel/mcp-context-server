@@ -23,6 +23,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id_with_timestamp
 from app.migrations.fts import apply_fts_migration
 from app.repositories import RepositoryContainer
@@ -61,7 +62,7 @@ async def backend_and_repos(
                 (cid, 't', 'agent', 'text', 'needle body'),
             )
 
-        await backend.execute_write(_write)
+        await backend.execute_write(_write, access_scope=MAINTENANCE)
 
     try:
         yield backend, repos

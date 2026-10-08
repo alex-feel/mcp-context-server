@@ -29,6 +29,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
@@ -119,7 +120,7 @@ async def apply_tag_uniqueness_migration(backend: StorageBackend) -> None:
             else:
                 logger.debug('Tag uniqueness already enforced, no duplicates found (SQLite)')
 
-        await backend.execute_write(_migrate_sqlite)
+        await backend.execute_write(_migrate_sqlite, access_scope=MAINTENANCE)
 
     else:  # postgresql
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
@@ -134,4 +135,4 @@ async def apply_tag_uniqueness_migration(backend: StorageBackend) -> None:
             await execute_migration_ddl(conn, _CREATE_UNIQUE_TAG_INDEX_SQL, migration_timeout_s)
             logger.info('Enforced tag uniqueness on tags(context_entry_id, tag) (PostgreSQL)')
 
-        await backend.execute_write(cast(Any, _migrate_postgresql))
+        await backend.execute_write(cast(Any, _migrate_postgresql), access_scope=MAINTENANCE)

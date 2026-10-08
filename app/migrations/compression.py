@@ -19,6 +19,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.compression.provenance import read_compression_metadata
 from app.errors import ConfigurationError
 from app.errors import format_exception_message
@@ -366,7 +367,7 @@ async def _apply_compression_migration_with_backend(
         if already_applied:
             # Both tables exist; only the fingerprint column may be missing.
             # Skip the destructive table swap.
-            await manager.execute_write(cast(Any, _ensure_fingerprint_column))
+            await manager.execute_write(cast(Any, _ensure_fingerprint_column), access_scope=MAINTENANCE)
             logger.info(
                 'Compression migration: already applied for PostgreSQL, '
                 'codebook_fingerprint column ensured',
@@ -420,7 +421,7 @@ async def _apply_compression_migration_with_backend(
                 migration_timeout_s,
             )
 
-        await manager.execute_write(cast(Any, _apply_postgresql))
+        await manager.execute_write(cast(Any, _apply_postgresql), access_scope=MAINTENANCE)
         logger.info(
             'Applied compression migration for PostgreSQL: '
             'vec_context_embeddings_compressed + compression_metadata created',
@@ -434,7 +435,7 @@ async def _apply_compression_migration_with_backend(
         conn.executescript(migration_sql_template)
         ensure_sqlite_codebook_fingerprint_column(conn)
 
-    await manager.execute_write(_apply_sqlite)
+    await manager.execute_write(_apply_sqlite, access_scope=MAINTENANCE)
 
     if not already_applied:
         logger.info(

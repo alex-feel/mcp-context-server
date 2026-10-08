@@ -30,6 +30,7 @@ from numpy.typing import NDArray
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository import EmbeddingRepository
@@ -223,6 +224,7 @@ async def _seed_three_entries(
                 ),
             ],
             model='test-model',
+            scope=LOCAL_SCOPE,
         )
     return cids[0], cids[1], cids[2], query
 
@@ -319,6 +321,7 @@ async def test_search_compressed_thread_filter(
             ),
         ],
         model='test-model',
+        scope=LOCAL_SCOPE,
     )
 
     results, stats = await repo.search_compressed(
@@ -429,7 +432,7 @@ async def test_search_compressed_offloads_large_candidate_decode(
         ChunkEmbedding(embedding=query.tolist(), start_index=i, end_index=i + 1, payload=payload)
         for i in range(n)
     ]
-    await repo.store_chunked(cid, chunks, model='test-model')
+    await repo.store_chunked(cid, chunks, model='test-model', scope=LOCAL_SCOPE)
 
     seen: dict[str, bool] = {}
     offloaded: list[str] = []
@@ -528,7 +531,7 @@ async def _seed_identical_compressed_entries(
                 (entry_id, 't-tied', 'user', 'text', 'identical text'),
             )
 
-    await backend.execute_write(_insert)
+    await backend.execute_write(_insert, access_scope=MAINTENANCE)
 
     for entry_id in _TIE_INSERT_ORDER:
         await repo.store_chunked(
@@ -542,6 +545,7 @@ async def _seed_identical_compressed_entries(
                 ),
             ],
             model='test-model',
+            scope=LOCAL_SCOPE,
         )
     return vec.astype(np.float32)
 
@@ -634,6 +638,7 @@ async def test_search_compressed_best_chunk_tie_resolves_on_start_index(
             ChunkEmbedding(embedding=vec.tolist(), start_index=0, end_index=9, payload=payload),
         ],
         model='test-model',
+        scope=LOCAL_SCOPE,
     )
 
     results, _ = await repo.search_compressed(query_embedding=vec.tolist(), limit=10, scope=LOCAL_SCOPE)

@@ -8,6 +8,7 @@ import asyncpg
 import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from tests.helpers import rebind_package_settings
 
 
@@ -22,7 +23,7 @@ class TestResolveProvisionVector:
 
     @staticmethod
     def _backend() -> PostgreSQLBackend:
-        return PostgreSQLBackend(connection_string='postgresql://u:p@localhost:5432/db')
+        return PostgreSQLBackend(connection_string='postgresql://u:p@localhost:5432/db', profile=UnboundProfile())
 
     @staticmethod
     def _settings(*, compression: bool, generation: bool) -> MagicMock:
@@ -165,6 +166,7 @@ class TestVectorProvisionProbeFaultScope:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:wrong@localhost:5432/testdb',
+            profile=UnboundProfile(),
         )
         monkeypatch.setattr(
             'asyncpg.connect',

@@ -27,6 +27,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.migrations.version import apply_version_migration
 
@@ -111,7 +112,7 @@ class TestVersionMigration:
                 (new_id,),
             )
 
-        await backend_pre_migration.execute_write(_insert)
+        await backend_pre_migration.execute_write(_insert, access_scope=MAINTENANCE)
 
         def _read_version(conn: sqlite3.Connection) -> int | None:
             cursor = conn.execute(
@@ -139,7 +140,7 @@ class TestVersionMigration:
                 (legacy_id,),
             )
 
-        await backend_pre_migration.execute_write(_insert_legacy)
+        await backend_pre_migration.execute_write(_insert_legacy, access_scope=MAINTENANCE)
 
         await apply_version_migration(backend_pre_migration)
 

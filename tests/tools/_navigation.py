@@ -8,6 +8,7 @@ from typing import Any
 from typing import cast
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id_with_timestamp
 from app.tools.navigation import grep_context
 from app.tools.navigation import navigate_context
@@ -33,7 +34,7 @@ async def store_entry(
             (cid, thread_id, 'agent', 'text', text, owner),
         )
 
-    await backend.execute_write(_write)
+    await backend.execute_write(_write, access_scope=MAINTENANCE)
     return cid
 
 

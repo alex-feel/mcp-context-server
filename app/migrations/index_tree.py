@@ -16,6 +16,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
@@ -99,7 +100,7 @@ async def _apply_sqlite(backend: StorageBackend) -> None:
         conn.execute(_CREATE_TABLE_SQLITE)
         conn.execute(_CREATE_INDEX_SQLITE)
 
-    await backend.execute_write(_apply)
+    await backend.execute_write(_apply, access_scope=MAINTENANCE)
     logger.info('Applied index_tree migration for SQLite: context_index_nodes ready')
 
 
@@ -118,7 +119,7 @@ async def _apply_postgresql(backend: StorageBackend) -> None:
         await execute_migration_ddl(conn, _CREATE_TABLE_POSTGRESQL, migration_timeout_s)
         await execute_migration_ddl(conn, _CREATE_INDEX_POSTGRESQL, migration_timeout_s)
 
-    await backend.execute_write(cast(Any, _apply))
+    await backend.execute_write(cast(Any, _apply), access_scope=MAINTENANCE)
     logger.info('Applied index_tree migration for PostgreSQL: context_index_nodes ready')
 
 

@@ -32,6 +32,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.cli._backend import make_backend
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
@@ -181,7 +182,7 @@ async def _reassign(backend: StorageBackend, from_principal: str, to_principal: 
             )
             return cursor.rowcount
 
-        return await backend.execute_write(_update_sqlite)
+        return await backend.execute_write(_update_sqlite, access_scope=MAINTENANCE)
 
     async def _update_pg(conn: asyncpg.Connection) -> int:
         result = await conn.execute(
@@ -191,7 +192,7 @@ async def _reassign(backend: StorageBackend, from_principal: str, to_principal: 
         )
         return int(result.split()[-1]) if result else 0
 
-    reassigned: int = await backend.execute_write(cast(Any, _update_pg))
+    reassigned: int = await backend.execute_write(cast(Any, _update_pg), access_scope=MAINTENANCE)
     return reassigned
 
 

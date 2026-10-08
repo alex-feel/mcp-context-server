@@ -7,6 +7,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.cli.migrate_compression import storage
 from app.cli.migrate_compression.storage import fp32_blob_to_list_sqlite
 from app.cli.migrate_compression.storage import make_2d_array
@@ -78,7 +79,7 @@ async def _execute_compress_sqlite(
     dim = settings.embedding.dim
     batch_size = storage.MIGRATION_BATCH_SIZE
 
-    async with backend.begin_transaction() as txn:
+    async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
         conn = cast(sqlite3.Connection, txn.connection)
 
         # Create the compressed tables inline (we cannot use the
@@ -267,7 +268,7 @@ async def _execute_compress_postgresql(
     batch_size = storage.MIGRATION_BATCH_SIZE
     migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
 
-    async with backend.begin_transaction() as txn:
+    async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
         conn = cast('asyncpg.Connection', txn.connection)
         # Raise this transaction's statement budget so the heavy vec-table DDL below
         # (DROP TABLE / DROP INDEX) and the streamed batch reads run under the migration

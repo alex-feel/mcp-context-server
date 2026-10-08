@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from tests.conftest import requires_sqlite_vec
 
 
@@ -151,7 +152,7 @@ class TestEmbeddingStorageDecoupledFromSearchTool:
                             cursor = conn.execute('SELECT COUNT(*) FROM vec_context_embeddings')
                             return int(cursor.fetchone()[0])
 
-                        stored_count = await backend.execute_write(_store_embedding)
+                        stored_count = await backend.execute_write(_store_embedding, access_scope=MAINTENANCE)
                         assert stored_count == 1, 'store into vec_context_embeddings should succeed'
                     finally:
                         await backend.shutdown()

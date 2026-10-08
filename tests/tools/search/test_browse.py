@@ -12,6 +12,7 @@ import pytest
 import app.startup
 import app.tools
 from app.access_scope import AccessScope
+from app.backends.base import MAINTENANCE
 from tests.helpers import as_principal
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
@@ -359,7 +360,7 @@ class TestSearchContext:
                     ('', 'null_test'),
                 )
 
-            await backend.execute_write(update_text_content)
+            await backend.execute_write(update_text_content, access_scope=MAINTENANCE)
         else:
             # PostgreSQL uses async connection
             async with backend.get_connection() as conn:

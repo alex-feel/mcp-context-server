@@ -61,6 +61,7 @@ from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.compression.factory import get_cached_compression_provider
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -337,9 +338,13 @@ class ScopedDb:
             raise ValueError(f'entry {label!r} merged into the latest entry of its thread and source')
         self.ids[label] = context_id
 
-        await self.repos.tags.store_tags(context_id, list(tags if tags is not None else ('seed', f'owner-{owner}')))
+        await self.repos.tags.store_tags(
+            context_id, list(tags if tags is not None else ('seed', f'owner-{owner}')), scope=MAINTENANCE,
+        )
         if image:
-            await self.repos.images.store_images(context_id, [{'data': _PNG_BASE64, 'mime_type': 'image/png'}])
+            await self.repos.images.store_images(
+                context_id, [{'data': _PNG_BASE64, 'mime_type': 'image/png'}], scope=MAINTENANCE,
+            )
         if angle is not None:
             await self._store_embedding(context_id, body, vector_at(angle))
         if index_node:
@@ -347,7 +352,7 @@ class ScopedDb:
                 node_id=label, level=1, ordinal=1, title=label,
                 node_summary=f'Summary of {label}.', char_start=0, char_end=len(body),
             )
-            await self.repos.index_nodes.replace_nodes_for_context(context_id, [node])
+            await self.repos.index_nodes.replace_nodes_for_context(context_id, [node], scope=MAINTENANCE)
         for grant in grants:
             await insert_grant(self.backend, context_id, grant.principal_type, grant.principal_id, grant.permission, owner)
         return context_id
@@ -359,7 +364,7 @@ class ScopedDb:
             provider = await get_cached_compression_provider()
             payload = provider.encode_sync(np.asarray([vector], dtype=np.float32))
         chunk = ChunkEmbedding(embedding=vector, start_index=0, end_index=len(text), payload=payload)
-        await self.repos.embeddings.store_chunked(context_id, [chunk], model=get_settings().embedding.model)
+        await self.repos.embeddings.store_chunked(context_id, [chunk], model=get_settings().embedding.model, scope=MAINTENANCE)
 
     async def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[tuple[object, ...]]:
         """Run one read statement on either backend.
@@ -402,7 +407,7 @@ class ScopedDb:
             def _execute_sqlite(conn: sqlite3.Connection) -> None:
                 conn.execute(sql, tuple(params))
 
-            await self.backend.execute_write(_execute_sqlite)
+            await self.backend.execute_write(_execute_sqlite, access_scope=MAINTENANCE)
             return
 
         native_sql = _numbered_placeholders(sql)
@@ -410,7 +415,7 @@ class ScopedDb:
         async def _execute_postgresql(conn: 'asyncpg.Connection') -> None:
             await conn.execute(native_sql, *params)
 
-        await self.backend.execute_write(_execute_postgresql)
+        await self.backend.execute_write(_execute_postgresql, access_scope=MAINTENANCE)
 
     async def labels_selected_by(self, scope: Scope, mode: AccessMode = AccessMode.READ) -> tuple[str, ...]:
         """Return the labels of the entries the access predicate admits for ``scope`` in ``mode``.

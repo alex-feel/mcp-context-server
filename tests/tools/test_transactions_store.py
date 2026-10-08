@@ -76,7 +76,7 @@ class TestExecuteStoreInTransaction:
             tags=['tag1', 'tag2'], validated_images=[],
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.tags.store_tags.assert_called_once_with('42', ['tag1', 'tag2'], txn=mock_txn)
+        mock_repos.tags.store_tags.assert_called_once_with('42', ['tag1', 'tag2'], txn=mock_txn, scope=LOCAL_SCOPE)
         mock_repos.tags.replace_tags_for_context.assert_not_called()
 
     @pytest.mark.asyncio
@@ -94,7 +94,7 @@ class TestExecuteStoreInTransaction:
             tags=['tag1'], validated_images=[],
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.tags.replace_tags_for_context.assert_called_once_with(42, ['tag1'], txn=mock_txn)
+        mock_repos.tags.replace_tags_for_context.assert_called_once_with(42, ['tag1'], txn=mock_txn, scope=LOCAL_SCOPE)
         mock_repos.tags.store_tags.assert_not_called()
 
     @pytest.mark.asyncio
@@ -117,7 +117,7 @@ class TestExecuteStoreInTransaction:
             tags=[], validated_images=[],
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.tags.replace_tags_for_context.assert_called_once_with('42', [], txn=mock_txn)
+        mock_repos.tags.replace_tags_for_context.assert_called_once_with('42', [], txn=mock_txn, scope=LOCAL_SCOPE)
         mock_repos.tags.store_tags.assert_not_called()
 
     @pytest.mark.asyncio
@@ -153,7 +153,7 @@ class TestExecuteStoreInTransaction:
             tags=None, validated_images=[], images_provided=True,
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.images.replace_images_for_context.assert_called_once_with('42', [], txn=mock_txn)
+        mock_repos.images.replace_images_for_context.assert_called_once_with('42', [], txn=mock_txn, scope=LOCAL_SCOPE)
         mock_repos.images.store_images.assert_not_called()
         # Providing images (even []) means content_type is NOT preserved.
         dedup_kwargs = mock_repos.context.store_with_deduplication.call_args.kwargs
@@ -359,7 +359,7 @@ class TestExecuteStoreInTransaction:
             tags=None, validated_images=images,
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.images.store_images.assert_called_once_with('42', images, txn=mock_txn)
+        mock_repos.images.store_images.assert_called_once_with('42', images, txn=mock_txn, scope=LOCAL_SCOPE)
         mock_repos.images.replace_images_for_context.assert_not_called()
 
     @pytest.mark.asyncio
@@ -390,9 +390,9 @@ class TestExecuteStoreInTransaction:
         """A fresh INSERT records the scope's principal as the grantor; a dedup UPDATE writes no grants."""
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', was_updated))
         mock_repos.grants.store_group_read_grants = AsyncMock()
+        bob = AccessScope('bob', frozenset({'team-x'}))
         await execute_store_in_transaction(
-            mock_repos, mock_txn,
-            scope=AccessScope('bob', frozenset({'team-x'})),
+            mock_repos, mock_txn, scope=bob,
             visibility='private',
             author_group_grants=frozenset({'team-x'}),
             thread_id='t', source='user', content_type='text',
@@ -403,5 +403,5 @@ class TestExecuteStoreInTransaction:
         assert mock_repos.grants.store_group_read_grants.await_count == expected_grants
         if expected_grants:
             mock_repos.grants.store_group_read_grants.assert_awaited_once_with(
-                '42', frozenset({'team-x'}), granted_by='bob', txn=mock_txn,
+                '42', frozenset({'team-x'}), granted_by='bob', txn=mock_txn, scope=bob,
             )

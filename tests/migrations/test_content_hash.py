@@ -21,6 +21,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.migrations.access_control import apply_access_control_migration
 from app.migrations.content_hash import apply_content_hash_migration
@@ -456,7 +457,7 @@ class TestNullHashFallback:
             )
             return legacy_id
 
-        await backend_pre_migration.execute_write(_insert_without_hash)
+        await backend_pre_migration.execute_write(_insert_without_hash, access_scope=MAINTENANCE)
         assert len(legacy_id) == 32
 
         # Verify the row has NULL content_hash
@@ -496,7 +497,7 @@ class TestNullHashFallback:
             )
             return legacy_id
 
-        await backend_pre_migration.execute_write(_insert_without_hash)
+        await backend_pre_migration.execute_write(_insert_without_hash, access_scope=MAINTENANCE)
 
         # check_latest_is_duplicate should find the match via text fallback
         result = await repos_pre_migration.context.check_latest_is_duplicate(
@@ -520,7 +521,7 @@ class TestNullHashFallback:
                 (legacy_id,),
             )
 
-        await backend_pre_migration.execute_write(_insert_without_hash)
+        await backend_pre_migration.execute_write(_insert_without_hash, access_scope=MAINTENANCE)
 
         result = await repos_pre_migration.context.check_latest_is_duplicate(
             thread_id='t1', source='user', text_content='Different text', scope=LOCAL_SCOPE,

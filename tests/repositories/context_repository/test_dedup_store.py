@@ -577,7 +577,7 @@ class TestDeduplication:
             thread_id='test-thread', source='user', content_type='text',
             text_content='Tag test content', metadata=None,
         )
-        await repos.tags.store_tags(context_id, ['a', 'b'])
+        await repos.tags.store_tags(context_id, ['a', 'b'], scope=LOCAL_SCOPE)
         # Dedup with was_updated=True
         context_id2, was_updated = await repos.context.store_with_deduplication(
             scope=LOCAL_SCOPE,
@@ -586,7 +586,7 @@ class TestDeduplication:
             text_content='Tag test content', metadata=None,
         )
         assert was_updated is True
-        await repos.tags.replace_tags_for_context(context_id, ['c', 'd'])
+        await repos.tags.replace_tags_for_context(context_id, ['c', 'd'], scope=LOCAL_SCOPE)
         tags = await repos.tags.get_tags_for_context(context_id)
         assert sorted(tags) == ['c', 'd']
 
@@ -598,7 +598,7 @@ class TestDeduplication:
             thread_id='test-thread', source='user', content_type='text',
             text_content='Tag preserve test', metadata=None,
         )
-        await repos.tags.store_tags(context_id, ['existing'])
+        await repos.tags.store_tags(context_id, ['existing'], scope=LOCAL_SCOPE)
         # Dedup fires but no tag operation called (simulates tags=None)
         context_id2, was_updated = await repos.context.store_with_deduplication(
             scope=LOCAL_SCOPE,

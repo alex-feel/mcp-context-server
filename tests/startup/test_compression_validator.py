@@ -25,6 +25,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.errors import ConfigurationError
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
@@ -477,7 +478,7 @@ async def test_validation_codebook_fingerprint_mismatch_raises(
             ('0' * 64,),
         )
 
-    await backend.execute_write(_tamper)
+    await backend.execute_write(_tamper, access_scope=MAINTENANCE)
 
     with pytest.raises(ConfigurationError) as exc_info:
         await validate_compression_provenance(backend=backend)
@@ -502,7 +503,7 @@ async def test_validation_null_fingerprint_warns_not_raises(
             'UPDATE compression_metadata SET codebook_fingerprint = NULL WHERE id = 1',
         )
 
-    await backend.execute_write(_null_fingerprint)
+    await backend.execute_write(_null_fingerprint, access_scope=MAINTENANCE)
 
     import logging as logging_module
     caplog.set_level(logging_module.WARNING)
@@ -566,7 +567,7 @@ async def test_generation_disabled_with_populated_fp32_and_no_row_raises(
             "VALUES ('abc', x'00')",
         )
 
-    await backend.execute_write(_seed_fp32)
+    await backend.execute_write(_seed_fp32, access_scope=MAINTENANCE)
 
     _set_compression_env(monkeypatch)
     monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
@@ -627,7 +628,7 @@ async def test_disable_direction_guard_refuses_populated_before_provisioning(
             "VALUES (1, 'turboquant', 4, 'ip', 0, 1024, NULL)",
         )
 
-    await backend.execute_write(_seed_provenance)
+    await backend.execute_write(_seed_provenance, access_scope=MAINTENANCE)
 
     # Flip compression OFF: the guard must refuse (exit 78) with a --decompress hint.
     disable_compression(monkeypatch)

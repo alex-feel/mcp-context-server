@@ -9,6 +9,7 @@ from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.access_scope import build_readable_parent_predicate
+from app.backends.base import BackendAccess
 from app.repositories.base import BaseRepository
 from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
 
@@ -237,7 +238,7 @@ class FtsMaintenanceMixin(BaseRepository):
         """
         return desired_sqlite_fts_tokenizer(language)
 
-    async def migrate_tokenizer(self, new_tokenizer: str) -> dict[str, Any]:
+    async def migrate_tokenizer(self, new_tokenizer: str, *, scope: BackendAccess) -> dict[str, Any]:
         """Migrate SQLite FTS5 to a new tokenizer (SQLite only).
 
         This operation drops the existing FTS5 virtual table and recreates it
@@ -246,6 +247,7 @@ class FtsMaintenanceMixin(BaseRepository):
 
         Args:
             new_tokenizer: The new tokenizer to use (e.g., 'porter unicode61' or 'unicode61')
+            scope: The identity the migration runs as.
 
         Returns:
             Dictionary with migration results
@@ -322,9 +324,9 @@ class FtsMaintenanceMixin(BaseRepository):
                 'entries_migrated': entry_count,
             }
 
-        return await self.backend.execute_write(_migrate_tokenizer)
+        return await self.backend.execute_write(_migrate_tokenizer, access_scope=scope)
 
-    async def migrate_language(self, new_language: str) -> dict[str, Any]:
+    async def migrate_language(self, new_language: str, *, scope: BackendAccess) -> dict[str, Any]:
         """Migrate PostgreSQL tsvector column to a new language (PostgreSQL only).
 
         This operation drops the existing text_search_vector column (and its GIN index)
@@ -333,6 +335,7 @@ class FtsMaintenanceMixin(BaseRepository):
 
         Args:
             new_language: The new language for tsvector (e.g., 'english', 'german')
+            scope: The identity the migration runs as.
 
         Returns:
             Dictionary with migration results
@@ -402,4 +405,4 @@ class FtsMaintenanceMixin(BaseRepository):
                 'entries_migrated': entry_count,
             }
 
-        return await self.backend.execute_write(cast(Any, _migrate_language))
+        return await self.backend.execute_write(cast(Any, _migrate_language), access_scope=scope)

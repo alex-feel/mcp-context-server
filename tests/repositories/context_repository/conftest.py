@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest_asyncio
 
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.backends.base import StorageBackend
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -32,7 +33,7 @@ async def context_test_db(tmp_path: Path) -> AsyncGenerator[StorageBackend, None
     def _init_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(schema_sql)
 
-    await backend.execute_write(_init_schema)
+    await backend.execute_write(_init_schema, access_scope=MAINTENANCE)
 
     yield backend
 

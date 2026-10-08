@@ -335,7 +335,7 @@ class ContextDedupMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_store_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_store_sqlite)
+            return await self.backend.execute_write(_store_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _store_postgresql(conn: 'asyncpg.Connection') -> tuple[str, bool]:
@@ -385,7 +385,7 @@ class ContextDedupMixin(BaseRepository):
 
         if txn:
             return await _store_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(_store_postgresql)
+        return await self.backend.execute_write(_store_postgresql, access_scope=scope)
 
     async def check_latest_is_duplicate(
         self,

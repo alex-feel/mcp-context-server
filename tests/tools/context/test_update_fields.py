@@ -112,7 +112,7 @@ class TestUpdateContext:
             # Verify tags were replaced
             from unittest.mock import ANY
             mock_repositories.tags.replace_tags_for_context.assert_called_once_with(
-                '0190abcdef1234567890abcd00000315', tags, txn=ANY,
+                '0190abcdef1234567890abcd00000315', tags, txn=ANY, scope=LOCAL_WRITE_SCOPE,
             )
 
     @pytest.mark.asyncio
@@ -189,7 +189,7 @@ class TestUpdateContext:
             # Verify images were replaced and content_type updated
             from unittest.mock import ANY
             mock_repositories.images.replace_images_for_context.assert_called_once_with(
-                '0190abcdef1234567890abcd0000006f', images, txn=ANY,
+                '0190abcdef1234567890abcd0000006f', images, txn=ANY, scope=LOCAL_WRITE_SCOPE,
             )
             mock_repositories.context.update_content_type.assert_called_once_with(
                 '0190abcdef1234567890abcd0000006f', 'multimodal', scope=LOCAL_WRITE_SCOPE, txn=ANY,
@@ -215,7 +215,7 @@ class TestUpdateContext:
             # Verify images were cleared and content_type set to text
             from unittest.mock import ANY
             mock_repositories.images.replace_images_for_context.assert_called_once_with(
-                '0190abcdef1234567890abcd000000de', [], txn=ANY,
+                '0190abcdef1234567890abcd000000de', [], txn=ANY, scope=LOCAL_WRITE_SCOPE,
             )
             mock_repositories.context.update_content_type.assert_called_once_with(
                 '0190abcdef1234567890abcd000000de', 'text', scope=LOCAL_WRITE_SCOPE, txn=ANY,

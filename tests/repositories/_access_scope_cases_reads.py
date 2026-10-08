@@ -210,7 +210,7 @@ async def _access_rows(
 ) -> tuple[AccessRow, ...]:
     """Return ``(label, can_write, is_owner)`` for every id ``probe_ids`` reports, in seed order."""
     if in_transaction:
-        async with db.backend.begin_transaction() as txn:
+        async with db.backend.begin_transaction(access_scope=scope) as txn:
             access = await db.repos.context.probe_ids(list(context_ids), scope=scope, txn=txn)
     else:
         access = await db.repos.context.probe_ids(list(context_ids), scope=scope)

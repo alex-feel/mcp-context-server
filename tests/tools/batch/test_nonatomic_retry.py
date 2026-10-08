@@ -25,7 +25,8 @@ class TestNonAtomicBatchRetry:
         real_txn.backend_type = 'sqlite'
 
         @asynccontextmanager
-        async def failing_begin_transaction():
+        async def failing_begin_transaction(*, access_scope):
+            _ = access_scope
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -76,7 +77,8 @@ class TestNonAtomicBatchRetry:
         real_txn.backend_type = 'sqlite'
 
         @asynccontextmanager
-        async def failing_begin_transaction():
+        async def failing_begin_transaction(*, access_scope):
+            _ = access_scope
             nonlocal call_count
             call_count += 1
             if call_count == 1:

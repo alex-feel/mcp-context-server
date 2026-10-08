@@ -7,6 +7,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.cli.migrate_compression.storage import raise_pg_migration_budget
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations._pg_ddl import fetchval_migration
@@ -51,7 +52,7 @@ async def execute_decompress_empty(backend: StorageBackend) -> None:
             dropped.
     """
     if backend.backend_type == 'sqlite':
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
             conn = cast(sqlite3.Connection, txn.connection)
             conn.execute('BEGIN IMMEDIATE')
             live_row = conn.execute(
@@ -71,7 +72,7 @@ async def execute_decompress_empty(backend: StorageBackend) -> None:
             conn.execute('DELETE FROM compression_metadata WHERE id = 1')
     else:
         migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
             pg_conn = cast('asyncpg.Connection', txn.connection)
             await raise_pg_migration_budget(pg_conn, migration_timeout_s)
             await execute_migration_ddl(

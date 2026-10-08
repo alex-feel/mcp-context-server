@@ -36,6 +36,7 @@ import numpy as np
 
 from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import Scope
+from app.backends.base import MAINTENANCE
 from app.backends.sqlite_backend import SQLiteBackend
 from app.compression.factory import get_cached_compression_provider
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -366,7 +367,7 @@ async def _store_chunks(db: ScopedDb, context_id: str, label: str, count: int) -
         ChunkEmbedding(embedding=vector, start_index=0, end_index=len(text), payload=payload)
         for vector, payload in zip(vectors, payloads, strict=True)
     ]
-    await db.repos.embeddings.store_chunked(context_id, chunks, model=get_settings().embedding.model)
+    await db.repos.embeddings.store_chunked(context_id, chunks, model=get_settings().embedding.model, scope=MAINTENANCE)
 
 
 async def _add_embedding_rows(db: ScopedDb) -> None:
@@ -428,7 +429,7 @@ async def _add_node_rows(db: ScopedDb) -> None:
         )
         for index in range(_A6_NODES)
     ]
-    await db.repos.index_nodes.replace_nodes_for_context(context_id, nodes)
+    await db.repos.index_nodes.replace_nodes_for_context(context_id, nodes, scope=MAINTENANCE)
     await db.add_entry('a6_public_bare', owner='alice', visibility='public')
 
 

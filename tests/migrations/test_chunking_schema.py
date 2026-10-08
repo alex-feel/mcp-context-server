@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+
 
 class TestChunkingMigrationSQLFiles:
     """Tests for chunking migration SQL file content."""
@@ -153,7 +155,7 @@ class TestChunkingMigrationIntegration:
                         VALUES (1, 100), (1, 101), (1, 102)
                     ''')
 
-                await backend.execute_write(_insert_multiple_chunks)
+                await backend.execute_write(_insert_multiple_chunks, access_scope=MAINTENANCE)
 
                 # Verify multiple chunks exist for same context_id
                 def _count_chunks(conn: sqlite3.Connection) -> int:
@@ -229,14 +231,14 @@ class TestChunkingMigrationIntegration:
                         VALUES (1, 100), (1, 101)
                     ''')
 
-                await backend.execute_write(_insert_chunks)
+                await backend.execute_write(_insert_chunks, access_scope=MAINTENANCE)
 
                 # Delete the context entry
                 def _delete_context(conn: sqlite3.Connection) -> None:
                     conn.execute('PRAGMA foreign_keys = ON')
                     conn.execute('DELETE FROM context_entries WHERE id = 1')
 
-                await backend.execute_write(_delete_context)
+                await backend.execute_write(_delete_context, access_scope=MAINTENANCE)
 
                 # Verify chunks are also deleted
                 def _count_chunks(conn: sqlite3.Connection) -> int:

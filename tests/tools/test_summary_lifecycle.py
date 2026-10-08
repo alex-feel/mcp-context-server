@@ -17,6 +17,7 @@ from fastmcp.exceptions import ToolError
 
 import app.tools
 import app.tools._generation as generation_module
+from app.backends.base import MAINTENANCE
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.startup import ensure_repositories
@@ -36,7 +37,8 @@ def _create_mock_repositories() -> MagicMock:
     mock_backend = MagicMock()
 
     @asynccontextmanager
-    async def mock_begin_transaction():
+    async def mock_begin_transaction(*, access_scope):
+        _ = access_scope
         txn = MagicMock()
         txn.backend_type = 'sqlite'
         txn.connection = MagicMock()
@@ -380,7 +382,7 @@ class TestSummaryIntegration:
                     (context_id,),
                 )
 
-            await repos.context.backend.execute_write(_clear_summary)
+            await repos.context.backend.execute_write(_clear_summary, access_scope=MAINTENANCE)
 
         # Now store duplicate - should detect duplicate but find no summary, so generate one
         mock_provider2 = MagicMock()

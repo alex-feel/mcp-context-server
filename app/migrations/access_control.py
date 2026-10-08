@@ -32,6 +32,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.errors import ConfigurationError
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
@@ -188,7 +189,7 @@ async def _apply_sqlite(backend: StorageBackend, default_principal: str) -> None
         for statement in (*_INDEX_STATEMENTS, *_SQLITE_COVERING_INDEX_STATEMENTS):
             conn.execute(statement)
 
-    await backend.execute_write(_migrate)
+    await backend.execute_write(_migrate, access_scope=MAINTENANCE)
     logger.info('Applied access-control migration for SQLite')
 
 
@@ -219,5 +220,5 @@ async def _apply_postgresql(backend: StorageBackend, default_principal: str) -> 
         for statement in _INDEX_STATEMENTS:
             await execute_migration_ddl(conn, statement, migration_timeout_s)
 
-    await backend.execute_write(cast(Any, _migrate))
+    await backend.execute_write(cast(Any, _migrate), access_scope=MAINTENANCE)
     logger.info('Applied access-control migration for PostgreSQL')

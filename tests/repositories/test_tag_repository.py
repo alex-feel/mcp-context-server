@@ -44,7 +44,7 @@ class TestTagRepository:
         )
 
         # Store tags
-        await repos.tags.store_tags(context_id, ['python', 'testing', 'pytest'])
+        await repos.tags.store_tags(context_id, ['python', 'testing', 'pytest'], scope=LOCAL_SCOPE)
 
         # Retrieve and verify
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -73,7 +73,7 @@ class TestTagRepository:
         )
 
         # Store tags with mixed case
-        await repos.tags.store_tags(context_id, ['Python', 'TESTING', 'PyTest'])
+        await repos.tags.store_tags(context_id, ['Python', 'TESTING', 'PyTest'], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert 'python' in tags
@@ -103,7 +103,7 @@ class TestTagRepository:
         )
 
         # Store tags with whitespace
-        await repos.tags.store_tags(context_id, ['  python  ', '\ttesting\n', ' pytest '])
+        await repos.tags.store_tags(context_id, ['  python  ', '\ttesting\n', ' pytest '], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert 'python' in tags
@@ -130,7 +130,7 @@ class TestTagRepository:
         )
 
         # Store tags including empty ones
-        await repos.tags.store_tags(context_id, ['python', '', '   ', 'testing'])
+        await repos.tags.store_tags(context_id, ['python', '', '   ', 'testing'], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert len(tags) == 2
@@ -179,14 +179,14 @@ class TestTagRepository:
         )
 
         # Store initial tags
-        await repos.tags.store_tags(context_id, ['old-tag-1', 'old-tag-2', 'old-tag-3'])
+        await repos.tags.store_tags(context_id, ['old-tag-1', 'old-tag-2', 'old-tag-3'], scope=LOCAL_SCOPE)
 
         # Verify initial tags
         tags = await repos.tags.get_tags_for_context(context_id)
         assert len(tags) == 3
 
         # Replace with new tags
-        await repos.tags.replace_tags_for_context(context_id, ['new-tag-1', 'new-tag-2'])
+        await repos.tags.replace_tags_for_context(context_id, ['new-tag-1', 'new-tag-2'], scope=LOCAL_SCOPE)
 
         # Verify replacement
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -215,10 +215,10 @@ class TestTagRepository:
         )
 
         # Store tags
-        await repos.tags.store_tags(context_id, ['tag-1', 'tag-2'])
+        await repos.tags.store_tags(context_id, ['tag-1', 'tag-2'], scope=LOCAL_SCOPE)
 
         # Replace with empty list
-        await repos.tags.replace_tags_for_context(context_id, [])
+        await repos.tags.replace_tags_for_context(context_id, [], scope=LOCAL_SCOPE)
 
         # Verify all deleted
         tags = await repos.tags.get_tags_for_context(context_id)
@@ -244,7 +244,7 @@ class TestTagRepository:
         )
 
         # Store tags in random order
-        await repos.tags.store_tags(context_id, ['zebra', 'apple', 'monkey', 'banana'])
+        await repos.tags.store_tags(context_id, ['zebra', 'apple', 'monkey', 'banana'], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
 
@@ -272,7 +272,7 @@ class TestTagRepository:
 
         # Store tags with special characters
         special_tags = ['c++', 'c#', '.net', 'node.js', '@typescript']
-        await repos.tags.store_tags(context_id, special_tags)
+        await repos.tags.store_tags(context_id, special_tags, scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert len(tags) == 5
@@ -304,7 +304,7 @@ class TestTagRepository:
 
         # Store Unicode tags
         unicode_tags = ['python', 'pythonic', 'test', 'example']
-        await repos.tags.store_tags(context_id, unicode_tags)
+        await repos.tags.store_tags(context_id, unicode_tags, scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert len(tags) == 4
@@ -334,8 +334,8 @@ class TestTagRepository:
             text_content='Test entry for duplicate tags',
         )
 
-        await repos.tags.store_tags(context_id, ['python', 'testing'])
-        await repos.tags.store_tags(context_id, ['python', 'testing'])
+        await repos.tags.store_tags(context_id, ['python', 'testing'], scope=LOCAL_SCOPE)
+        await repos.tags.store_tags(context_id, ['python', 'testing'], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert tags == ['python', 'testing']
@@ -366,8 +366,8 @@ class TestTagRepository:
             text_content='Second entry',
         )
 
-        await repos.tags.store_tags(ctx_id1, ['shared-tag', 'unique-a'])
-        await repos.tags.store_tags(ctx_id2, ['shared-tag', 'unique-b'])
+        await repos.tags.store_tags(ctx_id1, ['shared-tag', 'unique-a'], scope=LOCAL_SCOPE)
+        await repos.tags.store_tags(ctx_id2, ['shared-tag', 'unique-b'], scope=LOCAL_SCOPE)
 
         tags1 = await repos.tags.get_tags_for_context(ctx_id1)
         tags2 = await repos.tags.get_tags_for_context(ctx_id2)
@@ -397,8 +397,8 @@ class TestTagRepository:
             text_content='Test entry for replace normalization',
         )
 
-        await repos.tags.store_tags(context_id, ['original'])
-        await repos.tags.replace_tags_for_context(context_id, ['UPPER', 'MiXeD', '  spaced  '])
+        await repos.tags.store_tags(context_id, ['original'], scope=LOCAL_SCOPE)
+        await repos.tags.replace_tags_for_context(context_id, ['UPPER', 'MiXeD', '  spaced  '], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert 'original' not in tags
@@ -440,7 +440,7 @@ class TestTagDeduplicationWithinOneWrite:
             metadata=None,
         )
 
-        await repos.tags.store_tags(context_id, ['alpha', 'beta', 'alpha', 'beta', 'alpha'])
+        await repos.tags.store_tags(context_id, ['alpha', 'beta', 'alpha', 'beta', 'alpha'], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert tags == ['alpha', 'beta']
@@ -463,7 +463,7 @@ class TestTagDeduplicationWithinOneWrite:
             metadata=None,
         )
 
-        await repos.tags.store_tags(context_id, ['Tag', 'tag', 'TAG', '  tag  '])
+        await repos.tags.store_tags(context_id, ['Tag', 'tag', 'TAG', '  tag  '], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert tags == ['tag']
@@ -486,8 +486,8 @@ class TestTagDeduplicationWithinOneWrite:
             metadata=None,
         )
 
-        await repos.tags.store_tags(context_id, ['initial'])
-        await repos.tags.replace_tags_for_context(context_id, ['Gamma', 'gamma', 'delta', 'DELTA'])
+        await repos.tags.store_tags(context_id, ['initial'], scope=LOCAL_SCOPE)
+        await repos.tags.replace_tags_for_context(context_id, ['Gamma', 'gamma', 'delta', 'DELTA'], scope=LOCAL_SCOPE)
 
         tags = await repos.tags.get_tags_for_context(context_id)
         assert tags == ['delta', 'gamma']
@@ -573,7 +573,7 @@ class TestTagOrderingIsByteWiseOnBothBackends:
             text_content='Collation-sensitive tags',
             metadata=None,
         )
-        await repos.tags.store_tags(context_id, ['ra', 'r-z'])
+        await repos.tags.store_tags(context_id, ['ra', 'r-z'], scope=LOCAL_SCOPE)
 
         # '-' (0x2D) precedes 'a' (0x61), so byte ordering puts 'r-z' first.
         # A locale collation that ignores punctuation would return the reverse.

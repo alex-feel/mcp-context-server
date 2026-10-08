@@ -13,6 +13,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.errors import ConfigurationError
 from app.metadata_sql import pg_number_guard
 from app.metadata_sql import pg_numeric_accessor
@@ -233,7 +234,7 @@ async def _create_metadata_index(backend: StorageBackend, field: str, type_hint:
         def _create_sqlite_index(conn: sqlite3.Connection) -> None:
             conn.execute(sql)
 
-        await backend.execute_write(_create_sqlite_index)
+        await backend.execute_write(_create_sqlite_index, access_scope=MAINTENANCE)
 
     else:  # postgresql
         sql = _generate_create_index_postgresql(field, type_hint)
@@ -250,7 +251,7 @@ async def _create_metadata_index(backend: StorageBackend, field: str, type_hint:
             await execute_migration_ddl(conn, sql, migration_timeout_s)
 
         try:
-            await backend.execute_write(cast(Any, _create_postgresql_index))
+            await backend.execute_write(cast(Any, _create_postgresql_index), access_scope=MAINTENANCE)
         except asyncpg.exceptions.DataError as exc:
             raise ConfigurationError(_uncastable_rows_message(field, type_hint, exc)) from exc
 
@@ -305,7 +306,7 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
         def _drop_sqlite_index(conn: sqlite3.Connection) -> None:
             conn.execute(sql)
 
-        await backend.execute_write(_drop_sqlite_index)
+        await backend.execute_write(_drop_sqlite_index, access_scope=MAINTENANCE)
 
     else:  # postgresql
         # Use schema-qualified DROP to ensure correct index is dropped
@@ -334,7 +335,7 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
             sql = f'DROP INDEX IF EXISTS {schema}.{quoted_index_name};'
             await execute_migration_ddl(conn, sql, migration_timeout_s)
 
-        await backend.execute_write(cast(Any, _drop_postgresql_index))
+        await backend.execute_write(cast(Any, _drop_postgresql_index), access_scope=MAINTENANCE)
 
 
 # Empty temporary table the drift check builds probe indexes on: an index built from
@@ -404,7 +405,7 @@ async def _drifted_metadata_indexes(backend: StorageBackend, fields: dict[str, s
             if await _index_drifted(conn, field, type_hint, probe=f'{_PROBE_TABLE}_{position}')
         }
 
-    return cast(set[str], await backend.execute_write(cast(Any, _compare)))
+    return cast(set[str], await backend.execute_write(cast(Any, _compare), access_scope=MAINTENANCE))
 
 
 async def _rebuild_metadata_index(backend: StorageBackend, field: str, type_hint: str) -> None:
@@ -446,7 +447,7 @@ async def _rebuild_metadata_index(backend: StorageBackend, field: str, type_hint
             await execute_migration_ddl(conn, statement, migration_timeout_s)
 
     try:
-        await backend.execute_write(cast(Any, _rebuild_postgresql_index))
+        await backend.execute_write(cast(Any, _rebuild_postgresql_index), access_scope=MAINTENANCE)
     except asyncpg.exceptions.DataError as exc:
         raise ConfigurationError(_uncastable_rows_message(field, type_hint, exc)) from exc
 

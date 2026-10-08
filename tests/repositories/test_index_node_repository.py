@@ -18,6 +18,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id_with_timestamp
 from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories import RepositoryContainer
@@ -101,7 +102,7 @@ async def repos_with_table(tmp_path: Path) -> AsyncGenerator[tuple[StorageBacken
             (cid, 't', 'agent', 'text', '# A\nbody'),
         )
 
-    await backend.execute_write(_insert)
+    await backend.execute_write(_insert, access_scope=MAINTENANCE)
     try:
         yield backend, repos, cid
     finally:
@@ -118,6 +119,7 @@ class TestReplaceAndGet:
         await repos.index_nodes.replace_nodes_for_context(
             cid,
             [_row('intro', 'About intro', span=(0, 10)), _row('setup', 'About setup', span=(10, 25))],
+            scope=LOCAL_SCOPE,
         )
         summaries = await repos.index_nodes.get_nodes_for_context(cid)
         # The node-id index carries each row's stored span so the reader can
@@ -137,8 +139,8 @@ class TestReplaceAndGet:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first'), _row('b', 'second')])
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'updated')])
+        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first'), _row('b', 'second')], scope=LOCAL_SCOPE)
+        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'updated')], scope=LOCAL_SCOPE)
         summaries = await repos.index_nodes.get_nodes_for_context(cid)
         assert summaries.by_node_id == {'a': StoredNodeSummary(0, 10, 'updated')}
 
@@ -148,8 +150,8 @@ class TestReplaceAndGet:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first')])
-        await repos.index_nodes.replace_nodes_for_context(cid, [])
+        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first')], scope=LOCAL_SCOPE)
+        await repos.index_nodes.replace_nodes_for_context(cid, [], scope=LOCAL_SCOPE)
         assert (await repos.index_nodes.get_nodes_for_context(cid)).by_node_id == {}
 
     @pytest.mark.asyncio
@@ -158,7 +160,9 @@ class TestReplaceAndGet:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'x'), _row('b', 'y'), _row('c', 'z')])
+        await repos.index_nodes.replace_nodes_for_context(
+            cid, [_row('a', 'x'), _row('b', 'y'), _row('c', 'z')], scope=LOCAL_SCOPE,
+        )
         assert await repos.index_nodes.count_all_nodes(scope=LOCAL_SCOPE) == 3
 
 
@@ -169,7 +173,7 @@ class TestCascadeDelete:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'x')])
+        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'x')], scope=LOCAL_SCOPE)
         deleted = await repos.context.delete_by_ids([cid], scope=LOCAL_SCOPE)
         assert deleted == 1
         assert (await repos.index_nodes.get_nodes_for_context(cid)).by_node_id == {}
@@ -247,7 +251,7 @@ class TestTableAbsent:
         try:
             # Writing nodes against the absent table must NOT raise; it is a no-op
             # and the read side still degrades to empty.
-            await repos.index_nodes.replace_nodes_for_context('0' * 32, [_row('a', 'x')])
+            await repos.index_nodes.replace_nodes_for_context('0' * 32, [_row('a', 'x')], scope=LOCAL_SCOPE)
             assert (await repos.index_nodes.get_nodes_for_context('0' * 32)).by_node_id == {}
         finally:
             await backend.shutdown()

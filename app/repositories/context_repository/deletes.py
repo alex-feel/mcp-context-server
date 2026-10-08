@@ -119,7 +119,7 @@ class ContextDeleteMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_delete_by_ids_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_delete_by_ids_sqlite)
+            return await self.backend.execute_write(_delete_by_ids_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _delete_by_ids_postgresql(conn: 'asyncpg.Connection') -> int:
@@ -133,7 +133,7 @@ class ContextDeleteMixin(BaseRepository):
 
         if txn:
             return await _delete_by_ids_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(_delete_by_ids_postgresql)
+        return await self.backend.execute_write(_delete_by_ids_postgresql, access_scope=scope)
 
     async def get_ids_matching_batch_criteria(
         self,

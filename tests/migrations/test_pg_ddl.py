@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+
 
 class TestMigrationDdlTimeout:
     """PostgreSQL migration DDL must run under POSTGRESQL_MIGRATION_TIMEOUT_S.
@@ -208,7 +210,7 @@ class TestMigrationDdlTimeout:
             patch('app.settings.get_settings', return_value=mock_settings),
             patch.object(FtsRepository, 'get_current_language', AsyncMock(return_value='english')),
         ):
-            await repo.migrate_language('german')
+            await repo.migrate_language('german', scope=MAINTENANCE)
 
         self._assert_count_probe_carries_timeout(executed, migration_timeout=300.0)
 
@@ -306,7 +308,7 @@ class TestMigrationDdlTimeout:
             patch('app.settings.get_settings', return_value=mock_settings),
             patch.object(FtsRepository, 'get_current_language', AsyncMock(return_value='english')),
         ):
-            await repo.migrate_language('german')
+            await repo.migrate_language('german', scope=MAINTENANCE)
 
         self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
         self._assert_set_local_no_finally_restore(executed)

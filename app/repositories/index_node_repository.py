@@ -19,6 +19,7 @@ from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.access_scope import build_readable_parent_predicate
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 
@@ -91,6 +92,8 @@ class IndexNodeRepository(BaseRepository):
         context_id: str,
         nodes: list[IndexNodeRow],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Replace all index-tree nodes for a context entry (delete then insert).
 
@@ -103,6 +106,8 @@ class IndexNodeRepository(BaseRepository):
             context_id: Canonical id of the owning context entry.
             nodes: Node rows to store (each carries a non-empty summary).
             txn: Optional transaction context for atomic multi-repository writes.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
@@ -137,7 +142,7 @@ class IndexNodeRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_replace_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_replace_sqlite)
+                await self.backend.execute_write(_replace_sqlite, access_scope=scope)
             return
 
         async def _replace_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -162,7 +167,7 @@ class IndexNodeRepository(BaseRepository):
         if txn:
             await _replace_postgresql(cast('asyncpg.Connection', txn.connection))
         else:
-            await self.backend.execute_write(cast(Any, _replace_postgresql))
+            await self.backend.execute_write(cast(Any, _replace_postgresql), access_scope=scope)
 
     async def get_nodes_for_context(self, context_id: str) -> StoredNodeSummaries:
         """Return stored node summaries indexed by node id AND by char span.

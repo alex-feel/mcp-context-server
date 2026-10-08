@@ -19,6 +19,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.settings import get_settings
 
@@ -111,7 +112,7 @@ class TestEmbeddingsSizeSqlite:
                 (b'x' * payload_bytes,),
             )
 
-        await emb_backend.execute_write(_seed)
+        await emb_backend.execute_write(_seed, access_scope=MAINTENANCE)
 
         repo = EmbeddingRepository(emb_backend)
         size_mb, estimated = await repo.get_embeddings_size()
@@ -131,7 +132,7 @@ class TestEmbeddingsSizeSqlite:
                 "VALUES ('c1', 'test-model', 1024, 3)",
             )
 
-        await emb_backend.execute_write(_seed)
+        await emb_backend.execute_write(_seed, access_scope=MAINTENANCE)
 
         repo = EmbeddingRepository(emb_backend)
         size_mb, estimated = await repo.get_embeddings_size()

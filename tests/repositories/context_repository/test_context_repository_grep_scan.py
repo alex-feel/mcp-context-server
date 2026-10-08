@@ -25,6 +25,7 @@ import pytest_asyncio
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id_with_timestamp
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -74,7 +75,7 @@ async def _insert_entries(
                 (cid, thread_id, 'agent', 'text', text),
             )
 
-        await backend.execute_write(_write)
+        await backend.execute_write(_write, access_scope=MAINTENANCE)
     return ids
 
 
@@ -89,7 +90,7 @@ async def _insert_foreign_private(backend: StorageBackend, offset_seconds: int) 
             (cid,),
         )
 
-    await backend.execute_write(_write)
+    await backend.execute_write(_write, access_scope=MAINTENANCE)
     return cid
 
 

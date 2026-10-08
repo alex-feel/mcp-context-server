@@ -18,6 +18,7 @@ from typing import cast
 from typing import overload
 
 from app.backends._executor import run_in_executor_uninterruptible
+from app.backends.base import BackendAccess
 from app.backends.sqlite_backend.config import is_test_environment
 from app.backends.sqlite_backend.connections import SQLiteConnectionsMixin
 from app.backends.sqlite_backend.contention import is_sqlite_locked_error
@@ -266,6 +267,7 @@ class SQLiteWriteQueueMixin(SQLiteConnectionsMixin):
         self,
         operation: Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -274,6 +276,7 @@ class SQLiteWriteQueueMixin(SQLiteConnectionsMixin):
         self,
         operation: Callable[..., T],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -281,6 +284,7 @@ class SQLiteWriteQueueMixin(SQLiteConnectionsMixin):
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T:
         """
@@ -291,6 +295,8 @@ class SQLiteWriteQueueMixin(SQLiteConnectionsMixin):
                       Signature: operation(conn: sqlite3.Connection, *args, **kwargs) -> T
                       Note: Although protocol accepts sync or async, SQLiteBackend only uses sync.
             *args: Additional arguments for the operation
+            access_scope: The identity the write runs as. SQLite enforces access in the
+                application layer only, so it is accepted and discarded.
             **kwargs: Additional keyword arguments for the operation
 
         Returns:
@@ -303,6 +309,7 @@ class SQLiteWriteQueueMixin(SQLiteConnectionsMixin):
             SQLiteBackend expects SYNC callables (not async). The operation is executed
             synchronously in a thread executor to avoid blocking the event loop.
         """
+        _ = access_scope
         assert self._write_queue is not None, 'Backend not initialized, call initialize() first'
 
         if self._shutdown:

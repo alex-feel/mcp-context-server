@@ -12,6 +12,7 @@ import pytest
 from anyio import Path as AsyncPath
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.startup import init_database
 
@@ -215,10 +216,10 @@ class TestDatabaseConnection:
 
         # The failed operation surfaces its error to the caller.
         with pytest.raises(ValueError, match='boom'):
-            await manager.execute_write(op_fail)
+            await manager.execute_write(op_fail, access_scope=MAINTENANCE)
 
         # A subsequent unrelated write commits normally.
-        await manager.execute_write(op_ok)
+        await manager.execute_write(op_ok, access_scope=MAINTENANCE)
 
         # The partial row from the failed operation must be absent; only the
         # survivor row committed.

@@ -17,6 +17,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
@@ -270,7 +271,7 @@ async def _apply_chunking_migration_with_backend(
                     continue
                 await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-        await manager.execute_write(cast(Any, _apply_postgresql))
+        await manager.execute_write(cast(Any, _apply_postgresql), access_scope=MAINTENANCE)
         logger.info('Applied chunking migration for PostgreSQL: 1:N embedding relationship enabled')
 
     else:  # sqlite
@@ -305,7 +306,7 @@ async def _apply_chunking_migration_with_backend(
                     'ALTER TABLE embedding_metadata ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1',
                 )
 
-        await manager.execute_write(_apply_sqlite)
+        await manager.execute_write(_apply_sqlite, access_scope=MAINTENANCE)
 
         if not already_applied:
             logger.info('Applied chunking migration for SQLite: 1:N embedding relationship enabled')

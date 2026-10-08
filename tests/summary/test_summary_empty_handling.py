@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import BackendAccess
 from app.ids import generate_id
 from app.repositories.context_repository import ContextRepository
 from app.schemas import load_schema
@@ -30,7 +31,9 @@ def _make_sqlite_write_backend(db_path: str) -> MagicMock:
 
     async def mock_execute_write(
         func: Callable[[sqlite3.Connection], tuple[int, bool]],
+        *, access_scope: BackendAccess,
     ) -> tuple[int, bool]:
+        _ = access_scope
         test_conn = sqlite3.connect(db_path)
         test_conn.row_factory = sqlite3.Row
         try:

@@ -28,6 +28,8 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
 from app.migrations._pg_ddl import SCHEMA_INIT_ADVISORY_LOCK_SQL
 from app.startup import init_database
@@ -53,12 +55,15 @@ def _make_pg_backend() -> tuple[MagicMock, MagicMock]:
     Returns:
         A tuple ``(backend, conn)`` where ``backend.execute_write`` invokes the
         closure it is handed with ``conn`` (an ``AsyncMock`` asyncpg connection),
-        so the closure's real statement loop runs against a capturing mock.
+        so the closure's real statement loop runs against a capturing mock. Schema
+        initialization runs outside any request, so every write must name the
+        maintenance identity.
     """
     conn = MagicMock()
     conn.execute = AsyncMock(return_value=None)
 
-    async def _run_write(fn: Callable[[Any], Awaitable[None]]) -> None:
+    async def _run_write(fn: Callable[[Any], Awaitable[None]], *, access_scope: BackendAccess) -> None:
+        assert access_scope is MAINTENANCE
         await fn(conn)
 
     backend = MagicMock()

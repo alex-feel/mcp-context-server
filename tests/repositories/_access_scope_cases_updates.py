@@ -85,7 +85,7 @@ async def _exists_each(db: ScopedDb, scope: Scope) -> tuple[Outcome, ...]:
 
 async def _exists_each_in_transaction(db: ScopedDb, scope: Scope) -> tuple[Outcome, ...]:
     """Ask ``entry_exists`` about every target on a transaction connection as the scope."""
-    async with db.backend.begin_transaction() as txn:
+    async with db.backend.begin_transaction(access_scope=scope) as txn:
         outcomes: list[Outcome] = []
         for label in _TARGET_LABELS:
             exists = await db.repos.context.entry_exists(_id_of(db, label), scope=scope, txn=txn)
@@ -242,7 +242,7 @@ async def _content_type_each(db: ScopedDb, scope: Scope) -> tuple[Outcome, ...]:
 
 async def _content_type_each_in_transaction(db: ScopedDb, scope: Scope) -> tuple[Outcome, ...]:
     """Read the content type of every target on a transaction connection as the scope."""
-    async with db.backend.begin_transaction() as txn:
+    async with db.backend.begin_transaction(access_scope=scope) as txn:
         outcomes: list[Outcome] = []
         for label in _TARGET_LABELS:
             content_type = await db.repos.context.get_content_type(_id_of(db, label), scope=scope, txn=txn)

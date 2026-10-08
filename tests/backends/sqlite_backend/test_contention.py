@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.sqlite_backend import SQLiteBackend
 from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.backends.sqlite_backend.resilience import RetryConfig
@@ -108,7 +109,7 @@ class TestBeginTransactionContentionExemption:
             # Far more than failure_threshold consecutive contention rollbacks.
             for _ in range(backend.circuit_breaker.failure_threshold + 5):
                 with pytest.raises(sqlite3.OperationalError, match='database is locked'):
-                    async with backend.begin_transaction():
+                    async with backend.begin_transaction(access_scope=MAINTENANCE):
                         raise sqlite3.OperationalError('database is locked')
             assert backend.circuit_breaker.failures == 0
             assert backend.circuit_breaker.is_open() is False
@@ -120,7 +121,7 @@ class TestBeginTransactionContentionExemption:
         backend = await _initialized_backend(tmp_path / 'txn_fault.db')
         try:
             with pytest.raises(sqlite3.OperationalError, match='no such table'):
-                async with backend.begin_transaction():
+                async with backend.begin_transaction(access_scope=MAINTENANCE):
                     raise sqlite3.OperationalError('no such table: missing')
             assert backend.circuit_breaker.failures == 1
         finally:
@@ -157,7 +158,7 @@ class TestExecuteWriteRetryNoFinalSleep:
                 raise sqlite3.OperationalError('database is locked')
 
             with pytest.raises(sqlite3.OperationalError, match='database is locked'):
-                await backend.execute_write(_always_locked)
+                await backend.execute_write(_always_locked, access_scope=MAINTENANCE)
 
             # Restore before shutdown so its internal sleep is not recorded.
             monkeypatch.setattr(asyncio, 'sleep', real_sleep)
@@ -416,7 +417,7 @@ class TestConnectionCreationFaultCharging:
         backend = await _initialized_backend(tmp_path / 'writer_cantopen.db')
 
         async def _open_txn() -> None:
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 pass
 
         try:
@@ -441,7 +442,7 @@ class TestConnectionCreationFaultCharging:
         backend = await _initialized_backend(tmp_path / 'writer_locked_create.db')
 
         async def _open_txn() -> None:
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 pass
 
         try:

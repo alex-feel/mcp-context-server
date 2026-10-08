@@ -425,7 +425,7 @@ async def store_context_batch(
                     # retries and reconciliation passes never double-count.
                     stored_count_attempt = 0
 
-                    async with backend.begin_transaction() as txn:
+                    async with backend.begin_transaction(access_scope=scope) as txn:
                         for idx, (ve_idx, entry) in enumerate(validated_entries_filtered):
                             original_idx = entry['index']
 
@@ -576,7 +576,7 @@ async def store_context_batch(
 
                 while True:
                     try:
-                        async with backend.begin_transaction() as txn:
+                        async with backend.begin_transaction(access_scope=scope) as txn:
                             context_id, was_updated, embedding_stored = (
                                 await execute_store_in_transaction(
                                     repos, txn,
