@@ -3,7 +3,9 @@
 Every operation acquires through ``get_connection``, which applies the circuit breaker and
 its fault accounting; ``execute_write`` adds the retry loop and the per-write transaction,
 and ``execute_read`` runs inside a transaction that binds the caller's identity when the
-session profile wraps reads. ``readable_relation`` names relations through the profile.
+session profile wraps reads. A statement the database refuses under its privileges or
+policies (SQLSTATE 42501) is logged and re-raised, neither retried nor charged.
+``readable_relation`` names relations through the profile.
 """
 
 import asyncio
@@ -24,6 +26,7 @@ from app.backends.base import BackendAccess
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
 from app.backends.postgresql_backend.acquire_faults import track_acquire
 from app.backends.postgresql_backend.core import PostgreSQLBackendCore
+from app.backends.postgresql_backend.core import operation_name
 from app.errors import ControlFlowError
 from app.settings import get_settings
 
@@ -65,6 +68,9 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
             RuntimeError: If backend is shut down or circuit breaker is open
             ControlFlowError: Re-raised from the connection scope without recording a
                 circuit-breaker failure (normal control flow, not a database fault)
+            asyncpg.exceptions.InsufficientPrivilegeError: Re-raised from the connection
+                scope without recording a circuit-breaker failure (the database refused a
+                statement under its privileges or policies)
             ConnectionEstablishmentTimeoutError: If dialing a new connection for the
                 acquire timed out (an unreachable database; charged so the outage
                 can open the breaker)
@@ -119,6 +125,13 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                         # inside the connection scope), NOT a database fault: do not record
                         # a breaker failure, or a client repeatedly sending invalid input
                         # opens the breaker and rejects every caller's healthy requests.
+                        raise
+                    except asyncpg.exceptions.InsufficientPrivilegeError:
+                        # The database refused a statement under its privileges, a
+                        # row-level security check or a trigger: the application and the
+                        # policy disagree, which no retry or breaker opening can resolve,
+                        # so it is not charged. The entry point that ran the statement logs
+                        # it under the operation's name.
                         raise
                     except Exception as e:
                         # The single accounting site for a body fault: execute_read
@@ -278,6 +291,8 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         Raises:
             RuntimeError: If backend is shut down or circuit breaker is open
             asyncpg.exceptions.ConnectionDoesNotExistError: If connection validation fails
+            asyncpg.exceptions.InsufficientPrivilegeError: If the database refused the
+                write under its privileges or policies (logged, neither retried nor charged)
             ConnectionEstablishmentTimeoutError: If a new connection could not be
                 established within the connect timeout during the acquire (charged --
                 an unreachable database must be able to open the breaker)
@@ -422,6 +437,13 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                     await self._record_charged_failure(e)
                     raise
 
+                except asyncpg.exceptions.InsufficientPrivilegeError as e:
+                    # The database refused the write under its privileges, a row-level
+                    # security check or a trigger. Another attempt gets the same answer and
+                    # the refusal is no database fault, so it is neither retried nor charged.
+                    self._log_refused_statement(e, operation_name(operation))
+                    raise
+
                 except Exception as e:
                     # A circuit-breaker rejection raised by get_connection mid-loop (e.g.
                     # a concurrent writer opened the breaker after the up-front check) is
@@ -488,6 +510,11 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         Returns:
             Result of the operation (type preserved via TypeVar)
 
+        Raises:
+            asyncpg.exceptions.InsufficientPrivilegeError: If the database refused a
+                statement of the read under its privileges or policies (logged with the
+                operation's name, not charged)
+
         Note:
             PostgreSQLBackend expects ASYNC callables (not sync). The operation is executed
             with await.
@@ -509,12 +536,18 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         async with self.get_connection(readonly=True) as conn:
             # Cast to async callable since PostgreSQLBackend only uses async operations
             async_operation = cast(Callable[..., Awaitable[T]], operation)
-            if self._profile.wraps_reads:
-                async with conn.transaction():
-                    await self._profile.bind(conn, access_scope)
+            try:
+                if self._profile.wraps_reads:
+                    async with conn.transaction():
+                        await self._profile.bind(conn, access_scope)
+                        result = await async_operation(conn, *args, **kwargs)
+                else:
                     result = await async_operation(conn, *args, **kwargs)
-            else:
-                result = await async_operation(conn, *args, **kwargs)
+            except asyncpg.exceptions.InsufficientPrivilegeError as e:
+                # Logged here, where the operation's name is known; get_connection's body
+                # arm leaves the refusal uncharged.
+                self._log_refused_statement(e, operation_name(operation))
+                raise
             self.metrics.total_queries += 1
             return result
 

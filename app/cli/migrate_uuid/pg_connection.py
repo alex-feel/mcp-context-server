@@ -71,17 +71,19 @@ def pg_connect_kwargs() -> dict[str, Any]:
     Returns:
         Mapping suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``.
     """
+    from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
     from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
     from app.settings import get_settings
 
     settings = get_settings()
-    kwargs = build_asyncpg_connect_kwargs(settings)
+    # The URL's own credentials are authoritative for the command-line tools.
+    kwargs = build_asyncpg_connect_kwargs(settings, credentials=NO_CREDENTIAL_OVERRIDE)
     kwargs['timeout'] = settings.storage.postgresql_connect_timeout_s
     return kwargs
 
 
 async def pg_connect(dsn: str) -> 'asyncpg.Connection[asyncpg.Record]':
-    """Open a PostgreSQL connection configured exactly like the server's pool ones.
+    """Open a PostgreSQL connection configured exactly like the maintenance backend's pool ones.
 
     The single dial point for every PostgreSQL connection the migration CLI opens.
     Dialing and configuring in one place is what keeps the CLI's sessions equivalent
@@ -89,7 +91,9 @@ async def pg_connect(dsn: str) -> 'asyncpg.Connection[asyncpg.Record]':
     pool ``setup`` callback, which a one-off connection never runs, so a CLI
     connection that only spread the connect kwargs would resolve bare table names
     through the server's default ``search_path`` rather than ``POSTGRESQL_SCHEMA``
-    and would read float8 text at the server's default precision.
+    and would read float8 text at the server's default precision. The maintenance
+    profile's statements follow, so ``row_security`` is off and a statement a policy
+    would filter raises instead of returning a filtered result.
 
     Args:
         dsn: The PostgreSQL connection URL.
@@ -100,10 +104,11 @@ async def pg_connect(dsn: str) -> 'asyncpg.Connection[asyncpg.Record]':
     import asyncpg
 
     from app.backends.postgresql_backend.session import apply_session_gucs
+    from app.backends.postgresql_backend.session_profiles import MaintenanceProfile
 
     conn: asyncpg.Connection[asyncpg.Record] = await asyncpg.connect(dsn, **pg_connect_kwargs())
     try:
-        await apply_session_gucs(conn)
+        await apply_session_gucs(conn, profile_statements=MaintenanceProfile().session_statements())
     except BaseException:
         await conn.close()
         raise

@@ -9,6 +9,7 @@ import pytest
 
 from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session_profiles import UnboundProfile
 
 
@@ -26,6 +27,7 @@ class TestBeginTransactionDeadlockExemption:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._shutdown = False
 

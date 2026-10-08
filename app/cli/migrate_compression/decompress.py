@@ -12,8 +12,10 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session import apply_session_gucs
 from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
+from app.backends.postgresql_backend.session_profiles import MaintenanceProfile
 from app.cli._backend import make_backend
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
@@ -278,8 +280,9 @@ async def _decompress_needs_vector(address: str) -> bool:
     an embedding lands exactly here).
 
     The connection reuses :func:`build_asyncpg_connect_kwargs` and applies the
-    session parameters through :func:`apply_session_gucs`, so the ``search_path``
-    matches the bare-name DML the reverse path runs. ``EXISTS`` is used instead of
+    session parameters and the maintenance profile's statements through
+    :func:`apply_session_gucs`, so the ``search_path`` matches the bare-name DML
+    the reverse path runs and ``row_security`` is off. ``EXISTS`` is used instead of
     ``COUNT(*)`` so the probe stops at the first row rather than scanning a large
     compressed table.
 
@@ -291,14 +294,15 @@ async def _decompress_needs_vector(address: str) -> bool:
         pgvector); False when the compressed table is absent or empty (the
         zero-data reverse path needs no vector type).
     """
-    connect_kwargs = build_asyncpg_connect_kwargs()
+    # The URL's own credentials are authoritative for the command-line tools.
+    connect_kwargs = build_asyncpg_connect_kwargs(credentials=NO_CREDENTIAL_OVERRIDE)
     conn = await asyncpg.connect(
         address,
         timeout=get_settings().storage.postgresql_connect_timeout_s,
         **connect_kwargs,
     )
     try:
-        await apply_session_gucs(conn)
+        await apply_session_gucs(conn, profile_statements=MaintenanceProfile().session_statements())
         reachable = bool(
             await conn.fetchval(
                 "SELECT to_regclass('vec_context_embeddings_compressed') IS NOT NULL",

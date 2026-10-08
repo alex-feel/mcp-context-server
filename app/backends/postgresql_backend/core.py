@@ -1,7 +1,8 @@
 """Instance state and shared accounting of the PostgreSQL backend.
 
-Configuration, pool, circuit breaker and metrics, the charged-failure bookkeeping shared by the
-acquire, write and transaction paths, and the published health metrics.
+Configuration, pool, circuit breaker and metrics, the charged-failure bookkeeping and the log
+record of a refused statement shared by the acquire, read, write and transaction paths, and the
+published health metrics.
 """
 
 import logging
@@ -14,11 +15,25 @@ import asyncpg
 
 from app.backends.postgresql_backend.resilience import CircuitBreaker
 from app.backends.postgresql_backend.resilience import RetryConfig
+from app.backends.postgresql_backend.session import CredentialOverride
 from app.backends.postgresql_backend.session_profiles import SessionProfile
 from app.settings import get_settings
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+def operation_name(operation: object) -> str:
+    """Return the name a log uses for an operation callable.
+
+    Args:
+        operation: The callable an entry point runs.
+
+    Returns:
+        Its qualified name, or its type's name when it has none (a ``functools.partial``).
+    """
+    qualified = getattr(operation, '__qualname__', None)
+    return qualified if isinstance(qualified, str) else type(operation).__name__
 
 
 @dataclass
@@ -34,9 +49,10 @@ class ConnectionMetrics:
 class PostgreSQLBackendCore:
     """Instance state and shared accounting of the PostgreSQL backend.
 
-    Owns the connection string, retry configuration, session profile, pool, circuit breaker
-    and metrics that the provisioning, lifecycle, operations and transaction mixins share,
-    plus the charged-failure bookkeeping and the published metrics.
+    Owns the connection string, credential override, retry configuration, session profile,
+    pool, circuit breaker and metrics that the provisioning, lifecycle, operations and
+    transaction mixins share, plus the charged-failure and refused-statement bookkeeping and
+    the published metrics.
     """
 
     # Pgpool-II detection result (set during initialize() by _detect_pgpool_ii())
@@ -53,6 +69,7 @@ class PostgreSQLBackendCore:
         provision_vector: bool | None = None,
         *,
         profile: SessionProfile,
+        credentials: CredentialOverride,
     ) -> None:
         # Build connection string from settings if not provided
         if connection_string is None:
@@ -60,9 +77,16 @@ class PostgreSQLBackendCore:
 
         self.connection_string = connection_string
 
-        # How every transaction presents the caller's identity to the database and which
-        # relation each plain read names: the entry points hand each transaction's access
-        # scope to profile.bind, and readable_relation asks the profile.
+        # The login every connection uses in place of the connection string's own, field by
+        # field: the pool and the one-off provisioning connections pass it to asyncpg, whose
+        # explicit user and password win over the DSN's.
+        self._credentials = credentials
+
+        # How every transaction presents the caller's identity to the database, which
+        # relation each plain read names and which session statements each connection runs:
+        # the entry points hand each transaction's access scope to profile.bind,
+        # readable_relation asks the profile, and every connection path appends its
+        # session statements to the server's own.
         self._profile = profile
 
         # Explicit pgvector-provisioning override. The migration CLI knows
@@ -187,6 +211,25 @@ class PostgreSQLBackendCore:
             error: The release-phase failure being swallowed.
         """
         logger.warning(f'Releasing the pooled connection failed after the operation completed: {error}')
+
+    @staticmethod
+    def _log_refused_statement(error: asyncpg.exceptions.InsufficientPrivilegeError, operation: str) -> None:
+        """Log a statement the database refused under its privileges, a policy or a trigger.
+
+        Startup verifies the privileges, so a refusal at run time means the application
+        and the policy disagree. It is not a fault of the database, so the entry points
+        neither retry it nor charge the circuit breaker, which would otherwise reject every
+        caller over one disagreement; this ERROR record is how it surfaces. It carries the
+        SQLSTATE, the operation's name and the server's primary message only: the DETAIL
+        and HINT fields, which can describe the refused row, are never logged.
+
+        Args:
+            error: The refusal.
+            operation: The name of the refused operation (:func:`operation_name`), or of
+                the entry point when no single callable ran the statement.
+        """
+        message = error.args[0] if error.args else ''
+        logger.error(f'PostgreSQL refused a statement in {operation} (SQLSTATE {error.sqlstate}): {message}')
 
     async def _record_charged_failure(self, error: BaseException) -> None:
         """Record one charged failure: the breaker charge plus the failure metrics.

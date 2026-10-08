@@ -47,20 +47,22 @@ class TestBuildAsyncpgConnectKwargs:
 
     def test_statement_cache_zero_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """statement_cache_size=0 (transaction-pooler mode) propagates verbatim."""
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
         from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
         from app.settings import AppSettings
 
         monkeypatch.setenv('POSTGRESQL_STATEMENT_CACHE_SIZE', '0')
-        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        kwargs = build_asyncpg_connect_kwargs(AppSettings(), credentials=NO_CREDENTIAL_OVERRIDE)
         assert kwargs['statement_cache_size'] == 0
 
     def test_statement_cache_default_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The default prepared-statement cache size is forwarded unchanged."""
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
         from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
         from app.settings import AppSettings
 
         monkeypatch.delenv('POSTGRESQL_STATEMENT_CACHE_SIZE', raising=False)
-        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        kwargs = build_asyncpg_connect_kwargs(AppSettings(), credentials=NO_CREDENTIAL_OVERRIDE)
         assert kwargs['statement_cache_size'] == 100
 
     def test_startup_packet_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,6 +75,7 @@ class TestBuildAsyncpgConnectKwargs:
         configuration -- and a pooler that strips instead of refusing silently drops
         search_path, resolving every query against the wrong schema.
         """
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
         from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
         from app.settings import AppSettings
 
@@ -80,7 +83,7 @@ class TestBuildAsyncpgConnectKwargs:
         monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_IDLE_S', '15')
         monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S', '5')
         monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_COUNT', '3')
-        assert 'server_settings' not in build_asyncpg_connect_kwargs(AppSettings())
+        assert 'server_settings' not in build_asyncpg_connect_kwargs(AppSettings(), credentials=NO_CREDENTIAL_OVERRIDE)
 
     def test_session_gucs_are_set_statements(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every session parameter is delivered as a SET statement."""
@@ -123,14 +126,15 @@ class TestBuildAsyncpgConnectKwargs:
         from app.backends.postgresql_backend.pool_callbacks import setup_pool_connection
 
         conn = AsyncMock()
-        await setup_pool_connection(conn)
+        await setup_pool_connection(conn, profile_statements=['SET row_security = off'])
 
         statement = conn.execute.await_args.args[0]
         assert 'SET statement_timeout' in statement
         assert 'SET search_path' in statement
         assert 'SET extra_float_digits' in statement
         assert 'SET tcp_keepalives_idle' in statement
-        # One round trip: the whole session configuration goes out together.
+        # The session profile's statements follow the server's own, in the same round trip.
+        assert statement.endswith('; SET row_security = off')
         assert conn.execute.await_count == 1
 
     @pytest.mark.asyncio
@@ -146,12 +150,58 @@ class TestBuildAsyncpgConnectKwargs:
         from app.backends.postgresql_backend.session import apply_session_gucs
 
         conn = AsyncMock()
-        await apply_session_gucs(conn)
+        await apply_session_gucs(conn, profile_statements=['SET row_security = off'])
 
         statement = conn.execute.await_args.args[0]
         assert 'SET search_path' in statement
         assert 'SET extra_float_digits' in statement
+        assert statement.endswith('; SET row_security = off')
         assert conn.execute.await_count == 1
+
+
+class TestCredentialOverride:
+    """Only the credential fields that are set reach the connect kwargs, where they win over the DSN's own."""
+
+    def test_no_override_adds_no_credential(self) -> None:
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+        from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        kwargs = build_asyncpg_connect_kwargs(AppSettings(), credentials=NO_CREDENTIAL_OVERRIDE)
+
+        assert 'user' not in kwargs
+        assert 'password' not in kwargs
+
+    @pytest.mark.parametrize(
+        ('user', 'password', 'expected'),
+        [
+            ('mcp_owner', None, {'user': 'mcp_owner'}),
+            (None, 'owner-secret', {'password': 'owner-secret'}),
+            ('mcp_owner', 'owner-secret', {'user': 'mcp_owner', 'password': 'owner-secret'}),
+            ('', '', {}),
+        ],
+        ids=['user-only', 'password-only', 'both', 'empty-fields'],
+    )
+    def test_set_fields_become_connect_kwargs(
+        self, user: str | None, password: str | None, expected: dict[str, str],
+    ) -> None:
+        from pydantic import SecretStr
+
+        from app.backends.postgresql_backend.session import CredentialOverride
+        from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        override = CredentialOverride(user=user, password=SecretStr(password) if password is not None else None)
+        kwargs = build_asyncpg_connect_kwargs(AppSettings(), credentials=override)
+
+        assert {key: kwargs[key] for key in ('user', 'password') if key in kwargs} == expected
+
+    def test_password_stays_masked_in_the_override_repr(self) -> None:
+        from pydantic import SecretStr
+
+        from app.backends.postgresql_backend.session import CredentialOverride
+
+        assert 'owner-secret' not in repr(CredentialOverride(user='mcp_owner', password=SecretStr('owner-secret')))
 
 
 class TestQuotePgIdentifier:

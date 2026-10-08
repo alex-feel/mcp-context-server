@@ -6,8 +6,12 @@ from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
+from pydantic import SecretStr
 
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session import CredentialOverride
+from app.backends.postgresql_backend.session_profiles import MaintenanceProfile
 from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from tests.helpers import rebind_package_settings
 
@@ -23,7 +27,11 @@ class TestResolveProvisionVector:
 
     @staticmethod
     def _backend() -> PostgreSQLBackend:
-        return PostgreSQLBackend(connection_string='postgresql://u:p@localhost:5432/db', profile=UnboundProfile())
+        return PostgreSQLBackend(
+            connection_string='postgresql://u:p@localhost:5432/db',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
+        )
 
     @staticmethod
     def _settings(*, compression: bool, generation: bool) -> MagicMock:
@@ -167,6 +175,7 @@ class TestVectorProvisionProbeFaultScope:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:wrong@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         monkeypatch.setattr(
             'asyncpg.connect',
@@ -189,3 +198,78 @@ class TestVectorProvisionProbeFaultScope:
 
         with pytest.raises(ConfigurationError, match='authentication failed'):
             await backend.initialize()
+
+
+class TestOneOffConnectionIdentity:
+    """The provisioning connections log in and configure themselves exactly as the backend's pool does."""
+
+    OWNER = CredentialOverride(user='mcp_owner', password=SecretStr('owner-secret'))
+
+    @staticmethod
+    def _conn() -> AsyncMock:
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(return_value=False)
+        conn.close = AsyncMock()
+        return conn
+
+    @staticmethod
+    def _maintenance_backend(credentials: CredentialOverride) -> PostgreSQLBackend:
+        return PostgreSQLBackend(
+            connection_string='postgresql://mcp_app:app-secret@localhost:5432/db',
+            profile=MaintenanceProfile(),
+            credentials=credentials,
+        )
+
+    @pytest.mark.asyncio
+    async def test_extension_connection_uses_the_override_and_the_profile_statements(self) -> None:
+        conn = self._conn()
+        connect = AsyncMock(return_value=conn)
+
+        with unittest.mock.patch('asyncpg.connect', new=connect):
+            await self._maintenance_backend(self.OWNER)._ensure_pgvector_extension()
+
+        call = connect.await_args
+        assert call is not None
+        assert (call.kwargs['user'], call.kwargs['password']) == ('mcp_owner', 'owner-secret')
+        session_statement, extension_statement = (awaited.args[0] for awaited in conn.execute.await_args_list)
+        assert session_statement.endswith('; SET row_security = off')
+        assert extension_statement == 'CREATE EXTENSION IF NOT EXISTS vector;'
+
+    @pytest.mark.asyncio
+    async def test_probe_connection_uses_the_override_and_the_profile_statements(self) -> None:
+        conn = self._conn()
+        connect = AsyncMock(return_value=conn)
+        settings = MagicMock()
+        settings.compression.enabled = True
+        settings.embedding.generation_enabled = True
+        settings.storage.postgresql_connect_timeout_s = 5.0
+
+        with (
+            unittest.mock.patch('app.backends.postgresql_backend.provisioning.settings', settings),
+            unittest.mock.patch('asyncpg.connect', new=connect),
+        ):
+            assert await self._maintenance_backend(self.OWNER)._resolve_provision_vector() is False
+
+        call = connect.await_args
+        assert call is not None
+        assert (call.kwargs['user'], call.kwargs['password']) == ('mcp_owner', 'owner-secret')
+        assert conn.execute.await_args_list[0].args[0].endswith('; SET row_security = off')
+
+    @pytest.mark.asyncio
+    async def test_request_connection_keeps_the_dsn_credentials_and_adds_no_statement(self) -> None:
+        conn = self._conn()
+        connect = AsyncMock(return_value=conn)
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://mcp_app:app-secret@localhost:5432/db',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
+        )
+
+        with unittest.mock.patch('asyncpg.connect', new=connect):
+            await backend._ensure_pgvector_extension()
+
+        call = connect.await_args
+        assert call is not None
+        assert 'user' not in call.kwargs
+        assert 'password' not in call.kwargs
+        assert 'row_security' not in conn.execute.await_args_list[0].args[0]

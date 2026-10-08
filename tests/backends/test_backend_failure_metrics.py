@@ -22,6 +22,7 @@ import pytest
 
 from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from app.backends.sqlite_backend import SQLiteBackend
 from app.errors import ControlFlowError
@@ -317,6 +318,7 @@ class TestPostgresqlChargedFailureMetrics:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._shutdown = False
 
@@ -402,6 +404,7 @@ class TestCrossBackendMetricsContract:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         pool = MagicMock()
         pool.get_size = MagicMock(return_value=4)
@@ -428,6 +431,7 @@ class TestCrossBackendMetricsContract:
         postgres_backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         pool = MagicMock()
         pool.get_size = MagicMock(return_value=1)

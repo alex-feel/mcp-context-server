@@ -7,7 +7,9 @@ enabling support for SQLite, PostgreSQL, and other storage systems.
 Key Components:
     - StorageBackend: Protocol defining the interface for all storage backends
     - SQLiteBackend: Implementation for SQLite database
-    - create_backend: Factory function for creating backend instances
+    - create_backend: Factory function for the request backend that serves the tools
+    - create_maintenance_backend: Factory function for the backend migrations, startup
+      and the command-line tools run on (the table owner on PostgreSQL)
 
 Example Usage:
     from app.backends import create_backend
@@ -22,6 +24,7 @@ Example Usage:
 
 from app.backends.base import StorageBackend
 from app.backends.factory import create_backend
+from app.backends.factory import create_maintenance_backend
 from app.backends.sqlite_backend import SQLiteBackend
 
-__all__ = ['StorageBackend', 'SQLiteBackend', 'create_backend']
+__all__ = ['StorageBackend', 'SQLiteBackend', 'create_backend', 'create_maintenance_backend']

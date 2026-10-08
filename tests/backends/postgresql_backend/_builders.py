@@ -1,6 +1,7 @@
 """Backend builders shared by the PostgreSQL backend test modules."""
 
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session_profiles import UnboundProfile
 
 
@@ -13,7 +14,11 @@ def build_backend(connection_string: str = 'postgresql://postgres:postgres@local
     Returns:
         The constructed backend.
     """
-    backend = PostgreSQLBackend(connection_string=connection_string, profile=UnboundProfile())
+    backend = PostgreSQLBackend(
+        connection_string=connection_string,
+        profile=UnboundProfile(),
+        credentials=NO_CREDENTIAL_OVERRIDE,
+    )
     backend._shutdown = False
     return backend
 

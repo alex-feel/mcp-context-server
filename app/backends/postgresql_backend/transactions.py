@@ -90,6 +90,11 @@ class PostgreSQLTransactionMixin(PostgreSQLBackendCore):
             propagating it would report a committed store as failed and send the
             caller into a retry that writes it again.
 
+            A statement the database refuses under its privileges, a row-level
+            security check or a trigger (asyncpg ``InsufficientPrivilegeError``)
+            rolls the transaction back and is re-raised after an ERROR record,
+            without a circuit-breaker failure.
+
         Example:
             async with backend.begin_transaction(access_scope=scope) as txn:
                 conn = txn.connection
@@ -161,6 +166,13 @@ class PostgreSQLTransactionMixin(PostgreSQLBackendCore):
                             # embedding reconciliation), NOT a database fault: rolled back
                             # automatically, but do NOT record a circuit-breaker failure, so
                             # normal write contention cannot open the breaker.
+                            raise
+                        if isinstance(e, asyncpg.exceptions.InsufficientPrivilegeError):
+                            # The database refused a statement under its privileges, a
+                            # row-level security check or a trigger: the application and the
+                            # policy disagree, and a breaker opened over it would reject
+                            # every caller. Rolled back automatically; logged, not charged.
+                            self._log_refused_statement(e, 'begin_transaction')
                             raise
                         if isinstance(e, asyncpg.exceptions.TransactionRollbackError):
                             # PostgreSQL aborted this transaction to break a deadlock or a

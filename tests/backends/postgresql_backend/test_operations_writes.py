@@ -12,6 +12,7 @@ import pytest
 from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session_profiles import UnboundProfile
 
 
@@ -23,6 +24,7 @@ class TestExecuteWriteStatementTimeoutRetry:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         # Tight, deterministic retry config: enough attempts, no real sleeping.
         backend.retry_config.max_retries = 3
@@ -120,6 +122,7 @@ class TestExecuteWriteDeadlockRetry:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend.retry_config.max_retries = 3
         backend.retry_config.base_delay = 0.0
@@ -207,6 +210,7 @@ class TestExecuteWritePoolAcquireTimeout:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend.retry_config.max_retries = 3
         backend.retry_config.base_delay = 0.0
@@ -352,6 +356,7 @@ class TestExecuteWriteFinalAttemptBackoff:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
             profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend.retry_config.max_retries = 2
         backend.retry_config.base_delay = 0.01

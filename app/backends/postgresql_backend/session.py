@@ -1,15 +1,53 @@
 """PostgreSQL connection parameters shared by the pool and every one-off connection.
 
-Identifier quoting, the asyncpg connect kwargs, the session ``SET`` statements every connection
-runs, and the server-side statement timeout derived from the client command timeout.
+Identifier quoting, the asyncpg connect kwargs with an optional credential override, the session
+``SET`` statements every connection runs, and the server-side statement timeout derived from the
+client command timeout.
 """
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
+from pydantic import SecretStr
 
 from app.settings import AppSettings
 from app.settings import get_settings
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialOverride:
+    """The user and password a backend logs in with in place of those of its connection string.
+
+    asyncpg gives explicit ``user=`` and ``password=`` connect kwargs precedence over the
+    credentials of a URL or key=value DSN, so a backend can dial the request connection
+    settings as another role without rewriting the DSN. An unset or empty field keeps the
+    connection string's own value.
+
+    Attributes:
+        user: The role to log in as, or None to keep the connection string's user.
+        password: That role's password, or None to keep the connection string's password.
+    """
+
+    user: str | None
+    password: SecretStr | None
+
+    def connect_kwargs(self) -> dict[str, str]:
+        """Return the asyncpg connect kwargs for the fields that are set.
+
+        Returns:
+            ``user`` and ``password`` entries for the non-empty fields only.
+        """
+        kwargs: dict[str, str] = {}
+        if self.user:
+            kwargs['user'] = self.user
+        if self.password is not None and self.password.get_secret_value():
+            kwargs['password'] = self.password.get_secret_value()
+        return kwargs
+
+
+NO_CREDENTIAL_OVERRIDE = CredentialOverride(user=None, password=None)
 
 
 def quote_pg_identifier(name: str) -> str:
@@ -30,7 +68,11 @@ def quote_pg_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dict[str, Any]:
+def build_asyncpg_connect_kwargs(
+    app_settings: AppSettings | None = None,
+    *,
+    credentials: CredentialOverride,
+) -> dict[str, Any]:
     """Build the asyncpg connection kwargs shared by the pool and the migration CLI.
 
     Returns a dict suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``
@@ -60,6 +102,9 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
     parameter this server needs is applied with ``SET`` instead -- see
     :func:`session_guc_set_statements`, which every connection path runs.
 
+    - ``user`` and ``password``: the fields of ``credentials`` that are set,
+      which asyncpg applies over the credentials of the DSN.
+
     SSL is intentionally NOT included: asyncpg parses ``sslmode`` natively from
     the DSN query string, so SSL is carried by the connection URL itself.
 
@@ -67,12 +112,18 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
         app_settings: Resolved application settings. Defaults to
             ``get_settings()`` so callers in a different process (the CLI)
             pick up that process's environment.
+        credentials: The login that replaces the DSN's own, field by field;
+            :data:`NO_CREDENTIAL_OVERRIDE` dials the DSN as written.
 
     Returns:
-        Mapping with the ``statement_cache_size`` key.
+        Mapping with the ``statement_cache_size`` key, plus ``user`` and
+        ``password`` for the overridden fields.
     """
     resolved = app_settings if app_settings is not None else get_settings()
-    return {'statement_cache_size': resolved.storage.postgresql_statement_cache_size}
+    return {
+        'statement_cache_size': resolved.storage.postgresql_statement_cache_size,
+        **credentials.connect_kwargs(),
+    }
 
 
 def session_guc_set_statements(app_settings: AppSettings | None = None) -> list[str]:
@@ -130,7 +181,12 @@ def session_guc_set_statements(app_settings: AppSettings | None = None) -> list[
     return statements
 
 
-async def apply_session_gucs(conn: asyncpg.Connection, app_settings: AppSettings | None = None) -> None:
+async def apply_session_gucs(
+    conn: asyncpg.Connection,
+    app_settings: AppSettings | None = None,
+    *,
+    profile_statements: Sequence[str],
+) -> None:
     """Apply the session parameters to a connection that bypasses the pool.
 
     The pool applies them through its ``setup`` callback on every acquire; a
@@ -141,13 +197,16 @@ async def apply_session_gucs(conn: asyncpg.Connection, app_settings: AppSettings
     instead of ``POSTGRESQL_SCHEMA`` -- and the server's default
     ``extra_float_digits``.
 
-    All statements go out in ONE simple-query round trip.
+    All statements go out in ONE simple-query round trip, the session profile's
+    statements after the server's own.
 
     Args:
         conn: The freshly established connection.
         app_settings: Resolved application settings. Defaults to ``get_settings()``.
+        profile_statements: The session statements of the profile the connection
+            serves (``SessionProfile.session_statements``).
     """
-    await conn.execute('; '.join(session_guc_set_statements(app_settings)))
+    await conn.execute('; '.join([*session_guc_set_statements(app_settings), *profile_statements]))
 
 
 def statement_timeout_ms(command_timeout_s: float) -> int:

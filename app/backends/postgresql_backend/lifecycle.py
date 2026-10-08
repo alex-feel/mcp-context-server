@@ -89,21 +89,24 @@ class PostgreSQLLifecycleMixin(PostgreSQLProvisioningMixin):
                 'init': charge_cancelled_preparation(  # TCP keepalive + type registration
                     partial(init_pool_connection, provision_vector=self._provision_vector),
                 ),
-                'setup': setup_pool_connection,  # Session config before acquire
+                # Session config before acquire, followed by the session profile's own
+                # statements (the maintenance profile turns row_security off).
+                'setup': partial(setup_pool_connection, profile_statements=self._profile.session_statements()),
                 'reset': reset_pool_connection,  # Health check before pool return
             }
 
             # Merge the shared connection kwargs. build_asyncpg_connect_kwargs() is the
             # single source of truth shared with the migration CLI, and it forwards
-            # ONLY statement_cache_size (0 disables prepared statements for
-            # transaction-mode poolers). The PostgreSQL startup packet is left empty on
-            # purpose: an external pooler refuses any startup parameter it does not
-            # allowlist, so anything sent there is a deployment that cannot connect at
-            # all. search_path, extra_float_digits and the server-side TCP keepalive
-            # GUCs are applied as statements by setup_pool_connection, which runs on
-            # every acquire and therefore also restores them after the pool's RESET ALL
-            # (see build_asyncpg_connect_kwargs and docs/database-backends.md).
-            pool_kwargs.update(build_asyncpg_connect_kwargs(settings))
+            # statement_cache_size (0 disables prepared statements for transaction-mode
+            # poolers) plus the user and password of the backend's credential override,
+            # which asyncpg applies over the DSN's own. The PostgreSQL startup packet is
+            # left empty on purpose: an external pooler refuses any startup parameter it
+            # does not allowlist, so anything sent there is a deployment that cannot
+            # connect at all. search_path, extra_float_digits and the server-side TCP
+            # keepalive GUCs are applied as statements by setup_pool_connection, which
+            # runs on every acquire and therefore also restores them after the pool's
+            # RESET ALL (see build_asyncpg_connect_kwargs and docs/database-backends.md).
+            pool_kwargs.update(build_asyncpg_connect_kwargs(settings, credentials=self._credentials))
 
             # Add connection recycling settings if configured (0 means disabled)
             if settings.storage.postgresql_max_inactive_lifetime_s > 0:
