@@ -4,15 +4,22 @@ Every case of :mod:`tests.repositories._access_scope_cases` runs once per scope 
 a freshly seeded, isolated database of the case's layout on the pgvector container of the
 ``pg_test_url`` fixture (``@requires_docker_postgres``, skipped cleanly without Docker). The
 scaffold checks prove the seed on both layouts and the expected visibility tables against the
-access predicate, including the one-parameter ``text[]`` group bind.
+access predicate, including the one-parameter ``text[]`` group bind. They also prove the
+row-level security scaffold: the ``pg_rls_db`` database is owned by ``mcp_owner`` and
+reachable as each test role, and a layout prepared and seeded by its owner through the seed
+channel, while the request role ``mcp_app`` holds no table privilege, is read back whole
+through the request channel.
 """
 
+import dataclasses
 from collections.abc import AsyncIterator
 
+import asyncpg
 import pytest
 import pytest_asyncio
 
 from app.access_scope import AccessMode
+from tests.integration.postgresql.conftest import RlsUrls
 from tests.repositories._access_scope_cases import READABLE
 from tests.repositories._access_scope_cases import SCOPES
 from tests.repositories._access_scope_cases import AccessCase
@@ -23,6 +30,7 @@ from tests.repositories._access_scope_cases import in_seed_order
 from tests.repositories._access_scope_cases import observe_predicate_visibility
 from tests.repositories._access_scope_cases import run_case
 from tests.repositories._access_scope_layouts import assert_seeded_layout
+from tests.repositories._access_scope_layouts import postgresql_owner_seeded_db
 from tests.repositories._access_scope_layouts import postgresql_scoped_db
 from tests.repositories._access_scope_registry import CASES
 
@@ -93,3 +101,103 @@ class TestSeededLayoutsPostgreSQL:
         assert await db.labels_selected_by(SCOPES['bob'], AccessMode.READ) == in_seed_order(
             (*READABLE['bob'], 'alice_private'),
         )
+
+
+def _through_request_channel(db: ScopedDb) -> ScopedDb:
+    """Return ``db`` with its raw statements and repository writes sent through its request channel."""
+    return dataclasses.replace(db, seed_backend=db.backend, seed=db.repos)
+
+
+class TestRlsDatabase:
+    """``pg_rls_db`` is a fresh database owned by ``mcp_owner``, reachable as each test role."""
+
+    @pytest.mark.asyncio
+    async def test_each_url_logs_in_as_its_role_on_the_same_database(self, pg_rls_db: RlsUrls) -> None:
+        """The four connection strings log in as mcp_test, mcp_owner, mcp_app and mcp_outsider on one database."""
+        sessions: dict[str, tuple[str, str]] = {}
+        for name, url in dataclasses.asdict(pg_rls_db).items():
+            conn = await asyncpg.connect(url)
+            try:
+                row = await conn.fetchrow('SELECT current_user, current_database()')
+            finally:
+                await conn.close()
+            assert row is not None
+            sessions[name] = (row[0], row[1])
+
+        database = sessions['admin'][1]
+        assert database != 'mcp_test'
+        assert sessions == {
+            'admin': ('mcp_test', database),
+            'maintenance': ('mcp_owner', database),
+            'app': ('mcp_app', database),
+            'outsider': ('mcp_outsider', database),
+        }
+
+    @pytest.mark.asyncio
+    async def test_database_is_owned_by_mcp_owner_and_carries_only_pgvector(self, pg_rls_db: RlsUrls) -> None:
+        """The database belongs to mcp_owner, has the vector extension and holds no relation yet."""
+        conn = await asyncpg.connect(pg_rls_db.admin)
+        try:
+            row = await conn.fetchrow(
+                'SELECT pg_catalog.pg_get_userbyid(d.datdba), '
+                "(SELECT COUNT(*) FROM pg_catalog.pg_extension WHERE extname = 'vector'), "
+                '(SELECT COUNT(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace '
+                "WHERE n.nspname = 'public') "
+                'FROM pg_catalog.pg_database d WHERE d.datname = current_database()',
+            )
+        finally:
+            await conn.close()
+
+        assert row is not None
+        assert tuple(row) == ('mcp_owner', 1, 0)
+
+
+@pytest_asyncio.fixture(params=['fp32', 'compressed'])
+async def owner_seeded_db(
+    request: pytest.FixtureRequest, pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[ScopedDb]:
+    """The ``pg_rls_db`` database prepared and seeded by mcp_owner, with mcp_app as the request channel.
+
+    Yields:
+        The seeded database, in the fp32 and in the compressed layout.
+    """
+    async with postgresql_owner_seeded_db(
+        request_url=pg_rls_db.app, maintenance_url=pg_rls_db.maintenance, layout=request.param, monkeypatch=monkeypatch,
+    ) as db:
+        yield db
+
+
+class TestOwnerSeededLayouts:
+    """The seed channel writes as the table owner, and the request channel reads what it wrote."""
+
+    @pytest.mark.asyncio
+    async def test_seed_channel_runs_as_the_owner_and_requests_as_the_app_role(self, owner_seeded_db: ScopedDb) -> None:
+        """Raw statements of the seed channel run as mcp_owner, those of the request channel as mcp_app."""
+        db = owner_seeded_db
+
+        assert await db.fetch_all('SELECT current_user') == [('mcp_owner',)]
+        assert await _through_request_channel(db).fetch_all('SELECT current_user') == [('mcp_app',)]
+
+    @pytest.mark.asyncio
+    async def test_owner_owns_every_table_and_the_app_role_holds_no_privilege(self, owner_seeded_db: ScopedDb) -> None:
+        """The layout belongs to mcp_owner, and mcp_app could not have written a single seed row."""
+        db = owner_seeded_db
+
+        owners = await db.fetch_all("SELECT DISTINCT tableowner FROM pg_catalog.pg_tables WHERE schemaname = 'public'")
+        app_privileges = await db.fetch_all(
+            'SELECT c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace '
+            "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm') "
+            "AND pg_catalog.has_table_privilege('mcp_app', c.oid, 'SELECT, INSERT, UPDATE, DELETE')",
+        )
+
+        assert owners == [('mcp_owner',)]
+        assert app_privileges == []
+
+    @pytest.mark.asyncio
+    async def test_request_channel_reads_the_seeded_layout(self, owner_seeded_db: ScopedDb) -> None:
+        """Granted SELECT after the seed, mcp_app reads every seed row, child row and the layout's vector storage."""
+        db = owner_seeded_db
+
+        await db.execute('GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_app')
+
+        await assert_seeded_layout(_through_request_channel(db))

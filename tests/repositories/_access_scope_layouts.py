@@ -9,10 +9,15 @@ pinned settings, so it matches what a server with that configuration provisions:
 
 :func:`sqlite_scoped_db` prepares the SQLite backend of ``async_db_initialized``;
 :func:`postgresql_scoped_db` prepares an isolated database on the pgvector test container.
-Both seed it with :func:`~tests.repositories._access_scope_cases.seed_access_rows`.
+Both serve the request and the seed channel from one backend.
+:func:`postgresql_owner_seeded_db` prepares an existing database through a maintenance
+backend logged in as its owner, which also serves the seed channel, while the request
+channel logs in as another role. Each seeds the database with
+:func:`~tests.repositories._access_scope_cases.seed_access_rows`.
 :func:`assert_seeded_layout` proves a prepared database holds the seed and the layout's
-vector storage. :func:`limit_sqlite_variables` caps SQLite bind variables for the
-``sqlite_999_variables`` fixture of ``tests/repositories/conftest.py``.
+vector storage, reading through the seed channel. :func:`limit_sqlite_variables` caps
+SQLite bind variables for the ``sqlite_999_variables`` fixture of
+``tests/repositories/conftest.py``.
 """
 
 import asyncio
@@ -31,6 +36,7 @@ import app.migrations
 import app.startup
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends import create_maintenance_backend
 from app.compression.factory import reset_cached_compression_provider
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
@@ -61,7 +67,7 @@ async def _counts_by_label(db: ScopedDb, sql: str) -> dict[str, int]:
 
 async def _table_exists(db: ScopedDb, table: str) -> bool:
     """Return whether ``table`` exists in the database's working schema."""
-    if db.backend.backend_type == 'sqlite':
+    if db.seed_backend.backend_type == 'sqlite':
         sql = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?"
     else:
         sql = 'SELECT COUNT(*) FROM pg_tables WHERE schemaname = current_schema() AND tablename = ?'
@@ -72,6 +78,8 @@ async def _table_exists(db: ScopedDb, table: str) -> bool:
 async def assert_seeded_layout(db: ScopedDb) -> None:
     """Assert the database holds :data:`SEED_ROWS` with their children and the layout's vector storage.
 
+    Every statement runs through the seed channel.
+
     Args:
         db: The seeded database.
     """
@@ -81,7 +89,7 @@ async def assert_seeded_layout(db: ScopedDb) -> None:
         for row in SEED_ROWS
     }
 
-    grants = {row.label: await read_grants(db.backend, db.ids[row.label]) for row in SEED_ROWS}
+    grants = {row.label: await read_grants(db.seed_backend, db.ids[row.label]) for row in SEED_ROWS}
     assert grants == {
         row.label: sorted((grant.principal_type, grant.principal_id, grant.permission, row.owner) for grant in row.grants)
         for row in SEED_ROWS
@@ -103,7 +111,7 @@ async def assert_seeded_layout(db: ScopedDb) -> None:
         db, 'SELECT context_id, COUNT(*) FROM embedding_metadata GROUP BY context_id',
     ) == dict.fromkeys(SEED_LABELS, 1)
 
-    if db.backend.backend_type == 'sqlite':
+    if db.seed_backend.backend_type == 'sqlite':
         fts_sql = (
             'SELECT ce.id FROM context_entries_fts JOIN context_entries ce '
             'ON ce.rowid_int = context_entries_fts.rowid WHERE context_entries_fts MATCH ?'
@@ -211,11 +219,31 @@ def _configure_layout(
     return settings
 
 
+def _scoped_db(request_backend: StorageBackend, seed_backend: StorageBackend, layout: Layout) -> ScopedDb:
+    """Return an unseeded database with its request channel over one backend and its seed channel over the other.
+
+    Args:
+        request_backend: The backend the seams under test run on.
+        seed_backend: The backend the seed is written and read through; may be the request backend.
+        layout: The database layout.
+
+    Returns:
+        The database with its own repository container per channel.
+    """
+    return ScopedDb(
+        backend=request_backend,
+        repos=RepositoryContainer(request_backend),
+        seed_backend=seed_backend,
+        seed=RepositoryContainer(seed_backend),
+        layout=layout,
+    )
+
+
 @asynccontextmanager
 async def sqlite_scoped_db(
     backend: StorageBackend, layout: Layout, monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[ScopedDb]:
-    """Prepare ``backend`` as the server does for ``layout`` and seed it.
+    """Prepare ``backend`` as the server does for ``layout`` and seed it; it serves both channels.
 
     Args:
         backend: An initialized SQLite backend holding the base schema.
@@ -228,7 +256,7 @@ async def sqlite_scoped_db(
     settings = _configure_layout(monkeypatch, layout, {}, None)
     try:
         await prepare_database(backend, settings)
-        db = ScopedDb(backend=backend, repos=RepositoryContainer(backend), layout=layout)
+        db = _scoped_db(backend, backend, layout)
         await seed_access_rows(db)
         yield db
     finally:
@@ -265,11 +293,64 @@ async def _drop_database(pg_url: str, database: str) -> None:
         await admin.close()
 
 
+def _configure_postgresql_layout(monkeypatch: pytest.MonkeyPatch, layout: Layout, request_url: str) -> AppSettings:
+    """Configure ``layout`` with the PostgreSQL routing of ``request_url`` in the ``public`` schema.
+
+    Args:
+        monkeypatch: Restores the environment and the bindings after the test.
+        layout: The layout to configure.
+        request_url: Connection string of the request connection settings.
+
+    Returns:
+        The settings of the layout.
+    """
+    import app.backends.postgresql_backend as postgresql_backend_package
+
+    return _configure_layout(
+        monkeypatch,
+        layout,
+        {'STORAGE_BACKEND': 'postgresql', 'POSTGRESQL_CONNECTION_STRING': request_url, 'POSTGRESQL_SCHEMA': 'public'},
+        postgresql_backend_package,
+    )
+
+
+@asynccontextmanager
+async def _seeded_postgresql_db(
+    *, request_backend: StorageBackend, seed_backend: StorageBackend, layout: Layout, settings: AppSettings,
+) -> AsyncIterator[ScopedDb]:
+    """Initialize both backends, prepare the database through the seed backend and seed it.
+
+    Args:
+        request_backend: The backend the seams under test run on.
+        seed_backend: The backend that prepares the database and writes the seed; may be the request backend.
+        layout: The layout the settings configure.
+        settings: The settings of the layout.
+
+    Yields:
+        The seeded database. Both backends are shut down afterwards.
+    """
+    backends = (seed_backend,) if request_backend is seed_backend else (seed_backend, request_backend)
+    try:
+        for backend in backends:
+            await backend.initialize()
+        await prepare_database(seed_backend, settings)
+        db = _scoped_db(request_backend, seed_backend, layout)
+        await seed_access_rows(db)
+        yield db
+    finally:
+        for backend in backends:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+        _reset_compression_caches()
+
+
 @asynccontextmanager
 async def postgresql_scoped_db(
     pg_url: str, layout: Layout, monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[ScopedDb]:
     """Create an isolated database, prepare it as the server does for ``layout`` and seed it.
+
+    One backend, logged in with the credentials of ``pg_url``, serves both channels.
 
     Args:
         pg_url: Connection string of the test container's maintenance database.
@@ -279,26 +360,45 @@ async def postgresql_scoped_db(
     Yields:
         The seeded database.
     """
-    import app.backends.postgresql_backend as postgresql_backend_package
-
     database = f'mcp_access_scope_{layout}'
     await _recreate_database(pg_url, database)
     target_url = _with_database(pg_url, database)
-    settings = _configure_layout(
-        monkeypatch,
-        layout,
-        {'STORAGE_BACKEND': 'postgresql', 'POSTGRESQL_CONNECTION_STRING': target_url, 'POSTGRESQL_SCHEMA': 'public'},
-        postgresql_backend_package,
-    )
-    backend = create_backend(backend_type='postgresql', connection_string=target_url)
     try:
-        await backend.initialize()
-        await prepare_database(backend, settings)
-        db = ScopedDb(backend=backend, repos=RepositoryContainer(backend), layout=layout)
-        await seed_access_rows(db)
-        yield db
+        settings = _configure_postgresql_layout(monkeypatch, layout, target_url)
+        backend = create_backend(backend_type='postgresql', connection_string=target_url)
+        async with _seeded_postgresql_db(
+            request_backend=backend, seed_backend=backend, layout=layout, settings=settings,
+        ) as db:
+            yield db
     finally:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(backend.shutdown(), timeout=10.0)
-        _reset_compression_caches()
         await _drop_database(pg_url, database)
+
+
+@asynccontextmanager
+async def postgresql_owner_seeded_db(
+    *, request_url: str, maintenance_url: str, layout: Layout, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[ScopedDb]:
+    """Prepare an existing database for ``layout`` as its owner and seed it through the owner.
+
+    The maintenance backend logs in with the credentials of ``maintenance_url`` (the
+    database owner), creates every table and serves the seed channel; the request backend
+    logs in with those of ``request_url`` and serves the request channel. The database
+    itself belongs to the caller.
+
+    Args:
+        request_url: Connection string of the request role.
+        maintenance_url: Connection string of the role that owns the database.
+        layout: The layout to build.
+        monkeypatch: Restores the layout's environment and bindings after the test.
+
+    Yields:
+        The seeded database.
+    """
+    settings = _configure_postgresql_layout(monkeypatch, layout, request_url)
+    async with _seeded_postgresql_db(
+        request_backend=create_backend(backend_type='postgresql', connection_string=request_url),
+        seed_backend=create_maintenance_backend(connection_string=maintenance_url),
+        layout=layout,
+        settings=settings,
+    ) as db:
+        yield db

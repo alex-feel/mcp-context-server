@@ -145,7 +145,7 @@ async def _add_prefixed_rows(db: ScopedDb) -> None:
         )
         db.ids[label] = context_id
         for grant in grants:
-            await insert_grant(db.backend, context_id, grant.principal_type, grant.principal_id, grant.permission, owner)
+            await insert_grant(db.seed_backend, context_id, grant.principal_type, grant.principal_id, grant.permission, owner)
 
 
 async def _find_by_prefix(db: ScopedDb, scope: Scope) -> PrefixMatches:

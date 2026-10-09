@@ -15,7 +15,9 @@ line serves manual ``docker compose`` use only; ``-p`` overrides it.
 
 Credentials (``mcp_test:mcp_test``) are throwaway: the container exposes
 no listening interface beyond loopback for the test session lifetime and
-its data directory is mounted on tmpfs.
+its data directory is mounted on tmpfs. The same holds for the login roles
+``initdb/02-roles.sql`` creates, whose password is the role name;
+:func:`pg_rls_db` hands out one connection string per role.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import time
 import warnings
 from collections.abc import AsyncIterator
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
@@ -250,16 +253,21 @@ def pg_test_url() -> Iterator[str]:
         _force_cleanup()
 
 
-def _replace_db_name_non_default(pg_url: str, new_db: str) -> str:
-    """Return ``pg_url`` with the database name replaced by ``new_db``."""
+def _database_url(pg_url: str, database: str, *, role: str | None = None) -> str:
+    """Return ``pg_url`` pointing at ``database``, logging in as ``role`` when given.
+
+    Args:
+        pg_url: A connection string of the test container.
+        database: The database to connect to.
+        role: A login role of ``initdb/02-roles.sql``, whose password is its name;
+            None keeps the credentials of ``pg_url``.
+
+    Returns:
+        The connection string.
+    """
     parts = urlsplit(pg_url)
-    return urlunsplit((
-        parts.scheme,
-        parts.netloc,
-        f'/{new_db}',
-        parts.query,
-        parts.fragment,
-    ))
+    netloc = parts.netloc if role is None else f'{role}:{role}@{parts.netloc.rsplit("@", 1)[1]}'
+    return urlunsplit((parts.scheme, netloc, f'/{database}', parts.query, parts.fragment))
 
 
 @pytest_asyncio.fixture
@@ -269,10 +277,10 @@ async def pg_non_default_schema_db(pg_test_url: str) -> AsyncIterator[str]:
     The fixture creates a fresh database, installs pgvector inside it,
     creates the ``mcp_test`` schema, and yields the connection string.
     Tests that consume this fixture exercise the production schema
-    routing automatically because :class:`PostgreSQLBackend` sets
-    ``search_path`` on every pool connection via
-    ``asyncpg.create_pool(server_settings={'search_path': ...})``.
-    Ad-hoc ``asyncpg.connect()`` calls inside the fixture's own setup
+    routing automatically because :class:`PostgreSQLBackend` issues
+    ``SET search_path`` on every pool connection from the pool's setup
+    callback, each time the connection is acquired. Ad-hoc
+    ``asyncpg.connect()`` calls inside the fixture's own setup
     phase (database creation, schema creation) still need explicit
     ``search_path`` configuration; use
     :func:`apply_non_default_search_path` for those callsites.
@@ -293,7 +301,7 @@ async def pg_non_default_schema_db(pg_test_url: str) -> AsyncIterator[str]:
     finally:
         await admin.close()
 
-    target_url = _replace_db_name_non_default(pg_test_url, db_name)
+    target_url = _database_url(pg_test_url, db_name)
 
     setup = await asyncpg.connect(target_url)
     try:
@@ -314,13 +322,77 @@ async def pg_non_default_schema_db(pg_test_url: str) -> AsyncIterator[str]:
         await admin.close()
 
 
+@dataclass(frozen=True, slots=True)
+class RlsUrls:
+    """Connection strings of one row-level security test database, one per role.
+
+    Attributes:
+        admin: ``mcp_test``, the bootstrap superuser: database administration and the
+            oracle channel that reads every row whatever the policies say.
+        maintenance: ``mcp_owner``, the non-superuser login role that owns the database
+            and therefore every table the maintenance backend creates in it.
+        app: ``mcp_app``, the request login role, an inheriting member of the policy role
+            ``mcp_context_request``.
+        outsider: ``mcp_outsider``, a login role that is a member of no role.
+    """
+
+    admin: str
+    maintenance: str
+    app: str
+    outsider: str
+
+
+_RLS_DATABASE = 'mcp_rls'
+
+
+@pytest_asyncio.fixture
+async def pg_rls_db(pg_test_url: str) -> AsyncIterator[RlsUrls]:
+    """Provision a fresh database owned by ``mcp_owner`` for the row-level security tests.
+
+    ``mcp_test`` creates the database ``OWNER mcp_owner`` and, inside it, the ``vector``
+    extension; the database holds nothing else. Its ``public`` schema belongs to the
+    database owner, so ``mcp_owner`` creates the tables there and owns them. The database
+    is dropped with every connection still open to it at teardown.
+
+    Yields:
+        One connection string per role of ``initdb/02-roles.sql`` and the superuser.
+    """
+    admin = await asyncpg.connect(pg_test_url)
+    try:
+        await admin.execute(f'DROP DATABASE IF EXISTS {_RLS_DATABASE} WITH (FORCE)')
+        await admin.execute(f'CREATE DATABASE {_RLS_DATABASE} OWNER mcp_owner')
+    finally:
+        await admin.close()
+
+    urls = RlsUrls(
+        admin=_database_url(pg_test_url, _RLS_DATABASE),
+        maintenance=_database_url(pg_test_url, _RLS_DATABASE, role='mcp_owner'),
+        app=_database_url(pg_test_url, _RLS_DATABASE, role='mcp_app'),
+        outsider=_database_url(pg_test_url, _RLS_DATABASE, role='mcp_outsider'),
+    )
+    setup = await asyncpg.connect(urls.admin)
+    try:
+        await setup.execute('CREATE EXTENSION IF NOT EXISTS vector')
+    finally:
+        await setup.close()
+
+    yield urls
+
+    admin = await asyncpg.connect(pg_test_url)
+    try:
+        with contextlib.suppress(Exception):
+            await admin.execute(f'DROP DATABASE IF EXISTS {_RLS_DATABASE} WITH (FORCE)')
+    finally:
+        await admin.close()
+
+
 async def apply_non_default_search_path(conn: asyncpg.Connection) -> None:
     """Set ``search_path`` on ``conn`` to the non-default schema first.
 
     Helper for ad-hoc ``asyncpg.connect()`` callsites in tests that
     need to operate on tables in the non-default schema BEFORE the
-    production pool (which sets ``search_path`` automatically via
-    ``server_settings``) is initialized. Pool-routed connections do
+    production pool (whose setup callback sets ``search_path`` on every
+    acquired connection) is initialized. Pool-routed connections do
     not need this helper.
     """
     await conn.execute(

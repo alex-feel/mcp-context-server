@@ -356,7 +356,7 @@ _A4_CHUNKS = 3
 
 
 async def _store_chunks(db: ScopedDb, context_id: str, label: str, count: int) -> None:
-    """Store ``count`` chunk embeddings for one entry, compressed on the compressed layout."""
+    """Store ``count`` chunk embeddings for one entry through the seed channel, compressed on the compressed layout."""
     text = seed_text(label)
     vectors = [vector_at(0.1 * index) for index in range(count)]
     payloads: list[bytes | None] = [None] * count
@@ -367,7 +367,7 @@ async def _store_chunks(db: ScopedDb, context_id: str, label: str, count: int) -
         ChunkEmbedding(embedding=vector, start_index=0, end_index=len(text), payload=payload)
         for vector, payload in zip(vectors, payloads, strict=True)
     ]
-    await db.repos.embeddings.store_chunked(context_id, chunks, model=get_settings().embedding.model, scope=MAINTENANCE)
+    await db.seed.embeddings.store_chunked(context_id, chunks, model=get_settings().embedding.model, scope=MAINTENANCE)
 
 
 async def _add_embedding_rows(db: ScopedDb) -> None:
@@ -419,7 +419,7 @@ _A6_NODES = 3
 
 
 async def _add_node_rows(db: ScopedDb) -> None:
-    """Store a hidden row with several index-tree nodes and a public row without any."""
+    """Store a hidden row with several index-tree nodes, written through the seed channel, and a public row without any."""
     label = 'a6_hidden_nodes'
     context_id = await db.add_entry(label, owner='alice', visibility='private')
     nodes = [
@@ -429,7 +429,7 @@ async def _add_node_rows(db: ScopedDb) -> None:
         )
         for index in range(_A6_NODES)
     ]
-    await db.repos.index_nodes.replace_nodes_for_context(context_id, nodes, scope=MAINTENANCE)
+    await db.seed.index_nodes.replace_nodes_for_context(context_id, nodes, scope=MAINTENANCE)
     await db.add_entry('a6_public_bare', owner='alice', visibility='public')
 
 

@@ -332,7 +332,10 @@ async def insert_grant(
 
     The application writes only the group read grants of
     ``ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups``, so tests seed user
-    grants and write grants with this helper.
+    grants and write grants with this helper. The row is written as the role the
+    backend logs in as, so on PostgreSQL pass a backend of the table owner or of
+    a superuser (the oracle channel), never the request backend of a deployment
+    whose database policies filter the request role's writes.
 
     Args:
         backend: The backend whose database receives the row.
@@ -360,6 +363,10 @@ async def insert_grant(
 
 async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[str, str, str, str]]:
     """Read the grant rows of one context entry through raw SQL on either backend.
+
+    The rows are read as the role the backend logs in as, so on PostgreSQL pass a
+    backend of the table owner or of a superuser (the oracle channel) to see every
+    grant row whatever the database policies admit.
 
     Args:
         backend: The backend whose database holds the rows.

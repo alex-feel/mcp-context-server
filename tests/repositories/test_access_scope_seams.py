@@ -2,13 +2,16 @@
 
 Every case of :mod:`tests.repositories._access_scope_cases` runs once per scope it names, on
 a freshly seeded SQLite database of the case's layout; the fp32 layout needs sqlite-vec for
-its vector table. The scaffold checks prove the seed on both layouts, the expected visibility
-tables against the access predicate, the case registry and runner, and the variable cap of
-the ``sqlite_999_variables`` fixture.
+its vector table. The scaffold checks prove the seed on both layouts, that the seed and
+every case setup write through the seed channel alone, the expected visibility tables
+against the access predicate, the case registry and runner, and the variable cap of the
+``sqlite_999_variables`` fixture.
 """
 
+import dataclasses
 import sqlite3
 from collections.abc import AsyncIterator
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -19,10 +22,13 @@ from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.backends.base import MAINTENANCE
 from app.backends.base import StorageBackend
+from app.repositories import RepositoryContainer
 from tests.conftest import requires_sqlite_vec
 from tests.repositories._access_scope_cases import READABLE
 from tests.repositories._access_scope_cases import SCOPES
+from tests.repositories._access_scope_cases import TEAM_GROUP
 from tests.repositories._access_scope_cases import AccessCase
+from tests.repositories._access_scope_cases import Grant
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_cases import case_params
 from tests.repositories._access_scope_cases import expected_visibility
@@ -106,6 +112,89 @@ class TestSeededLayouts:
         assert await db.labels_selected_by(SCOPES['bob'], AccessMode.READ) == in_seed_order(
             (*READABLE['bob'], 'alice_private'),
         )
+
+
+# Every operation of the backend protocol; reading backend_type is the only use left open.
+_BACKEND_OPERATIONS = (
+    'initialize', 'shutdown', 'get_connection', 'execute_write', 'execute_read', 'readable_relation',
+    'begin_transaction', 'get_metrics',
+)
+
+
+def _refusing_backend(backend_type: str) -> MagicMock:
+    """Return a backend that fails on every operation and only reports its backend type.
+
+    Args:
+        backend_type: The backend type the backend reports.
+
+    Returns:
+        A backend whose every operation raises ``AssertionError`` naming the operation.
+    """
+    backend = MagicMock(spec=StorageBackend)
+    backend.backend_type = backend_type
+    for operation in _BACKEND_OPERATIONS:
+        getattr(backend, operation).side_effect = AssertionError(f'the request channel was used: {operation}')
+    return backend
+
+
+def _with_refusing_request_channel(db: ScopedDb) -> ScopedDb:
+    """Return ``db`` with a request channel that fails on every use; the seed channel and labels stay shared."""
+    refusing = _refusing_backend(db.backend.backend_type)
+    return dataclasses.replace(db, backend=refusing, repos=RepositoryContainer(refusing))
+
+
+# The child rows of one entry, counted per table: the entry itself, tags, images, the
+# embedding, index-tree nodes and grants.
+_CHILD_COUNTS_SQL = (
+    'SELECT '
+    '(SELECT COUNT(*) FROM context_entries WHERE id = ?), '
+    '(SELECT COUNT(*) FROM tags WHERE context_entry_id = ?), '
+    '(SELECT COUNT(*) FROM image_attachments WHERE context_entry_id = ?), '
+    '(SELECT COUNT(*) FROM embedding_metadata WHERE context_id = ?), '
+    '(SELECT COUNT(*) FROM context_index_nodes WHERE context_id = ?), '
+    '(SELECT COUNT(*) FROM context_entry_grants WHERE context_entry_id = ?)'
+)
+
+
+class TestSeedChannel:
+    """Rows beyond the requests under test are written through the seed channel and never the request channel."""
+
+    @pytest.mark.asyncio
+    async def test_layouts_seed_through_a_second_container_over_the_request_backend(
+        self, scoped_db_compressed: ScopedDb,
+    ) -> None:
+        """On the SQLite layouts the seed channel is its own repository container over the request backend."""
+        db = scoped_db_compressed
+
+        assert db.seed_backend is db.backend
+        assert db.seed is not db.repos
+
+    @pytest.mark.asyncio
+    async def test_add_entry_writes_the_entry_and_every_child_through_the_seed_channel(
+        self, scoped_db_compressed: ScopedDb,
+    ) -> None:
+        """An entry with every kind of child row is stored while the request channel refuses every use."""
+        db = _with_refusing_request_channel(scoped_db_compressed)
+
+        context_id = await db.add_entry(
+            'seed_channel_entry', owner='bob', visibility='private', summary='Seed channel summary.',
+            angle=0.5, image=True, index_node=True, grants=(Grant('group', TEAM_GROUP, 'read'),),
+        )
+
+        assert await db.fetch_all(_CHILD_COUNTS_SQL, (context_id,) * 6) == [(1, 2, 1, 1, 1, 1)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'case',
+        [pytest.param(case, id=f'{case.param_id}-{case.layout}') for case in CASES if case.setup is not None],
+    )
+    async def test_case_setup_writes_only_through_the_seed_channel(
+        self, scoped_db_compressed: ScopedDb, case: AccessCase,
+    ) -> None:
+        """Every case setup adds its rows while the request channel refuses every use."""
+        assert case.setup is not None
+
+        await case.setup(_with_refusing_request_channel(scoped_db_compressed))
 
 
 async def _principal_of(db: ScopedDb, scope: Scope) -> str:
