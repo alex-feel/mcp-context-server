@@ -44,7 +44,8 @@ class FtsMaintenanceMixin(BaseRepository):
         predicate = build_access_predicate(
             scope, mode=AccessMode.READ, backend_type=self.backend.backend_type, outer='context_entries',
         )
-        total_sql = f'SELECT COUNT(*) FROM context_entries{predicate.where_clause()}'
+        entries = self._readable('context_entries', alias='context_entries')
+        total_sql = f'SELECT COUNT(*) FROM {entries}{predicate.where_clause()}'
 
         def _figures(total_count: int, indexed_count: int, backend: str, engine: str) -> dict[str, Any]:
             return {
@@ -75,7 +76,7 @@ class FtsMaintenanceMixin(BaseRepository):
 
         # postgresql: an entry is indexed once its tsvector is populated
         indexed_sql = (
-            f'SELECT COUNT(*) FROM context_entries WHERE text_search_vector IS NOT NULL{predicate.and_clause()}'
+            f'SELECT COUNT(*) FROM {entries} WHERE text_search_vector IS NOT NULL{predicate.and_clause()}'
         )
 
         async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:

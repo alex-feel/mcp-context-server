@@ -233,10 +233,11 @@ class FtsSearchMixin(BaseRepository):
                         'Metadata filter validation failed', [str(e)],
                     ) from e
                 tag_placeholders = ','.join(['?' for _ in normalized_tags])
+                tag_rows = self._readable('tags', alias='tags')
                 filter_conditions.append(f'''
                     ce.id IN (
                         SELECT DISTINCT context_entry_id
-                        FROM tags
+                        FROM {tag_rows}
                         WHERE tag IN ({tag_placeholders})
                     )
                 ''')
@@ -371,6 +372,7 @@ class FtsSearchMixin(BaseRepository):
             # paging a tied result set silently skips or duplicates rows. Matches the browse
             # path's ``created_at DESC, id DESC`` contract (newest-first on ties); the id is
             # lowercase hex on SQLite and a UUID on PostgreSQL, which order identically.
+            entries = self._readable('context_entries', alias='ce')
             sql_query = f'''
                 SELECT
                     ce.id,
@@ -384,7 +386,7 @@ class FtsSearchMixin(BaseRepository):
                     ce.updated_at,
                     -bm25(context_entries_fts) as score,
                     {highlight_expr}
-                FROM context_entries ce
+                FROM {entries}
                 JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 {where_clause}
                 {'AND' if where_clause else 'WHERE'} fts.text_content MATCH ?
@@ -576,10 +578,11 @@ class FtsSearchMixin(BaseRepository):
                 tag_placeholders = ','.join([
                     self._placeholder(param_position + i) for i in range(len(normalized_tags))
                 ])
+                tag_rows = self._readable('tags', alias='tags')
                 filter_conditions.append(f'''
                     ce.id IN (
                         SELECT DISTINCT context_entry_id
-                        FROM tags
+                        FROM {tag_rows}
                         WHERE tag IN ({tag_placeholders})
                     )
                 ''')
@@ -702,6 +705,7 @@ class FtsSearchMixin(BaseRepository):
             # under unrelated concurrent writes. Without the tiebreak the LIMIT/OFFSET window is
             # computed over an undefined ordering and a client paging a tied result set silently
             # skips or duplicates rows; the outer re-sort would also be free to permute the page.
+            entries = self._readable('context_entries', alias='ce')
             sql_query = f'''
                 SELECT
                     sub.id,
@@ -727,7 +731,7 @@ class FtsSearchMixin(BaseRepository):
                         ce.created_at,
                         ce.updated_at,
                         ts_rank_cd(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score
-                    FROM context_entries ce
+                    FROM {entries}
                     WHERE {where_clause}
                     AND ce.text_search_vector @@ {tsquery_func}{self._placeholder(query_param_pos)})
                     ORDER BY score DESC, ce.id DESC

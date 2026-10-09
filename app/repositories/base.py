@@ -141,6 +141,25 @@ class BaseRepository:
             raise ValueError('Tag filter requires at least one non-blank tag')
         return normalized
 
+    def _readable(self, table: str, *, alias: str) -> str:
+        """Name the relation a plain read selects ``table``'s rows from.
+
+        A plain read writes nothing and takes no row lock. It names every routable table
+        it reads through this method and qualifies the table's columns and its access
+        predicate with ``alias``. The backend decides the relation: the table itself, or
+        an access view under the same alias, so the statement resolves its names the same
+        way in either form.
+
+        Args:
+            table: A routable table.
+            alias: The name the statement qualifies the table's columns with; the table's
+                own name when the statement uses no alias.
+
+        Returns:
+            The FROM or JOIN item to place in the statement.
+        """
+        return self.backend.readable_relation(table, alias=alias)
+
     def _placeholder(self, position: int) -> str:
         """Generate SQL parameter placeholder for the given position.
 

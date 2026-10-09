@@ -55,7 +55,8 @@ class EmbeddingInventoryMixin(BaseRepository):
         if backend_type == 'sqlite':
 
             def _exists_sqlite(conn: sqlite3.Connection) -> bool:
-                query = f'SELECT 1 FROM embedding_metadata WHERE context_id = {self._placeholder(1)} LIMIT 1'
+                embeddings = self._readable('embedding_metadata', alias='embedding_metadata')
+                query = f'SELECT 1 FROM {embeddings} WHERE context_id = {self._placeholder(1)} LIMIT 1'
                 cursor = conn.execute(query, (context_id,))
                 return cursor.fetchone() is not None
 
@@ -65,7 +66,8 @@ class EmbeddingInventoryMixin(BaseRepository):
 
         # postgresql
         async def _exists_postgresql(conn: 'asyncpg.Connection') -> bool:
-            query = f'SELECT 1 FROM embedding_metadata WHERE context_id = {self._placeholder(1)} LIMIT 1'
+            embeddings = self._readable('embedding_metadata', alias='embedding_metadata')
+            query = f'SELECT 1 FROM {embeddings} WHERE context_id = {self._placeholder(1)} LIMIT 1'
             row = await conn.fetchrow(query, context_id)
             return row is not None
 
@@ -137,8 +139,11 @@ class EmbeddingInventoryMixin(BaseRepository):
         backend_type = self.backend.backend_type
         entries = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries')
         parents = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
-        readable_embeddings = f'embedding_metadata em JOIN context_entries ce ON em.context_id = ce.id{parents.where_clause()}'
-        total_sql = f'SELECT COUNT(*) FROM context_entries{entries.where_clause()}'
+        embeddings = self._readable('embedding_metadata', alias='em')
+        parent_rows = self._readable('context_entries', alias='ce')
+        entry_rows = self._readable('context_entries', alias='context_entries')
+        readable_embeddings = f'{embeddings} JOIN {parent_rows} ON em.context_id = ce.id{parents.where_clause()}'
+        total_sql = f'SELECT COUNT(*) FROM {entry_rows}{entries.where_clause()}'
         embeddings_sql = f'SELECT COUNT(*) FROM {readable_embeddings}'
         chunks_sql = f'SELECT COALESCE(SUM(em.chunk_count), 0) FROM {readable_embeddings}'
 

@@ -184,9 +184,10 @@ class CompressedSearchMixin(BaseRepository):
                     params.append(content_type)
                 if normalized_tags:
                     placeholders = ','.join(['?' for _ in normalized_tags])
+                    tag_rows = self._readable('tags', alias='tags')
                     conditions.append(
                         'id IN (SELECT DISTINCT context_entry_id '
-                        f'FROM tags WHERE tag IN ({placeholders}))',
+                        f'FROM {tag_rows} WHERE tag IN ({placeholders}))',
                     )
                     params.extend(normalized_tags)
                 if start_date:
@@ -256,7 +257,8 @@ class CompressedSearchMixin(BaseRepository):
                 where_clause = (
                     f'WHERE {" AND ".join(conditions)}' if conditions else ''
                 )
-                cand_sql = f'SELECT id FROM context_entries {where_clause}'
+                entries = self._readable('context_entries', alias='context_entries')
+                cand_sql = f'SELECT id FROM {entries} {where_clause}'
                 cursor = conn.execute(cand_sql, params)
                 cand_ids = [str(row[0]) for row in cursor.fetchall()]
 
@@ -307,9 +309,10 @@ class CompressedSearchMixin(BaseRepository):
                     placeholders = ','.join(
                         f'${position + i}' for i in range(len(normalized_tags))
                     )
+                    tag_rows = self._readable('tags', alias='tags')
                     conditions.append(
                         'ce.id IN (SELECT DISTINCT context_entry_id '
-                        f'FROM tags WHERE tag IN ({placeholders}))',
+                        f'FROM {tag_rows} WHERE tag IN ({placeholders}))',
                     )
                     params.extend(normalized_tags)
                     position += len(normalized_tags)
@@ -386,8 +389,9 @@ class CompressedSearchMixin(BaseRepository):
                     position += read.bind_count
 
                 where_clause = ' AND '.join(conditions)
+                entries = self._readable('context_entries', alias='ce')
                 cand_sql = (
-                    f'SELECT ce.id FROM context_entries ce WHERE {where_clause}'
+                    f'SELECT ce.id FROM {entries} WHERE {where_clause}'
                 )
                 rows = await conn.fetch(cand_sql, *params)
 
@@ -435,12 +439,13 @@ class CompressedSearchMixin(BaseRepository):
                 conn: sqlite3.Connection,
             ) -> list[tuple[str, int, int, int, bytes]]:
                 rows: list[tuple[str, int, int, int, bytes]] = []
+                payloads = self._readable('vec_context_embeddings_compressed', alias='vec_context_embeddings_compressed')
                 for start in range(0, len(candidate_ids), SQLITE_IN_CLAUSE_BATCH):
                     batch = candidate_ids[start:start + SQLITE_IN_CLAUSE_BATCH]
                     placeholders = ','.join('?' for _ in batch)
                     cursor = conn.execute(
                         'SELECT context_id, chunk_index, start_index, end_index, '
-                        f'payload FROM vec_context_embeddings_compressed '
+                        f'payload FROM {payloads} '
                         f'WHERE context_id IN ({placeholders})',
                         batch,
                     )
@@ -455,9 +460,10 @@ class CompressedSearchMixin(BaseRepository):
             async def _read_compressed_pg(
                 conn: 'asyncpg.Connection',
             ) -> list[tuple[str, int, int, int, bytes]]:
+                payloads = self._readable('vec_context_embeddings_compressed', alias='vec_context_embeddings_compressed')
                 rows = await conn.fetch(
                     'SELECT context_id, chunk_index, start_index, end_index, '
-                    'payload FROM vec_context_embeddings_compressed '
+                    f'payload FROM {payloads} '
                     'WHERE context_id = ANY($1::uuid[])',
                     candidate_ids,
                 )
@@ -617,12 +623,13 @@ class CompressedSearchMixin(BaseRepository):
                 # in bounded batches like the compressed candidate read (a batch
                 # plus the predicate's binds stays below the variable limit).
                 out: dict[str, dict[str, Any]] = {}
+                entries = self._readable('context_entries', alias='context_entries')
                 for start in range(0, len(page_ids), SQLITE_IN_CLAUSE_BATCH):
                     batch = page_ids[start:start + SQLITE_IN_CLAUSE_BATCH]
                     placeholders = ','.join('?' for _ in batch)
                     cursor = conn.execute(
                         'SELECT id, thread_id, source, content_type, text_content, '
-                        'metadata, summary, created_at, updated_at FROM context_entries '
+                        f'metadata, summary, created_at, updated_at FROM {entries} '
                         f'WHERE id IN ({placeholders}){hydrate_read.and_clause()}',
                         [*batch, *hydrate_read.params],
                     )
@@ -638,9 +645,10 @@ class CompressedSearchMixin(BaseRepository):
             async def _hydrate_pg(
                 conn: 'asyncpg.Connection',
             ) -> dict[str, dict[str, Any]]:
+                entries = self._readable('context_entries', alias='context_entries')
                 rows = await conn.fetch(
                     'SELECT id, thread_id, source, content_type, text_content, '
-                    'metadata, summary, created_at, updated_at FROM context_entries '
+                    f'metadata, summary, created_at, updated_at FROM {entries} '
                     f'WHERE id = ANY($1::uuid[]){hydrate_read.and_clause()}',
                     page_ids,
                     *hydrate_read.params,

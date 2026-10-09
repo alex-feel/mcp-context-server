@@ -3,7 +3,8 @@
 The unit of classification is the method: a function defined directly under a class or a
 module of ``app/repositories``, with every closure nested inside it counted as part of it.
 :data:`REGISTRY` assigns every repository method that runs SQL against ``context_entries`` or
-one of its child tables a :class:`Seam`, and the helpers below parse ``app/`` once and answer
+one of its child tables a :class:`Seam`, whether the statement names the table itself or reads
+it through the read seam ``_readable``, and the helpers below parse ``app/`` once and answer
 the structural questions the completeness tests ask of it.
 """
 
@@ -31,6 +32,10 @@ CONTEXT_TABLE_SQL = re.compile(
     r'|vec_context_embeddings|vec_context_embeddings_compressed)\b',
     re.IGNORECASE,
 )
+
+# The repository method a plain read names each routable relation through; the backend
+# renders the relation, so the table appears in the call rather than in the statement text.
+READ_SEAM = '_readable'
 
 
 class Seam(StrEnum):
@@ -284,8 +289,17 @@ def string_constants(node: ast.AST, module: ParsedModule) -> Iterator[tuple[int,
 
 
 def runs_context_sql(node: ast.AST, module: ParsedModule) -> bool:
-    """Whether ``node``'s subtree carries a statement against a context table."""
-    return any(CONTEXT_TABLE_SQL.search(value) for _line, value in string_constants(node, module))
+    """Whether ``node``'s subtree carries a statement against a context table.
+
+    A statement names its table in a string constant, or names a routable relation through
+    the read seam.
+
+    Returns:
+        True when a string constant names a context table or the subtree calls the read seam.
+    """
+    if any(CONTEXT_TABLE_SQL.search(value) for _line, value in string_constants(node, module)):
+        return True
+    return any(isinstance(child, ast.Call) and callee_name(child) == READ_SEAM for child in ast.walk(node))
 
 
 @functools.cache

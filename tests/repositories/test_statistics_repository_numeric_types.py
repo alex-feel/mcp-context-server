@@ -17,6 +17,7 @@ import pytest
 from app.backends.base import MAINTENANCE
 from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
+from app.backends.base import base_relation
 from app.repositories.statistics_repository import StatisticsRepository
 from app.repositories.statistics_repository import _to_float
 from tests.helpers import LOCAL_SCOPE
@@ -84,6 +85,10 @@ class _PgStubBackend:
 
     def __init__(self, avg_value: Decimal | None) -> None:
         self._conn = _PgStubConnection(avg_value)
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name every table by its own name, as a backend without access views does."""
+        return base_relation(table, alias=alias)
 
     async def execute_read(self, operation: Callable[[Any], Awaitable[T]], *, access_scope: BackendAccess) -> T:
         _ = access_scope

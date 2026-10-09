@@ -1,14 +1,61 @@
 """Tests for BaseRepository helpers.
 
-Covers _parse_date_for_postgresql, which converts ISO 8601 strings into the timezone-aware datetime
+Covers _readable, which names the relation a plain read selects a routable table from, and
+_parse_date_for_postgresql, which converts ISO 8601 strings into the timezone-aware datetime
 objects asyncpg needs for TIMESTAMPTZ parameters.
 """
 
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from typing import cast
 
 import pytest
+
+from app.backends.base import StorageBackend
+from app.backends.base import base_relation
+from app.repositories.base import BaseRepository
+
+
+class _ViewBackend:
+    """A backend stand-in that reads ``context_entries`` through a view and records each request."""
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, str]] = []
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        self.requests.append((table, alias))
+        if table == 'context_entries':
+            return f'context_entries_readable AS {alias}'
+        return base_relation(table, alias=alias)
+
+
+class TestReadable:
+    """_readable asks the backend for the relation a plain read names."""
+
+    def test_returns_the_relation_the_backend_names(self) -> None:
+        """The backend decides the relation; the repository passes the table and alias through."""
+        backend = _ViewBackend()
+        repo = BaseRepository(cast(StorageBackend, backend))
+
+        assert repo._readable('context_entries', alias='ce') == 'context_entries_readable AS ce'
+        assert repo._readable('tags', alias='tags') == 'tags'
+        assert backend.requests == [('context_entries', 'ce'), ('tags', 'tags')]
+
+    @pytest.mark.parametrize(
+        ('table', 'alias', 'relation'),
+        [
+            ('context_entries', 'context_entries', 'context_entries'),
+            ('context_entries', 'ce', 'context_entries ce'),
+            ('embedding_chunks', 'ec', 'embedding_chunks ec'),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_sqlite_names_the_base_table(
+        self, async_db_initialized: StorageBackend, table: str, alias: str, relation: str,
+    ) -> None:
+        """SQLite reads every table by its own name, keeping the alias."""
+        assert BaseRepository(async_db_initialized)._readable(table, alias=alias) == relation
 
 
 class TestParseDateForPostgresql:

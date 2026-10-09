@@ -179,6 +179,7 @@ class ContextDeleteMixin(BaseRepository):
             List of matching context entry IDs.
         """
         backend_type = self.backend.backend_type
+        entries = self._readable('context_entries', alias='context_entries')
 
         def _chunk_statement(
             id_chunk: list[str] | None, thread_chunk: list[str] | None,
@@ -217,7 +218,7 @@ class ContextDeleteMixin(BaseRepository):
             access = build_access_predicate(
                 scope, mode=mode, backend_type=backend_type, outer='context_entries', start=len(params) + 1,
             )
-            query = f'SELECT id FROM context_entries WHERE {" AND ".join(conditions)}{access.and_clause()}'
+            query = f'SELECT id FROM {entries} WHERE {" AND ".join(conditions)}{access.and_clause()}'
             return query, [*params, *access.params]
 
         statements = [

@@ -150,8 +150,9 @@ class TagRepository(BaseRepository):
             def _get_tags_sqlite(conn: sqlite3.Connection) -> list[str]:
                 cursor = conn.cursor()
                 order_term = byte_ordered_text('tag', 'sqlite')
+                tag_rows = self._readable('tags', alias='tags')
                 query = (
-                    f'SELECT tag FROM tags WHERE context_entry_id = {self._placeholder(1)} ORDER BY {order_term}'
+                    f'SELECT tag FROM {tag_rows} WHERE context_entry_id = {self._placeholder(1)} ORDER BY {order_term}'
                 )
                 cursor.execute(query, (context_id,))
                 return [row['tag'] for row in cursor.fetchall()]
@@ -162,7 +163,8 @@ class TagRepository(BaseRepository):
 
         async def _get_tags_postgresql(conn: 'asyncpg.Connection') -> list[str]:
             order_term = byte_ordered_text('tag', 'postgresql')
-            query = f'SELECT tag FROM tags WHERE context_entry_id = {self._placeholder(1)} ORDER BY {order_term}'
+            tag_rows = self._readable('tags', alias='tags')
+            query = f'SELECT tag FROM {tag_rows} WHERE context_entry_id = {self._placeholder(1)} ORDER BY {order_term}'
             rows = await conn.fetch(query, context_id)
             return [row['tag'] for row in rows]
 

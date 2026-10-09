@@ -192,10 +192,11 @@ class IndexNodeRepository(BaseRepository):
         if self.backend.backend_type == 'sqlite':
 
             def _get_sqlite(conn: sqlite3.Connection) -> StoredNodeSummaries:
+                nodes = self._readable('context_index_nodes', alias='context_index_nodes')
                 try:
                     cursor = conn.execute(
                         f'SELECT node_id, node_summary, char_start, char_end '
-                        f'FROM context_index_nodes '
+                        f'FROM {nodes} '
                         f'WHERE context_id = {self._placeholder(1)}',
                         (context_id,),
                     )
@@ -227,10 +228,11 @@ class IndexNodeRepository(BaseRepository):
             return await self.backend.execute_read(_get_sqlite, access_scope=scope)
 
         async def _get_postgresql(conn: 'asyncpg.Connection') -> StoredNodeSummaries:
+            nodes = self._readable('context_index_nodes', alias='context_index_nodes')
             try:
                 rows = await conn.fetch(
                     f'SELECT node_id, node_summary, char_start, char_end '
-                    f'FROM context_index_nodes '
+                    f'FROM {nodes} '
                     f'WHERE context_id = {self._placeholder(1)}',
                     context_id,
                 )
@@ -270,7 +272,8 @@ class IndexNodeRepository(BaseRepository):
             readable = build_readable_parent_predicate(
                 scope, child_key='n.context_id', parent_key='id', backend_type=backend_type,
             )
-            sqlite_count_sql = f'SELECT COUNT(*) AS n FROM context_index_nodes n{readable.where_clause()}'
+            nodes = self._readable('context_index_nodes', alias='n')
+            sqlite_count_sql = f'SELECT COUNT(*) AS n FROM {nodes}{readable.where_clause()}'
 
             def _count_sqlite(conn: sqlite3.Connection) -> int:
                 try:
@@ -290,9 +293,11 @@ class IndexNodeRepository(BaseRepository):
             return await self.backend.execute_read(_count_sqlite, access_scope=scope)
 
         predicate = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
+        nodes = self._readable('context_index_nodes', alias='n')
+        entries = self._readable('context_entries', alias='ce')
         count_sql = (
-            'SELECT COUNT(*) AS n FROM context_index_nodes n '
-            f'JOIN context_entries ce ON ce.id = n.context_id{predicate.where_clause()}'
+            f'SELECT COUNT(*) AS n FROM {nodes} '
+            f'JOIN {entries} ON ce.id = n.context_id{predicate.where_clause()}'
         )
 
         async def _count_postgresql(conn: 'asyncpg.Connection') -> int:

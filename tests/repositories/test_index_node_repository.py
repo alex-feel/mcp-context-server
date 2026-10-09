@@ -20,6 +20,7 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.backends.base import MAINTENANCE
 from app.backends.base import BackendAccess
+from app.backends.base import base_relation
 from app.ids import generate_id_with_timestamp
 from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories import RepositoryContainer
@@ -61,6 +62,10 @@ class _RaisingReadBackend:
 
     def __init__(self, error: sqlite3.OperationalError) -> None:
         self._conn = _RaisingConnection(error)
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name every table by its own name, as a backend without access views does."""
+        return base_relation(table, alias=alias)
 
     async def execute_read(
         self, operation: Callable[[object], _T], *args: object, access_scope: BackendAccess, **kwargs: object,

@@ -27,6 +27,7 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.backends.base import MAINTENANCE
 from app.backends.base import BackendAccess
+from app.backends.base import base_relation
 from app.ids import generate_id_with_timestamp
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -352,6 +353,7 @@ class TestGrepScanScope:
         connection = _RecordingConnection(row_id)
         pg_backend = Mock()
         pg_backend.backend_type = 'postgresql'
+        pg_backend.readable_relation = base_relation
         bob = AccessScope('bob', frozenset({'team-x'}))
         handed: list[BackendAccess] = []
 

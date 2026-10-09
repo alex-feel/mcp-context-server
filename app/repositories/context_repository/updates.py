@@ -156,7 +156,8 @@ class ContextUpdateMixin(BaseRepository):
         probe_access = build_access_predicate(
             scope, mode=mode, backend_type=backend_type, outer='context_entries', start=2,
         )
-        probe_query = f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}{probe_access.and_clause()}'
+        entries = self._readable('context_entries', alias='context_entries')
+        probe_query = f'SELECT id FROM {entries} WHERE id = {self._placeholder(1)}{probe_access.and_clause()}'
         probe_params: list[object] = [context_id, *probe_access.params]
 
         if backend_type == 'sqlite':
@@ -377,7 +378,8 @@ class ContextUpdateMixin(BaseRepository):
         check_access = build_access_predicate(
             scope, mode=AccessMode.WRITE, backend_type=backend_type, outer='context_entries', start=2,
         )
-        check_query = f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}{check_access.and_clause()}'
+        entries = self._readable('context_entries', alias='context_entries')
+        check_query = f'SELECT id FROM {entries} WHERE id = {self._placeholder(1)}{check_access.and_clause()}'
         check_params: list[object] = [context_id, *check_access.params]
         update_access = build_access_predicate(
             scope, mode=AccessMode.WRITE, backend_type=backend_type, outer='context_entries', start=3,

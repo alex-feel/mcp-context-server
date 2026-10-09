@@ -78,6 +78,7 @@ class ContextReadMixin(BaseRepository):
         # ORDER BY compares).
         chunks = chunk_ids(context_ids)
         backend_type = self.backend.backend_type
+        entries = self._readable('context_entries', alias='context_entries')
 
         def _chunk_statement(chunk: list[str]) -> tuple[str, list[object]]:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(chunk))])
@@ -86,7 +87,7 @@ class ContextReadMixin(BaseRepository):
             )
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'''
-                SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
+                SELECT {CONTEXT_ENTRY_COLUMNS} FROM {entries}
                 WHERE id IN ({placeholders}){read.and_clause()}
                 ORDER BY created_at DESC, id DESC
             '''
@@ -149,8 +150,9 @@ class ContextReadMixin(BaseRepository):
         read = build_access_predicate(
             scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=id_position + 1,
         )
+        entries = self._readable('context_entries', alias='context_entries')
         query = (
-            f'SELECT source, version, owner_id, {_admits_sql(write)} AS can_write FROM context_entries '
+            f'SELECT source, version, owner_id, {_admits_sql(write)} AS can_write FROM {entries} '
             f'WHERE id = {self._placeholder(id_position)}{read.and_clause()} LIMIT 1'
         )
         params: list[object] = [*write.params, context_id, *read.params]
@@ -218,6 +220,7 @@ class ContextReadMixin(BaseRepository):
 
         backend_type = txn.backend_type if txn else self.backend.backend_type
         chunks = chunk_ids(context_ids)
+        entries = self._readable('context_entries', alias='context_entries')
 
         def _chunk_statement(chunk: list[str]) -> tuple[str, list[object]]:
             # Placeholder order follows the text: the WRITE and OWNER binds of the
@@ -237,7 +240,7 @@ class ContextReadMixin(BaseRepository):
             )
             query = (
                 f'SELECT id, {_admits_sql(write)} AS can_write, {_admits_sql(owner)} AS is_owner '
-                f'FROM context_entries WHERE id IN ({placeholders}){read.and_clause()}'
+                f'FROM {entries} WHERE id IN ({placeholders}){read.and_clause()}'
             )
             return query, [*write.params, *owner.params, *chunk, *read.params]
 
@@ -372,7 +375,8 @@ class ContextReadMixin(BaseRepository):
         write = build_access_predicate(
             scope, mode=AccessMode.WRITE, backend_type=backend_type, outer='context_entries', start=2,
         )
-        query = f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}{write.and_clause()}'
+        entries = self._readable('context_entries', alias='context_entries')
+        query = f'SELECT content_type FROM {entries} WHERE id = {self._placeholder(1)}{write.and_clause()}'
         params: list[object] = [context_id, *write.params]
 
         if backend_type == 'sqlite':
@@ -425,6 +429,7 @@ class ContextReadMixin(BaseRepository):
         )
         limit_placeholder = self._placeholder(2 + read.bind_count)
         params: list[object] = [prefix + '%', *read.params, limit]
+        entries = self._readable('context_entries', alias='context_entries')
 
         if backend_type == 'sqlite':
 
@@ -432,7 +437,7 @@ class ContextReadMixin(BaseRepository):
                 cursor = conn.cursor()
                 cursor.execute(
                     f'''
-                    SELECT id FROM context_entries
+                    SELECT id FROM {entries}
                     WHERE id LIKE {self._placeholder(1)}{read.and_clause()}
                     ORDER BY id
                     LIMIT {limit_placeholder}
@@ -449,7 +454,7 @@ class ContextReadMixin(BaseRepository):
         async def _find_postgresql(conn: 'asyncpg.Connection') -> list[str]:
             rows = await conn.fetch(
                 f'''
-                SELECT id FROM context_entries
+                SELECT id FROM {entries}
                 WHERE REPLACE(CAST(id AS TEXT), '-', '') LIKE {self._placeholder(1)}{read.and_clause()}
                 ORDER BY id
                 LIMIT {limit_placeholder}

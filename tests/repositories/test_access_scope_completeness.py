@@ -7,8 +7,8 @@ The classification and the source parser live in
 share. Six rules hold:
 
 1. Detection: every method whose non-docstring string constants carry a statement against
-   ``context_entries`` or one of its child tables is a key of :data:`REGISTRY`, and every
-   key names a method of the package.
+   ``context_entries`` or one of its child tables, or that reads one through the read seam
+   ``_readable``, is a key of :data:`REGISTRY`, and every key names a method of the package.
 2. Classification: :data:`REGISTRY` assigns each method a :class:`Seam`.
 3. Predicate reference: every scoped, write-authorized and owner-keyed method builds the
    access predicate, hands its scope to a predicate fragment helper, or is a dispatcher

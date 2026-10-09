@@ -13,6 +13,7 @@ from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessScope
 from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
+from app.backends.base import base_relation
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
 from tests.helpers import LOCAL_SCOPE
@@ -391,6 +392,7 @@ class TestContextRepositorySearch:
         """
         pg_backend = Mock()
         pg_backend.backend_type = 'postgresql'
+        pg_backend.readable_relation = base_relation
 
         async def _execute_read(
             closure: Callable[[object], Awaitable[tuple[list[object], dict[str, object]]]],
@@ -431,6 +433,7 @@ def _recording_postgresql_repo(rows: list[object]) -> tuple[ContextRepository, l
 
     pg_backend = Mock()
     pg_backend.backend_type = 'postgresql'
+    pg_backend.readable_relation = base_relation
 
     async def _execute_read(closure: Callable[[object], Awaitable[object]], *, access_scope: BackendAccess) -> object:
         _ = access_scope

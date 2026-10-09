@@ -16,6 +16,7 @@ import pytest
 
 from app.backends import StorageBackend
 from app.backends.base import BackendAccess
+from app.backends.base import base_relation
 from app.repositories.tag_repository import TagRepository
 from tests.helpers import LOCAL_SCOPE
 
@@ -531,6 +532,10 @@ class _OrderRecordingBackend:
 
     def __init__(self) -> None:
         self.connection = _OrderRecordingConnection()
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name every table by its own name, as a backend without access views does."""
+        return base_relation(table, alias=alias)
 
     async def execute_read(self, operation: Callable[[Any], Awaitable[T]], *, access_scope: BackendAccess) -> T:
         """Run the repository's async closure against the recording connection.

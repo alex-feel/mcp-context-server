@@ -237,18 +237,19 @@ class ImageRepository(BaseRepository):
 
             def _get_images_sqlite(conn: sqlite3.Connection) -> list[ImageDict]:
                 cursor = conn.cursor()
+                image_rows = self._readable('image_attachments', alias='image_attachments')
 
                 if include_data:
                     query = f'''
                         SELECT image_data, mime_type, image_metadata, position
-                        FROM image_attachments
+                        FROM {image_rows}
                         WHERE context_entry_id = {self._placeholder(1)}
                         ORDER BY position
                     '''
                 else:
                     query = f'''
                         SELECT mime_type, image_metadata, position
-                        FROM image_attachments
+                        FROM {image_rows}
                         WHERE context_entry_id = {self._placeholder(1)}
                         ORDER BY position
                     '''
@@ -277,17 +278,18 @@ class ImageRepository(BaseRepository):
         # postgresql
 
         async def _get_images_postgresql(conn: 'asyncpg.Connection') -> list[ImageDict]:
+            image_rows = self._readable('image_attachments', alias='image_attachments')
             if include_data:
                 query = f'''
                         SELECT image_data, mime_type, image_metadata, position
-                        FROM image_attachments
+                        FROM {image_rows}
                         WHERE context_entry_id = {self._placeholder(1)}
                         ORDER BY position
                     '''
             else:
                 query = f'''
                         SELECT mime_type, image_metadata, position
-                        FROM image_attachments
+                        FROM {image_rows}
                         WHERE context_entry_id = {self._placeholder(1)}
                         ORDER BY position
                     '''
@@ -339,7 +341,8 @@ class ImageRepository(BaseRepository):
 
             def _count_images_sqlite(conn: sqlite3.Connection) -> int:
                 cursor = conn.cursor()
-                query = f'SELECT COUNT(*) as count FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
+                image_rows = self._readable('image_attachments', alias='image_attachments')
+                query = f'SELECT COUNT(*) as count FROM {image_rows} WHERE context_entry_id = {self._placeholder(1)}'
                 cursor.execute(query, (context_id,))
                 result = cursor.fetchone()
                 return int(result['count']) if result else 0
@@ -351,7 +354,8 @@ class ImageRepository(BaseRepository):
         # postgresql
 
         async def _count_images_postgresql(conn: 'asyncpg.Connection') -> int:
-            query = f'SELECT COUNT(*) as count FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
+            image_rows = self._readable('image_attachments', alias='image_attachments')
+            query = f'SELECT COUNT(*) as count FROM {image_rows} WHERE context_entry_id = {self._placeholder(1)}'
             result = await conn.fetchrow(query, context_id)
             return int(result['count']) if result else 0
 
