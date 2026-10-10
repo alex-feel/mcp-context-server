@@ -20,11 +20,28 @@ Note: Currently, the UserPromptSubmit event does not provide images from user
 requests, so this hook cannot save image content to the context server. Only
 text prompts are captured and stored.
 
+Claude Code kills a hook at the timeout its environment registers and discards
+its output, so the hook keeps one shorter time budget of its own,
+mcp_client.deadline_seconds, measured from its start: every connection or
+request timeout is capped by what remains of the budget, no attempt starts once
+less than a second remains, and the run ends with an answer for the model before
+the budget does. A store request that fails or times out after it was sent is
+never sent again within the run, because the server may have received it and
+would store the message twice; only a failure before the request is sent is
+retried. When the message is not confirmed stored, the hook exits 0 and tells
+the model so through additionalContext, naming the thread and the stage the run
+reached: when no store request was sent, the model stores the prompt itself
+with the context-server store tool; when one was sent, the server may still
+complete it, so the model searches the thread at the end of the turn and
+stores a copy only if none landed, and a chunked store names the chunks the
+server confirmed.
+
 main() relies on its helpers being correct under the platform contract; only
 narrower handlers exist (json.JSONDecodeError for malformed stdin from Claude
-Code; an inner except Exception around the MCP store_context call and its
-additionalContext emission to absorb realistic remote-service failures without
-blocking the user's workflow). There is no outer catch-all except Exception
+Code; an inner except Exception around building the MCP client and its
+store_context call to absorb realistic remote-service failures without blocking
+the user's workflow, followed by the notice that tells the model the message was
+not confirmed stored). There is no outer catch-all except Exception
 block: an unexpected exception escapes to Python's default handler, so the hook
 exits non-zero and the transcript shows a hook error notice carrying the first
 stderr line. The full traceback is recorded only in Claude Code's debug log,
@@ -63,6 +80,11 @@ from typing import Any
 from typing import cast
 
 from fastmcp import Client
+
+# The run's clock starts once the interpreter has imported the hook's
+# dependencies; the gap between mcp_client.deadline_seconds and the Claude Code
+# hook timeout covers what runs before this line.
+_HOOK_STARTED_AT = time.monotonic()
 
 
 def _load_config_loader() -> ModuleType:
@@ -138,6 +160,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'connection_timeout': 30.0,  # Timeout per connection attempt (seconds)
         'timeout_first_run': 240.0,
         'timeout_normal': 240.0,
+        # The run's whole time budget (seconds), measured from the hook's start.
+        # Every timeout above is capped by what remains of it, so the hook answers
+        # before the Claude Code hook timeout kills it. A UserPromptSubmit hook gets
+        # 30 seconds unless its event entry registers a timeout, so this default
+        # leaves 10 of them for startup; a config pairs a longer budget with a
+        # longer registered timeout.
+        'deadline_seconds': 20.0,
     },
     'mcp_server': {
         # Transport type: 'stdio' (default) or 'http'
@@ -154,8 +183,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 'timeout': 30.0,  # Request timeout in seconds
     },
     'chunking': {
-        'max_chunk_retries': 3,  # Retries per chunk within single connection
-        'chunk_retry_delay': 0.5,  # Initial delay between chunk retries (seconds)
         'fail_mode': 'warn',  # 'silent', 'warn', or 'error'
     },
 }
@@ -392,12 +419,139 @@ def report_error(error_type: str, error_msg: str) -> None:
             pass
 
 
+class Deadline:
+    """
+    The run's one time budget, shared by every attempt the hook makes.
+
+    Claude Code kills a hook at the timeout its environment registers and
+    discards its output, so the hook keeps a shorter budget of its own and
+    answers before that happens: every connection or request timeout is capped
+    by what remains of the budget, and no attempt starts once less than
+    MIN_ATTEMPT_SECONDS remains. Elapsed time is read from a monotonic clock
+    against the start the budget was given, by default its creation.
+    """
+
+    MIN_ATTEMPT_SECONDS = 1.0
+
+    def __init__(self, seconds: float, started_at: float | None = None) -> None:
+        """
+        Initialize the budget.
+
+        Args:
+            seconds: The whole budget, in seconds
+            started_at: The time.monotonic() reading the budget counts from; now when omitted
+        """
+        self.seconds = seconds
+        self.started_at = time.monotonic() if started_at is None else started_at
+
+    def elapsed(self) -> float:
+        """Return the seconds used since the start."""
+        return time.monotonic() - self.started_at
+
+    def remaining(self) -> float:
+        """Return the seconds left, never below zero."""
+        return max(0.0, self.seconds - self.elapsed())
+
+    def cap(self, timeout: float) -> float:
+        """Return the smaller of a timeout and the remaining budget."""
+        return min(timeout, self.remaining())
+
+    def allows_attempt(self) -> bool:
+        """Return whether at least MIN_ATTEMPT_SECONDS of the budget remain for another attempt."""
+        return self.remaining() >= self.MIN_ATTEMPT_SECONDS
+
+    def describe(self) -> str:
+        """Return the budget and its used part as a short phrase for log and error text."""
+        return f'{self.elapsed():.1f}s of the {self.seconds:g}s hook deadline used'
+
+
+class UnconfirmedStoreError(Exception):
+    """
+    A run that ended without the server confirming the message stored.
+
+    Attributes:
+        cause: The last attempt's own failure, or a TimeoutError naming the budget
+            when no attempt could start within it
+        request_sent: Whether a store request had been sent when the run ended; when
+            it had, the server may still complete it
+        stored_context_ids: The context_ids of the chunks the server confirmed before
+            the run ended (chunked store only)
+        total_chunks: The number of chunks the message was split into, or None for a
+            single store
+    """
+
+    def __init__(
+        self,
+        cause: Exception,
+        request_sent: bool,
+        stored_context_ids: list[int] | None = None,
+        total_chunks: int | None = None,
+    ) -> None:
+        """
+        Initialize the error.
+
+        Args:
+            cause: The last attempt's own failure
+            request_sent: Whether a store request had been sent when the run ended
+            stored_context_ids: The context_ids of the chunks the server confirmed
+            total_chunks: The number of chunks, or None for a single store
+        """
+        super().__init__(f'{type(cause).__name__}: {cause}')
+        self.cause = cause
+        self.request_sent = request_sent
+        self.stored_context_ids = list(stored_context_ids or [])
+        self.total_chunks = total_chunks
+
+
+def _unconfirmed_store_error(
+    deadline: Deadline,
+    last_error: Exception | None,
+    request_sent: bool,
+    max_attempts: int,
+    error_type: str,
+    stored_context_ids: list[int] | None = None,
+    total_chunks: int | None = None,
+) -> UnconfirmedStoreError:
+    """
+    Build and record the error that ends a run whose message was not confirmed stored.
+
+    Args:
+        deadline: The run's budget
+        last_error: The failure of the last attempt, or None when no attempt could start
+        request_sent: Whether the last attempt had sent its store request when it failed
+        max_attempts: The configured number of connection attempts
+        error_type: The category the failure is reported under
+        stored_context_ids: The context_ids of the chunks the server confirmed (chunked store only)
+        total_chunks: The number of chunks, or None for a single store
+
+    Returns:
+        The error for the caller to raise, carrying the last attempt's own error (or
+        a TimeoutError naming the budget when no attempt could start within it), the
+        stage the run reached, and the chunks already stored.
+    """
+    cause: Exception = (
+        last_error if last_error is not None
+        else TimeoutError(f'no connection attempt could start ({deadline.describe()})')
+    )
+    error = UnconfirmedStoreError(cause, request_sent, stored_context_ids, total_chunks)
+    if request_sent:
+        detail = f'store request sent but not confirmed ({deadline.describe()}): {error}'
+        if total_chunks is not None:
+            detail += f'; chunks confirmed: {len(error.stored_context_ids)}/{total_chunks} {error.stored_context_ids}'
+    else:
+        detail = f'no store request was sent within {max_attempts} connection attempt(s) ({deadline.describe()}): {error}'
+    log_always(detail, level='ERROR')
+    report_error(error_type, detail)
+    return error
+
+
 class SyncMCPClient:
     """
     Synchronous wrapper for the async FastMCP client.
 
     This wrapper allows us to use the async FastMCP client in a synchronous
-    context, which is required for Claude Code hooks.
+    context, which is required for Claude Code hooks. Every attempt it makes
+    runs under the run's time budget, and a store request is sent at most once.
     """
 
     def __init__(
@@ -406,26 +560,27 @@ class SyncMCPClient:
         timeout: float = 120.0,
         max_connection_retries: int = 3,
         connection_timeout: float = 30.0,
-        config: dict[str, Any] | None = None,
+        deadline: Deadline | None = None,
     ) -> None:
         """
         Initialize the synchronous MCP client wrapper.
 
         Args:
             server_command: Command to start the MCP server (list or string)
-            timeout: Timeout in seconds for MCP operations
-            max_connection_retries: Number of retry attempts for MCP connection
+            timeout: Timeout in seconds per attempt, capped by the run's remaining budget
+            max_connection_retries: Number of connection attempts before the store request is sent
             connection_timeout: Timeout in seconds per connection attempt
-            config: Optional configuration dictionary with chunking settings
+            deadline: The run's time budget; the default budget, starting now, when omitted
         """
         self.server_command = server_command
         self.timeout = timeout
         self.max_connection_retries = max_connection_retries
         self.connection_timeout = connection_timeout
-        self.config = config or DEFAULT_CONFIG
+        self.deadline = deadline if deadline is not None else Deadline(DEFAULT_CONFIG['mcp_client']['deadline_seconds'])
         log_always(
             f'SyncMCPClient initialized: command={server_command}, timeout={timeout}, '
-            f'max_conn_retries={max_connection_retries}, conn_timeout={connection_timeout}',
+            f'max_conn_retries={max_connection_retries}, conn_timeout={connection_timeout}, '
+            f'deadline={self.deadline.seconds}s',
         )
 
     def _run_async(self, coro: Coroutine[Any, Any, dict[str, Any]]) -> dict[str, Any]:
@@ -551,6 +706,26 @@ class SyncMCPClient:
 
         return chunks
 
+    @staticmethod
+    def _response_payload(result: object) -> dict[str, Any]:
+        """
+        Return the dictionary a store_context response carries.
+
+        FastMCP delivers the tool's structured output as structured_content; a
+        response without one is returned as it is.
+
+        Args:
+            result: The value call_tool returned
+
+        Returns:
+            The structured content when present, otherwise the result itself
+        """
+        structured_content = getattr(result, 'structured_content', None)
+        if structured_content is not None:
+            log_always('Using structured_content for stdio response')
+            return cast(dict[str, Any], structured_content)
+        return cast(dict[str, Any], result)
+
     async def _store_single_context_async(
         self,
         thread_id: str,
@@ -561,8 +736,15 @@ class SyncMCPClient:
         """
         Store a single context message asynchronously using the MCP server.
 
-        Includes retry logic with exponential backoff for connection reliability.
-        The connection is wrapped in asyncio.timeout() to prevent hanging.
+        Each attempt starts the server, connects, and sends one store_context
+        request, under a timeout capped by the run's remaining budget. A failure
+        before the request is sent (the server did not start, the connection was
+        not established) is retried with exponential backoff while the budget
+        allows another attempt. A failure or timeout after the request was sent
+        ends the run without a retry: the server may have received the request,
+        and a second copy would duplicate the entry. A run that ends without a
+        confirmed store raises UnconfirmedStoreError, carrying the last attempt's
+        own error and whether the request was sent.
 
         Args:
             thread_id: The thread/session identifier
@@ -572,9 +754,6 @@ class SyncMCPClient:
 
         Returns:
             The server response as a dictionary
-
-        Raises:
-            RuntimeError: If all connection retries are exhausted
         """
         from fastmcp.client.transports import StdioTransport
 
@@ -595,17 +774,21 @@ class SyncMCPClient:
 
         last_error: Exception | None = None
         max_retries = self.max_connection_retries
-        operation_timeout = self.timeout
+        request_sent = False
 
         for attempt in range(max_retries):
+            if not self.deadline.allows_attempt():
+                log_always(f'No further connection attempt: {self.deadline.describe()}', level='WARN')
+                break
+            attempt_timeout = self.deadline.cap(self.timeout)
             try:
-                log_always(f'Connection attempt {attempt + 1}/{max_retries} (timeout={operation_timeout}s)')
+                log_always(f'Connection attempt {attempt + 1}/{max_retries} (timeout={attempt_timeout}s)')
 
                 transport = cast(Any, StdioTransport(cmd, args, env=env))
                 log_always('StdioTransport created')
 
-                # Wrap connection in asyncio.timeout for reliability
-                async with asyncio.timeout(operation_timeout):
+                # The timeout covers the connection and the request together
+                async with asyncio.timeout(attempt_timeout):
                     async with cast(Any, Client(transport)) as client:
                         # Connection health check - log successful connection
                         log_always('MCP client connected successfully (health check passed)')
@@ -623,22 +806,17 @@ class SyncMCPClient:
                             params['metadata'] = metadata
 
                         log_always(f'Calling store_context with thread_id={thread_id}, source={source}')
+                        # From here on the request may have reached the server, so a
+                        # failure ends the run instead of sending a second copy
+                        request_sent = True
                         result = await client.call_tool('store_context', params)
                         log_always(f'store_context returned: {type(result).__name__}')
-
-                        # Use structured_content if available (canonical FastMCP approach)
-                        if hasattr(result, 'structured_content') and result.structured_content is not None:
-                            log_always('Using structured_content for stdio response')
-                            return cast(dict[str, Any], result.structured_content)
-
-                        return cast(dict[str, Any], result)
+                        return self._response_payload(result)
 
             except TimeoutError:
-                last_error = TimeoutError(f'Connection timed out after {operation_timeout}s')
-                log_always(
-                    f'Connection attempt {attempt + 1}/{max_retries} timed out after {operation_timeout}s',
-                    level='WARN',
-                )
+                stage = 'store_context request' if request_sent else 'connection attempt'
+                last_error = TimeoutError(f'{stage} timed out after {attempt_timeout}s')
+                log_always(f'Connection attempt {attempt + 1}/{max_retries}: {last_error}', level='WARN')
             except Exception as e:
                 last_error = e
                 log_always(
@@ -646,22 +824,17 @@ class SyncMCPClient:
                     level='WARN',
                 )
 
-            # Exponential backoff before retry (1s, 2s, 4s)
+            if request_sent:
+                break
+
+            # Exponential backoff before retry (1s, 2s, 4s), within the remaining budget
             if attempt < max_retries - 1:
-                backoff_delay = 1.0 * (2**attempt)
+                backoff_delay = min(1.0 * (2**attempt), self.deadline.remaining())
                 log_always(f'Waiting {backoff_delay}s before retry (exponential backoff)')
                 await asyncio.sleep(backoff_delay)
 
-        # All retries exhausted
-        error_msg = f'All {max_retries} connection attempts failed'
-        if last_error:
-            error_msg = f'{error_msg}: {type(last_error).__name__}: {last_error}'
-        log_always(error_msg, level='ERROR')
-        report_error('MCP_CONNECTION_EXHAUSTED', error_msg)
-
-        if last_error:
-            raise last_error
-        raise RuntimeError(error_msg)
+        failure = _unconfirmed_store_error(self.deadline, last_error, request_sent, max_retries, 'MCP_CONNECTION_EXHAUSTED')
+        raise failure from failure.cause
 
     async def _store_context_async(
         self,
@@ -677,9 +850,9 @@ class SyncMCPClient:
         exceed the Windows subprocess pipe buffer limit (~64KB). Messages are split
         at safe boundaries to avoid breaking UTF-8 encoding.
 
-        CRITICAL: Uses a SINGLE MCP connection for ALL chunks to prevent connection
-        churn and ensure reliable chunked storage. Per-chunk retry with exponential
-        backoff is implemented within the single connection.
+        One MCP connection carries all chunks, each sent exactly once; a chunk
+        whose request fails after it was sent is reported as failed rather than
+        sent again.
 
         Args:
             thread_id: The thread/session identifier
@@ -717,19 +890,12 @@ class SyncMCPClient:
             f'sizes={chunk_byte_sizes}, avg={sum(chunk_byte_sizes) / len(chunks):.0f} bytes',
         )
 
-        # Get chunking config settings
-        chunking_config = self.config.get('chunking', DEFAULT_CONFIG['chunking'])
-        max_chunk_retries = chunking_config.get('max_chunk_retries', 3)
-        chunk_retry_delay = chunking_config.get('chunk_retry_delay', 0.5)
-
-        # Use SINGLE connection for ALL chunks to prevent connection churn
+        # One connection carries every chunk
         return await self._store_chunks_single_connection(
             thread_id=thread_id,
             source=source,
             chunks=chunks,
             text_bytes=text_bytes,
-            max_chunk_retries=max_chunk_retries,
-            chunk_retry_delay=chunk_retry_delay,
         )
 
     async def _store_chunks_single_connection(
@@ -738,33 +904,33 @@ class SyncMCPClient:
         source: str,
         chunks: list[str],
         text_bytes: int,
-        max_chunk_retries: int,
-        chunk_retry_delay: float,
     ) -> dict[str, Any]:
         """
-        Store all chunks using a SINGLE MCP connection.
+        Store all chunks through one MCP connection.
 
-        This method establishes ONE connection and stores ALL chunks through it,
-        with per-chunk retry logic using exponential backoff. This prevents the
-        connection churn that was causing chunk 2+ failures.
+        One connection carries every chunk, each sent as its own store_context
+        request exactly once: a chunk whose request fails after it was sent is
+        recorded as failed rather than sent again, because the server may have
+        received it, and the remaining chunks still go out. A failure before the
+        first request is sent is retried with exponential backoff while the
+        run's budget allows another attempt, and the whole exchange runs under a
+        timeout capped by that budget. An exchange that does not finish raises
+        UnconfirmedStoreError, carrying the last connection attempt's own error,
+        whether a chunk was sent, and the context_ids of the chunks the server
+        confirmed before it ended.
 
         Args:
             thread_id: The thread/session identifier
             source: The source of the context
             chunks: List of text chunks to store
             text_bytes: Total size in bytes for logging
-            max_chunk_retries: Maximum retry attempts per chunk
-            chunk_retry_delay: Initial delay between chunk retries (seconds)
 
         Returns:
             Summary of chunked storage results
-
-        Raises:
-            RuntimeError: If all connection retries are exhausted
         """
         from fastmcp.client.transports import StdioTransport
 
-        log_always(f'_store_chunks_single_connection: storing {len(chunks)} chunks through SINGLE connection')
+        log_always(f'_store_chunks_single_connection: storing {len(chunks)} chunks through one connection')
 
         if isinstance(self.server_command, list):
             cmd = self.server_command[0]
@@ -781,24 +947,27 @@ class SyncMCPClient:
 
         last_error: Exception | None = None
         max_retries = self.max_connection_retries
-        # Extended timeout for chunked storage: base timeout * number of chunks
-        extended_timeout = self.timeout * max(len(chunks), 2)
+        request_sent = False
+        # Only the attempt that sends chunks fills this, and no attempt follows it
+        results: list[dict[str, Any]] = []
 
         for conn_attempt in range(max_retries):
+            if not self.deadline.allows_attempt():
+                log_always(f'No further connection attempt: {self.deadline.describe()}', level='WARN')
+                break
+            # Extended timeout for chunked storage: base timeout * number of chunks, within the budget
+            extended_timeout = self.deadline.cap(self.timeout * max(len(chunks), 2))
             try:
                 log_always(f'Connection attempt {conn_attempt + 1}/{max_retries} (timeout={extended_timeout}s)')
 
                 transport = cast(Any, StdioTransport(cmd, args, env=env))
                 log_always('StdioTransport created for chunked storage')
 
-                # Wrap connection in asyncio.timeout for reliability
+                # The timeout covers the connection and every chunk together
                 async with asyncio.timeout(extended_timeout):
                     async with cast(Any, Client(transport)) as client:
-                        log_always('MCP client connected for chunked storage (SINGLE connection for all chunks)')
+                        log_always('MCP client connected for chunked storage (one connection for all chunks)')
 
-                        results: list[dict[str, Any]] = []
-
-                        # Store ALL chunks through the SAME connection
                         for idx, chunk in enumerate(chunks):
                             chunk_num = idx + 1
                             chunk_byte_size = len(chunk.encode('utf-8'))
@@ -820,51 +989,29 @@ class SyncMCPClient:
                                 'is_chunked': True,
                             }
 
-                            # Per-chunk retry with exponential backoff (within same connection)
-                            chunk_stored = False
-                            chunk_last_error: Exception | None = None
+                            # Normalize Windows line endings for NDJSON format
+                            normalized_chunk = chunk.replace('\r\n', '\n').replace('\r', '\n')
 
-                            for chunk_attempt in range(max_chunk_retries):
-                                try:
-                                    # Normalize Windows line endings for NDJSON format
-                                    normalized_chunk = chunk.replace('\r\n', '\n').replace('\r', '\n')
+                            params: dict[str, Any] = {
+                                'thread_id': thread_id,
+                                'source': source,
+                                'text': normalized_chunk,
+                                'metadata': metadata,
+                            }
 
-                                    params: dict[str, Any] = {
-                                        'thread_id': thread_id,
-                                        'source': source,
-                                        'text': normalized_chunk,
-                                        'metadata': metadata,
-                                    }
-
-                                    result = await client.call_tool('store_context', params)
-                                    results.append(cast(dict[str, Any], result))
-                                    log_always(f'Chunk {chunk_num}/{len(chunks)} stored successfully')
-                                    chunk_stored = True
-                                    break  # Success, move to next chunk
-
-                                except Exception as chunk_error:
-                                    chunk_last_error = chunk_error
-                                    if chunk_attempt < max_chunk_retries - 1:
-                                        # Exponential backoff: delay * 2^attempt
-                                        backoff = chunk_retry_delay * (2**chunk_attempt)
-                                        log_always(
-                                            f'Chunk {chunk_num} attempt {chunk_attempt + 1}/{max_chunk_retries} '
-                                            f'failed: {chunk_error}. Retrying in {backoff}s',
-                                            level='WARN',
-                                        )
-                                        await asyncio.sleep(backoff)
-                                    else:
-                                        log_always(
-                                            f'Chunk {chunk_num} failed after {max_chunk_retries} attempts: '
-                                            f'{chunk_error}',
-                                            level='ERROR',
-                                        )
-
-                            if not chunk_stored:
-                                # All retries exhausted for this chunk
-                                error_msg = str(chunk_last_error) if chunk_last_error else 'Unknown error'
-                                error_result: dict[str, Any] = {'error': error_msg, 'chunk': chunk_num}
-                                results.append(error_result)
+                            # From here on the request may have reached the server, so a
+                            # failed chunk is recorded instead of being sent again
+                            request_sent = True
+                            try:
+                                result = await client.call_tool('store_context', params)
+                                results.append(self._response_payload(result))
+                                log_always(f'Chunk {chunk_num}/{len(chunks)} stored successfully')
+                            except Exception as chunk_error:
+                                log_always(
+                                    f'Chunk {chunk_num}/{len(chunks)} failed: {type(chunk_error).__name__}: {chunk_error}',
+                                    level='ERROR',
+                                )
+                                results.append({'error': str(chunk_error), 'chunk': chunk_num})
 
                         # All chunks processed - return results
                         successful_chunks = [r for r in results if 'error' not in r]
@@ -887,11 +1034,9 @@ class SyncMCPClient:
                         }
 
             except TimeoutError:
-                last_error = TimeoutError(f'Connection timed out after {extended_timeout}s')
-                log_always(
-                    f'Connection attempt {conn_attempt + 1}/{max_retries} timed out after {extended_timeout}s',
-                    level='WARN',
-                )
+                stage = 'chunked store_context exchange' if request_sent else 'connection attempt'
+                last_error = TimeoutError(f'{stage} timed out after {extended_timeout}s')
+                log_always(f'Connection attempt {conn_attempt + 1}/{max_retries}: {last_error}', level='WARN')
             except Exception as e:
                 last_error = e
                 log_always(
@@ -899,22 +1044,23 @@ class SyncMCPClient:
                     level='WARN',
                 )
 
-            # Exponential backoff before retry (1s, 2s, 4s)
+            if request_sent:
+                break
+
+            # Exponential backoff before retry (1s, 2s, 4s), within the remaining budget
             if conn_attempt < max_retries - 1:
-                backoff_delay = 1.0 * (2**conn_attempt)
+                backoff_delay = min(1.0 * (2**conn_attempt), self.deadline.remaining())
                 log_always(f'Waiting {backoff_delay}s before connection retry (exponential backoff)')
                 await asyncio.sleep(backoff_delay)
 
-        # All connection retries exhausted
-        error_msg = f'All {max_retries} connection attempts failed for chunked storage'
-        if last_error:
-            error_msg = f'{error_msg}: {type(last_error).__name__}: {last_error}'
-        log_always(error_msg, level='ERROR')
-        report_error('MCP_CHUNKED_CONNECTION_EXHAUSTED', error_msg)
-
-        if last_error:
-            raise last_error
-        raise RuntimeError(error_msg)
+        stored_context_ids = [
+            r['context_id'] for r in results if 'error' not in r and r.get('context_id') is not None
+        ]
+        failure = _unconfirmed_store_error(
+            self.deadline, last_error, request_sent, max_retries, 'MCP_CHUNKED_CONNECTION_EXHAUSTED',
+            stored_context_ids=stored_context_ids, total_chunks=len(chunks),
+        )
+        raise failure from failure.cause
 
     def store_context(
         self,
@@ -959,25 +1105,28 @@ class FastMCPHttpClient:
         headers: dict[str, str] | None = None,
         max_retries: int = 3,
         config: dict[str, Any] | None = None,
+        deadline: Deadline | None = None,
     ) -> None:
         """
         Initialize the FastMCP HTTP client.
 
         Args:
             url: The MCP server endpoint URL
-            timeout: Request timeout in seconds
+            timeout: Request timeout in seconds per attempt, capped by the run's remaining budget
             headers: Optional custom headers for authentication
-            max_retries: Number of retry attempts for failed requests
+            max_retries: Number of connection attempts before the store request is sent
             config: Optional configuration dictionary
+            deadline: The run's time budget; the default budget, starting now, when omitted
         """
         self.url = url
         self.timeout = timeout
         self.headers = headers or {}
         self.max_retries = max_retries
         self.config = config or DEFAULT_CONFIG
+        self.deadline = deadline if deadline is not None else Deadline(DEFAULT_CONFIG['mcp_client']['deadline_seconds'])
         log_always(
             f'FastMCPHttpClient initialized: url={url}, timeout={timeout}, '
-            f'max_retries={max_retries}',
+            f'max_retries={max_retries}, deadline={self.deadline.seconds}s',
         )
 
     def _calculate_message_size(self, thread_id: str, source: str, text: str) -> int:
@@ -995,6 +1144,16 @@ class FastMCPHttpClient:
         """
         Store context asynchronously using FastMCP Client.
 
+        Each attempt connects and sends one store_context request, under a
+        timeout capped by the run's remaining budget. A failure before the
+        request is sent (the connection or the MCP handshake failed) is retried
+        with exponential backoff while the budget allows another attempt. A
+        failure, a tool error, or a timeout after the request was sent ends the
+        run without a retry: the server may have received the request, and a
+        second copy would duplicate the entry. A run that ends without a
+        confirmed store raises UnconfirmedStoreError, carrying the last attempt's
+        own error and whether the request was sent.
+
         Args:
             thread_id: The thread/session identifier
             source: The source of the context (always "user" for this hook)
@@ -1003,12 +1162,8 @@ class FastMCPHttpClient:
 
         Returns:
             The server response as a dictionary
-
-        Raises:
-            RuntimeError: If all retry attempts are exhausted
         """
         from fastmcp.client.transports import StreamableHttpTransport
-        from fastmcp.exceptions import ToolError as FastMCPToolError
 
         log_always(f'_store_context_async: thread_id={thread_id}, source={source}, text_len={len(text)}')
 
@@ -1016,10 +1171,15 @@ class FastMCPHttpClient:
         normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
 
         last_error: Exception | None = None
+        request_sent = False
 
         for attempt in range(self.max_retries):
+            if not self.deadline.allows_attempt():
+                log_always(f'No further connection attempt: {self.deadline.describe()}', level='WARN')
+                break
+            attempt_timeout = self.deadline.cap(self.timeout)
             try:
-                log_always(f'FastMCP HTTP attempt {attempt + 1}/{self.max_retries}')
+                log_always(f'FastMCP HTTP attempt {attempt + 1}/{self.max_retries} (timeout={attempt_timeout}s)')
 
                 # Create transport with custom headers
                 transport = StreamableHttpTransport(
@@ -1027,9 +1187,9 @@ class FastMCPHttpClient:
                     headers=self.headers or None,
                 )
 
-                # Use async context manager for proper connection lifecycle
-                async with asyncio.timeout(self.timeout):
-                    async with Client(transport, timeout=self.timeout) as client:
+                # The timeout covers the connection and the request together
+                async with asyncio.timeout(attempt_timeout):
+                    async with Client(transport, timeout=attempt_timeout) as client:
                         log_always('FastMCP client connected successfully')
 
                         # Build call parameters
@@ -1041,11 +1201,13 @@ class FastMCPHttpClient:
                         if metadata:
                             call_params['metadata'] = metadata
 
-                        # Call store_context tool
+                        # From here on the request may have reached the server, so a
+                        # failure ends the run instead of sending a second copy
+                        request_sent = True
                         result = await client.call_tool(
                             'store_context',
                             call_params,
-                            timeout=self.timeout,
+                            timeout=attempt_timeout,
                             raise_on_error=True,
                         )
 
@@ -1107,18 +1269,10 @@ class FastMCPHttpClient:
                         log_always('[WARN] No structured_content, data, or content available')
                         return {'success': False, 'error': 'No response data available'}
 
-            except FastMCPToolError as e:
-                last_error = e
-                log_always(
-                    f'FastMCP attempt {attempt + 1}/{self.max_retries} tool error: {e}',
-                    level='WARN',
-                )
             except TimeoutError:
-                last_error = TimeoutError(f'Request timed out after {self.timeout}s')
-                log_always(
-                    f'FastMCP attempt {attempt + 1}/{self.max_retries} timed out',
-                    level='WARN',
-                )
+                stage = 'store_context request' if request_sent else 'connection attempt'
+                last_error = TimeoutError(f'{stage} timed out after {attempt_timeout}s')
+                log_always(f'FastMCP attempt {attempt + 1}/{self.max_retries}: {last_error}', level='WARN')
             except Exception as e:
                 last_error = e
                 log_always(
@@ -1127,22 +1281,19 @@ class FastMCPHttpClient:
                     level='WARN',
                 )
 
-            # Exponential backoff before retry
+            if request_sent:
+                break
+
+            # Exponential backoff before retry (1s, 2s, 4s), within the remaining budget
             if attempt < self.max_retries - 1:
-                backoff_delay = 1.0 * (2 ** attempt)
+                backoff_delay = min(1.0 * (2 ** attempt), self.deadline.remaining())
                 log_always(f'Waiting {backoff_delay}s before retry')
                 await asyncio.sleep(backoff_delay)
 
-        # All retries exhausted
-        error_msg = f'All {self.max_retries} FastMCP HTTP attempts failed'
-        if last_error:
-            error_msg = f'{error_msg}: {type(last_error).__name__}: {last_error}'
-        log_always(error_msg, level='ERROR')
-        report_error('FASTMCP_HTTP_CONNECTION_EXHAUSTED', error_msg)
-
-        if last_error:
-            raise last_error
-        raise RuntimeError(error_msg)
+        failure = _unconfirmed_store_error(
+            self.deadline, last_error, request_sent, self.max_retries, 'FASTMCP_HTTP_CONNECTION_EXHAUSTED',
+        )
+        raise failure from failure.cause
 
     def store_context(
         self,
@@ -1387,12 +1538,13 @@ def resolve_thread_id(project_dir: str, config: dict[str, Any], worktree_info: d
     return fallback_name
 
 
-def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
+def create_mcp_client_with_retry(config: dict[str, Any], deadline: Deadline) -> SyncMCPClient:
     """
     Create MCP client with retry logic for uvx reliability.
 
     Args:
         config: Configuration dictionary with mcp_client and mcp_server settings
+        deadline: The run's time budget, shared by every attempt the client makes
 
     Returns:
         Configured SyncMCPClient instance
@@ -1441,7 +1593,7 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
                 timeout=timeout,
                 max_connection_retries=max_connection_retries,
                 connection_timeout=connection_timeout,
-                config=config,
+                deadline=deadline,
             )
 
             if attempts > 0:
@@ -1475,7 +1627,7 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
                             timeout=timeout_normal,
                             max_connection_retries=max_connection_retries,
                             connection_timeout=connection_timeout,
-                            config=config,
+                            deadline=deadline,
                         )
                         log_always('MCP client created successfully in offline mode')
                         return client
@@ -1501,10 +1653,12 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClie
     Create appropriate MCP client based on transport configuration.
 
     This factory function selects between stdio transport (a server launched through uvx)
-    and HTTP transport (using FastMCP Client for remote MCP servers).
+    and HTTP transport (using FastMCP Client for remote MCP servers), and gives the
+    client the run's time budget: mcp_client.deadline_seconds counted from the hook's
+    start, which caps every attempt the client makes.
 
     Args:
-        config: Configuration dictionary with mcp_server settings
+        config: Configuration dictionary with mcp_client and mcp_server settings
 
     Returns:
         Either SyncMCPClient (stdio) or FastMCPHttpClient (http)
@@ -1513,9 +1667,13 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClie
         ValueError: If transport type is invalid or required fields missing
     """
     server_config = config.get('mcp_server', DEFAULT_CONFIG['mcp_server'])
+    mcp_config = config.get('mcp_client', DEFAULT_CONFIG['mcp_client'])
     transport = server_config.get('transport', 'stdio')
 
-    log_always(f'Creating MCP client with transport: {transport}')
+    deadline_seconds = float(mcp_config.get('deadline_seconds', DEFAULT_CONFIG['mcp_client']['deadline_seconds']))
+    deadline = Deadline(deadline_seconds, started_at=_HOOK_STARTED_AT)
+
+    log_always(f'Creating MCP client with transport: {transport} ({deadline.describe()})')
 
     if transport == 'http':
         # HTTP transport using FastMCP Client
@@ -1523,7 +1681,6 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClie
         if not url:
             raise ValueError("mcp_server.url is required when transport is 'http'")
 
-        mcp_config = config.get('mcp_client', DEFAULT_CONFIG['mcp_client'])
         timeout = server_config.get('timeout', mcp_config.get('connection_timeout', 30.0))
         headers = server_config.get('headers', {})
         max_retries = mcp_config.get('max_retries', 3)
@@ -1536,14 +1693,149 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClie
             headers=headers,
             max_retries=max_retries,
             config=config,
+            deadline=deadline,
         )
     if transport == 'stdio':
         # Stdio transport via uvx subprocess. Warm the uvx cache first so the
         # initial connection attempt does not pay the package-download cost.
         _warmup_uvx_cache(server_config)
         log_always('stdio transport: using create_mcp_client_with_retry')
-        return create_mcp_client_with_retry(config)
+        return create_mcp_client_with_retry(config, deadline)
     raise ValueError(f"Invalid mcp_server.transport: {transport}. Must be 'stdio' or 'http'")
+
+
+def _report_stored(result: dict[str, Any], config: dict[str, Any]) -> None:
+    """
+    Report a confirmed store: the context_id, or the chunk ids and any failed chunks.
+
+    Args:
+        result: The store's response, or the chunked store's summary
+        config: The hook configuration
+    """
+    # Check for chunked storage and surface complete chunk-storage info to the
+    # model via additionalContext (both success-chunk-ids AND any partial-failure
+    # summary).
+    if result.get('chunked', False):
+        chunks_failed = result.get('chunks_failed', 0)
+        total_chunks = result.get('total_chunks', 0)
+        chunks_stored = result.get('chunks_stored', 0)
+        failed_numbers = result.get('failed_chunk_numbers', [])
+
+        # Derive chunk_ids by extracting context_id from each successful chunk's
+        # MCP response. The store_context_chunked method returns a list of per-chunk
+        # results: successful chunks have 'context_id' (per the context-server
+        # store_context tool contract); failed chunks have 'error' instead.
+        chunk_ids: list[int] = [
+            r['context_id']
+            for r in result.get('results', [])
+            if 'error' not in r and r.get('context_id') is not None
+        ]
+
+        partial_failure_summary = ''
+        if chunks_failed > 0:
+            # Get fail_mode from config
+            chunking_config = config.get('chunking', DEFAULT_CONFIG['chunking'])
+            fail_mode = chunking_config.get('fail_mode', 'warn')
+
+            partial_failure_summary = (
+                f'Context storage partial failure: {chunks_failed}/{total_chunks} chunks failed '
+                f'(chunks {failed_numbers}). {chunks_stored} chunks stored successfully.'
+            )
+
+            # Always log the failure (existing logging continues)
+            log_always(partial_failure_summary, level='WARN')
+            report_error('CHUNK_STORAGE_PARTIAL', partial_failure_summary)
+
+            # A stderr line chosen by fail_mode. The hook exits 0, and Claude Code
+            # records the stderr of a hook that exits 0 only in its debug log,
+            # which exists only while its debug logging is on (for example under
+            # --debug or --debug-file), so the line reaches neither the transcript
+            # nor the model; the model learns of the partial failure through
+            # additionalContext below while output_context_id is on.
+            if fail_mode == 'warn':
+                print(f'[WARN] {partial_failure_summary}', file=sys.stderr)
+            elif fail_mode == 'error':
+                print(f'[ERROR] {partial_failure_summary}', file=sys.stderr)
+            # 'silent' mode: no stderr output, only logging
+
+            log_always(f'User feedback mode: {fail_mode}')
+        else:
+            log_always(f'SUCCESS: All {total_chunks} chunks stored successfully')
+
+        # Emit chunk-storage info to the model via additionalContext.
+        # Includes chunk_ids whenever any chunks succeeded AND the partial-failure
+        # summary whenever any chunks failed. Both cases coexist when partial.
+        if config.get('output_context_id', True) and (chunk_ids or partial_failure_summary):
+            if partial_failure_summary:
+                chunk_message = (
+                    f'[Hook: user message stored to context-server (chunked).'
+                    f' context_ids={chunk_ids}. {partial_failure_summary}]'
+                )
+            else:
+                chunk_message = (
+                    f'[Hook: user message stored to context-server (chunked).'
+                    f' context_ids={chunk_ids}]'
+                )
+            json_output = _load_json_output()
+            json_output.emit_additional_context('UserPromptSubmit', chunk_message)
+            log_always(f'Output chunk message via additionalContext: {chunk_message}')
+    else:
+        log_always('SUCCESS: Context stored successfully')
+
+        # Output context_id via additionalContext for orchestrator reference
+        if config.get('output_context_id', True):
+            context_id = result.get('context_id')
+            if context_id is not None:
+                single_message = f'[Hook: user message stored to context-server. context_id={context_id}]'
+                json_output = _load_json_output()
+                json_output.emit_additional_context('UserPromptSubmit', single_message)
+                log_always(f'Output context_id={context_id} via additionalContext')
+
+
+def _unconfirmed_store_notice(error: Exception, error_msg: str, thread_id: str, metadata: dict[str, Any]) -> str:
+    """
+    Compose what the model is told when the message was not confirmed stored.
+
+    The model has the context-server tools, so it can store the prompt itself.
+    Whether it should do so now depends on the stage the run reached. Every
+    failure that follows a sent store request arrives as an UnconfirmedStoreError
+    with request_sent set, so any other error means nothing was sent: the thread
+    holds no copy, and the model stores the prompt right away. After a request
+    was sent the server may still complete it, and a copy stored now would
+    duplicate it, so the model searches the thread at the end of the turn, when
+    the server has had the turn to finish, and stores the prompt only if no
+    entry holds it; a chunked store names the chunks already stored.
+
+    Args:
+        error: The error that ended the store
+        error_msg: The error's type and message, as the notice shows them
+        thread_id: The thread the message belongs in
+        metadata: The metadata the hook would have stored the message with
+
+    Returns:
+        The notice text for additionalContext
+    """
+    store_call = f'the context-server store_context tool (thread_id={thread_id}, source=user, metadata={json.dumps(metadata)})'
+    if not (isinstance(error, UnconfirmedStoreError) and error.request_sent):
+        return (
+            f'[Hook: user message not stored to context-server (thread_id={thread_id}; {error_msg}).'
+            f' No store request was sent, so the thread holds no copy: store the prompt yourself now with {store_call}.]'
+        )
+    if error.total_chunks is not None:
+        stage = (
+            f' The chunked store was cut short: the server confirmed {len(error.stored_context_ids)} of'
+            f' {error.total_chunks} chunks (context_ids={error.stored_context_ids}) and may still complete the chunk'
+            f' in flight, so do not store a copy now.'
+            f' At the end of this turn, search thread {thread_id} for the text of this prompt,'
+            f' and store only what no entry holds yourself with {store_call}.]'
+        )
+    else:
+        stage = (
+            ' The store request reached the server, which may still complete it, so do not store a copy now.'
+            f' At the end of this turn, search thread {thread_id} for the text of this prompt, and only if no entry holds it,'
+            f' store the prompt yourself with {store_call}.]'
+        )
+    return f'[Hook: user message not confirmed stored to context-server (thread_id={thread_id}; {error_msg}).{stage}'
 
 
 def main() -> None:
@@ -1652,9 +1944,27 @@ def main() -> None:
     # Resolve thread ID (reads .thread_id file, falls back to project name)
     thread_id = resolve_thread_id(claude_project_dir, config, worktree_info)
 
+    # Build metadata with worktree fields for context isolation.
+    # kind and schema_version follow the universal context-server metadata
+    # schema v1: every entry carries a record-kind discriminator so filters
+    # and future server-side schema enforcement can rely on it.
+    metadata: dict[str, Any] = {
+        'schema_version': 1,
+        'kind': 'user_message',
+        'project': worktree_info['project'],
+    }
+    # Add optional worktree fields if available (git repository detected)
+    if worktree_info.get('worktree_id') is not None:
+        metadata['worktree_id'] = worktree_info['worktree_id']
+    if worktree_info.get('worktree_path') is not None:
+        metadata['worktree_path'] = worktree_info['worktree_path']
+    if worktree_info.get('is_linked_worktree') is not None:
+        metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
+
     # Create MCP client and store context
     try:
-        # Any failure in MCP communication should be silent
+        # A failure in MCP communication never blocks the prompt: the hook exits 0
+        # and tells the model below that the message was not confirmed stored
         #
         # CRITICAL UTF-8 REQUIREMENT:
         # The setup_windows_utf8() function MUST be called before this point
@@ -1669,23 +1979,6 @@ def main() -> None:
         # Create client based on transport configuration (stdio or http)
         client = create_mcp_client(config)
 
-        # Build metadata with worktree fields for context isolation.
-        # kind and schema_version follow the universal context-server metadata
-        # schema v1: every entry carries a record-kind discriminator so filters
-        # and future server-side schema enforcement can rely on it.
-        metadata: dict[str, Any] = {
-            'schema_version': 1,
-            'kind': 'user_message',
-            'project': worktree_info['project'],
-        }
-        # Add optional worktree fields if available (git repository detected)
-        if worktree_info.get('worktree_id') is not None:
-            metadata['worktree_id'] = worktree_info['worktree_id']
-        if worktree_info.get('worktree_path') is not None:
-            metadata['worktree_path'] = worktree_info['worktree_path']
-        if worktree_info.get('is_linked_worktree') is not None:
-            metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
-
         log_always('Storing context in MCP server')
         result = client.store_context(
             thread_id=thread_id,
@@ -1693,89 +1986,10 @@ def main() -> None:
             text=prompt,
             metadata=metadata,
         )
-
-        # Check for chunked storage and surface complete chunk-storage info to the
-        # model via additionalContext (both success-chunk-ids AND any partial-failure
-        # summary).
-        if result.get('chunked', False):
-            chunks_failed = result.get('chunks_failed', 0)
-            total_chunks = result.get('total_chunks', 0)
-            chunks_stored = result.get('chunks_stored', 0)
-            failed_numbers = result.get('failed_chunk_numbers', [])
-
-            # Derive chunk_ids by extracting context_id from each successful chunk's
-            # MCP response. The store_context_chunked method returns a list of per-chunk
-            # results: successful chunks have 'context_id' (per the context-server
-            # store_context tool contract); failed chunks have 'error' instead.
-            chunk_ids: list[int] = [
-                r['context_id']
-                for r in result.get('results', [])
-                if 'error' not in r and r.get('context_id') is not None
-            ]
-
-            partial_failure_summary = ''
-            if chunks_failed > 0:
-                # Get fail_mode from config
-                chunking_config = config.get('chunking', DEFAULT_CONFIG['chunking'])
-                fail_mode = chunking_config.get('fail_mode', 'warn')
-
-                partial_failure_summary = (
-                    f'Context storage partial failure: {chunks_failed}/{total_chunks} chunks failed '
-                    f'(chunks {failed_numbers}). {chunks_stored} chunks stored successfully.'
-                )
-
-                # Always log the failure (existing logging continues)
-                log_always(partial_failure_summary, level='WARN')
-                report_error('CHUNK_STORAGE_PARTIAL', partial_failure_summary)
-
-                # A stderr line chosen by fail_mode. The hook exits 0, and Claude Code
-                # records the stderr of a hook that exits 0 only in its debug log,
-                # which exists only while its debug logging is on (for example under
-                # --debug or --debug-file), so the line reaches neither the transcript
-                # nor the model; the model learns of the partial failure through
-                # additionalContext below while output_context_id is on.
-                if fail_mode == 'warn':
-                    print(f'[WARN] {partial_failure_summary}', file=sys.stderr)
-                elif fail_mode == 'error':
-                    print(f'[ERROR] {partial_failure_summary}', file=sys.stderr)
-                # 'silent' mode: no stderr output, only logging
-
-                log_always(f'User feedback mode: {fail_mode}')
-            else:
-                log_always(f'SUCCESS: All {total_chunks} chunks stored successfully')
-
-            # Emit chunk-storage info to the model via additionalContext.
-            # Includes chunk_ids whenever any chunks succeeded AND the partial-failure
-            # summary whenever any chunks failed. Both cases coexist when partial.
-            if config.get('output_context_id', True) and (chunk_ids or partial_failure_summary):
-                if partial_failure_summary:
-                    chunk_message = (
-                        f'[Hook: user message stored to context-server (chunked).'
-                        f' context_ids={chunk_ids}. {partial_failure_summary}]'
-                    )
-                else:
-                    chunk_message = (
-                        f'[Hook: user message stored to context-server (chunked).'
-                        f' context_ids={chunk_ids}]'
-                    )
-                json_output = _load_json_output()
-                json_output.emit_additional_context('UserPromptSubmit', chunk_message)
-                log_always(f'Output chunk message via additionalContext: {chunk_message}')
-        else:
-            log_always('SUCCESS: Context stored successfully')
-
-            # Output context_id via additionalContext for orchestrator reference
-            if config.get('output_context_id', True):
-                context_id = result.get('context_id')
-                if context_id is not None:
-                    single_message = f'[Hook: user message stored to context-server. context_id={context_id}]'
-                    json_output = _load_json_output()
-                    json_output.emit_additional_context('UserPromptSubmit', single_message)
-                    log_always(f'Output context_id={context_id} via additionalContext')
-
     except Exception as e:
-        # Log the error for debugging with full traceback, then suppress as designed
-        error_msg = f'{type(e).__name__}: {e}'
+        # Log the error with its traceback, then tell the model instead of blocking the prompt
+        cause = e.cause if isinstance(e, UnconfirmedStoreError) else e
+        error_msg = f'{type(cause).__name__}: {cause}'
         full_traceback = traceback.format_exc()
 
         # Check for specific error patterns related to pipe buffer issues
@@ -1784,8 +1998,8 @@ def main() -> None:
 
         if 'broken pipe' in error_str:
             error_context = ' (Message likely too large for subprocess pipe buffer)'
-        elif 'timeout' in error_str:
-            error_context = ' (Consider increasing timeout for large messages via CLAUDE_HOOK_MCP_TIMEOUT)'
+        elif 'timed out' in error_str or 'deadline' in error_str:
+            error_context = ' (The store did not finish within the run budget; see mcp_client.deadline_seconds)'
         elif '[errno 32]' in error_str or 'epipe' in error_str:
             error_context = ' (Subprocess pipe broken - message size may exceed buffer capacity)'
         elif 'buffer' in error_str:
@@ -1794,7 +2008,13 @@ def main() -> None:
         log_always(f'MCP store failure: {error_msg}{error_context}', level='ERROR')
         log_always(f'Traceback:\n{full_traceback}', level='ERROR')
         report_error('MCP_STORE_FAILURE', f'{error_msg}{error_context}\n{full_traceback}')
-        # Silent failure - don't break Claude Code workflow
+
+        failure_message = _unconfirmed_store_notice(e, error_msg, thread_id, metadata)
+        json_output = _load_json_output()
+        json_output.emit_additional_context('UserPromptSubmit', failure_message)
+        log_always(f'Output store failure notice via additionalContext: {failure_message}')
+    else:
+        _report_stored(result, config)
 
     # Always exit successfully
     end_time = datetime.now(tz=UTC)

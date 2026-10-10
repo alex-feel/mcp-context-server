@@ -163,11 +163,13 @@ hooks:
       type: command
       command: timezone_date_context.py
 
-    # Context preservation during workflow
+    # Context preservation during workflow. The hook's own budget (90 seconds in its
+    # config) must end before this timeout, or Claude Code kills it with its output discarded.
     - event: UserPromptSubmit
       type: command
       command: user_prompt_context_saver.py
       config: user_prompt_context_saver_config.yaml
+      timeout: 120
 
     # A blocking SubagentStop report-saver is intentionally NOT registered here.
     # A blocking stop-time hook forces an extra turn after a subagent finishes and

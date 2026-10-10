@@ -7,6 +7,11 @@ enabled: true
 # Whether to output stored context_id to model context via hookSpecificOutput.additionalContext
 # When enabled, the hook outputs a JSON response with the context_id after successful storage,
 # allowing the orchestrator to reference the exact user message by ID in agent prompts.
+# A message the hook could not confirm stored is reported to the model whatever this
+# setting: when no store request was sent, the model stores the prompt itself with the
+# context-server store tool; when one was sent, the server may still complete it, so the
+# model searches the thread at the end of the turn and stores a copy only if
+# none landed.
 output_context_id: true
 
 # Regex patterns to skip saving: prompts that are not the user's own words.
@@ -160,6 +165,18 @@ mcp_client:
   timeout_first_run: 240.0
   # Timeout in seconds for subsequent runs
   timeout_normal: 240.0
+  # The hook's whole budget in seconds, measured from its start: every timeout above
+  # and the request timeout below are capped by what remains of it, and no attempt
+  # starts once less than a second remains. Keep it below the Claude Code hook
+  # timeout the environment registers for this hook (the environment sets that
+  # timeout on the hook's event entry; Claude Code's own default for a
+  # UserPromptSubmit hook is 30 seconds), so the hook always answers before it is
+  # killed with its output discarded: with the stored context_id, or with a notice
+  # that the message was not confirmed stored. The gap covers what runs before the
+  # hook's clock starts, such as the interpreter start and the import of the hook's
+  # dependencies. A store request is sent at most once per run; only a failure
+  # before it is sent is retried.
+  deadline_seconds: 90.0
 
 # MCP server command configuration
 # Command and arguments to start the MCP context server
@@ -181,13 +198,11 @@ mcp_server:
   # Pre-warm the uvx cache before connecting over stdio to avoid cold start delays
   # prewarm_cache: true
 
-# Chunking reliability settings
-# Controls how large messages are split and stored with maximum reliability
+# Chunking settings
+# A message above max_message_size is split into chunks that one connection stores
+# one by one, each sent exactly once; a chunk whose request fails is reported as
+# failed rather than sent again, because the server may have received it.
 chunking:
-  # Retry attempts per chunk within a single connection
-  max_chunk_retries: 3
-  # Initial delay between chunk retries in seconds (exponential backoff applied)
-  chunk_retry_delay: 0.5
   # Failure mode for partial chunk storage. In every mode the partial failure reaches
   # the model through additionalContext (while output_context_id is on) and the hook's
   # debug log (while CLAUDE_HOOK_DEBUG_ENABLED is set). The modes differ only in one
