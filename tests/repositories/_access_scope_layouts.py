@@ -52,6 +52,7 @@ from app.repositories.embedding_repository.compression_cache import _reset_compr
 from app.settings import AppSettings
 from app.settings import get_settings
 from app.startup.database_setup import prepare_database
+from tests.helpers import RlsCredentials
 from tests.helpers import read_grants
 from tests.helpers import rebind_package_settings
 from tests.repositories._access_scope_cases import EMBEDDING_DIM
@@ -472,12 +473,9 @@ async def postgresql_rls_scoped_db(
         monkeypatch,
         layout,
         request_url,
-        overrides={
-            'ENABLE_POSTGRESQL_RLS': 'true',
-            'POSTGRESQL_RLS_POLICY_ROLE': policy_role,
-            'POSTGRESQL_MIGRATION_USER': maintenance.username,
-            'POSTGRESQL_MIGRATION_PASSWORD': maintenance.password,
-        },
+        overrides=RlsCredentials(
+            migration_user=maintenance.username, migration_password=maintenance.password, policy_role=policy_role,
+        ).environment(),
     )
     async with _seeded_postgresql_db(
         request_backend=PostgreSQLBackend(
