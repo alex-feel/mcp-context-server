@@ -16,11 +16,11 @@ statement to the rows the scope may read, modify or owns:
 row instead: the child's key must name an entry the scope may read.
 
 :func:`build_policy_predicate` renders the same three modes for PostgreSQL
-row-level security policies and the read view: the identity comes from the
-schema's ``mcp_context_principal_id()`` and ``mcp_context_groups()`` functions
-instead of bound parameters. Both renderers compose their arms through one
-function, so the application predicate and the database policies cannot drift
-apart.
+row-level security policies and the read view: the identity comes from
+:func:`policy_operands`, scalar subqueries around the schema's identity
+functions, instead of bound parameters. Both renderers compose their arms
+through one function, so the application predicate and the database policies
+cannot drift apart.
 
 A grant carries no visibility condition, so it is effective under either
 visibility, and a write grant implies read. Comparisons are exact and
@@ -42,6 +42,7 @@ import json
 from dataclasses import KW_ONLY
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Final
 from typing import final
 
 
@@ -194,18 +195,58 @@ def build_access_predicate(
     return AccessPredicate(sql=sql, params=params)
 
 
+@dataclass(frozen=True, slots=True)
+class PolicyOperands:
+    """The SQL operands through which PostgreSQL policies read the transaction's bound identity.
+
+    Each is a scalar subquery around one of the schema's identity functions, so
+    PostgreSQL evaluates it once per statement.
+
+    Attributes:
+        principal: The bound principal; NULL when none is bound.
+        groups: The bound groups as a ``text[]``; empty when none are bound. The
+            explicit cast makes ``= ANY(<groups>)`` compare with the elements of
+            the array: without it, ``= ANY((SELECT ...))`` compares with each row
+            of the subquery.
+        may_publish: Whether the bound caller may set visibility ``public``.
+    """
+
+    principal: str
+    groups: str
+    may_publish: str
+
+
+# The schema functions that hand the bound identity to the policies.
+PRINCIPAL_FUNCTION: Final = 'mcp_context_principal_id'
+GROUPS_FUNCTION: Final = 'mcp_context_groups'
+MAY_PUBLISH_FUNCTION: Final = 'mcp_context_may_publish'
+
+
+def policy_operands(schema: str) -> PolicyOperands:
+    """Return the operands of the identity functions in ``schema``.
+
+    Args:
+        schema: The schema holding the identity functions, already quoted as a
+            SQL identifier.
+
+    Returns:
+        The principal, groups and publish-right operands.
+    """
+    return PolicyOperands(
+        principal=f'(SELECT {schema}.{PRINCIPAL_FUNCTION}())',
+        groups=f'(SELECT {schema}.{GROUPS_FUNCTION}())::text[]',
+        may_publish=f'(SELECT {schema}.{MAY_PUBLISH_FUNCTION}())',
+    )
+
+
 def build_policy_predicate(mode: AccessMode, *, outer: str, schema: str) -> str:
     """Render the PostgreSQL row-level security form of the ``mode`` predicate.
 
     The arms are those of :func:`build_access_predicate`; only the operands
-    differ. The principal and the groups come from the schema's
-    ``mcp_context_principal_id()`` and ``mcp_context_groups()`` functions, each
-    wrapped in a scalar subquery so PostgreSQL evaluates it once per statement,
-    and the grants table is qualified by ``schema``. The groups subquery carries
-    an explicit ``::text[]`` cast, because ``= ANY ((SELECT ...))`` without it
-    parses as a comparison with each row of the subquery instead of with the
-    elements of the array. The text binds no parameter, so it serves as a policy
-    expression and as the read view's ``WHERE`` conjunct alike.
+    differ. The principal and the groups are the :func:`policy_operands` of
+    ``schema``, and the grants table is qualified by ``schema``. The text binds
+    no parameter, so it serves as a policy expression and as the read view's
+    ``WHERE`` conjunct alike.
 
     Args:
         mode: ``READ``, ``WRITE`` or ``OWNER``.
@@ -220,13 +261,13 @@ def build_policy_predicate(mode: AccessMode, *, outer: str, schema: str) -> str:
     Returns:
         The predicate text.
     """
-    principal = f'(SELECT {schema}.mcp_context_principal_id())'
+    operands = policy_operands(schema)
     return _compose(
         mode,
         outer=outer,
-        owner_operand=principal,
-        grantee_operand=principal,
-        group_membership=f'= ANY((SELECT {schema}.mcp_context_groups())::text[])',
+        owner_operand=operands.principal,
+        grantee_operand=operands.principal,
+        group_membership=f'= ANY({operands.groups})',
         grants_relation=f'{schema}.context_entry_grants',
     )
 

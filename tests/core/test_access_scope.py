@@ -33,6 +33,7 @@ from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.access_scope import build_policy_predicate
 from app.access_scope import build_readable_parent_predicate
+from app.access_scope import policy_operands
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.ids import generate_id
@@ -351,6 +352,18 @@ def test_view_conjunct_is_the_select_policy_text_with_outer_ce() -> None:
 
     assert view != policy
     assert view == policy.replace('context_entries.', 'ce.')
+
+
+def test_policy_operands_are_the_scalar_subqueries_of_the_identity_functions() -> None:
+    """Each operand calls one schema function once per statement; the policy predicate uses two of them."""
+    operands = policy_operands('"tenant one"')
+
+    assert operands.principal == '(SELECT "tenant one".mcp_context_principal_id())'
+    assert operands.groups == '(SELECT "tenant one".mcp_context_groups())::text[]'
+    assert operands.may_publish == '(SELECT "tenant one".mcp_context_may_publish())'
+    sql = build_policy_predicate(AccessMode.READ, outer='ce', schema='"tenant one"')
+    assert f'ce.owner_id = {operands.principal} ' in sql
+    assert f'g.principal_id = ANY({operands.groups})' in sql
 
 
 # ============================================================================
