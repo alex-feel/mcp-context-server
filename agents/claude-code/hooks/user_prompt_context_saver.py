@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12,<3.13"
 # dependencies = [
-#   "fastmcp>=2.10.5",
+#   "fastmcp>=4.1.0",
 #   "pyyaml",
 # ]
 # ///
