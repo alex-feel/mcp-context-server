@@ -14,7 +14,10 @@ for the writes, what the rows hold afterwards through raw SQL.
   caller may modify; with a stale version it raises a version conflict for those rows and
   reports the rest as absent.
 - W2: ``update_context_entry`` with a visibility change, alone or together with text,
-  touches exactly the rows the caller owns; a write grant is not enough.
+  touches exactly the rows the caller owns; a write grant is not enough. Under row-level
+  security alone (:data:`RLS_UPDATE_CASES`), a caller without the publish right who sets
+  its private rows public with new text is refused by the database's guard trigger, and
+  those rows keep their visibility and their text.
 - W3: ``patch_metadata`` patches exactly the rows the caller may modify.
 - W4: ``touch_updated_at`` and ``update_content_type`` match exactly the rows the caller
   may modify, and only those rows change their content type.
@@ -23,9 +26,14 @@ for the writes, what the rows hold afterwards through raw SQL.
 """
 
 import json
+import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from typing import cast
 
+import asyncpg
+
+from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.repositories.context_repository.records import VersionConflictError
 from tests.repositories._access_scope_cases import OWNED
@@ -34,6 +42,7 @@ from tests.repositories._access_scope_cases import SEED_ROWS
 from tests.repositories._access_scope_cases import WRITABLE
 from tests.repositories._access_scope_cases import AccessCase
 from tests.repositories._access_scope_cases import ScopedDb
+from tests.repositories._access_scope_cases import per_request_scope
 from tests.repositories._access_scope_cases import per_scope
 from tests.repositories._access_scope_cases_reads import ABSENT_ID
 from tests.repositories._access_scope_cases_reads import ABSENT_LABEL
@@ -43,6 +52,8 @@ type WriteObservable = tuple[tuple[Outcome, ...], tuple[str, ...]]
 
 EDITED_TEXT = 'Edited by the update cases.'
 STALE_VERSION = 99
+# The outcome of a target whose update the database's publish gate refused.
+PUBLISH_REFUSED = 'refused by the publish gate'
 _SEED_VISIBILITY = {row.label: row.visibility for row in SEED_ROWS}
 _SEED_CONTENT_TYPE = {row.label: 'multimodal' if row.image else 'text' for row in SEED_ROWS}
 _OTHER_CONTENT_TYPE = {'text': 'multimodal', 'multimodal': 'text'}
@@ -152,12 +163,16 @@ async def _publish(db: ScopedDb, scope: Scope, *, with_text: bool) -> WriteObser
             scope=scope,
         )
         outcomes.append((label, (success, tuple(fields))))
+    return tuple(outcomes), await _visibility_and_text_states(db)
+
+
+async def _visibility_and_text_states(db: ScopedDb) -> tuple[str, ...]:
+    """Return each seed row's visibility and whether its text is the edited text, in seed order."""
     visibilities = await _column_by_label(db, 'visibility')
     texts = await _column_by_label(db, 'text_content')
-    states = tuple(
+    return tuple(
         f'{visibilities[label]} {"edited" if texts[label] == EDITED_TEXT else "unchanged"}' for label in SEED_LABELS
     )
-    return tuple(outcomes), states
 
 
 async def _publish_only(db: ScopedDb, scope: Scope) -> WriteObservable:
@@ -186,6 +201,65 @@ def _expected_publish(*, with_text: bool) -> Callable[[str], WriteObservable]:
         return outcomes, states
 
     return build
+
+
+def _refusal(db: ScopedDb, label: str, error: asyncpg.exceptions.InsufficientPrivilegeError) -> object:
+    """Name a refusal by the publish gate for the row of ``label``; report any other refusal as it is."""
+    message = error.args[0] if error.args else ''
+    if message == f'publishing context entry {uuid.UUID(hex=db.ids[label])} requires the publish role':
+        return PUBLISH_REFUSED
+    return error.sqlstate, message
+
+
+async def _publish_without_the_publish_right(db: ScopedDb, scope: Scope) -> WriteObservable:
+    """Set every target public with new text as the scope without the publish right, then report each row's state.
+
+    The repositories leave the publish right to the database: under row-level security the
+    guard trigger refuses a visibility change to public for an identity bound without it.
+
+    Returns:
+        Each target's outcome, :data:`PUBLISH_REFUSED` for a refusal by the publish gate,
+        and each seed row's visibility and whether it holds the edited text.
+    """
+    assert isinstance(scope, AccessScope)
+    unpublishing = replace(scope, may_publish=False)
+    outcomes: list[Outcome] = []
+    for label in _TARGET_LABELS:
+        try:
+            success, fields = await db.repos.context.update_context_entry(
+                _id_of(db, label), text_content=EDITED_TEXT, visibility='public', scope=unpublishing,
+            )
+        except asyncpg.exceptions.InsufficientPrivilegeError as error:
+            outcomes.append((label, _refusal(db, label, error)))
+        else:
+            outcomes.append((label, (success, tuple(fields))))
+    return tuple(outcomes), await _visibility_and_text_states(db)
+
+
+def _expected_refused_publish(scope_name: str) -> WriteObservable:
+    """The publish gate refuses every private row the scope owns, which keeps its visibility and text.
+
+    A public row the scope owns is already public, so setting it public changes no
+    visibility and the gate lets its new text through. Every other target reports no row.
+
+    Returns:
+        The outcome of every target and the state of every seed row the scope must observe.
+    """
+    owned = OWNED[scope_name]
+    owned_public = tuple(label for label in owned if _SEED_VISIBILITY[label] == 'public')
+
+    def outcome(label: str) -> object:
+        if label in owned_public:
+            return True, ('text_content', 'visibility')
+        if label in owned:
+            return PUBLISH_REFUSED
+        return False, ()
+
+    outcomes = tuple((label, outcome(label)) for label in _TARGET_LABELS)
+    states = tuple(
+        'public edited' if label in owned_public else f'{_SEED_VISIBILITY[label]} unchanged' for label in SEED_LABELS
+    )
+    return outcomes, states
 
 
 async def _patch_each(db: ScopedDb, scope: Scope) -> WriteObservable:
@@ -268,4 +342,13 @@ UPDATE_CASES: tuple[AccessCase, ...] = (
     AccessCase('W4', _touch_and_retype, per_scope(_expected_touch_and_retype)),
     AccessCase('W5', _content_type_each, per_scope(_expected_content_types)),
     AccessCase('W5', _content_type_each_in_transaction, per_scope(_expected_content_types), variant='in-transaction'),
+)
+
+# The cases only row-level security runs: the database enforces the publish right, which the
+# repositories leave to it, so no other run can observe a refusal.
+RLS_UPDATE_CASES: tuple[AccessCase, ...] = (
+    AccessCase(
+        'W2', _publish_without_the_publish_right, per_request_scope(_expected_refused_publish),
+        variant='without-publish-right',
+    ),
 )

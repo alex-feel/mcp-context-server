@@ -1,4 +1,4 @@
-"""The two database layouts of the access-scope cases, and the SQLite variable cap.
+"""The database layouts of the access-scope cases, and the SQLite variable cap.
 
 Each layout is built by the server's own startup preparation (``prepare_database``) under
 pinned settings, so it matches what a server with that configuration provisions:
@@ -6,14 +6,18 @@ pinned settings, so it matches what a server with that configuration provisions:
 - ``fp32``: compression off; embeddings live in the fp32 ``vec_context_embeddings`` table.
 - ``compressed``: compression on from the first start; the compressed table replaces the
   fp32 one, which is never created, and the provenance row is bootstrapped.
+- ``fp32_rls`` and ``compressed_rls`` (PostgreSQL only): the same storage with
+  ``ENABLE_POSTGRESQL_RLS`` on, prepared by the table owner, which grants the policy role
+  the request privileges and installs the policies and the read view.
 
 :func:`sqlite_scoped_db` prepares the SQLite backend of ``async_db_initialized``;
 :func:`postgresql_scoped_db` prepares an isolated database on the pgvector test container.
 Both serve the request and the seed channel from one backend.
 :func:`postgresql_owner_seeded_db` prepares an existing database through a maintenance
 backend logged in as its owner, which also serves the seed channel, while the request
-channel logs in as another role. Each seeds the database with
-:func:`~tests.repositories._access_scope_cases.seed_access_rows`.
+channel logs in as another role. :func:`postgresql_rls_scoped_db` does the same for the
+row-level security layouts, with the request backend under a given session profile. Each
+seeds the database with :func:`~tests.repositories._access_scope_cases.seed_access_rows`.
 :func:`configure_postgresql_layout` pins the environment of a layout on PostgreSQL for a
 test that prepares the database itself.
 :func:`assert_seeded_layout` proves a prepared database holds the seed and the layout's
@@ -25,7 +29,7 @@ SQLite bind variables for the ``sqlite_999_variables`` fixture of
 import asyncio
 import contextlib
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from types import ModuleType
@@ -39,6 +43,9 @@ import app.startup
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.backends import create_maintenance_backend
+from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import SessionProfile
 from app.compression.factory import reset_cached_compression_provider
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
@@ -244,7 +251,7 @@ def _scoped_db(request_backend: StorageBackend, seed_backend: StorageBackend, la
 @asynccontextmanager
 async def sqlite_scoped_db(
     backend: StorageBackend, layout: Layout, monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[ScopedDb]:
+) -> AsyncGenerator[ScopedDb]:
     """Prepare ``backend`` as the server does for ``layout`` and seed it; it serves both channels.
 
     Args:
@@ -327,8 +334,13 @@ def configure_postgresql_layout(
 
 @asynccontextmanager
 async def _seeded_postgresql_db(
-    *, request_backend: StorageBackend, seed_backend: StorageBackend, layout: Layout, settings: AppSettings,
-) -> AsyncIterator[ScopedDb]:
+    *,
+    request_backend: StorageBackend,
+    seed_backend: StorageBackend,
+    layout: Layout,
+    settings: AppSettings,
+    request_role: str | None,
+) -> AsyncGenerator[ScopedDb]:
     """Initialize both backends, prepare the database through the seed backend and seed it.
 
     Args:
@@ -336,6 +348,8 @@ async def _seeded_postgresql_db(
         seed_backend: The backend that prepares the database and writes the seed; may be the request backend.
         layout: The layout the settings configure.
         settings: The settings of the layout.
+        request_role: The role the request backend logs in as, which the preparation
+            grants the request privileges to through the policy role; None grants nothing.
 
     Yields:
         The seeded database. Both backends are shut down afterwards.
@@ -344,7 +358,7 @@ async def _seeded_postgresql_db(
     try:
         for backend in backends:
             await backend.initialize()
-        await prepare_database(seed_backend, settings, request_role=None)
+        await prepare_database(seed_backend, settings, request_role=request_role)
         db = _scoped_db(request_backend, seed_backend, layout)
         await seed_access_rows(db)
         yield db
@@ -358,7 +372,7 @@ async def _seeded_postgresql_db(
 @asynccontextmanager
 async def postgresql_scoped_db(
     pg_url: str, layout: Layout, monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[ScopedDb]:
+) -> AsyncGenerator[ScopedDb]:
     """Create an isolated database, prepare it as the server does for ``layout`` and seed it.
 
     One backend, logged in with the credentials of ``pg_url``, serves both channels.
@@ -378,7 +392,7 @@ async def postgresql_scoped_db(
         settings = configure_postgresql_layout(monkeypatch, layout, target_url, overrides={})
         backend = create_backend(backend_type='postgresql', connection_string=target_url)
         async with _seeded_postgresql_db(
-            request_backend=backend, seed_backend=backend, layout=layout, settings=settings,
+            request_backend=backend, seed_backend=backend, layout=layout, settings=settings, request_role=None,
         ) as db:
             yield db
     finally:
@@ -388,7 +402,7 @@ async def postgresql_scoped_db(
 @asynccontextmanager
 async def postgresql_owner_seeded_db(
     *, request_url: str, maintenance_url: str, layout: Layout, monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[ScopedDb]:
+) -> AsyncGenerator[ScopedDb]:
     """Prepare an existing database for ``layout`` as its owner and seed it through the owner.
 
     The maintenance backend logs in with the credentials of ``maintenance_url`` (the
@@ -411,5 +425,67 @@ async def postgresql_owner_seeded_db(
         seed_backend=create_maintenance_backend(connection_string=maintenance_url),
         layout=layout,
         settings=settings,
+        request_role=None,
+    ) as db:
+        yield db
+
+
+@asynccontextmanager
+async def postgresql_rls_scoped_db(
+    *,
+    request_url: str,
+    maintenance_url: str,
+    policy_role: str,
+    request_profile: SessionProfile,
+    layout: Layout,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncGenerator[ScopedDb]:
+    """Prepare an existing database for ``layout`` with row-level security on, as its owner, and seed it.
+
+    This builds the ``fp32_rls`` and ``compressed_rls`` layouts: ``ENABLE_POSTGRESQL_RLS``
+    is on and the migration credentials are those of ``maintenance_url``. The maintenance
+    backend logs in as the database owner and runs ``prepare_database`` with the role of
+    ``request_url`` as the request role, which grants ``policy_role`` the request privileges
+    and installs the policies and the read view; it then writes the seed as the owner, whom
+    the policies do not filter, and serves the seed channel. The request backend logs in
+    with the credentials of ``request_url`` under ``request_profile`` and serves the request
+    channel, so every statement of the seams under test reaches rows through the policies
+    and the read view. The database itself belongs to the caller.
+
+    Args:
+        request_url: Connection string of the request login role, a member of ``policy_role``.
+        maintenance_url: Connection string of the role that owns the database.
+        policy_role: The NOLOGIN role the policies name.
+        request_profile: The session profile of the request backend.
+        layout: The layout to build.
+        monkeypatch: Restores the layout's environment and bindings after the test.
+
+    Yields:
+        The seeded database.
+    """
+    request_role = urlsplit(request_url).username
+    maintenance = urlsplit(maintenance_url)
+    assert request_role is not None
+    assert maintenance.username is not None
+    assert maintenance.password is not None
+    settings = configure_postgresql_layout(
+        monkeypatch,
+        layout,
+        request_url,
+        overrides={
+            'ENABLE_POSTGRESQL_RLS': 'true',
+            'POSTGRESQL_RLS_POLICY_ROLE': policy_role,
+            'POSTGRESQL_MIGRATION_USER': maintenance.username,
+            'POSTGRESQL_MIGRATION_PASSWORD': maintenance.password,
+        },
+    )
+    async with _seeded_postgresql_db(
+        request_backend=PostgreSQLBackend(
+            connection_string=request_url, profile=request_profile, credentials=NO_CREDENTIAL_OVERRIDE,
+        ),
+        seed_backend=create_maintenance_backend(connection_string=maintenance_url),
+        layout=layout,
+        settings=settings,
+        request_role=request_role,
     ) as db:
         yield db

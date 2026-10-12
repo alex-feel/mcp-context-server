@@ -6,7 +6,9 @@ share everything here:
 
 - The case type :class:`AccessCase`, one per seam case (unfiltered, filtered or another
   variant), each naming the database layout it runs on (``fp32`` or ``compressed``, built
-  by :mod:`tests.repositories._access_scope_layouts`), and the runner :func:`run_case`.
+  by :mod:`tests.repositories._access_scope_layouts`; on PostgreSQL every case also runs on
+  the row-level security build of its layout), and the runners :func:`run_case` and
+  :func:`run_case_with_scope`.
 - The seed: :data:`SEED_ROWS`, eight entries owned by alice and bob covering every
   visibility and grant arrangement the access model distinguishes, written by
   :func:`seed_access_rows` through the repositories, with grants through the raw-SQL
@@ -109,11 +111,14 @@ SEED_ANGLE_STEP = 0.1
 # A 1x1 PNG, the smallest image attachment the image repository stores.
 _PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
+# The scopes the cases run as. The cases set no publish role, so every request scope may
+# publish, exactly as the write tools resolve it; under row-level security the database
+# enforces that right, and the access predicates never read it.
 SCOPES: dict[str, Scope] = {
-    'alice': AccessScope('alice', frozenset()),
-    'bob': AccessScope('bob', frozenset()),
-    'carol': AccessScope('carol', frozenset({TEAM_GROUP})),
-    'dave': AccessScope('dave', frozenset()),
+    'alice': AccessScope('alice', frozenset(), may_publish=True),
+    'bob': AccessScope('bob', frozenset(), may_publish=True),
+    'carol': AccessScope('carol', frozenset({TEAM_GROUP}), may_publish=True),
+    'dave': AccessScope('dave', frozenset(), may_publish=True),
     'system': SYSTEM_SCOPE,
 }
 
@@ -234,6 +239,18 @@ def per_scope[T](build: Callable[[str], T]) -> dict[str, T]:
         ``build(scope_name)`` keyed by every scope name in :data:`SCOPES`.
     """
     return {scope_name: build(scope_name) for scope_name in SCOPES}
+
+
+def per_request_scope[T](build: Callable[[str], T]) -> dict[str, T]:
+    """Return the expectation of every request scope a case runs as, leaving out the system scope.
+
+    Args:
+        build: Builds the expected observable for one scope name.
+
+    Returns:
+        ``build(scope_name)`` keyed by the name of every :class:`AccessScope` in :data:`SCOPES`.
+    """
+    return {scope_name: build(scope_name) for scope_name, scope in SCOPES.items() if isinstance(scope, AccessScope)}
 
 
 def in_seed_order(labels: Iterable[str]) -> tuple[str, ...]:
@@ -487,6 +504,10 @@ class AccessCase:
         setup: Adds the rows the case needs beyond the seed, before the invoker runs.
         backend: Runs the case on this backend's entry point only, for a behavior the two
             backends differ in by design; None runs it on both.
+        reports_write_access: The observable reports whether the scope may modify or owns
+            each row it reads, which the seam computes with the application predicate in the
+            statement's select list. The database's own answer decides only which rows the
+            scope reads, so the run that leaves the database as the only filter skips it.
     """
 
     case_id: str
@@ -497,6 +518,7 @@ class AccessCase:
     variant: str = ''
     setup: Setup | None = None
     backend: BackendType | None = None
+    reports_write_access: bool = False
 
     @property
     def param_id(self) -> str:
@@ -566,9 +588,26 @@ async def run_case(db: ScopedDb, case: AccessCase, scope_name: str) -> None:
         case: The case.
         scope_name: The scope to run as, a key of ``case.expected``.
     """
+    await run_case_with_scope(db, case, scope_name, scope=SCOPES[scope_name])
+
+
+async def run_case_with_scope(db: ScopedDb, case: AccessCase, scope_name: str, *, scope: Scope) -> None:
+    """Run one case with its seams called as ``scope`` and compare the observable with that of ``scope_name``.
+
+    :func:`run_case` passes the scope ``scope_name`` names. The row-level security run
+    passes the system scope, which renders no application predicate, on a request backend
+    that binds the identity of ``scope_name`` in every transaction, so the database alone
+    must produce what the scope observes.
+
+    Args:
+        db: The freshly seeded database of the case's layout.
+        case: The case.
+        scope_name: The scope whose observable is expected, a key of ``case.expected``.
+        scope: The scope the invoker calls the seams as.
+    """
     if case.setup is not None:
         await case.setup(db)
-    observed = await case.invoker(db, SCOPES[scope_name])
+    observed = await case.invoker(db, scope)
     expected = case.expected[scope_name]
     assert observed == expected, f'{case.param_id} as {scope_name}: observed {observed!r}, expected {expected!r}'
 

@@ -245,8 +245,10 @@ READ_CASES: tuple[AccessCase, ...] = (
     AccessCase('S3', _get_chunked, per_scope(READABLE.__getitem__), variant='chunked'),
     AccessCase('S4', _find_by_prefix, per_scope(_PREFIX_MATCHES.__getitem__), setup=_add_prefixed_rows),
     AccessCase('S4', _resolve_prefixes, per_scope(_expected_resolution), variant='resolve', setup=_add_prefixed_rows),
-    AccessCase('S5', _probe_each, per_scope(_expected_probes)),
-    AccessCase('S7', _probe_ids, per_scope(_expected_access)),
-    AccessCase('S7', _probe_ids_in_transaction, per_scope(_expected_access), variant='in-transaction'),
-    AccessCase('S7', _probe_ids_chunked, per_scope(_expected_access), variant='chunked'),
+    AccessCase('S5', _probe_each, per_scope(_expected_probes), reports_write_access=True),
+    AccessCase('S7', _probe_ids, per_scope(_expected_access), reports_write_access=True),
+    AccessCase(
+        'S7', _probe_ids_in_transaction, per_scope(_expected_access), variant='in-transaction', reports_write_access=True,
+    ),
+    AccessCase('S7', _probe_ids_chunked, per_scope(_expected_access), variant='chunked', reports_write_access=True),
 )
