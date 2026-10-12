@@ -221,6 +221,10 @@ PRINCIPAL_FUNCTION: Final = 'mcp_context_principal_id'
 GROUPS_FUNCTION: Final = 'mcp_context_groups'
 MAY_PUBLISH_FUNCTION: Final = 'mcp_context_may_publish'
 
+# The view through which a request backend under row-level security reads
+# context_entries: owned by the table owner, its condition is the READ predicate.
+READ_VIEW: Final = 'context_entries_readable'
+
 
 def policy_operands(schema: str) -> PolicyOperands:
     """Return the operands of the identity functions in ``schema``.

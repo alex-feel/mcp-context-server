@@ -23,6 +23,7 @@ from typing import runtime_checkable
 
 import asyncpg
 
+from app.access_scope import READ_VIEW
 from app.access_scope import AccessScope
 from app.backends.base import BackendAccess
 from app.backends.base import base_relation
@@ -43,7 +44,7 @@ BIND_IDENTITY_STATEMENT: Final = (
 
 # The relation a request backend under row-level security reads each mapped table through:
 # an owner-owned view gated on the policy role whose condition is the read predicate.
-RLS_READ_VIEWS: Final[Mapping[str, str]] = MappingProxyType({'context_entries': 'context_entries_readable'})
+RLS_READ_VIEWS: Final[Mapping[str, str]] = MappingProxyType({'context_entries': READ_VIEW})
 
 _VIEW_NAME = re.compile(r'[a-z_][a-z0-9_]*')
 
