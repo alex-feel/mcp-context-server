@@ -204,6 +204,55 @@ class TestCredentialOverride:
         assert 'owner-secret' not in repr(CredentialOverride(user='mcp_owner', password=SecretStr('owner-secret')))
 
 
+class TestRequestConnectionString:
+    """The request connection settings: the configured DSN, otherwise one built from the component fields."""
+
+    def test_a_configured_connection_string_is_dialed_as_written(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.backends.postgresql_backend.session import request_connection_string
+        from app.settings import AppSettings
+
+        dsn = 'postgresql://mcp_app.projectref:secret@aws-0.pooler.supabase.com:6543/postgres?sslmode=require'
+        monkeypatch.setenv('POSTGRESQL_CONNECTION_STRING', dsn)
+
+        assert request_connection_string(AppSettings()) == dsn
+
+    def test_the_component_fields_are_url_encoded_with_the_ssl_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.backends.postgresql_backend.session import request_connection_string
+        from app.settings import AppSettings
+
+        monkeypatch.delenv('POSTGRESQL_CONNECTION_STRING', raising=False)
+        monkeypatch.setenv('POSTGRESQL_HOST', 'db.example.com')
+        monkeypatch.setenv('POSTGRESQL_PORT', '5433')
+        monkeypatch.setenv('POSTGRESQL_USER', 'app:user')
+        monkeypatch.setenv('POSTGRESQL_PASSWORD', 'p@ss#word')
+        monkeypatch.setenv('POSTGRESQL_DATABASE', 'mcp/context')
+        monkeypatch.setenv('POSTGRESQL_SSL_MODE', 'require')
+
+        assert request_connection_string(AppSettings()) == (
+            'postgresql://app%3Auser:p%40ss%23word@db.example.com:5433/mcp%2Fcontext?sslmode=require'
+        )
+
+    def test_the_backend_without_a_connection_string_dials_the_request_settings(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import app.backends.postgresql_backend as pg_module
+        from app.backends.postgresql_backend import PostgreSQLBackend
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+        from app.backends.postgresql_backend.session import request_connection_string
+        from app.backends.postgresql_backend.session_profiles import UnboundProfile
+        from app.settings import AppSettings
+        from tests.helpers import rebind_package_settings
+
+        monkeypatch.delenv('POSTGRESQL_CONNECTION_STRING', raising=False)
+        monkeypatch.setenv('POSTGRESQL_HOST', 'db.example.com')
+        settings = AppSettings()
+        rebind_package_settings(monkeypatch, pg_module, settings)
+
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
+
+        assert backend.connection_string == request_connection_string(settings)
+
+
 class TestQuotePgIdentifier:
     """Unit tests for the shared PostgreSQL quoted-identifier helper.
 

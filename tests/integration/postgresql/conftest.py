@@ -253,6 +253,21 @@ def pg_test_url() -> Iterator[str]:
         _force_cleanup()
 
 
+def login_url(url: str, role: str) -> str:
+    """Return ``url`` logging in as ``role``, whose password is its own name.
+
+    Args:
+        url: A connection string of the test container.
+        role: A login role of ``initdb/02-roles.sql``, or one a test creates the same way.
+
+    Returns:
+        The connection string.
+    """
+    parts = urlsplit(url)
+    host = parts.netloc.rsplit('@', 1)[1]
+    return urlunsplit((parts.scheme, f'{role}:{role}@{host}', parts.path, parts.query, parts.fragment))
+
+
 def _database_url(pg_url: str, database: str, *, role: str | None = None) -> str:
     """Return ``pg_url`` pointing at ``database``, logging in as ``role`` when given.
 
@@ -266,8 +281,8 @@ def _database_url(pg_url: str, database: str, *, role: str | None = None) -> str
         The connection string.
     """
     parts = urlsplit(pg_url)
-    netloc = parts.netloc if role is None else f'{role}:{role}@{parts.netloc.rsplit("@", 1)[1]}'
-    return urlunsplit((parts.scheme, netloc, f'/{database}', parts.query, parts.fragment))
+    url = urlunsplit((parts.scheme, parts.netloc, f'/{database}', parts.query, parts.fragment))
+    return url if role is None else login_url(url, role)
 
 
 @pytest_asyncio.fixture

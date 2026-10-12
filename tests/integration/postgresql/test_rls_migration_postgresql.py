@@ -107,7 +107,7 @@ async def booted(pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch) -> AsyncGe
     """
     settings = configure_rls_layout(pg_rls_db, monkeypatch, layout='fp32', overrides={}, rls=True)
     async with maintenance_backend(pg_rls_db.maintenance) as backend:
-        await prepare_database(backend, settings)
+        await prepare_database(backend, settings, request_role=None)
         await apply_request_role_grants(backend, settings, request_role=REQUEST_ROLE)
         yield backend
 
@@ -169,7 +169,7 @@ class TestNoDdlBoot:
     ) -> None:
         settings = configure_rls_layout(pg_rls_db, monkeypatch, layout=layout, overrides={}, rls=True)
         async with maintenance_backend(pg_rls_db.maintenance) as backend:
-            await prepare_database(backend, settings)
+            await prepare_database(backend, settings, request_role=None)
             await _assert_installed(admin)
             vector_table = 'vec_context_embeddings' if layout == 'fp32' else 'vec_context_embeddings_compressed'
             assert vector_table in await _managed_tables(admin)
@@ -219,7 +219,7 @@ class TestTablesThatExist:
         overrides = {'ENABLE_EMBEDDING_GENERATION': 'false'}
         settings = configure_rls_layout(pg_rls_db, monkeypatch, layout='fp32', overrides=overrides, rls=True)
         async with maintenance_backend(pg_rls_db.maintenance) as backend:
-            await prepare_database(backend, settings)
+            await prepare_database(backend, settings, request_role=None)
 
         assert await _managed_tables(admin) == {
             'context_entries', 'context_entry_grants', 'tags', 'image_attachments', 'context_index_nodes',
@@ -233,14 +233,14 @@ class TestTablesThatExist:
         off = {'ENABLE_INDEX_TREE_NODE_SUMMARIES': 'false'}
         settings = configure_rls_layout(pg_rls_db, monkeypatch, layout='fp32', overrides=off, rls=True)
         async with maintenance_backend(pg_rls_db.maintenance) as backend:
-            await prepare_database(backend, settings)
+            await prepare_database(backend, settings, request_role=None)
             assert 'context_index_nodes' not in await _managed_tables(admin)
             await _assert_installed(admin)
             before = await object_oids(admin, SCHEMA_NAME)
 
             on = {'ENABLE_INDEX_TREE_NODE_SUMMARIES': 'true'}
             settings = configure_rls_layout(pg_rls_db, monkeypatch, layout='fp32', overrides=on, rls=True)
-            await prepare_database(backend, settings)
+            await prepare_database(backend, settings, request_role=None)
 
         await _assert_installed(admin)
         after = await object_oids(admin, SCHEMA_NAME)
@@ -455,4 +455,4 @@ class TestFlagOffGuard:
         assert f'(tables: {", ".join(tables)}, context_entries_readable)' in str(raised.value)
         assert 'mcp-context-server-migrate --disable-rls' in str(raised.value)
         with pytest.raises(ConfigurationError, match='ENABLE_POSTGRESQL_RLS=false'):
-            await prepare_database(booted, flag_off)
+            await prepare_database(booted, flag_off, request_role=None)

@@ -15,6 +15,7 @@ from collections.abc import Generator
 from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from contextlib import contextmanager
+from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING
 from typing import Any
@@ -43,6 +44,60 @@ LOCAL_SCOPE = AccessScope('local', frozenset())
 # The scope the write tools build for that request: with ACCESS_CONTROL_PUBLISH_ROLE
 # unset any caller may publish, so resolve_write_scope sets may_publish.
 LOCAL_WRITE_SCOPE = AccessScope('local', frozenset(), may_publish=True)
+
+
+@dataclass(frozen=True, slots=True)
+class RlsCredentials:
+    """What a PostgreSQL subprocess needs to start with row-level security.
+
+    Attributes:
+        migration_user: The role that owns the tables, ``POSTGRESQL_MIGRATION_USER``.
+        migration_password: Its password, ``POSTGRESQL_MIGRATION_PASSWORD``.
+        policy_role: The NOLOGIN role the policies name, ``POSTGRESQL_RLS_POLICY_ROLE``.
+    """
+
+    migration_user: str
+    migration_password: str
+    policy_role: str
+
+
+def postgresql_subprocess_env(pg_url: str, *, rls: RlsCredentials | None = None, **overrides: str) -> dict[str, str]:
+    """Return the environment of a server or command-line subprocess on the PostgreSQL database ``pg_url``.
+
+    The subprocess inherits the parent environment for its provider configuration (a CI
+    ``EMBEDDING_MODEL``, a developer's ``.env``), but never its PostgreSQL routing: every
+    ``POSTGRESQL_*`` variable and ``ENABLE_POSTGRESQL_RLS`` is removed before the routing is
+    pinned, so a shell routed to another database, its migration credentials included,
+    cannot reach the subprocess.
+
+    Args:
+        pg_url: The request connection settings, as a connection string.
+        rls: The row-level security credentials; None starts the subprocess with the flag off.
+        overrides: Further environment values, applied last.
+
+    Returns:
+        The complete environment.
+    """
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith('POSTGRESQL_') and key.upper() != 'ENABLE_POSTGRESQL_RLS'
+    }
+    env.update({
+        'STORAGE_BACKEND': 'postgresql',
+        'POSTGRESQL_CONNECTION_STRING': pg_url,
+        'MCP_TEST_MODE': '1',
+        'DISABLED_TOOLS': '',
+    })
+    if rls is not None:
+        env.update({
+            'ENABLE_POSTGRESQL_RLS': 'true',
+            'POSTGRESQL_RLS_POLICY_ROLE': rls.policy_role,
+            'POSTGRESQL_MIGRATION_USER': rls.migration_user,
+            'POSTGRESQL_MIGRATION_PASSWORD': rls.migration_password,
+        })
+    env.update(overrides)
+    return env
 
 
 def is_ollama_model_available(

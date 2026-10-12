@@ -15,10 +15,12 @@ These tests drive the real ``_init_schema_postgresql`` closure (via a mock
 backend whose ``execute_write`` invokes the closure with a mock asyncpg
 connection) and assert that every schema statement is executed with the
 migration-budget client-side deadline (``migration_timeout_s +
-_CLIENT_TIMEOUT_MARGIN_S``), for BOTH the provided-backend path and the
-temporary-backend backward-compatibility path.
+_CLIENT_TIMEOUT_MARGIN_S``). ``init_database`` always runs on the backend its
+caller passes, which on PostgreSQL is the maintenance backend of the table owner,
+and never creates one of its own.
 """
 
+import inspect
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Any
@@ -130,33 +132,9 @@ async def test_provided_backend_schema_statements_carry_migration_timeout() -> N
         )
 
 
-@pytest.mark.asyncio
-async def test_temp_backend_schema_statements_carry_migration_timeout() -> None:
-    """Temporary-backend path: every schema statement gets the migration budget.
+def test_the_backend_is_required() -> None:
+    """``init_database`` takes no default backend, so no caller can make it create its own."""
+    parameter = inspect.signature(init_database).parameters['backend']
 
-    ``init_database()`` with no backend argument creates a temporary backend for
-    backward compatibility; that path has its own ``_init_schema_postgresql``
-    closure. This asserts that path applies the same budget, so a first-boot
-    schema statement is not cancelled client-side at the pool's shorter deadline.
-    """
-    backend, conn = _make_pg_backend()
-    backend.initialize = AsyncMock(return_value=None)
-    backend.shutdown = AsyncMock(return_value=None)
-    expected_timeout = _MIGRATION_TIMEOUT_S + _CLIENT_TIMEOUT_MARGIN_S
-
-    with (
-        patch('app.startup.settings', _mock_settings()),
-        patch('app.startup.create_backend', return_value=backend),
-        patch('pathlib.Path.exists', return_value=True),
-        patch('pathlib.Path.read_text', return_value=_FAKE_SCHEMA_SQL),
-        patch('app.backends.postgresql_backend.session.quote_pg_identifier', return_value='"public"'),
-    ):
-        await init_database()
-
-    schema_calls = _schema_statement_calls(conn)
-    assert len(schema_calls) == 3
-    for sql, kwargs in schema_calls:
-        assert kwargs.get('timeout') == expected_timeout, (
-            f'schema statement executed without the migration-budget client deadline: {sql!r} '
-            f'(kwargs={kwargs})'
-        )
+    assert parameter.default is inspect.Parameter.empty
+    assert 'create_backend' not in inspect.getsource(init_database)

@@ -67,7 +67,7 @@ async def installed(
     """
     flag_off = configure_rls_layout(pg_rls_db, monkeypatch, layout='fp32', overrides={}, rls=False)
     async with maintenance_backend(pg_rls_db.maintenance) as backend:
-        await prepare_database(backend, flag_off)
+        await prepare_database(backend, flag_off, request_role=None)
         owner = await asyncpg.connect(pg_rls_db.maintenance)
         try:
             await owner.execute('ALTER TABLE tags ENABLE ROW LEVEL SECURITY')
@@ -149,5 +149,5 @@ class TestRemoveRls:
         flag_off = get_settings()
         assert not flag_off.access_control.postgresql_rls_enabled
         await guard_rls_disable_over_enabled(installed, flag_off)
-        await prepare_database(installed, flag_off)
+        await prepare_database(installed, flag_off, request_role=None)
         assert await _our_functions(admin) == []

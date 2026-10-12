@@ -257,7 +257,7 @@ async def sqlite_scoped_db(
     """
     settings = _configure_layout(monkeypatch, layout, {}, None)
     try:
-        await prepare_database(backend, settings)
+        await prepare_database(backend, settings, request_role=None)
         db = _scoped_db(backend, backend, layout)
         await seed_access_rows(db)
         yield db
@@ -344,7 +344,7 @@ async def _seeded_postgresql_db(
     try:
         for backend in backends:
             await backend.initialize()
-        await prepare_database(seed_backend, settings)
+        await prepare_database(seed_backend, settings, request_role=None)
         db = _scoped_db(request_backend, seed_backend, layout)
         await seed_access_rows(db)
         yield db

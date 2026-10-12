@@ -1,15 +1,30 @@
 """Tests for the server lifespan in app/server.py.
 
-Covers startup failure cleanup, migration failure propagation, and the shutdown of the
-backend and the embedding provider.
+Covers startup failure cleanup, migration failure propagation, the shutdown of the
+backend and the embedding provider, and the PostgreSQL start: the request role is
+discovered and refused before any DDL when the policies could not hold it, the schema is
+prepared on a maintenance backend logged in as the table owner, the runtime check
+refuses request and migration credentials that resolve to one role with row-level
+security on, and the request backend opens afterwards and is checked whenever the roles
+are split.
 """
 
+import dataclasses
 import os
+from collections.abc import Awaitable
+from collections.abc import Callable
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 
+import app.startup as app_startup
+from app.errors import ConfigurationError
+from app.startup.rls_posture import RequestRole
 from tests.helpers import patch_database_setup_steps
 
 
@@ -19,9 +34,6 @@ class TestLifespanErrorHandling:
     @pytest.mark.asyncio
     async def test_startup_failure_shuts_down_backend(self, tmp_path: Path) -> None:
         """Verify backend shutdown on startup failure."""
-        from unittest.mock import AsyncMock
-        from unittest.mock import MagicMock
-
         env = {
             'DB_PATH': str(tmp_path / 'test.db'),
             'MCP_TEST_MODE': '1',
@@ -57,9 +69,6 @@ class TestLifespanErrorHandling:
     @pytest.mark.asyncio
     async def test_migration_failure_propagates(self, tmp_path: Path) -> None:
         """Verify migration errors not swallowed."""
-        from unittest.mock import AsyncMock
-        from unittest.mock import MagicMock
-
         env = {
             'DB_PATH': str(tmp_path / 'test.db'),
             'MCP_TEST_MODE': '1',
@@ -97,8 +106,6 @@ class TestLifespanErrorHandling:
     async def test_shutdown_logs_errors(self, caplog: pytest.LogCaptureFixture) -> None:
         """Verify shutdown errors logged not raised."""
         import logging
-        from unittest.mock import AsyncMock
-        from unittest.mock import MagicMock
 
         import app.startup
         from app.server import lifespan
@@ -162,9 +169,6 @@ class TestLifespanErrorHandling:
     @pytest.mark.asyncio
     async def test_embedding_provider_shutdown_on_exit(self) -> None:
         """Verify embedding provider shutdown called on exit."""
-        from unittest.mock import AsyncMock
-        from unittest.mock import MagicMock
-
         import app.startup
         from app.server import lifespan
 
@@ -235,3 +239,200 @@ class TestLifespanErrorHandling:
             app.startup._backend = original_backend
             app.startup._repositories = original_repos
             app.startup._embedding_provider = original_provider
+
+
+APP_ROLE = RequestRole(name='mcp_app', is_superuser=False, bypass_rls=False, policy_role_exists=True, policy_member=True)
+
+
+class _PostgreSQLStart:
+    """Patches the PostgreSQL start of the lifespan and records, in order, every step it takes.
+
+    The discovered request role and the role the maintenance backend logs in as are given;
+    the role checks themselves run unpatched, so a refusal is the real one.
+    """
+
+    def __init__(self, *, request_role: RequestRole | None, maintenance_role: str, rls: bool) -> None:
+        self.request_role = request_role
+        self.maintenance_role = maintenance_role
+        self.steps: list[str] = []
+        self.settings = MagicMock()
+        self.settings.storage.backend_type = 'postgresql'
+        self.settings.storage.postgresql_migration_user = None if request_role is None else 'mcp_owner'
+        self.settings.access_control.postgresql_rls_enabled = rls
+        self.settings.access_control.postgresql_rls_policy_role = 'mcp_context_request'
+        self.settings.auth.provider = 'none'
+        self.maintenance = self._backend('maintenance')
+        self.request = self._backend('request')
+        self.prepare_database = AsyncMock(side_effect=self._record('prepare_database'))
+        self.verify_rls_posture = AsyncMock(side_effect=self._record('verify_rls_posture'))
+
+    def _record(self, step: str) -> Callable[..., Awaitable[None]]:
+        async def _step(*_args: object, **_kwargs: object) -> None:
+            self.steps.append(step)
+
+        return _step
+
+    def _backend(self, name: str) -> MagicMock:
+        backend = MagicMock()
+        backend.backend_type = 'postgresql'
+        backend.initialize = AsyncMock(side_effect=self._record(f'{name}.initialize'))
+        backend.shutdown = AsyncMock(side_effect=self._record(f'{name}.shutdown'))
+        return backend
+
+    async def _discover(self, _settings: object) -> RequestRole | None:
+        self.steps.append('discover_request_role')
+        return self.request_role
+
+    async def _read_login_role(self, backend: object) -> str:
+        assert backend is self.maintenance
+        self.steps.append('read_login_role')
+        return self.maintenance_role
+
+    def _create_maintenance_backend(self) -> MagicMock:
+        self.steps.append('create_maintenance_backend')
+        return self.maintenance
+
+    def _create_backend(self) -> MagicMock:
+        self.steps.append('create_backend')
+        return self.request
+
+    def _register_core_tools(self, *_args: object) -> None:
+        self.steps.append('register_core_tools')
+
+    @contextmanager
+    def patched(self) -> Generator[None]:
+        """Install the patches, restoring the startup globals afterwards."""
+        original = (app_startup._backend, app_startup._repositories)
+        try:
+            with (
+                patch('app.server.settings', self.settings),
+                patch('app.server.discover_request_role', side_effect=self._discover),
+                patch('app.server.read_login_role', side_effect=self._read_login_role),
+                patch('app.server.create_maintenance_backend', side_effect=self._create_maintenance_backend),
+                patch('app.server.create_backend', side_effect=self._create_backend),
+                patch('app.server.prepare_database', self.prepare_database),
+                patch('app.server.verify_rls_posture', self.verify_rls_posture),
+                patch('app.server.RepositoryContainer', return_value=MagicMock()),
+                patch('app.server.register_core_tools', side_effect=self._register_core_tools),
+                patch('app.server.initialize_providers', new=AsyncMock()),
+                patch('app.server.register_search_tools', new=AsyncMock()),
+                patch('app.server.install_json_string_middleware', new=AsyncMock()),
+            ):
+                yield
+        finally:
+            app_startup._backend, app_startup._repositories = original
+
+
+class TestPostgreSQLMaintenancePhase:
+    """On PostgreSQL the schema is prepared as the table owner before the request backend opens."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('rls', [True, False])
+    async def test_split_roles_prepare_as_the_owner_then_verify_the_request_role(self, rls: bool) -> None:
+        from app.server import lifespan
+
+        start = _PostgreSQLStart(request_role=APP_ROLE, maintenance_role='mcp_owner', rls=rls)
+        with start.patched():
+            async with lifespan(MagicMock()):
+                assert app_startup.get_backend() is start.request
+
+        assert start.steps == [
+            'discover_request_role',
+            'create_maintenance_backend',
+            'maintenance.initialize',
+            'read_login_role',
+            'prepare_database',
+            'maintenance.shutdown',
+            'create_backend',
+            'request.initialize',
+            'verify_rls_posture',
+            'register_core_tools',
+            'request.shutdown',
+        ]
+        start.prepare_database.assert_awaited_once_with(start.maintenance, start.settings, request_role='mcp_app')
+        start.verify_rls_posture.assert_awaited_once_with(
+            start.request, start.settings, request_role=APP_ROLE, maintenance_role='mcp_owner',
+        )
+
+    @pytest.mark.asyncio
+    async def test_one_role_by_configuration_grants_nothing_and_checks_nothing(self) -> None:
+        from app.server import lifespan
+
+        start = _PostgreSQLStart(request_role=None, maintenance_role='postgres', rls=False)
+        with start.patched():
+            async with lifespan(MagicMock()):
+                pass
+
+        start.prepare_database.assert_awaited_once_with(start.maintenance, start.settings, request_role=None)
+        start.verify_rls_posture.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_effective_role_with_the_flag_off_is_not_split(self) -> None:
+        from app.server import lifespan
+
+        start = _PostgreSQLStart(
+            request_role=dataclasses.replace(APP_ROLE, name='postgres'), maintenance_role='postgres', rls=False,
+        )
+        with start.patched():
+            async with lifespan(MagicMock()):
+                pass
+
+        start.prepare_database.assert_awaited_once_with(start.maintenance, start.settings, request_role=None)
+        start.verify_rls_posture.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_effective_role_with_the_flag_on_is_refused_before_any_ddl(self) -> None:
+        from app.server import lifespan
+
+        start = _PostgreSQLStart(
+            request_role=dataclasses.replace(APP_ROLE, name='mcp_owner'), maintenance_role='mcp_owner', rls=True,
+        )
+        with start.patched(), pytest.raises(ConfigurationError, match="resolve to the same PostgreSQL role 'mcp_owner'"):
+            async with lifespan(MagicMock()):
+                pass
+
+        assert start.steps == [
+            'discover_request_role',
+            'create_maintenance_backend',
+            'maintenance.initialize',
+            'read_login_role',
+            'maintenance.shutdown',
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_unsafe_request_role_is_refused_before_the_maintenance_backend_opens(self) -> None:
+        from app.server import lifespan
+
+        start = _PostgreSQLStart(
+            request_role=dataclasses.replace(APP_ROLE, is_superuser=True), maintenance_role='mcp_owner', rls=True,
+        )
+        with start.patched(), pytest.raises(ConfigurationError, match='rolsuper=true'):
+            async with lifespan(MagicMock()):
+                pass
+
+        assert start.steps == ['discover_request_role']
+
+    @pytest.mark.asyncio
+    async def test_a_failed_preparation_still_shuts_the_maintenance_backend_down(self) -> None:
+        from app.server import lifespan
+
+        start = _PostgreSQLStart(request_role=APP_ROLE, maintenance_role='mcp_owner', rls=True)
+        start.prepare_database.side_effect = RuntimeError('migration failed')
+        with start.patched(), pytest.raises(RuntimeError, match='migration failed'):
+            async with lifespan(MagicMock()):
+                pass
+
+        assert start.steps[-2:] == ['read_login_role', 'maintenance.shutdown']
+        assert 'create_backend' not in start.steps
+
+    @pytest.mark.asyncio
+    async def test_a_refused_posture_shuts_the_request_backend_down(self) -> None:
+        from app.server import lifespan
+
+        start = _PostgreSQLStart(request_role=APP_ROLE, maintenance_role='mcp_owner', rls=True)
+        start.verify_rls_posture.side_effect = ConfigurationError('posture refused')
+        with start.patched(), pytest.raises(ConfigurationError, match='posture refused'):
+            async with lifespan(MagicMock()):
+                pass
+
+        start.request.shutdown.assert_awaited_once()

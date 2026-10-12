@@ -1,13 +1,14 @@
 """PostgreSQL connection parameters shared by the pool and every one-off connection.
 
-Identifier quoting, the asyncpg connect kwargs with an optional credential override, the session
-``SET`` statements every connection runs, and the server-side statement timeout derived from the
-client command timeout.
+The request connection string, identifier quoting, the asyncpg connect kwargs with an optional
+credential override, the session ``SET`` statements every connection runs, and the server-side
+statement timeout derived from the client command timeout.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import asyncpg
 from pydantic import SecretStr
@@ -48,6 +49,57 @@ class CredentialOverride:
 
 
 NO_CREDENTIAL_OVERRIDE = CredentialOverride(user=None, password=None)
+
+
+def request_connection_string(app_settings: AppSettings) -> str:
+    """Return the request connection settings as one connection string.
+
+    ``POSTGRESQL_CONNECTION_STRING`` when it is set, otherwise a DSN built from the
+    component fields. Supports self-hosted PostgreSQL and Supabase alike; for Supabase,
+    use the connection string or the component fields with the Supabase host. The user,
+    password and database name are URL-encoded, so characters such as ``#``, ``@``,
+    ``:``, ``/`` and ``?`` cannot break the URL parsing in asyncpg.
+
+    Args:
+        app_settings: Resolved application settings.
+
+    Returns:
+        The connection string for asyncpg.
+    """
+    storage = app_settings.storage
+    if storage.postgresql_connection_string:
+        return storage.postgresql_connection_string.get_secret_value()
+
+    # URL-encode every user-controlled component of the DSN, not only the password: a
+    # colon in the user reads as the start of the password, an @ in the user or database
+    # reads as the host boundary, and a / or ? in the database reads as the start of the
+    # path or query string -- any of which corrupts the parsed DSN. safe='' encodes ALL
+    # special characters (e.g. # becomes %23); asyncpg automatically URL-decodes the
+    # connection string.
+    encoded_user = quote(storage.postgresql_user, safe='')
+    encoded_password = quote(storage.postgresql_password.get_secret_value(), safe='')
+    encoded_database = quote(storage.postgresql_database, safe='')
+
+    # An IPv6 host literal contains colons, which the DSN authority parses as the
+    # host:port separator; bracket it (RFC 3986 IP-literal) so ::1 or a full IPv6
+    # address interpolates as [::1]:port rather than corrupting the parse. Bracketing
+    # is idempotent: a host already in bracket form (e.g. '[::1]', a natural
+    # copy-paste from URI-style examples) is left as-is, because wrapping it again
+    # would produce '[[::1]]', which asyncpg rejects at DSN parse with a plain
+    # ValueError that never names the bracket cause. A hostname or IPv4 literal has
+    # no colon and is left as-is.
+    host = storage.postgresql_host
+    if host.startswith('[') and host.endswith(']'):
+        host_part = host
+    elif ':' in host:
+        host_part = f'[{host}]'
+    else:
+        host_part = host
+
+    conn_str = f'postgresql://{encoded_user}:{encoded_password}@{host_part}:{storage.postgresql_port}/{encoded_database}'
+    if storage.postgresql_ssl_mode != 'prefer':
+        conn_str += f'?sslmode={storage.postgresql_ssl_mode}'
+    return conn_str
 
 
 def quote_pg_identifier(name: str) -> str:

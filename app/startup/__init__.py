@@ -8,7 +8,7 @@ This package contains:
 - Configuration constants (DB_PATH, MAX_IMAGE_SIZE_MB, MAX_TOTAL_SIZE_MB)
 - The server lifespan's startup phases, in submodules this package never imports
   (tool_registration imports app.tools, which imports this package):
-  database_setup, providers, tool_registration
+  database_setup, rls_posture, providers, tool_registration
 
 Global State Architecture:
     The _backend, _repositories, _embedding_provider, _reranking_provider, and _summary_provider variables
@@ -17,16 +17,20 @@ Global State Architecture:
     (app/server.py) and its provider phase (app/startup/providers.py).
 
 Usage:
-    # In the server lifespan (app/server.py):
+    # In the server lifespan (app/server.py), on SQLite:
     from app.startup import DB_PATH, set_backend, set_repositories
     from app.startup.database_setup import prepare_database
 
-    # Initialize
     backend = create_backend(backend_type=None, db_path=DB_PATH)
-    await backend.initialize()  # Connection pool + Pgpool-II detection (no schema)
+    await backend.initialize()  # Connection pool (no schema)
     set_backend(backend)
-    await prepare_database(backend, settings)  # Schema (init_database) and migrations
+    await prepare_database(backend, settings, request_role=None)  # Schema (init_database) and migrations
     set_repositories(RepositoryContainer(backend))
+
+    # On PostgreSQL the lifespan prepares the schema on a short-lived maintenance backend
+    # logged in as the table owner (create_maintenance_backend), passing the request role
+    # when requests log in as another role, and only then creates and checks the request
+    # backend it shares with every tool (app.startup.rls_posture).
 
     # In MCP tools (app/tools/*.py):
     from app.startup import ensure_repositories, get_reranking_provider
@@ -160,29 +164,19 @@ def get_summary_provider() -> SummaryProvider | None:
     return _summary_provider
 
 
-async def init_database(backend: StorageBackend | None = None) -> None:
-    """Initialize database schema.
+async def init_database(backend: StorageBackend) -> None:
+    """Initialize the base database schema through ``backend``.
 
     Args:
-        backend: Optional backend to use. If None, creates temporary backend for backward compatibility.
-
-    This function can work in two modes:
-    1. With backend parameter (normal server startup): Uses provided backend, no temp backend created
-    2. Without backend parameter (tests/direct calls): Creates temporary backend for isolation
+        backend: The initialized backend to create the schema through: on PostgreSQL the
+            maintenance backend, logged in as the role that owns the tables.
 
     Raises:
         RuntimeError: If no schema file found or backend initialization fails.
     """
     try:
-        # Determine backend type first: the database file is provisioned only for
-        # the file-based SQLite backend, so the backend type must be resolved before
-        # the mkdir/touch below decides whether to touch the SQLite path at all.
-        if backend is not None:
-            backend_type = backend.backend_type
-        else:
-            # Create temporary backend to determine type
-            temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
-            backend_type = temp_backend.backend_type
+        # The database file is provisioned only for the file-based SQLite backend.
+        backend_type = backend.backend_type
 
         # Ensure the database path exists, but ONLY for the file-based SQLite
         # backend. A PostgreSQL deployment still carries a DB_PATH default, so
@@ -220,140 +214,72 @@ async def init_database(backend: StorageBackend | None = None) -> None:
         else:
             schema_sql = schema_sql_template
 
-        # Apply schema - backend-specific approach
-        if backend is not None:
-            # Use provided backend (normal server startup)
-            if backend.backend_type == 'sqlite':
+        # Apply the schema, the way each backend takes it
+        if backend.backend_type == 'sqlite':
 
-                def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
-                    # Single executescript to create all objects atomically
-                    conn.executescript(schema_sql)
+            def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
+                # Single executescript to create all objects atomically
+                conn.executescript(schema_sql)
 
-                await backend.execute_write(_init_schema_sqlite, access_scope=MAINTENANCE)
-            else:  # postgresql
-                migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+            await backend.execute_write(_init_schema_sqlite, access_scope=MAINTENANCE)
+        else:  # postgresql
+            migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
-                async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
-                    # Raise the transaction-scoped statement_timeout to the migration budget
-                    # and take the shared schema-init advisory lock UNDER it, serializing DDL
-                    # across concurrent Kubernetes pods. A multi-pod peer running the first-time
-                    # schema build can hold the lock longer than the pool's regular command
-                    # timeout; acquiring it under the raised client- and server-side deadlines
-                    # waits the peer out instead of being cancelled client-side and crash-looping
-                    # the booting pod. The SET LOCAL and the transaction-scoped lock both
-                    # auto-revert/release on COMMIT/ROLLBACK (no explicit unlock needed).
-                    await begin_migration(conn, migration_timeout_s)
+            async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
+                # Raise the transaction-scoped statement_timeout to the migration budget
+                # and take the shared schema-init advisory lock UNDER it, serializing DDL
+                # across concurrent Kubernetes pods. A multi-pod peer running the first-time
+                # schema build can hold the lock longer than the pool's regular command
+                # timeout; acquiring it under the raised client- and server-side deadlines
+                # waits the peer out instead of being cancelled client-side and crash-looping
+                # the booting pod. The SET LOCAL and the transaction-scoped lock both
+                # auto-revert/release on COMMIT/ROLLBACK (no explicit unlock needed).
+                await begin_migration(conn, migration_timeout_s)
 
-                    # PostgreSQL: parse and execute statements individually
-                    statements: list[str] = []
-                    current_stmt: list[str] = []
-                    in_function = False
+                # PostgreSQL: parse and execute statements individually
+                statements: list[str] = []
+                current_stmt: list[str] = []
+                in_function = False
 
-                    for line in schema_sql.split('\n'):
-                        stripped = line.strip()
-                        # Skip comment-only lines
-                        if stripped.startswith('--'):
-                            continue
-                        # Track dollar-quoted strings (function bodies)
-                        if '$$' in stripped:
-                            in_function = not in_function
-                        if stripped:
-                            current_stmt.append(line)
-                        # End of statement: semicolon when not in dollar quotes
-                        if stripped.endswith(';') and not in_function:
-                            statements.append('\n'.join(current_stmt))
-                            current_stmt = []
-
-                    # Add any remaining statement
-                    if current_stmt:
+                for line in schema_sql.split('\n'):
+                    stripped = line.strip()
+                    # Skip comment-only lines
+                    if stripped.startswith('--'):
+                        continue
+                    # Track dollar-quoted strings (function bodies)
+                    if '$$' in stripped:
+                        in_function = not in_function
+                    if stripped:
+                        current_stmt.append(line)
+                    # End of statement: semicolon when not in dollar quotes
+                    if stripped.endswith(';') and not in_function:
                         statements.append('\n'.join(current_stmt))
+                        current_stmt = []
 
-                    # Execute each statement under the migration budget. Route through
-                    # execute_migration_ddl so asyncpg's client-side per-call deadline
-                    # matches the raised server-side statement_timeout; a bare
-                    # conn.execute would inherit the pool's shorter command_timeout (60s)
-                    # and be cancelled client-side despite the raised migration budget,
-                    # crash-looping the boot on any first-time schema statement that runs
-                    # longer than 60s (large instance, slow disk, multi-pod contention).
-                    for i, stmt in enumerate(statements):
-                        stmt = stmt.strip()
-                        if stmt and not stmt.startswith('--'):
-                            try:
-                                await execute_migration_ddl(conn, stmt, migration_timeout_s)
-                                logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
-                            except Exception as e:
-                                logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
-                                logger.error('Statement: %s...', stmt[:200])
-                                raise
+                # Add any remaining statement
+                if current_stmt:
+                    statements.append('\n'.join(current_stmt))
 
-                await backend.execute_write(cast(Any, _init_schema_postgresql), access_scope=MAINTENANCE)
-            logger.info(f'Database schema initialized successfully ({backend.backend_type})')
-        else:
-            # Backward compatibility: create temporary backend for tests
-            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
-            await temp_manager.initialize()
-            try:
-                if temp_manager.backend_type == 'sqlite':
+                # Execute each statement under the migration budget. Route through
+                # execute_migration_ddl so asyncpg's client-side per-call deadline
+                # matches the raised server-side statement_timeout; a bare
+                # conn.execute would inherit the pool's shorter command_timeout (60s)
+                # and be cancelled client-side despite the raised migration budget,
+                # crash-looping the boot on any first-time schema statement that runs
+                # longer than 60s (large instance, slow disk, multi-pod contention).
+                for i, stmt in enumerate(statements):
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        try:
+                            await execute_migration_ddl(conn, stmt, migration_timeout_s)
+                            logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
+                        except Exception as e:
+                            logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
+                            logger.error('Statement: %s...', stmt[:200])
+                            raise
 
-                    def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
-                        conn.executescript(schema_sql)
-
-                    await temp_manager.execute_write(_init_schema_sqlite, access_scope=MAINTENANCE)
-                else:  # postgresql
-                    migration_timeout_s = settings.storage.postgresql_migration_timeout_s
-
-                    async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
-                        # Raise the transaction-scoped statement_timeout to the migration budget
-                        # and take the shared schema-init advisory lock UNDER it, serializing DDL
-                        # across concurrent pods. A peer running the first-time schema build can
-                        # hold the lock longer than the pool's regular command timeout; acquiring
-                        # it under the raised client- and server-side deadlines waits the peer out
-                        # instead of being cancelled client-side and crash-looping the booting pod.
-                        # The SET LOCAL and the transaction-scoped lock both auto-revert/release on
-                        # COMMIT/ROLLBACK (no explicit unlock needed).
-                        await begin_migration(conn, migration_timeout_s)
-
-                        # PostgreSQL: parse and execute statements individually
-                        statements: list[str] = []
-                        current_stmt: list[str] = []
-                        in_function = False
-
-                        for line in schema_sql.split('\n'):
-                            stripped = line.strip()
-                            if stripped.startswith('--'):
-                                continue
-                            if '$$' in stripped:
-                                in_function = not in_function
-                            if stripped:
-                                current_stmt.append(line)
-                            if stripped.endswith(';') and not in_function:
-                                statements.append('\n'.join(current_stmt))
-                                current_stmt = []
-
-                        if current_stmt:
-                            statements.append('\n'.join(current_stmt))
-
-                        # Execute each statement under the migration budget via
-                        # execute_migration_ddl so the client-side per-call deadline
-                        # matches the raised server-side statement_timeout instead of
-                        # falling back to the pool's shorter command_timeout (see the
-                        # provided-backend closure above for the crash-loop rationale).
-                        for i, stmt in enumerate(statements):
-                            stmt = stmt.strip()
-                            if stmt and not stmt.startswith('--'):
-                                try:
-                                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
-                                    logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
-                                except Exception as e:
-                                    logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
-                                    logger.error('Statement: %s...', stmt[:200])
-                                    raise
-
-                    await temp_manager.execute_write(cast(Any, _init_schema_postgresql), access_scope=MAINTENANCE)
-                logger.info(f'Database schema initialized successfully ({temp_manager.backend_type})')
-            finally:
-                # Always shutdown to stop background tasks and close connections
-                await temp_manager.shutdown()
+            await backend.execute_write(cast(Any, _init_schema_postgresql), access_scope=MAINTENANCE)
+        logger.info(f'Database schema initialized successfully ({backend.backend_type})')
     except Exception as e:
         logger.error(f'Failed to initialize database: {e}')
         raise
@@ -367,7 +293,7 @@ async def ensure_backend() -> StorageBackend:
 
     Note:
         This initializes the connection pool only (no schema).
-        For full database setup including schema, call init_database()
+        For full database setup including schema, call init_database(backend)
         after ensure_backend().
 
     Returns:

@@ -53,6 +53,8 @@ case $EXIT_CODE in
         echo '  - Missing API key (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)'
         echo '  - Invalid provider configuration'
         echo '  - PostgreSQL: wrong password, missing database, or pgvector not installed'
+        echo '  - PostgreSQL row-level security misconfiguration (ENABLE_POSTGRESQL_RLS, POSTGRESQL_MIGRATION_USER, POSTGRESQL_RLS_POLICY_ROLE, or the request role'"'"'s membership and privileges)'
+        echo '  - ENABLE_POSTGRESQL_RLS=false over installed policies (run mcp-context-server-migrate --disable-rls first)'
         echo ''
         echo 'To resolve:'
         echo '  1. Fix the configuration (check logs above)'

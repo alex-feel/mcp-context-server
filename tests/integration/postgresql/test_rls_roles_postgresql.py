@@ -7,11 +7,10 @@ with no membership. The bootstrap ``mcp_test`` superuser stays the administrativ
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit
-from urllib.parse import urlunsplit
-
 import asyncpg
 import pytest
+
+from tests.integration.postgresql.conftest import login_url
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
@@ -24,13 +23,6 @@ EXPECTED_ATTRIBUTES = {
     'mcp_test': (True, True, True),
 }
 LOGIN_ROLES = ['mcp_app', 'mcp_owner', 'mcp_outsider']
-
-
-def _url_for(pg_url: str, role: str) -> str:
-    """Return ``pg_url`` logging in as ``role``, whose password is its own name."""
-    parts = urlsplit(pg_url)
-    host = parts.netloc.rsplit('@', 1)[1]
-    return urlunsplit((parts.scheme, f'{role}:{role}@{host}', parts.path, parts.query, parts.fragment))
 
 
 @pytest.mark.asyncio
@@ -71,7 +63,7 @@ async def test_only_the_request_role_is_a_member_of_the_policy_role(pg_test_url:
 @pytest.mark.asyncio
 @pytest.mark.parametrize('role', LOGIN_ROLES)
 async def test_login_role_connects_with_its_password(pg_test_url: str, role: str) -> None:
-    conn = await asyncpg.connect(_url_for(pg_test_url, role))
+    conn = await asyncpg.connect(login_url(pg_test_url, role))
     try:
         assert await conn.fetchval('SELECT current_user') == role
     finally:
