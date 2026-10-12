@@ -6,7 +6,10 @@ rejection, every policy of ours on every managed table, the guard trigger and th
 helpers. It disables row-level security only on the tables whose read policy recorded
 that it was off before the migration first enabled it, and reports every table it leaves
 enabled. The objects are found by their fixed names, so removal does not depend on the
-configured policy role.
+configured policy role. Before it drops anything it refuses while a session of a member
+of a role our policies apply to is connected to the database, since a running server
+instance would go on without the policies it started with; forcing it logs the sessions
+instead.
 
 :func:`guard_rls_disable_over_enabled` refuses a PostgreSQL start with
 ``ENABLE_POSTGRESQL_RLS`` off while any policy of ours or the read view exists: a request
@@ -14,6 +17,7 @@ role that does not own the tables would then read only public rows and fail ever
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 from typing import Final
@@ -54,6 +58,28 @@ _OUR_POLICY_TABLES_SQL: Final = (
     'JOIN pg_catalog.pg_class c ON c.oid = p.polrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace '
     'WHERE n.nspname = $1 AND p.polname = ANY($2::text[])'
 )
+# $1 schema name, $2 and $3 the table and name of every policy of ours: every session in
+# this database whose login role is a member of a role one of those policies applies to,
+# other than the sessions of the role this connection logged in as. Every pooled
+# connection of the removing command logs in as that role, the table owner, whom no
+# policy filters; a superuser owner would otherwise count its own pool as members of
+# every role. pg_stat_activity shows the pid, the role and the application name of every
+# session to any role.
+_MEMBER_SESSIONS_SQL: Final = (
+    'WITH policy_roles AS ('
+    'SELECT DISTINCT r.roleid FROM pg_catalog.pg_policy p '
+    'JOIN pg_catalog.pg_class c ON c.oid = p.polrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace '
+    'CROSS JOIN LATERAL pg_catalog.unnest(p.polroles) AS r(roleid) '
+    'WHERE n.nspname = $1 AND r.roleid <> 0 '
+    'AND (c.relname::text, p.polname::text) IN (SELECT o.relname, o.polname FROM ROWS FROM '
+    '(pg_catalog.unnest($2::text[]), pg_catalog.unnest($3::text[])) AS o(relname, polname))) '
+    "SELECT a.pid, u.rolname::text, COALESCE(a.application_name, '') "
+    'FROM pg_catalog.pg_stat_activity a JOIN pg_catalog.pg_roles u ON u.oid = a.usesysid '
+    'WHERE a.datname = pg_catalog.current_database() '
+    'AND u.rolname <> session_user '
+    "AND EXISTS (SELECT 1 FROM policy_roles pr WHERE pg_catalog.pg_has_role(a.usesysid, pr.roleid, 'MEMBER')) "
+    'ORDER BY a.pid'
+)
 # $1 schema name, $2 the view's name.
 _VIEW_EXISTS_SQL: Final = (
     'SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace '
@@ -76,6 +102,68 @@ class RlsRemovalReport:
     statements: list[str]
     disabled: list[str]
     left_enabled: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class MemberSession:
+    """A session connected as a member of a role the policies apply to.
+
+    Attributes:
+        pid: The server process of the session.
+        user: The role the session logged in as.
+        application_name: The name the client gave, empty when it gave none.
+    """
+
+    pid: int
+    user: str
+    application_name: str
+
+    def describe(self) -> str:
+        """Return the session as the refusal and the warning name it."""
+        application = f", application '{self.application_name}'" if self.application_name else ''
+        return f'pid {self.pid} ({self.user}{application})'
+
+
+def describe_sessions(sessions: Sequence[MemberSession]) -> str:
+    """Return how many sessions of policy-role members are connected, and which."""
+    count = (
+        '1 session of a policy-role member is'
+        if len(sessions) == 1
+        else f'{len(sessions)} sessions of policy-role members are'
+    )
+    return f'{count} connected: {", ".join(session.describe() for session in sessions)}'
+
+
+class MemberSessionsConnectedError(Exception):
+    """Removal refused because members of a role the policies apply to are connected.
+
+    Attributes:
+        sessions: The connected sessions, by pid.
+    """
+
+    def __init__(self, sessions: Sequence[MemberSession]) -> None:
+        self.sessions = tuple(sessions)
+        super().__init__(describe_sessions(self.sessions))
+
+
+async def read_member_sessions(conn: asyncpg.Connection, *, schema_name: str) -> list[MemberSession]:
+    """Return the sessions of members of the roles our policies apply to, other than this command's own.
+
+    The roles come from the policies themselves, so the answer does not depend on the
+    configured policy role.
+
+    Args:
+        conn: A connection to the database, logged in as the table owner.
+        schema_name: The schema of the tables, unquoted.
+
+    Returns:
+        The sessions, by pid.
+    """
+    pairs = [(table, name) for table in MANAGED_TABLES for name in policy_names(table)]
+    rows = await conn.fetch(
+        _MEMBER_SESSIONS_SQL, schema_name, [table for table, _ in pairs], [name for _, name in pairs],
+    )
+    return [MemberSession(pid=int(row[0]), user=str(row[1]), application_name=str(row[2])) for row in rows]
 
 
 def plan_removal(state: RlsState, *, schema: str) -> RlsRemovalReport:
@@ -113,10 +201,14 @@ def plan_removal(state: RlsState, *, schema: str) -> RlsRemovalReport:
     return RlsRemovalReport(statements=statements, disabled=disabled, left_enabled=left_enabled)
 
 
-async def remove_rls(backend: StorageBackend, settings: AppSettings, *, dry_run: bool) -> RlsRemovalReport:
+async def remove_rls(
+    backend: StorageBackend, settings: AppSettings, *, dry_run: bool, force: bool,
+) -> RlsRemovalReport:
     """Drop every row-level security object of ours, under the lock and in one transaction.
 
-    It must run as the table owner, while no server instance runs. A table keeps
+    It must run as the table owner, while no server instance runs: under the lock and
+    before anything else it reads the sessions of members of the roles our policies
+    apply to, and refuses while any is connected unless ``force``. A table keeps
     row-level security when it was on before the migration first enabled it, or when no
     readable record of ours says otherwise; the report names each such table.
 
@@ -124,12 +216,16 @@ async def remove_rls(backend: StorageBackend, settings: AppSettings, *, dry_run:
         backend: A maintenance backend, logged in as the table owner.
         settings: The application settings: the schema and the migration budget.
         dry_run: Report what would be dropped and disabled without changing anything.
+        force: Remove even while members of the policy roles are connected, logging
+            their sessions.
 
     Returns:
         The statements issued, or that a dry run would issue, and the tables disabled and
         left enabled; empty on SQLite, which has no row-level security.
 
     Raises:
+        MemberSessionsConnectedError: If members of the policy roles are connected and
+            ``force`` is off; nothing was dropped.
         RuntimeError: If reading the catalog or dropping an object fails.
     """
     if backend.backend_type != 'postgresql':
@@ -140,6 +236,11 @@ async def remove_rls(backend: StorageBackend, settings: AppSettings, *, dry_run:
 
     async def _remove(conn: asyncpg.Connection) -> RlsRemovalReport:
         await begin_migration(conn, timeout_s)
+        sessions = await read_member_sessions(conn, schema_name=schema_name)
+        if sessions and not force:
+            raise MemberSessionsConnectedError(sessions)
+        if sessions:
+            logger.warning(f'Removing row-level security while {describe_sessions(sessions)}')
         report = plan_removal(await read_rls_state(conn, schema_name=schema_name, role=None), schema=schema)
         if not dry_run:
             for statement in report.statements:
@@ -148,6 +249,8 @@ async def remove_rls(backend: StorageBackend, settings: AppSettings, *, dry_run:
 
     try:
         report: RlsRemovalReport = await backend.execute_write(cast(Any, _remove), access_scope=MAINTENANCE)
+    except MemberSessionsConnectedError:
+        raise
     except Exception as e:
         logger.error(f'Failed to remove row-level security: {e}')
         raise RuntimeError(f'Row-level security removal failed: {format_exception_message(e)}') from e

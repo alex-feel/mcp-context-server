@@ -73,6 +73,9 @@ def run_uuid_migration(source_url: str, target_url: str, *, dry_run: bool, repor
         Process exit code: 0 on success, 1 on an invalid URL, an unsupported
         backend combination or recorded errors, 2 on unrecoverable migration
         failure, 78 (EX_CONFIG) on a settings ValidationError.
+        A connection row-level security filters, or a privilege error, is not a
+        failure of this mode: it propagates to the dispatcher, which prints the
+        owner remediation and exits 1.
     """
     options = MigrationOptions(
         source_url=source_url,
@@ -107,6 +110,10 @@ def run_uuid_migration(source_url: str, target_url: str, *, dry_run: bool, repor
         print(f'Configuration invalid: {exc}', file=sys.stderr)
         return ConfigurationError.EXIT_CODE
     except Exception as exc:
+        from app.cli._backend import owner_refusal
+
+        if owner_refusal(exc) is not None:
+            raise
         logger.exception('migration failed: %s', exc)
         return 2
 

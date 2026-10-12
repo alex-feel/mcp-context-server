@@ -16,7 +16,9 @@ from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session import apply_session_gucs
 from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
 from app.backends.postgresql_backend.session_profiles import MaintenanceProfile
+from app.cli._backend import assert_maintenance_connection
 from app.cli._backend import make_backend
+from app.cli._backend import owner_refusal
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
 from app.cli._database_url import parse_backend_url
@@ -50,6 +52,9 @@ def run_decompress(source_url: str, *, dry_run: bool) -> int:
         Process exit code (0 success or success-no-op, 1 invalid input,
         2 unrecoverable failure, 78 EX_CONFIG on an invalid environment
         configuration).
+        A connection row-level security filters, or a privilege error, is not a
+        failure of this mode: it propagates to the dispatcher, which prints the
+        owner remediation and exits 1.
     """
     masked = mask_credentials(source_url)
     settings = load_cli_settings()
@@ -78,6 +83,8 @@ def run_decompress(source_url: str, *, dry_run: bool) -> int:
     try:
         return asyncio.run(_decompress_async(source_url, dry_run=dry_run))
     except Exception as exc:
+        if owner_refusal(exc) is not None:
+            raise
         logger.exception('decompression failed: %s', exc)
         return 2
 
@@ -101,6 +108,7 @@ async def _decompress_async(source_url: str, *, dry_run: bool) -> int:
     backend = make_backend(source_url, provision_vector=provision_vector)
     await backend.initialize()
     try:
+        await assert_maintenance_connection(backend, get_settings().storage.postgresql_schema)
         existing = await read_compression_metadata(backend)
         compressed_present = await table_exists(
             backend, 'vec_context_embeddings_compressed',
@@ -282,7 +290,9 @@ async def _decompress_needs_vector(address: str) -> bool:
     The connection reuses :func:`build_asyncpg_connect_kwargs` and applies the
     session parameters and the maintenance profile's statements through
     :func:`apply_session_gucs`, so the ``search_path`` matches the bare-name DML
-    the reverse path runs and ``row_security`` is off. ``EXISTS`` is used instead of
+    the reverse path runs and ``row_security`` is off, and refuses a role that
+    row-level security filters before it reads anything: such a role would count no
+    compressed row and take the zero-data path. ``EXISTS`` is used instead of
     ``COUNT(*)`` so the probe stops at the first row rather than scanning a large
     compressed table.
 
@@ -303,6 +313,7 @@ async def _decompress_needs_vector(address: str) -> bool:
     )
     try:
         await apply_session_gucs(conn, profile_statements=MaintenanceProfile().session_statements())
+        await assert_maintenance_connection(conn, get_settings().storage.postgresql_schema)
         reachable = bool(
             await conn.fetchval(
                 "SELECT to_regclass('vec_context_embeddings_compressed') IS NOT NULL",

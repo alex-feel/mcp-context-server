@@ -93,7 +93,10 @@ async def pg_connect(dsn: str) -> 'asyncpg.Connection[asyncpg.Record]':
     through the server's default ``search_path`` rather than ``POSTGRESQL_SCHEMA``
     and would read float8 text at the server's default precision. The maintenance
     profile's statements follow, so ``row_security`` is off and a statement a policy
-    would filter raises instead of returning a filtered result.
+    would filter raises instead of returning a filtered result. The connection is
+    closed and :class:`app.cli._backend.MaintenanceConnectionError` raised before any
+    data statement when row-level security filters its role on a managed table of
+    ``POSTGRESQL_SCHEMA``.
 
     Args:
         dsn: The PostgreSQL connection URL.
@@ -105,10 +108,13 @@ async def pg_connect(dsn: str) -> 'asyncpg.Connection[asyncpg.Record]':
 
     from app.backends.postgresql_backend.session import apply_session_gucs
     from app.backends.postgresql_backend.session_profiles import MaintenanceProfile
+    from app.cli._backend import assert_maintenance_connection
+    from app.settings import get_settings
 
     conn: asyncpg.Connection[asyncpg.Record] = await asyncpg.connect(dsn, **pg_connect_kwargs())
     try:
         await apply_session_gucs(conn, profile_statements=MaintenanceProfile().session_statements())
+        await assert_maintenance_connection(conn, get_settings().storage.postgresql_schema)
     except BaseException:
         await conn.close()
         raise

@@ -1,10 +1,14 @@
-"""Tests for the mcp-context-server-migrate dispatcher: argument parsing and configuration errors."""
+"""Tests for the mcp-context-server-migrate dispatcher: argument parsing, configuration errors and the owner refusal."""
 
+import importlib
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
+import asyncpg
 import pytest
 
+from app.cli._backend import MaintenanceConnectionError
 from app.cli.migrate import build_parser
 from app.cli.migrate import main as cli_main
 
@@ -113,3 +117,83 @@ def test_build_parser_target_url_optional_when_compress() -> None:
         '--compress',
     ])
     assert args.target_url is None
+
+
+_OWNER_REFUSAL = (
+    "This command must connect with the table owner's credentials: row-level security filters mcp_app on "
+    "context_entries. Rerun with the owner's connection string (docs/migration-v2-to-v3.md)."
+)
+_PG_SOURCE = 'postgresql://mcp_app:app-secret@db.internal:5432/mcp_context'
+
+# mode flags, the module and name of the async body the dispatcher reaches, and the compression switch the mode needs
+_MODES = [
+    pytest.param(
+        ['--reassign-owner', 'local', 'alice'], 'app.cli.migrate_reassign_owner', '_reassign_async', None, id='reassign',
+    ),
+    pytest.param(['--compress'], 'app.cli.migrate_compression.compress', '_compress_async', 'true', id='compress'),
+    pytest.param(['--decompress'], 'app.cli.migrate_compression.decompress', '_decompress_async', 'false', id='decompress'),
+    pytest.param(['--re-embed'], 'app.cli.migrate_reembed', '_reembed_async', None, id='re-embed'),
+    pytest.param(['--embed-missing'], 'app.cli.migrate_embeddings', '_embed_missing_async', None, id='embed-missing'),
+    pytest.param(['--disable-rls'], 'app.cli.migrate_disable_rls', '_disable_rls_async', None, id='disable-rls'),
+    pytest.param(
+        ['--target-url', 'postgresql://mcp_owner:owner-secret@db.internal:5432/target'],
+        'app.cli.migrate_uuid.run',
+        'run_migration_postgresql',
+        None,
+        id='uuid-migration',
+    ),
+]
+
+
+class TestOwnerRefusalExitCode:
+    """Every PostgreSQL mode lets the owner refusal and a privilege error reach the dispatcher, which exits 1."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_settings(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        from app.settings import get_settings
+
+        monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
+        get_settings.cache_clear()
+        yield
+        get_settings.cache_clear()
+
+    @pytest.mark.parametrize(('flags', 'module', 'body', 'compression'), _MODES)
+    @pytest.mark.parametrize(
+        ('error', 'message'),
+        [
+            pytest.param(MaintenanceConnectionError(_OWNER_REFUSAL), _OWNER_REFUSAL, id='precondition'),
+            pytest.param(
+                asyncpg.exceptions.InsufficientPrivilegeError('permission denied for table context_entries'),
+                "This command must connect with the table owner's credentials: the database refused a statement "
+                "(permission denied for table context_entries). Rerun with the owner's connection string "
+                '(docs/migration-v2-to-v3.md).',
+                id='42501',
+            ),
+        ],
+    )
+    def test_the_refusal_exits_1_with_the_remediation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        flags: list[str],
+        module: str,
+        body: str,
+        compression: str | None,
+        error: Exception,
+        message: str,
+    ) -> None:
+        from app.settings import get_settings
+
+        if compression is not None:
+            monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', compression)
+            get_settings.cache_clear()
+
+        async def _refuse(*_args: object, **_kwargs: object) -> int:
+            raise error
+
+        monkeypatch.setattr(importlib.import_module(module), body, _refuse)
+
+        rc = cli_main(['--source-url', _PG_SOURCE, *flags])
+
+        assert rc == 1
+        assert capsys.readouterr().err.splitlines()[-1] == message

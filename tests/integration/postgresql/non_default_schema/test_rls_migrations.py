@@ -82,7 +82,7 @@ def test_rls_objects_live_in_the_configured_schema_and_come_out_again(
             with pytest.raises(ConfigurationError, match=r'\(tables: context_entries, context_entry_grants'):
                 await guard_rls_disable_over_enabled(backend, flag_off)
 
-            report = await remove_rls(backend, flag_off, dry_run=False)
+            report = await remove_rls(backend, flag_off, dry_run=False, force=False)
             assert 'context_entries' in report.disabled
             remaining, _, left = await _snapshot(pg_non_default_schema_db)
             assert left == {}

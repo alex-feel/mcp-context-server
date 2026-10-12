@@ -33,7 +33,9 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
+from app.cli._backend import assert_maintenance_connection
 from app.cli._backend import make_backend
+from app.cli._backend import owner_refusal
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
 from app.settings import get_settings
@@ -53,6 +55,9 @@ def run_reassign_owner(source_url: str, from_principal: str, to_principal: str, 
     Returns:
         Process exit code: 0 on success or success-no-op, 1 on invalid
         arguments, 2 on an unrecoverable failure.
+        A connection row-level security filters, or a privilege error, is not a
+        failure of this mode: it propagates to the dispatcher, which prints the
+        owner remediation and exits 1.
     """
     if not from_principal or not to_principal:
         print('[ERROR] --reassign-owner FROM and TO must not be empty.', file=sys.stderr)
@@ -82,6 +87,8 @@ def run_reassign_owner(source_url: str, from_principal: str, to_principal: str, 
     try:
         return asyncio.run(_reassign_async(source_url, from_principal, to_principal, dry_run=dry_run))
     except Exception as exc:
+        if owner_refusal(exc) is not None:
+            raise
         logger.exception('owner reassignment failed: %s', exc)
         return 2
 
@@ -108,6 +115,7 @@ async def _reassign_async(source_url: str, from_principal: str, to_principal: st
     backend = make_backend(source_url, provision_vector=False)
     await backend.initialize()
     try:
+        await assert_maintenance_connection(backend, get_settings().storage.postgresql_schema)
         if dry_run:
             count = await _count_owned(backend, from_principal)
             print(

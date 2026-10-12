@@ -147,8 +147,8 @@ async def raise_pg_migration_budget(
 ) -> None:
     """Raise this transaction's PostgreSQL statement budget to the migration timeout.
 
-    The compression CLI borrows the server ``PostgreSQLBackend`` pool (via
-    ``create_backend`` in :func:`app.cli._backend.make_backend`), whose ``command_timeout``
+    The compression CLI borrows the server's maintenance ``PostgreSQLBackend`` pool (via
+    ``create_maintenance_backend`` in :func:`app.cli._backend.make_backend`), whose ``command_timeout``
     (``POSTGRESQL_COMMAND_TIMEOUT_S``, ~60s) asyncpg applies as the default client-side
     deadline and whose session ``statement_timeout`` is ~54s. The heavy vec-table DDL
     these paths run -- a full HNSW index build, a whole-table DROP -- can exceed that on

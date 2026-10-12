@@ -8,7 +8,12 @@ Parses the command line and routes each invocation to its mode:
 - ``--re-embed``: :mod:`app.cli.migrate_reembed`;
 - ``--embed-missing``, standalone or after ``--compress``:
   :mod:`app.cli.migrate_embeddings`;
-- ``--reassign-owner``: :mod:`app.cli.migrate_reassign_owner`.
+- ``--reassign-owner``: :mod:`app.cli.migrate_reassign_owner`;
+- ``--disable-rls``, with ``--force``: :mod:`app.cli.migrate_disable_rls`.
+
+Every PostgreSQL mode must connect with the table owner's credentials. A mode that finds
+its role filtered by row-level security, or that the database refuses a statement with
+insufficient privilege, ends here with the owner remediation and exit code 1.
 """
 
 import argparse
@@ -36,8 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
             'Migrate an integer-keyed MCP context database to the UUIDv7 '
             'schema, compress/decompress an existing UUIDv7 database with '
             'TurboQuant embedding compression, re-embed an existing '
-            'database under a new model, or reassign the owner of existing '
-            'context entries.'
+            'database under a new model, reassign the owner of existing '
+            'context entries, or remove the PostgreSQL row-level security '
+            "the server installed. PostgreSQL modes need the table owner's "
+            'credentials in --source-url.'
         ),
     )
     parser.add_argument(
@@ -52,7 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             'Target database URL or filesystem path. Required for the v2->v3 '
             'migration; ignored by the in-place modes (--compress, '
-            '--decompress, --re-embed, --embed-missing, --reassign-owner).'
+            '--decompress, --re-embed, --embed-missing, --reassign-owner, '
+            '--disable-rls).'
         ),
     )
     parser.add_argument(
@@ -122,6 +130,29 @@ def build_parser() -> argparse.ArgumentParser:
             'Not combinable with --embed-missing.'
         ),
     )
+    mode_group.add_argument(
+        '--disable-rls',
+        action='store_true',
+        help=(
+            'Remove the PostgreSQL row-level security this server installed '
+            '(policies, guard trigger, read view and helper functions) and '
+            'disable row-level security on the tables it enabled. Stop every '
+            "server instance first and connect with the table owner's "
+            'credentials; set ENABLE_POSTGRESQL_RLS=false before starting '
+            'again. Refuses while a member of the policy role is connected '
+            'unless --force. Reads from --source-url; --target-url is '
+            'ignored. Use --dry-run to print what would be removed. Not '
+            'combinable with --embed-missing.'
+        ),
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help=(
+            'With --disable-rls only: remove row-level security even while '
+            'sessions of policy-role members are connected.'
+        ),
+    )
     # --embed-missing is intentionally OUTSIDE mode_group: it composes with
     # --compress (one-shot compress+backfill) AND runs standalone (fp32-only
     # backfill or compressed-only backfill, depending on the env var state).
@@ -149,30 +180,35 @@ def main(argv: list[str] | None = None) -> int:
         argv: Optional override for ``sys.argv[1:]`` (used by tests).
 
     Returns:
-        Process exit code: 0 on success, 1 on user error or recorded
-        errors, 2 on unrecoverable migration failure, 78 (EX_CONFIG) on a
-        settings ValidationError -- the same classification the server's
-        guarded import applies.
+        Process exit code: 0 on success, 1 on user error, recorded errors,
+        or a connection the command may not run on (row-level security
+        filters its role, or the database refuses a statement with
+        insufficient privilege), 2 on unrecoverable migration failure, 78
+        (EX_CONFIG) on a settings ValidationError -- the same classification
+        the server's guarded import applies.
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.force and not args.disable_rls:
+        parser.error('--force is valid only with --disable-rls')
 
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
-    # Single-backend in-place operations: --reassign-owner, --compress,
-    # --decompress, --re-embed, --embed-missing. All dispatch on --source-url
-    # alone; --target-url is ignored. Composition rule: --compress and
-    # --embed-missing can be combined (--compress runs first, then
+    # Single-backend in-place operations: --reassign-owner, --disable-rls,
+    # --compress, --decompress, --re-embed, --embed-missing. All dispatch on
+    # --source-url alone; --target-url is ignored. Composition rule: --compress
+    # and --embed-missing can be combined (--compress runs first, then
     # --embed-missing against the compressed layout). --reassign-owner,
-    # --compress, --decompress, and --re-embed are mutually exclusive
-    # (enforced by argparse mode_group). --reassign-owner, --decompress and
-    # --re-embed return before the --embed-missing check below, so a
-    # co-passed --embed-missing is silently superseded: --re-embed already
-    # re-embeds every entry (gaps included), and --reassign-owner and
-    # --decompress are documented as not combinable with --embed-missing
-    # (run it separately afterward). Imported lazily so callers running the
-    # v2->v3 migration do not pay the compression/numpy import cost.
+    # --disable-rls, --compress, --decompress, and --re-embed are mutually
+    # exclusive (enforced by argparse mode_group). --reassign-owner,
+    # --disable-rls, --decompress and --re-embed return before the
+    # --embed-missing check in _dispatch, so a co-passed --embed-missing is
+    # silently superseded: --re-embed already re-embeds every entry (gaps
+    # included), and --reassign-owner, --disable-rls and --decompress are
+    # documented as not combinable with --embed-missing (run it separately
+    # afterward). Imported lazily so callers running the v2->v3 migration do
+    # not pay the compression/numpy import cost.
     #
     # Settings validation surfaces on these paths at the first get_settings()
     # call (transitively, at backend-module import), never through
@@ -182,39 +218,68 @@ def main(argv: list[str] | None = None) -> int:
     # (78) with the pydantic detail on stderr, instead of an unhandled
     # traceback and the generic exit 1 supervisors cannot distinguish from a
     # transient failure.
+    #
+    # A mode that finds its connection filtered by row-level security, or whose
+    # statement the database refuses with insufficient privilege (42501), lets
+    # that reach this point rather than reporting a generic failure: the
+    # remediation, connecting with the table owner's credentials, is the same for
+    # every mode.
     try:
-        if args.reassign_owner:
-            from app.cli.migrate_reassign_owner import run_reassign_owner
-            from_principal, to_principal = args.reassign_owner
-            return run_reassign_owner(args.source_url, from_principal, to_principal, dry_run=args.dry_run)
-        if args.compress:
-            from app.cli.migrate_compression.compress import run_compress
-            rc = run_compress(args.source_url, dry_run=args.dry_run)
-            if rc != 0:
-                return rc
-            if args.embed_missing:
-                from app.cli.migrate_embeddings import run_embed_missing
-                return run_embed_missing(args.source_url, dry_run=args.dry_run)
-            return 0
-        if args.decompress:
-            from app.cli.migrate_compression.decompress import run_decompress
-            return run_decompress(args.source_url, dry_run=args.dry_run)
-        if args.re_embed:
-            from app.cli.migrate_reembed import run_reembed
-            return run_reembed(args.source_url, dry_run=args.dry_run)
-        if args.embed_missing:
-            from app.cli.migrate_embeddings import run_embed_missing
-            return run_embed_missing(args.source_url, dry_run=args.dry_run)
+        return _dispatch(args)
     except ValidationError as e:
         print(f'Configuration invalid: {e}', file=sys.stderr)
         return ConfigurationError.EXIT_CODE
+    except Exception as exc:
+        from app.cli._backend import owner_refusal
+
+        refusal = owner_refusal(exc)
+        if refusal is None:
+            raise
+        print(refusal, file=sys.stderr)
+        return 1
+
+
+def _dispatch(args: argparse.Namespace) -> int:
+    """Run the mode ``args`` select and return its exit code.
+
+    Args:
+        args: The parsed command line.
+
+    Returns:
+        The mode's exit code.
+    """
+    if args.reassign_owner:
+        from app.cli.migrate_reassign_owner import run_reassign_owner
+        from_principal, to_principal = args.reassign_owner
+        return run_reassign_owner(args.source_url, from_principal, to_principal, dry_run=args.dry_run)
+    if args.disable_rls:
+        from app.cli.migrate_disable_rls import run_disable_rls
+        return run_disable_rls(args.source_url, dry_run=args.dry_run, force=args.force)
+    if args.compress:
+        from app.cli.migrate_compression.compress import run_compress
+        rc = run_compress(args.source_url, dry_run=args.dry_run)
+        if rc != 0:
+            return rc
+        if args.embed_missing:
+            from app.cli.migrate_embeddings import run_embed_missing
+            return run_embed_missing(args.source_url, dry_run=args.dry_run)
+        return 0
+    if args.decompress:
+        from app.cli.migrate_compression.decompress import run_decompress
+        return run_decompress(args.source_url, dry_run=args.dry_run)
+    if args.re_embed:
+        from app.cli.migrate_reembed import run_reembed
+        return run_reembed(args.source_url, dry_run=args.dry_run)
+    if args.embed_missing:
+        from app.cli.migrate_embeddings import run_embed_missing
+        return run_embed_missing(args.source_url, dry_run=args.dry_run)
 
     if not args.target_url:
         logger.error(
             '--target-url is required for the v2->v3 migration. '
             'For an in-place operation against --source-url, pass one of '
-            '--compress, --decompress, --re-embed, --embed-missing, or '
-            '--reassign-owner (none of which use --target-url).',
+            '--compress, --decompress, --re-embed, --embed-missing, '
+            '--reassign-owner, or --disable-rls (none of which use --target-url).',
         )
         return 1
 

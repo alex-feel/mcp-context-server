@@ -22,9 +22,10 @@ import pytest
 from app.cli import _backend
 from app.cli.migrate_compression import decompress
 from app.cli.migrate_compression.decompress import _decompress_needs_vector
+from tests.cli._owner_connection import AnswersAsOwner
 
 
-class _FakeProbeConn:
+class _FakeProbeConn(AnswersAsOwner):
     """Minimal asyncpg-connection stand-in for the pre-init decompress probe.
 
     Records the SQL passed to ``fetchval`` and answers the two probe queries
@@ -110,7 +111,7 @@ class _StopInitializeError(Exception):
 
     ``_decompress_async`` calls ``backend.initialize()`` right after construction
     and before any database work, so raising here lets the test capture the
-    ``provision_vector`` passed to ``create_backend`` without stubbing the whole
+    ``provision_vector`` passed to the backend factory without stubbing the whole
     downstream decompress pipeline.
     """
 
@@ -220,17 +221,16 @@ async def test_decompress_async_provisions_vector_per_probe(
         del address
         return probe_result
 
-    def _fake_create_backend(**kwargs: object) -> _StubBackend:
+    def _fake_create_maintenance_backend(**kwargs: object) -> _StubBackend:
         captured.update(kwargs)
         return _StubBackend()
 
     monkeypatch.setattr(decompress, '_decompress_needs_vector', _fake_probe)
-    monkeypatch.setattr(_backend, 'create_backend', _fake_create_backend)
+    monkeypatch.setattr(_backend, 'create_maintenance_backend', _fake_create_maintenance_backend)
 
     with pytest.raises(_StopInitializeError):
         await decompress._decompress_async(
             'postgresql://u:p@h:5432/db', dry_run=True,
         )
 
-    assert captured['backend_type'] == 'postgresql'
-    assert captured['provision_vector'] is expected
+    assert captured == {'connection_string': 'postgresql://u:p@h:5432/db', 'provision_vector': expected}

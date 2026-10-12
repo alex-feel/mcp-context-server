@@ -388,7 +388,9 @@ class TestMaintenanceBackend:
 
         await call.kwargs['setup'](conn)
 
-        statements = conn.execute.await_args.args[0].split('; ')
+        executed = conn.execute.await_args
+        assert executed is not None
+        statements = executed.args[0].split('; ')
         assert 'SET row_security = off' in statements
         assert any(statement.startswith('SET search_path') for statement in statements)
 
@@ -412,3 +414,17 @@ class TestMaintenanceBackend:
             get_settings.cache_clear()
 
         assert isinstance(backend, SQLiteBackend)
+
+    def test_an_explicit_db_path_builds_the_sqlite_backend_at_that_path(
+        self, configure_postgresql: ConfigureEnv, tmp_path: Path,
+    ) -> None:
+        configure_postgresql(POSTGRESQL_CONNECTION_STRING=REQUEST_DSN)
+
+        backend = create_maintenance_backend(db_path=str(tmp_path / 'cli.db'))
+
+        assert isinstance(backend, SQLiteBackend)
+        assert backend.db_path == tmp_path / 'cli.db'
+
+    def test_a_db_path_and_a_connection_string_together_are_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match='either a SQLite db_path or a PostgreSQL connection_string'):
+            create_maintenance_backend(connection_string=CLI_DSN, db_path=tmp_path / 'cli.db')

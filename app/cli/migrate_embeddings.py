@@ -35,7 +35,9 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
+from app.cli._backend import assert_maintenance_connection
 from app.cli._backend import make_backend
+from app.cli._backend import owner_refusal
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
 from app.cli._embedding_introspect import dimension_conflict_error
@@ -77,6 +79,9 @@ def run_embed_missing(source_url: str, *, dry_run: bool) -> int:
     Returns:
         Process exit code: 0 success or success-no-op, 1 invalid input,
         2 unrecoverable failure.
+        A connection row-level security filters, or a privilege error, is not a
+        failure of this mode: it propagates to the dispatcher, which prints the
+        owner remediation and exits 1.
     """
     masked = mask_credentials(source_url)
     _print_warning(source_url=masked, dry_run=dry_run)
@@ -93,6 +98,8 @@ def run_embed_missing(source_url: str, *, dry_run: bool) -> int:
     try:
         return asyncio.run(_embed_missing_async(source_url, dry_run=dry_run))
     except Exception as exc:
+        if owner_refusal(exc) is not None:
+            raise
         logger.exception('embed-missing failed: %s', exc)
         return 2
 
@@ -116,6 +123,8 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
     backend = make_backend(source_url)
     await backend.initialize()
     try:
+        await assert_maintenance_connection(backend, get_settings().storage.postgresql_schema)
+
         # Deferred imports: keep numpy / heavy provider machinery out of
         # the dispatcher's import graph.
         from app.repositories import RepositoryContainer

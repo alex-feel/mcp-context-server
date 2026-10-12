@@ -21,6 +21,7 @@ from app.cli.migrate_uuid.pg_connection import pg_connect_kwargs
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
 from app.settings import get_settings
+from tests.cli._owner_connection import AnswersAsOwner
 from tests.cli.migrate_uuid._sources import INTEGER_KEYED_ENTRIES_SCHEMA_SQL
 
 
@@ -104,7 +105,7 @@ def _seed_single_row_source(path: Path) -> None:
         conn.close()
 
 
-class _FakeTargetConn:
+class _FakeTargetConn(AnswersAsOwner):
     """Minimal async stand-in for the asyncpg target connection."""
 
     async def execute(self, _query: str, *_args: object) -> str:

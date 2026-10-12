@@ -29,6 +29,7 @@ import pytest
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
+from tests.cli._owner_connection import AnswersAsOwner
 from tests.cli.migrate_uuid._sources import INTEGER_KEYED_SCHEMA_SQL
 
 
@@ -88,7 +89,7 @@ def _seed_source(
         conn.close()
 
 
-class _FakeTargetConn:
+class _FakeTargetConn(AnswersAsOwner):
     """Minimal async stand-in for the asyncpg target connection.
 
     Records every ``execute`` call so a test can assert which rows were inserted

@@ -8,10 +8,13 @@ from unittest import mock
 
 import pytest
 
+from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.sqlite_backend import SQLiteBackend
 from app.cli.migrate_compression.decompress import run_decompress
 from app.compression.types import CompressionMetadata
 from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
 from app.settings import get_settings
+from tests.cli._owner_connection import OWNER_ANSWER
 from tests.cli.migrate_compression._sqlite_db import bootstrap_schema
 from tests.cli.migrate_compression._sqlite_db import create_fp32_vec_table
 from tests.conftest import requires_numpy
@@ -286,10 +289,12 @@ def _install_decompress_fakes(
     """
     import app.cli.migrate_compression.decompress as decompress_mod
 
-    backend = mock.MagicMock()
+    backend = mock.MagicMock(spec=SQLiteBackend if backend_type == 'sqlite' else PostgreSQLBackend)
     backend.backend_type = backend_type
     backend.initialize = mock.AsyncMock()
     backend.shutdown = mock.AsyncMock()
+    # The owner precondition reads through the backend: the table owner, filtered on no table.
+    backend.execute_read = mock.AsyncMock(return_value=OWNER_ANSWER)
 
     meta = CompressionMetadata(
         provider='turboquant', bits=4, variant='ip', seed=0, dim=dim,

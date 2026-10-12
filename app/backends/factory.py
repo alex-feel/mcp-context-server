@@ -124,6 +124,7 @@ def create_backend(
 def create_maintenance_backend(
     *,
     connection_string: str | None = None,
+    db_path: Path | str | None = None,
     provision_vector: bool | None = None,
 ) -> StorageBackend:
     """Create the backend migrations, startup and the command-line tools run on.
@@ -135,18 +136,28 @@ def create_maintenance_backend(
     connections run as the table owner under the maintenance session profile: no identity
     is bound, reads name the base tables, and every connection turns ``row_security`` off.
     An explicit ``connection_string`` (the command-line tools) is dialed with its own
-    credentials and no override. With the SQLite settings it returns the SQLite backend,
-    which enforces access in the application layer only.
+    credentials and no override. With the SQLite settings, or an explicit ``db_path`` (the
+    command-line tools on a SQLite file), it returns the SQLite backend, which enforces
+    access in the application layer only.
 
     Args:
         connection_string: PostgreSQL connection string whose credentials are authoritative.
             If None, the request connection settings with the migration credentials.
+        db_path: SQLite database file to open whatever the settings route to.
         provision_vector: Explicit pgvector-provisioning decision (PostgreSQL only); if
             None, the backend resolves it at initialize() time.
 
     Returns:
         The maintenance StorageBackend.
+
+    Raises:
+        ValueError: If both ``connection_string`` and ``db_path`` are given.
     """
+    if connection_string is not None and db_path is not None:
+        raise ValueError('Pass either a SQLite db_path or a PostgreSQL connection_string, not both')
+    if db_path is not None:
+        return create_backend(backend_type='sqlite', db_path=db_path)
+
     settings = get_settings()
 
     if connection_string is None and settings.storage.backend_type == 'sqlite':
