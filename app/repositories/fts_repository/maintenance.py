@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app.access_scope import READ_VIEW
 from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
@@ -343,6 +344,13 @@ class FtsMaintenanceMixin(BaseRepository):
         and recreates it with the new language. The GENERATED ALWAYS AS column is
         automatically populated from text_content on recreation.
 
+        The row-level security read view lists every column of context_entries, so the
+        column cannot be dropped while it exists. When it exists, it is dropped first, the
+        grants the drop takes away named as the row-level security migration names them,
+        and re-created in the same transaction once the column and its index exist again,
+        listing the new column; the table lock the rewrite holds keeps every other
+        session from seeing it missing.
+
         Args:
             new_language: The new language for tsvector (e.g., 'english', 'german')
             scope: The identity the migration runs as.
@@ -357,12 +365,18 @@ class FtsMaintenanceMixin(BaseRepository):
             raise RuntimeError('migrate_language is only supported for PostgreSQL backend')
 
         # Import locally to avoid a repository->migrations import at module load.
+        from app.backends.postgresql_backend.session import quote_pg_identifier
+        from app.migrations import rls
         from app.migrations._pg_ddl import begin_migration
         from app.migrations._pg_ddl import execute_migration_ddl
         from app.migrations._pg_ddl import fetchval_migration
         from app.settings import get_settings
 
-        migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
+        settings = get_settings()
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+        schema_name = settings.storage.postgresql_schema
+        schema = quote_pg_identifier(schema_name)
+        policy_role = settings.access_control.postgresql_rls_policy_role
         old_language = await self.get_current_language(scope=scope)
 
         async def _migrate_language(conn: 'asyncpg.Connection') -> dict[str, Any]:
@@ -375,6 +389,11 @@ class FtsMaintenanceMixin(BaseRepository):
             # COMMIT/ROLLBACK, so no finally-restore (which would raise 25P02 in an
             # aborted transaction and mask the real DDL error) is used.
             await begin_migration(conn, migration_timeout_s)
+
+            # The read view depends on every column of context_entries, this one included.
+            view_existed = await conn.fetchval('SELECT pg_catalog.to_regclass($1) IS NOT NULL', f'{schema}.{READ_VIEW}')
+            if view_existed:
+                await rls.drop_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=migration_timeout_s)
 
             # Count entries for statistics
             entry_count = await fetchval_migration(conn, 'SELECT COUNT(*) FROM context_entries', migration_timeout_s)
@@ -406,6 +425,9 @@ class FtsMaintenanceMixin(BaseRepository):
             ''',
                 migration_timeout_s,
             )
+
+            if view_existed:
+                await rls.create_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=migration_timeout_s)
 
             return {
                 'success': True,

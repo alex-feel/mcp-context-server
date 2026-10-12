@@ -311,18 +311,19 @@ class TestTransactionScopedAdvisoryLocks:
 
     @pytest.mark.asyncio
     async def test_no_session_scoped_locks_in_migration_source(self) -> None:
-        """Verify migration source files contain no session-scoped advisory locks.
+        """Verify no migration module takes a session-scoped advisory lock.
 
-        This is a static analysis test that reads the source files directly
-        to ensure they contain no pg_advisory_lock (without xact) or pg_advisory_unlock calls.
+        This is a static analysis test that reads every module of app/migrations directly
+        to ensure none contains a pg_advisory_lock (without xact) or pg_advisory_unlock call.
         """
         from pathlib import Path
 
         migrations_dir = Path(__file__).parent.parent.parent / 'app' / 'migrations'
-        migration_files = ['fts.py', 'semantic.py', 'chunking.py', 'metadata.py']
+        migration_files = sorted(path.name for path in migrations_dir.glob('*.py'))
+        assert {'rls.py', 'rls_removal.py', 'rls_state.py', 'request_role_grants.py', 'fts.py'} <= set(migration_files)
 
         for filename in migration_files:
-            source = (migrations_dir / filename).read_text()
+            source = (migrations_dir / filename).read_text(encoding='utf-8')
             lines = source.split('\n')
             for i, line in enumerate(lines, 1):
                 # Check for session-scoped lock (pg_advisory_lock without xact prefix)

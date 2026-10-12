@@ -115,7 +115,7 @@ def test_read_view_comment_and_drop_name_the_view() -> None:
     definition = hashlib.sha256(b'deparse').hexdigest()
 
     assert view.target == f'VIEW {VIEW}'
-    assert comment_statement(view, definition=definition) == (
+    assert comment_statement(view, definition=definition, preenabled=None) == (
         f"COMMENT ON VIEW {VIEW} IS 'mcp-context-server rls v1 sha={view.sha} def={definition}'"
     )
     assert view.drop_statement == f'DROP VIEW IF EXISTS {VIEW}'

@@ -1,13 +1,25 @@
-"""PostgreSQL row-level security: installing the objects :mod:`app.migrations.rls_ddl` renders.
+"""PostgreSQL row-level security: keeping the objects :mod:`app.migrations.rls_ddl` renders installed and current.
 
-With ``ENABLE_POSTGRESQL_RLS`` on a PostgreSQL backend, :func:`apply_rls` runs as the table
-owner and installs, in one transaction under the schema-init advisory lock: the helper
-functions and the policy role's EXECUTE on them, the guard trigger on ``context_entries``,
-the policies of every managed table that exists, ``ENABLE ROW LEVEL SECURITY`` on each
-such table where it is still off, and last the read view of ``context_entries``
-(:func:`create_read_view`). Every object then gets its fingerprint comment, built from the
-``sha`` of its rendered statement and the digest of the server's own deparse of the object
-(:func:`read_definition`), read back in the same transaction.
+With ``ENABLE_POSTGRESQL_RLS`` on a PostgreSQL backend, :func:`apply_rls` runs as the
+table owner and brings the database to what the code renders: the helper functions and
+the policy role's EXECUTE on them, the guard trigger on ``context_entries``, the policies
+of every managed table that exists, ``ENABLE ROW LEVEL SECURITY`` on each such table
+where it is off, and last the read view of ``context_entries`` (:func:`create_read_view`)
+with SELECT for the policy role as the only privilege anyone but its owner holds on it.
+Every object carries a fingerprint comment built from the ``sha`` of its rendered
+statement and the digest of the server's own deparse (:func:`read_definition`), read back
+in the same transaction; each table's read policy also records whether row-level
+security was on before the migration first enabled it.
+
+The step uses double-checked locking. It first reads the catalog without any lock
+(:func:`~app.migrations.rls_state.read_rls_state`); when nothing differs it returns with
+no lock taken and no DDL issued, which is what rolling restarts of several instances
+need. Otherwise it takes the schema-init lock, reads again and changes only what still
+differs (:func:`~app.migrations.rls_state.plan_rls`), naming in a WARNING every object
+that was changed outside the server and every grantee whose privileges on the view it
+takes away. Tables created after a boot get their policies at the next one. The FTS
+language rebuild, which must drop the view to drop a column, shares
+:func:`drop_read_view` and :func:`create_read_view`.
 """
 
 import logging
@@ -16,6 +28,7 @@ from typing import cast
 
 import asyncpg
 
+from app.access_scope import READ_VIEW
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend.session import quote_pg_identifier
@@ -23,47 +36,27 @@ from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations.rls_ddl import CONTEXT_TABLE
-from app.migrations.rls_ddl import MANAGED_TABLES
 from app.migrations.rls_ddl import RlsObject
 from app.migrations.rls_ddl import RlsObjectKind
 from app.migrations.rls_ddl import comment_statement
 from app.migrations.rls_ddl import digest
 from app.migrations.rls_ddl import enable_statement
-from app.migrations.rls_ddl import guard_function
-from app.migrations.rls_ddl import guard_trigger
-from app.migrations.rls_ddl import helper_functions
 from app.migrations.rls_ddl import helper_grant
 from app.migrations.rls_ddl import read_view
 from app.migrations.rls_ddl import read_view_drop
-from app.migrations.rls_ddl import read_view_grant
-from app.migrations.rls_ddl import read_view_revoke
 from app.migrations.rls_ddl import reject_function
 from app.migrations.rls_ddl import reject_trigger
-from app.migrations.rls_ddl import table_policies
+from app.migrations.rls_state import COLUMNS_SQL
+from app.migrations.rls_state import RlsPlan
+from app.migrations.rls_state import plan_rls
+from app.migrations.rls_state import policy_definition
+from app.migrations.rls_state import read_rls_state
+from app.migrations.rls_state import read_view_acl
+from app.migrations.rls_state import view_acl_repair
 from app.settings import AppSettings
 
 logger = logging.getLogger(__name__)
 
-# The managed tables that exist in the schema, with whether row-level security is enabled on each.
-_MANAGED_TABLES_SQL = (
-    'SELECT c.relname, c.relrowsecurity FROM pg_catalog.pg_class c '
-    'JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace '
-    "WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') AND c.relname = ANY($2::text[])"
-)
-# The live columns of a table, in the order SELECT * lists them.
-_COLUMNS_SQL = (
-    'SELECT a.attname FROM pg_catalog.pg_attribute a '
-    'WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped '
-    'ORDER BY a.attnum'
-)
-# Every privilege a relation's ACL holds for a role other than its owner; PUBLIC reads as NULL.
-_ACL_SQL = (
-    'SELECT r.rolname, a.privilege_type FROM pg_catalog.pg_class c '
-    'CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) AS a '
-    'LEFT JOIN pg_catalog.pg_roles r ON r.oid = a.grantee '
-    'WHERE c.oid = pg_catalog.to_regclass($1) AND a.grantee <> c.relowner '
-    'ORDER BY r.rolname NULLS FIRST, a.privilege_type'
-)
 _FUNCTION_DEFINITION_SQL = 'SELECT pg_catalog.pg_get_functiondef(pg_catalog.to_regprocedure($1))'
 _VIEW_DEFINITION_SQL = 'SELECT pg_catalog.pg_get_viewdef(pg_catalog.to_regclass($1), true)'
 _TRIGGER_DEFINITION_SQL = (
@@ -79,12 +72,13 @@ _POLICY_DEFINITION_SQL = (
 
 
 async def apply_rls(backend: StorageBackend, settings: AppSettings) -> None:
-    """Install the row-level security helpers, guard trigger, policies and read view with their fingerprints.
+    """Bring the row-level security helpers, guard trigger, policies and read view to what the code renders.
 
     Runs only on PostgreSQL with ``ENABLE_POSTGRESQL_RLS``; otherwise it returns without
     touching the database. It must run as the table owner, after every table this boot
     provisions exists: a table created later gets its policies on the next boot, and the
-    read view lists the columns ``context_entries`` has when it runs.
+    read view lists the columns ``context_entries`` has when it runs. A database that
+    already holds exactly what the code renders is only read: no lock, no DDL.
 
     Args:
         backend: The maintenance backend, logged in as the table owner.
@@ -92,7 +86,7 @@ async def apply_rls(backend: StorageBackend, settings: AppSettings) -> None:
             budget.
 
     Raises:
-        RuntimeError: If installing an object fails.
+        RuntimeError: If reading the catalog or changing an object fails.
     """
     if backend.backend_type != 'postgresql' or not settings.access_control.postgresql_rls_enabled:
         return
@@ -103,39 +97,25 @@ async def apply_rls(backend: StorageBackend, settings: AppSettings) -> None:
     role = quote_pg_identifier(policy_role)
     timeout_s = settings.storage.postgresql_migration_timeout_s
 
-    async def _apply(conn: asyncpg.Connection) -> None:
+    async def _apply(conn: asyncpg.Connection) -> bool:
+        state = await read_rls_state(conn, schema_name=schema_name, role=role)
+        if plan_rls(state, schema=schema, role_name=policy_role).clean:
+            return False
         await begin_migration(conn, timeout_s)
-        helpers = helper_functions(schema)
-        for helper in helpers:
-            await execute_migration_ddl(conn, helper.statement, timeout_s)
-        await execute_migration_ddl(conn, helper_grant(schema, role), timeout_s)
-        for helper in helpers:
-            await _fingerprint(conn, helper, timeout_s)
-
-        function = guard_function(schema)
-        await execute_migration_ddl(conn, function.statement, timeout_s)
-        await _fingerprint(conn, function, timeout_s)
-        await _recreate(conn, guard_trigger(schema), timeout_s)
-
-        rows = await conn.fetch(_MANAGED_TABLES_SQL, schema_name, list(MANAGED_TABLES))
-        enabled = {str(row[0]): bool(row[1]) for row in rows}
-        for table in (table for table in MANAGED_TABLES if table in enabled):
-            for policy in table_policies(table, schema=schema, role=role):
-                await _recreate(conn, policy, timeout_s)
-            if not enabled[table]:
-                await execute_migration_ddl(conn, enable_statement(table, schema=schema), timeout_s)
-
-        # CREATE OR REPLACE VIEW cannot drop or reorder columns, so the view is re-created.
-        if CONTEXT_TABLE in enabled:
-            await execute_migration_ddl(conn, read_view_drop(schema), timeout_s)
-            await create_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=timeout_s)
+        state = await read_rls_state(conn, schema_name=schema_name, role=role)
+        plan = plan_rls(state, schema=schema, role_name=policy_role)
+        await _repair(conn, plan, schema_name=schema_name, policy_role=policy_role, timeout_s=timeout_s)
+        return not plan.clean
 
     try:
-        await backend.execute_write(cast(Any, _apply), access_scope=MAINTENANCE)
+        changed = await backend.execute_write(cast(Any, _apply), access_scope=MAINTENANCE)
     except Exception as e:
         logger.error(f'Failed to apply the row-level security migration: {e}')
         raise RuntimeError(f'Row-level security migration failed: {format_exception_message(e)}') from e
-    logger.info(f'Applied row-level security policies for the role {role} in schema {schema}')
+    if changed:
+        logger.info(f'Applied row-level security for the role {role} in schema {schema}')
+    else:
+        logger.debug(f'Row-level security for the role {role} in schema {schema} is current')
 
 
 async def create_read_view(conn: asyncpg.Connection, *, schema: str, policy_role: str, timeout_s: float) -> None:
@@ -157,17 +137,38 @@ async def create_read_view(conn: asyncpg.Connection, *, schema: str, policy_role
     """
     quoted_schema = quote_pg_identifier(schema)
     columns = [
-        quote_pg_identifier(str(row[0])) for row in await conn.fetch(_COLUMNS_SQL, f'{quoted_schema}.{CONTEXT_TABLE}')
+        quote_pg_identifier(str(row[0])) for row in await conn.fetch(COLUMNS_SQL, f'{quoted_schema}.{CONTEXT_TABLE}')
     ]
     view = read_view(columns, schema=quoted_schema, role_name=policy_role)
     await execute_migration_ddl(conn, view.statement, timeout_s)
-    await _normalize_view_acl(conn, view, schema=quoted_schema, policy_role=policy_role, timeout_s=timeout_s)
+    await _normalize_view_acl(conn, schema=quoted_schema, policy_role=policy_role, timeout_s=timeout_s)
     function = reject_function(quoted_schema)
     trigger = reject_trigger(quoted_schema)
     await execute_migration_ddl(conn, function.statement, timeout_s)
     await execute_migration_ddl(conn, trigger.statement, timeout_s)
     for obj in (function, trigger, view):
-        await _fingerprint(conn, obj, timeout_s)
+        await _fingerprint(conn, obj, timeout_s, preenabled=None)
+
+
+async def drop_read_view(conn: asyncpg.Connection, *, schema: str, policy_role: str, timeout_s: float) -> None:
+    """Drop the read view of ``context_entries`` when it exists, naming every grant the drop takes away.
+
+    The drop takes every privilege on the view along with it. One WARNING names each
+    grantee that held more than the policy role's SELECT, which :func:`create_read_view`
+    grants again, with what it held. It runs inside the caller's migration transaction, as
+    the table owner.
+
+    Args:
+        conn: The migration transaction's connection, logged in as the table owner.
+        schema: The schema of the tables.
+        policy_role: The NOLOGIN role the policies and the view's membership test name.
+        timeout_s: The server-side budget of the statement, in seconds.
+    """
+    quoted_schema = quote_pg_identifier(schema)
+    acl = await read_view_acl(conn, f'{quoted_schema}.{READ_VIEW}')
+    taken = view_acl_repair(acl, schema=quoted_schema, role_name=policy_role)
+    await execute_migration_ddl(conn, read_view_drop(quoted_schema), timeout_s)
+    _warn_revoked(schema=quoted_schema, policy_role=policy_role, revoked=taken.revoked)
 
 
 async def read_definition(conn: asyncpg.Connection, obj: RlsObject) -> str:
@@ -192,10 +193,7 @@ async def read_definition(conn: asyncpg.Connection, obj: RlsObject) -> str:
         row = await conn.fetchrow(_POLICY_DEFINITION_SQL, obj.anchor, obj.name)
         if row is None:
             raise LookupError(f'{obj.target} does not exist')
-        command, permissive, roles, using, check = row[0], row[1], row[2], row[3], row[4]
-        return '\n'.join((
-            str(command), 'permissive' if permissive else 'restrictive', ','.join(roles), using or '', check or '',
-        ))
+        return policy_definition(str(row[0]), bool(row[1]), [str(role) for role in row[2]], row[3], row[4])
     if obj.kind is RlsObjectKind.TRIGGER:
         definition = await conn.fetchval(_TRIGGER_DEFINITION_SQL, obj.anchor, obj.name)
     elif obj.kind is RlsObjectKind.VIEW:
@@ -207,52 +205,68 @@ async def read_definition(conn: asyncpg.Connection, obj: RlsObject) -> str:
     return str(definition)
 
 
-async def _normalize_view_acl(
-    conn: asyncpg.Connection, view: RlsObject, *, schema: str, policy_role: str, timeout_s: float,
+async def _repair(
+    conn: asyncpg.Connection, plan: RlsPlan, *, schema_name: str, policy_role: str, timeout_s: float,
 ) -> None:
-    """Leave the policy role's SELECT as the only privilege anyone but the owner holds on ``view``.
+    """Change what ``plan`` lists, in dependency order, inside the locked migration transaction."""
+    schema = quote_pg_identifier(schema_name)
+    for target in plan.drifted:
+        logger.warning(f'{target} was changed outside the server; re-creating it')
+    for helper in plan.helpers:
+        await execute_migration_ddl(conn, helper.statement, timeout_s)
+    if plan.grant_helpers:
+        await execute_migration_ddl(conn, helper_grant(schema, quote_pg_identifier(policy_role)), timeout_s)
+    for helper in plan.helpers:
+        await _fingerprint(conn, helper, timeout_s, preenabled=None)
+    if plan.guard_function is not None:
+        await execute_migration_ddl(conn, plan.guard_function.statement, timeout_s)
+        await _fingerprint(conn, plan.guard_function, timeout_s, preenabled=None)
+    if plan.guard_trigger is not None:
+        await _recreate(conn, plan.guard_trigger, timeout_s, preenabled=None)
+    for repair in plan.tables:
+        for policy, preenabled in repair.policies:
+            await _recreate(conn, policy, timeout_s, preenabled=preenabled)
+        if repair.enable:
+            await execute_migration_ddl(conn, enable_statement(repair.table, schema=schema), timeout_s)
+    if plan.view is not None:
+        # CREATE OR REPLACE VIEW cannot drop or reorder columns, so the view is re-created.
+        await drop_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=timeout_s)
+        await create_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=timeout_s)
+    elif plan.view_acl:
+        await _normalize_view_acl(conn, schema=schema, policy_role=policy_role, timeout_s=timeout_s)
+
+
+async def _normalize_view_acl(conn: asyncpg.Connection, *, schema: str, policy_role: str, timeout_s: float) -> None:
+    """Leave the policy role's SELECT as the only privilege anyone but the owner holds on the read view.
 
     Every other grantee, PUBLIC included, loses everything; the policy role loses every
     privilege but SELECT and gets SELECT when it lacks it. One WARNING names each revoked
     grantee with the privileges it held.
     """
-    held: dict[str | None, list[str]] = {}
-    for row in await conn.fetch(_ACL_SQL, view.anchor):
-        held.setdefault(None if row[0] is None else str(row[0]), []).append(str(row[1]))
-
-    role = quote_pg_identifier(policy_role)
-    statements: list[str] = []
-    revoked: list[str] = []
-    for grantee, privileges in held.items():
-        if grantee == policy_role:
-            continue
-        statements.append(read_view_revoke(schema, 'PUBLIC' if grantee is None else quote_pg_identifier(grantee), ('ALL',)))
-        revoked.append(f'{"PUBLIC" if grantee is None else grantee} ({", ".join(privileges)})')
-    policy_role_privileges = held.get(policy_role, [])
-    beyond_select = [privilege for privilege in policy_role_privileges if privilege != 'SELECT']
-    if beyond_select:
-        statements.append(read_view_revoke(schema, role, beyond_select))
-        revoked.append(f'{policy_role} ({", ".join(beyond_select)})')
-    if 'SELECT' not in policy_role_privileges:
-        statements.append(read_view_grant(schema, role))
-
-    for statement in statements:
+    acl = await read_view_acl(conn, f'{schema}.{READ_VIEW}')
+    repair = view_acl_repair(acl, schema=schema, role_name=policy_role)
+    for statement in repair.statements:
         await execute_migration_ddl(conn, statement, timeout_s)
+    _warn_revoked(schema=schema, policy_role=policy_role, revoked=repair.revoked)
+
+
+def _warn_revoked(*, schema: str, policy_role: str, revoked: list[str]) -> None:
+    """Log one WARNING naming each grantee that lost privileges on the read view, if any did."""
     if revoked:
         logger.warning(
-            f'Revoked privileges on {view.anchor}, where only the policy role {policy_role} may hold SELECT: '
+            f'Revoked privileges on {schema}.{READ_VIEW}, where only the policy role {policy_role} may hold SELECT: '
             f'{"; ".join(revoked)}',
         )
 
 
-async def _fingerprint(conn: asyncpg.Connection, obj: RlsObject, timeout_s: float) -> None:
+async def _fingerprint(conn: asyncpg.Connection, obj: RlsObject, timeout_s: float, *, preenabled: bool | None) -> None:
     """Attach ``obj``'s fingerprint, reading its deparse back first."""
     definition = digest(await read_definition(conn, obj))
-    await execute_migration_ddl(conn, comment_statement(obj, definition=definition), timeout_s)
+    await execute_migration_ddl(conn, comment_statement(obj, definition=definition, preenabled=preenabled), timeout_s)
 
 
-async def _recreate(conn: asyncpg.Connection, obj: RlsObject, timeout_s: float) -> None:
+async def _recreate(conn: asyncpg.Connection, obj: RlsObject, timeout_s: float, *, preenabled: bool | None) -> None:
     """Drop ``obj`` when it exists, create it and attach its fingerprint."""
     await execute_migration_ddl(conn, obj.drop_statement, timeout_s)
     await execute_migration_ddl(conn, obj.statement, timeout_s)
-    await _fingerprint(conn, obj, timeout_s)
+    await _fingerprint(conn, obj, timeout_s, preenabled=preenabled)

@@ -28,7 +28,9 @@ it owns, which carries the read predicate as an ordinary condition.
 
 Every object carries a fingerprint comment: the ``sha`` of its rendered statement, which
 changes whenever this module renders something different, and the digest of the server's
-own deparse of the object, which changes when the object is altered out of band.
+own deparse of the object, which changes when the object is altered out of band. The
+comment of each table's read policy also records whether row-level security was already
+on before the migration first enabled it, which tells removal whether to switch it off.
 
 Schema and role names are taken already quoted as SQL identifiers.
 """
@@ -41,6 +43,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Final
+from typing import NamedTuple
 
 from app.access_scope import GROUPS_FUNCTION
 from app.access_scope import MAY_PUBLISH_FUNCTION
@@ -65,6 +68,9 @@ CHILD_PARENT_KEYS: Final[Mapping[str, str]] = MappingProxyType({
 })
 # The tables row-level security governs; each layout and feature set provisions a subset.
 MANAGED_TABLES: Final[tuple[str, ...]] = (CONTEXT_TABLE, GRANTS_TABLE, *CHILD_PARENT_KEYS)
+# The read policy of each managed table, whose fingerprint records whether row-level security
+# was on before the migration first enabled it.
+_READ_POLICIES: Final = frozenset(f'{table}_read' for table in MANAGED_TABLES)
 
 GUARD_FUNCTION: Final = 'mcp_context_guard_access_columns'
 GUARD_TRIGGER: Final = 'guard_context_entry_access_columns'
@@ -75,6 +81,9 @@ REJECT_TRIGGER: Final = 'reject_writes'
 # context_entries in the read view.
 _PARENT: Final = 'ce'
 _HEX_DIGEST = re.compile(r'[0-9a-f]{64}')
+_FINGERPRINT = re.compile(
+    rf'{re.escape(FINGERPRINT_PREFIX)} sha=([0-9a-f]{{64}}) def=([0-9a-f]{{64}})(?: preenabled=(true|false))?',
+)
 # The privileges a table's or a view's ACL holds, as GRANT and REVOKE name them, and ALL.
 _ACL_PRIVILEGES: Final = frozenset({
     'ALL', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN',
@@ -107,6 +116,51 @@ class RlsObjectKind(StrEnum):
     VIEW = 'VIEW'
 
 
+class ObjectKey(NamedTuple):
+    """What identifies a row-level security object in the catalog, without rendering it.
+
+    Attributes:
+        kind: Function, policy, trigger or view.
+        name: The object's own name.
+        anchor: For a function, its schema-qualified signature; for a view, its
+            schema-qualified name; for a policy or a trigger, the schema-qualified table
+            or view it is defined on.
+    """
+
+    kind: RlsObjectKind
+    name: str
+    anchor: str
+
+    @property
+    def target(self) -> str:
+        """The object as COMMENT ON and DROP name it, such as ``POLICY tags_read ON "public".tags``."""
+        if self.kind in (RlsObjectKind.FUNCTION, RlsObjectKind.VIEW):
+            return f'{self.kind} {self.anchor}'
+        return f'{self.kind} {self.name} ON {self.anchor}'
+
+    @property
+    def drop_statement(self) -> str:
+        """The statement that drops the object when it exists."""
+        kind, _, reference = self.target.partition(' ')
+        return f'DROP {kind} IF EXISTS {reference}'
+
+
+@dataclass(frozen=True, slots=True)
+class Fingerprint:
+    """A fingerprint comment as read back from the catalog.
+
+    Attributes:
+        sha: The digest of the statement the object was created from.
+        definition: The digest of the server's deparse right after it was created.
+        preenabled: On a table's read policy, whether row-level security was on before
+            the migration first enabled it; None on every other object.
+    """
+
+    sha: str
+    definition: str
+    preenabled: bool | None
+
+
 @dataclass(frozen=True, slots=True)
 class RlsObject:
     """One row-level security object and the statement that creates it.
@@ -132,17 +186,19 @@ class RlsObject:
         return digest(self.statement)
 
     @property
+    def key(self) -> ObjectKey:
+        """What identifies the object in the catalog."""
+        return ObjectKey(self.kind, self.name, self.anchor)
+
+    @property
     def target(self) -> str:
         """The object as COMMENT ON and DROP name it, such as ``POLICY tags_read ON "public".tags``."""
-        if self.kind in (RlsObjectKind.FUNCTION, RlsObjectKind.VIEW):
-            return f'{self.kind} {self.anchor}'
-        return f'{self.kind} {self.name} ON {self.anchor}'
+        return self.key.target
 
     @property
     def drop_statement(self) -> str:
         """The statement that drops the object when it exists."""
-        kind, _, reference = self.target.partition(' ')
-        return f'DROP {kind} IF EXISTS {reference}'
+        return self.key.drop_statement
 
 
 def digest(text: str) -> str:
@@ -157,36 +213,75 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
-def fingerprint(*, sha: str, definition: str) -> str:
+def fingerprint(*, sha: str, definition: str, preenabled: bool | None) -> str:
     """Return the fingerprint comment of an object.
 
     Args:
         sha: The digest of the object's rendered statement.
         definition: The digest of the server's deparse of the object.
+        preenabled: For a table's read policy, whether row-level security was on before
+            the migration first enabled it; None for every other object.
 
     Returns:
-        ``'mcp-context-server rls v1 sha=<sha> def=<definition>'``.
+        ``'mcp-context-server rls v1 sha=<sha> def=<definition>'``, followed by
+        ``' preenabled=true'`` or ``' preenabled=false'`` when ``preenabled`` is given.
     """
-    return f'{FINGERPRINT_PREFIX} sha={sha} def={definition}'
+    comment = f'{FINGERPRINT_PREFIX} sha={sha} def={definition}'
+    if preenabled is None:
+        return comment
+    return f'{comment} preenabled={"true" if preenabled else "false"}'
 
 
-def comment_statement(obj: RlsObject, *, definition: str) -> str:
+def parse_fingerprint(comment: str | None) -> Fingerprint | None:
+    """Read a fingerprint comment back.
+
+    Args:
+        comment: An object's comment, or None when it has none.
+
+    Returns:
+        The fingerprint, or None when the comment is not one :func:`fingerprint` writes.
+    """
+    match = None if comment is None else _FINGERPRINT.fullmatch(comment)
+    if match is None:
+        return None
+    preenabled = None if match[3] is None else match[3] == 'true'
+    return Fingerprint(sha=match[1], definition=match[2], preenabled=preenabled)
+
+
+def records_preenabled(obj: RlsObject) -> bool:
+    """Return whether ``obj`` is a table's read policy, whose fingerprint records ``preenabled``.
+
+    Args:
+        obj: The object.
+
+    Returns:
+        True for the read policy of a managed table.
+    """
+    return obj.kind is RlsObjectKind.POLICY and obj.name in _READ_POLICIES
+
+
+def comment_statement(obj: RlsObject, *, definition: str, preenabled: bool | None) -> str:
     """Return the COMMENT that attaches ``obj``'s fingerprint to it.
 
     Args:
         obj: The object.
         definition: The digest of the server's deparse of the object.
+        preenabled: For a table's read policy, whether row-level security was on before
+            the migration first enabled it; None for every other object.
 
     Returns:
         The COMMENT ON statement.
 
     Raises:
-        ValueError: If ``definition`` is not a lowercase hex SHA-256 digest; it is
-            interpolated into a string literal.
+        ValueError: If ``definition`` is not a lowercase hex SHA-256 digest, which is
+            interpolated into a string literal, or if ``preenabled`` is missing on a read
+            policy or given for any other object.
     """
     if _HEX_DIGEST.fullmatch(definition) is None:
         raise ValueError(f'{definition!r} is not a SHA-256 hex digest')
-    return f"COMMENT ON {obj.target} IS '{fingerprint(sha=obj.sha, definition=definition)}'"
+    if (preenabled is None) == records_preenabled(obj):
+        raise ValueError(f'{obj.target} must record preenabled exactly when it is a read policy of a managed table')
+    return f"COMMENT ON {obj.target} IS '{fingerprint(sha=obj.sha, definition=definition, preenabled=preenabled)}'"
 
 
 def helper_functions(schema: str) -> tuple[RlsObject, RlsObject, RlsObject]:
@@ -367,6 +462,24 @@ def enable_statement(table: str, *, schema: str) -> str:
     if table not in MANAGED_TABLES:
         raise ValueError(f'{table!r} is not a table row-level security manages')
     return f'ALTER TABLE {schema}.{table} ENABLE ROW LEVEL SECURITY'
+
+
+def disable_statement(table: str, *, schema: str) -> str:
+    """Return the statement that disables row-level security on ``table``.
+
+    Args:
+        table: A managed table.
+        schema: The schema of the tables, quoted.
+
+    Returns:
+        The ALTER TABLE statement.
+
+    Raises:
+        ValueError: If ``table`` is not managed.
+    """
+    if table not in MANAGED_TABLES:
+        raise ValueError(f'{table!r} is not a table row-level security manages')
+    return f'ALTER TABLE {schema}.{table} DISABLE ROW LEVEL SECURITY'
 
 
 def _context_entries_clauses(schema: str) -> tuple[tuple[str, str], ...]:

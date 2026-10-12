@@ -22,16 +22,21 @@ from app.backends.postgresql_backend.session_profiles import BIND_IDENTITY_STATE
 from app.migrations import rls_ddl
 from app.migrations.rls_ddl import CHILD_PARENT_KEYS
 from app.migrations.rls_ddl import MANAGED_TABLES
+from app.migrations.rls_ddl import Fingerprint
+from app.migrations.rls_ddl import ObjectKey
 from app.migrations.rls_ddl import RlsObject
 from app.migrations.rls_ddl import RlsObjectKind
 from app.migrations.rls_ddl import comment_statement
+from app.migrations.rls_ddl import disable_statement
 from app.migrations.rls_ddl import enable_statement
 from app.migrations.rls_ddl import fingerprint
 from app.migrations.rls_ddl import guard_function
 from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
 from app.migrations.rls_ddl import helper_grant
+from app.migrations.rls_ddl import parse_fingerprint
 from app.migrations.rls_ddl import policy_names
+from app.migrations.rls_ddl import records_preenabled
 from app.migrations.rls_ddl import table_policies
 
 SCHEMA = '"public"'
@@ -343,11 +348,89 @@ def test_sha_embeds_the_schema_and_the_policy_role() -> None:
 
 
 def test_fingerprint_names_the_version_and_both_digests() -> None:
-    """The fingerprint carries the rendered sha and the server deparse digest."""
+    """The fingerprint carries the rendered sha and the server deparse digest, and preenabled when recorded."""
     sha = 'a' * 64
     definition = 'b' * 64
 
-    assert fingerprint(sha=sha, definition=definition) == f'mcp-context-server rls v1 sha={sha} def={definition}'
+    assert fingerprint(sha=sha, definition=definition, preenabled=None) == (
+        f'mcp-context-server rls v1 sha={sha} def={definition}'
+    )
+    assert fingerprint(sha=sha, definition=definition, preenabled=False) == (
+        f'mcp-context-server rls v1 sha={sha} def={definition} preenabled=false'
+    )
+    assert fingerprint(sha=sha, definition=definition, preenabled=True) == (
+        f'mcp-context-server rls v1 sha={sha} def={definition} preenabled=true'
+    )
+
+
+@pytest.mark.parametrize('preenabled', [None, False, True])
+def test_a_fingerprint_reads_back_as_it_was_written(preenabled: bool | None) -> None:
+    """Parsing a fingerprint returns both digests and the preenabled value it carries."""
+    sha = hashlib.sha256(b'statement').hexdigest()
+    definition = hashlib.sha256(b'deparse').hexdigest()
+
+    assert parse_fingerprint(fingerprint(sha=sha, definition=definition, preenabled=preenabled)) == Fingerprint(
+        sha=sha, definition=definition, preenabled=preenabled,
+    )
+
+
+@pytest.mark.parametrize(
+    'comment',
+    [
+        None,
+        '',
+        'policy installed by hand',
+        f'mcp-context-server rls v1 sha={"a" * 64}',
+        f'mcp-context-server rls v1 sha={"a" * 63} def={"b" * 64}',
+        f'mcp-context-server rls v1 sha={"A" * 64} def={"b" * 64}',
+        f'mcp-context-server rls v2 sha={"a" * 64} def={"b" * 64}',
+        f'mcp-context-server rls v1 sha={"a" * 64} def={"b" * 64} preenabled=maybe',
+        f'mcp-context-server rls v1 sha={"a" * 64} def={"b" * 64} trailing',
+    ],
+)
+def test_anything_but_a_fingerprint_reads_as_no_fingerprint(comment: str | None) -> None:
+    """A missing, foreign or damaged comment is no fingerprint, so the object counts as changed out of band."""
+    assert parse_fingerprint(comment) is None
+
+
+def test_each_tables_read_policy_and_nothing_else_records_preenabled() -> None:
+    """Only the read policy of a managed table carries whether row-level security was on before the migration."""
+    for table in MANAGED_TABLES:
+        read, *others = table_policies(table, schema=SCHEMA, role=ROLE)
+        assert records_preenabled(read), read.name
+        assert not any(records_preenabled(policy) for policy in others), table
+    non_policies = (*helper_functions(SCHEMA), guard_function(SCHEMA), guard_trigger(SCHEMA))
+    assert not any(records_preenabled(obj) for obj in non_policies)
+
+
+def test_comment_statement_carries_preenabled_on_read_policies_only() -> None:
+    """A read policy's comment must say whether row-level security was on before; no other comment may."""
+    definition = hashlib.sha256(b'deparse').hexdigest()
+    read, insert, _ = table_policies('tags', schema=SCHEMA, role=ROLE)
+
+    assert comment_statement(read, definition=definition, preenabled=True) == (
+        f'COMMENT ON POLICY tags_read ON {SCHEMA}.tags IS '
+        f"'mcp-context-server rls v1 sha={read.sha} def={definition} preenabled=true'"
+    )
+    with pytest.raises(ValueError, match='preenabled'):
+        comment_statement(read, definition=definition, preenabled=None)
+    with pytest.raises(ValueError, match='preenabled'):
+        comment_statement(insert, definition=definition, preenabled=False)
+    with pytest.raises(ValueError, match='preenabled'):
+        comment_statement(guard_trigger(SCHEMA), definition=definition, preenabled=True)
+
+
+def test_an_object_key_names_and_drops_the_object_without_rendering_it() -> None:
+    """The key of an object, which the catalog read builds too, yields its target and its drop."""
+    policy = table_policies('tags', schema=SCHEMA, role=ROLE)[0]
+    key = ObjectKey(RlsObjectKind.POLICY, 'tags_read', f'{SCHEMA}.tags')
+
+    assert policy.key == key
+    assert key.target == policy.target == f'POLICY tags_read ON {SCHEMA}.tags'
+    assert key.drop_statement == policy.drop_statement == f'DROP POLICY IF EXISTS tags_read ON {SCHEMA}.tags'
+    assert guard_function(SCHEMA).key.drop_statement == (
+        f'DROP FUNCTION IF EXISTS {SCHEMA}.mcp_context_guard_access_columns()'
+    )
 
 
 @pytest.mark.parametrize(
@@ -364,9 +447,12 @@ def test_comment_and_drop_statements_name_the_object(obj: RlsObject, target: str
     """COMMENT ON attaches the fingerprint, and DROP ... IF EXISTS removes the same object."""
     definition = hashlib.sha256(b'deparse').hexdigest()
 
+    preenabled = True if records_preenabled(obj) else None
+    suffix = ' preenabled=true' if preenabled else ''
+
     assert obj.target == target
-    assert comment_statement(obj, definition=definition) == (
-        f"COMMENT ON {target} IS 'mcp-context-server rls v1 sha={obj.sha} def={definition}'"
+    assert comment_statement(obj, definition=definition, preenabled=preenabled) == (
+        f"COMMENT ON {target} IS 'mcp-context-server rls v1 sha={obj.sha} def={definition}{suffix}'"
     )
     kind, _, reference = target.partition(' ')
     assert obj.drop_statement == f'DROP {kind} IF EXISTS {reference}'
@@ -377,7 +463,7 @@ def test_comment_statement_accepts_only_a_hex_digest() -> None:
     obj = guard_trigger(SCHEMA)
 
     with pytest.raises(ValueError, match='digest'):
-        comment_statement(obj, definition="x' OR '1")
+        comment_statement(obj, definition="x' OR '1", preenabled=None)
 
 
 def test_enable_statement_enables_without_force() -> None:
@@ -388,6 +474,13 @@ def test_enable_statement_enables_without_force() -> None:
     assert 'FORCE' not in statement
     with pytest.raises(ValueError, match='compression_metadata'):
         enable_statement('compression_metadata', schema=SCHEMA)
+
+
+def test_disable_statement_disables_a_managed_table_only() -> None:
+    """Removal turns row-level security off again only on the tables it manages."""
+    assert disable_statement('tags', schema=SCHEMA) == f'ALTER TABLE {SCHEMA}.tags DISABLE ROW LEVEL SECURITY'
+    with pytest.raises(ValueError, match='compression_metadata'):
+        disable_statement('compression_metadata', schema=SCHEMA)
 
 
 def test_no_rendered_statement_forces_row_level_security() -> None:

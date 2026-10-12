@@ -109,6 +109,9 @@ class TestMigrationDdlTimeout:
 
             async def record_fetchval(stmt, *_a, **kw):
                 executed.append((stmt, kw.get('timeout')))
+                # No row-level security read view exists for the FTS rebuild to drop.
+                if 'to_regclass' in stmt:
+                    return False
                 return MagicMock()
 
             mock_conn.execute = record_execute
@@ -202,6 +205,8 @@ class TestMigrationDdlTimeout:
         mock_settings = MagicMock()
         mock_settings.storage.postgresql_migration_timeout_s = 300.0
         mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+        mock_settings.access_control.postgresql_rls_policy_role = 'mcp_context_request'
 
         from app.repositories.fts_repository import FtsRepository
 
@@ -300,6 +305,8 @@ class TestMigrationDdlTimeout:
         mock_settings = MagicMock()
         mock_settings.storage.postgresql_migration_timeout_s = 300.0
         mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+        mock_settings.access_control.postgresql_rls_policy_role = 'mcp_context_request'
 
         from app.repositories.fts_repository import FtsRepository
 

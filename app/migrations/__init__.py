@@ -12,7 +12,9 @@ This package contains migration orchestration and all migration implementations:
 - version.py: Optimistic-concurrency version column migration
 - compression.py: Embedding compression migration (vec_context_embeddings_compressed + compression_metadata)
 - rls_ddl.py: Rendering of the PostgreSQL row-level security helpers, policies, guard trigger and read view
-- rls.py: Installing the PostgreSQL row-level security objects and the read view with their fingerprint comments
+- rls_state.py: Reading the installed PostgreSQL row-level security objects and planning what differs
+- rls.py: Keeping the PostgreSQL row-level security objects and the read view installed and current
+- rls_removal.py: Removing the PostgreSQL row-level security objects, and refusing a start with them switched off
 - request_role_grants.py: The privileges the request role needs, granted to the policy role
 
 SQL Files (resources):
@@ -55,6 +57,9 @@ from app.migrations.request_role_grants import GrantReport
 from app.migrations.request_role_grants import apply_request_role_grants
 from app.migrations.rls import apply_rls
 from app.migrations.rls import create_read_view
+from app.migrations.rls_removal import RlsRemovalReport
+from app.migrations.rls_removal import guard_rls_disable_over_enabled
+from app.migrations.rls_removal import remove_rls
 from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
@@ -99,6 +104,9 @@ __all__ = [
     # Row-level security
     'apply_rls',
     'create_read_view',
+    'RlsRemovalReport',
+    'guard_rls_disable_over_enabled',
+    'remove_rls',
     'GrantReport',
     'apply_request_role_grants',
 ]

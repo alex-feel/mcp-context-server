@@ -280,7 +280,8 @@ class TestInstalledView:
         """Each comment holds the sha of the rendered statement and the digest of the server's own definition."""
         for obj in (await _rendered_view(admin_conn), reject_function(SCHEMA), reject_trigger(SCHEMA)):
             comment = await _comment(admin_conn, obj)
-            assert comment == fingerprint(sha=obj.sha, definition=digest(await read_definition(admin_conn, obj))), obj.target
+            definition = digest(await read_definition(admin_conn, obj))
+            assert comment == fingerprint(sha=obj.sha, definition=definition, preenabled=None), obj.target
 
     @pytest.mark.asyncio
     async def test_the_definition_digest_changes_when_the_view_loses_its_gate(
@@ -299,7 +300,7 @@ class TestInstalledView:
 
         comment = await _comment(admin_conn, view)
         after = digest(await read_definition(admin_conn, view))
-        assert comment == fingerprint(sha=view.sha, definition=before)
+        assert comment == fingerprint(sha=view.sha, definition=before, preenabled=None)
         assert after != before
 
     @pytest.mark.asyncio
@@ -313,6 +314,8 @@ class TestInstalledView:
         await admin_conn.execute(
             f'ALTER DEFAULT PRIVILEGES FOR ROLE mcp_owner IN SCHEMA {SCHEMA} GRANT ALL ON TABLES TO {POLICY_ROLE}',
         )
+        # A current view is left alone, so the migration creates a new one only once this one is gone.
+        await admin_conn.execute(f'DROP VIEW {VIEW}')
 
         with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
             await apply_rls(matrix_db.seed_backend, rls_settings())
@@ -329,7 +332,7 @@ class TestInstalledView:
     async def test_the_request_role_reads_the_view_after_the_migration_reruns(
         self, matrix_db: ScopedDb, pg_rls_db: RlsUrls,
     ) -> None:
-        """Re-creating the view keeps its privileges, so the request role reads it right after another apply."""
+        """Another apply leaves the view and its privileges in place, so the request role reads it right after."""
         await apply_rls(matrix_db.seed_backend, rls_settings())
 
         conn = await asyncpg.connect(pg_rls_db.app)

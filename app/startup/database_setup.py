@@ -1,9 +1,10 @@
 """Database preparation phase of the server lifespan.
 
 Runs on the backend the lifespan created, before any repository or tool uses it:
-ensures the base schema, applies every idempotent migration, validates the
-connection-pool acquire timeout and the compression provenance, then announces the
-active compression configuration.
+ensures the base schema, refuses a start whose configuration contradicts the data
+already stored, applies every idempotent migration, validates the connection-pool
+acquire timeout and the compression provenance, announces the active compression
+configuration and finally brings the PostgreSQL row-level security objects up to date.
 """
 
 import logging
@@ -18,10 +19,12 @@ from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
 from app.migrations import apply_index_tree_migration
 from app.migrations import apply_jsonb_merge_patch_migration
+from app.migrations import apply_rls
 from app.migrations import apply_semantic_search_migration
 from app.migrations import apply_summary_migration
 from app.migrations import apply_tag_uniqueness_migration
 from app.migrations import apply_version_migration
+from app.migrations import guard_rls_disable_over_enabled
 from app.migrations import handle_metadata_indexes
 from app.settings import AppSettings
 from app.startup import init_database
@@ -52,6 +55,9 @@ async def prepare_database(backend: StorageBackend, settings: AppSettings) -> No
     # Refusing up front means no stray schema is ever created on either
     # backend.
     await guard_compression_disable_over_populated(backend=backend)
+    # Refuse a PostgreSQL start with ENABLE_POSTGRESQL_RLS off over the row-level
+    # security objects a start with it on installed, before anything is provisioned.
+    await guard_rls_disable_over_enabled(backend, settings)
     # Apply semantic search migration if enabled using the shared backend
     await apply_semantic_search_migration(backend=backend)
     # Apply jsonb_merge_patch migration for PostgreSQL (required for metadata_patch)
@@ -97,6 +103,10 @@ async def prepare_database(backend: StorageBackend, settings: AppSettings) -> No
     # mismatch; the supervisor does not auto-restart.
     await validate_compression_provenance(backend=backend)
     await _announce_compression(backend, settings)
+    # Row-level security comes last: every table and column this start provisions
+    # exists by now, so the policies cover every managed table and the read view lists
+    # every column. A database whose objects are current takes no lock and no DDL here.
+    await apply_rls(backend, settings)
 
 
 async def _announce_compression(backend: StorageBackend, settings: AppSettings) -> None:

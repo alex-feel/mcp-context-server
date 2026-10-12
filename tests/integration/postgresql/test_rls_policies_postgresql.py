@@ -27,6 +27,7 @@ from app.migrations.rls_ddl import fingerprint
 from app.migrations.rls_ddl import guard_function
 from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
+from app.migrations.rls_ddl import records_preenabled
 from app.migrations.rls_ddl import table_policies
 from tests.integration.postgresql._rls_matrix import MATRIX_SCOPES
 from tests.integration.postgresql._rls_matrix import MATRIX_VISIBILITY
@@ -431,7 +432,10 @@ class TestInstalledObjects:
         try:
             for obj in objects:
                 comment = await conn.fetchval(_COMMENT_SQL[obj.kind], obj.anchor, obj.name)
-                expected = fingerprint(sha=obj.sha, definition=digest(await read_definition(conn, obj)))
+                # The migration enabled every table, so each read policy records it was off before.
+                preenabled = False if records_preenabled(obj) else None
+                definition = digest(await read_definition(conn, obj))
+                expected = fingerprint(sha=obj.sha, definition=definition, preenabled=preenabled)
                 assert comment == expected, obj.target
         finally:
             await conn.close()

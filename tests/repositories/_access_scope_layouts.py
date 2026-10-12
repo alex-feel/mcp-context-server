@@ -14,6 +14,8 @@ Both serve the request and the seed channel from one backend.
 backend logged in as its owner, which also serves the seed channel, while the request
 channel logs in as another role. Each seeds the database with
 :func:`~tests.repositories._access_scope_cases.seed_access_rows`.
+:func:`configure_postgresql_layout` pins the environment of a layout on PostgreSQL for a
+test that prepares the database itself.
 :func:`assert_seeded_layout` proves a prepared database holds the seed and the layout's
 vector storage, reading through the seed channel. :func:`limit_sqlite_variables` caps
 SQLite bind variables for the ``sqlite_999_variables`` fixture of
@@ -293,13 +295,17 @@ async def _drop_database(pg_url: str, database: str) -> None:
         await admin.close()
 
 
-def _configure_postgresql_layout(monkeypatch: pytest.MonkeyPatch, layout: Layout, request_url: str) -> AppSettings:
+def configure_postgresql_layout(
+    monkeypatch: pytest.MonkeyPatch, layout: Layout, request_url: str, *, overrides: Mapping[str, str],
+) -> AppSettings:
     """Configure ``layout`` with the PostgreSQL routing of ``request_url`` in the ``public`` schema.
 
     Args:
         monkeypatch: Restores the environment and the bindings after the test.
         layout: The layout to configure.
         request_url: Connection string of the request connection settings.
+        overrides: Further environment values, which win over the layout's own, such as a
+            feature switched off.
 
     Returns:
         The settings of the layout.
@@ -309,7 +315,12 @@ def _configure_postgresql_layout(monkeypatch: pytest.MonkeyPatch, layout: Layout
     return _configure_layout(
         monkeypatch,
         layout,
-        {'STORAGE_BACKEND': 'postgresql', 'POSTGRESQL_CONNECTION_STRING': request_url, 'POSTGRESQL_SCHEMA': 'public'},
+        {
+            'STORAGE_BACKEND': 'postgresql',
+            'POSTGRESQL_CONNECTION_STRING': request_url,
+            'POSTGRESQL_SCHEMA': 'public',
+            **overrides,
+        },
         postgresql_backend_package,
     )
 
@@ -364,7 +375,7 @@ async def postgresql_scoped_db(
     await _recreate_database(pg_url, database)
     target_url = _with_database(pg_url, database)
     try:
-        settings = _configure_postgresql_layout(monkeypatch, layout, target_url)
+        settings = configure_postgresql_layout(monkeypatch, layout, target_url, overrides={})
         backend = create_backend(backend_type='postgresql', connection_string=target_url)
         async with _seeded_postgresql_db(
             request_backend=backend, seed_backend=backend, layout=layout, settings=settings,
@@ -394,7 +405,7 @@ async def postgresql_owner_seeded_db(
     Yields:
         The seeded database.
     """
-    settings = _configure_postgresql_layout(monkeypatch, layout, request_url)
+    settings = configure_postgresql_layout(monkeypatch, layout, request_url, overrides={})
     async with _seeded_postgresql_db(
         request_backend=create_backend(backend_type='postgresql', connection_string=request_url),
         seed_backend=create_maintenance_backend(connection_string=maintenance_url),
