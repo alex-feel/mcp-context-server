@@ -60,6 +60,19 @@ class RlsCredentials:
     migration_password: str
     policy_role: str
 
+    def environment(self) -> dict[str, str]:
+        """Return the environment variables that start a server with row-level security on these credentials.
+
+        Returns:
+            ``ENABLE_POSTGRESQL_RLS`` set to true, with the policy role and the migration credentials.
+        """
+        return {
+            'ENABLE_POSTGRESQL_RLS': 'true',
+            'POSTGRESQL_RLS_POLICY_ROLE': self.policy_role,
+            'POSTGRESQL_MIGRATION_USER': self.migration_user,
+            'POSTGRESQL_MIGRATION_PASSWORD': self.migration_password,
+        }
+
 
 def postgresql_subprocess_env(pg_url: str, *, rls: RlsCredentials | None = None, **overrides: str) -> dict[str, str]:
     """Return the environment of a server or command-line subprocess on the PostgreSQL database ``pg_url``.
@@ -90,12 +103,7 @@ def postgresql_subprocess_env(pg_url: str, *, rls: RlsCredentials | None = None,
         'DISABLED_TOOLS': '',
     })
     if rls is not None:
-        env.update({
-            'ENABLE_POSTGRESQL_RLS': 'true',
-            'POSTGRESQL_RLS_POLICY_ROLE': rls.policy_role,
-            'POSTGRESQL_MIGRATION_USER': rls.migration_user,
-            'POSTGRESQL_MIGRATION_PASSWORD': rls.migration_password,
-        })
+        env.update(rls.environment())
     env.update(overrides)
     return env
 

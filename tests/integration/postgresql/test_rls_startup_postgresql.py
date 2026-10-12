@@ -43,6 +43,7 @@ from tests.integration._http_jwt import wait_for_health
 from tests.integration.postgresql._rls_catalog import configure_rls_layout
 from tests.integration.postgresql._rls_catalog import maintenance_backend
 from tests.integration.postgresql._rls_catalog import view_acl
+from tests.integration.postgresql.conftest import RLS_CREDENTIALS
 from tests.integration.postgresql.conftest import RlsUrls
 from tests.integration.postgresql.conftest import login_url
 
@@ -50,12 +51,9 @@ pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 BOOT_TIMEOUT_S: Final = 180
-POLICY_ROLE: Final = 'mcp_context_request'
+POLICY_ROLE: Final = RLS_CREDENTIALS.policy_role
 PR: Final = f'"{POLICY_ROLE}"'
 VIEW: Final = '"public".context_entries_readable'
-OWNER_CREDENTIALS: Final = RlsCredentials(
-    migration_user='mcp_owner', migration_password='mcp_owner', policy_role=POLICY_ROLE,
-)
 APP_ROLE: Final = RequestRole(
     name='mcp_app', is_superuser=False, bypass_rls=False, policy_role_exists=True, policy_member=True,
 )
@@ -144,7 +142,7 @@ class TestRefusedRequestRoles:
 
     @pytest.mark.asyncio
     async def test_the_superuser_is_refused(self, pg_rls_db: RlsUrls) -> None:
-        start = await asyncio.to_thread(_start, pg_rls_db.admin, rls=OWNER_CREDENTIALS)
+        start = await asyncio.to_thread(_start, pg_rls_db.admin, rls=RLS_CREDENTIALS)
 
         assert start.returncode == ConfigurationError.EXIT_CODE, start.stderr
         assert "'mcp_test'" in start.stderr
@@ -152,14 +150,14 @@ class TestRefusedRequestRoles:
 
     @pytest.mark.asyncio
     async def test_the_table_owner_is_refused(self, pg_rls_db: RlsUrls) -> None:
-        start = await asyncio.to_thread(_start, pg_rls_db.maintenance, rls=OWNER_CREDENTIALS)
+        start = await asyncio.to_thread(_start, pg_rls_db.maintenance, rls=RLS_CREDENTIALS)
 
         assert start.returncode == ConfigurationError.EXIT_CODE, start.stderr
         assert f'GRANT {PR} TO "mcp_owner";' in start.stderr
 
     @pytest.mark.asyncio
     async def test_a_login_role_outside_the_policy_role_is_refused(self, pg_rls_db: RlsUrls) -> None:
-        start = await asyncio.to_thread(_start, pg_rls_db.outsider, rls=OWNER_CREDENTIALS)
+        start = await asyncio.to_thread(_start, pg_rls_db.outsider, rls=RLS_CREDENTIALS)
 
         assert start.returncode == ConfigurationError.EXIT_CODE, start.stderr
         assert f'GRANT {PR} TO "mcp_outsider";' in start.stderr
@@ -174,7 +172,7 @@ class TestRefusedRequestRoles:
             f'GRANT {POLICY_ROLE} TO mcp_owner',
         )
         try:
-            start = await asyncio.to_thread(_start, login_url(pg_rls_db.app, 'mcp_alias'), rls=OWNER_CREDENTIALS)
+            start = await asyncio.to_thread(_start, login_url(pg_rls_db.app, 'mcp_alias'), rls=RLS_CREDENTIALS)
         finally:
             await _admin(pg_rls_db, f'REVOKE {POLICY_ROLE} FROM mcp_owner', 'DROP ROLE mcp_alias')
 
@@ -190,7 +188,7 @@ class TestStarts:
 
     @pytest.mark.asyncio
     async def test_the_request_role_starts_with_the_flag_on(self, pg_rls_db: RlsUrls) -> None:
-        start = await asyncio.to_thread(_start, pg_rls_db.app, rls=OWNER_CREDENTIALS)
+        start = await asyncio.to_thread(_start, pg_rls_db.app, rls=RLS_CREDENTIALS)
 
         assert start.returncode == 0, start.stderr
         conn = await asyncpg.connect(pg_rls_db.admin)
@@ -220,11 +218,11 @@ class TestStarts:
 
     @pytest.mark.asyncio
     async def test_a_grant_on_the_read_view_is_revoked_by_the_next_start(self, pg_rls_db: RlsUrls) -> None:
-        first = await asyncio.to_thread(_start, pg_rls_db.app, rls=OWNER_CREDENTIALS)
+        first = await asyncio.to_thread(_start, pg_rls_db.app, rls=RLS_CREDENTIALS)
         assert first.returncode == 0, first.stderr
         await _as_owner(pg_rls_db, f'GRANT SELECT ON {VIEW} TO mcp_outsider')
 
-        second = await asyncio.to_thread(_start, pg_rls_db.app, rls=OWNER_CREDENTIALS)
+        second = await asyncio.to_thread(_start, pg_rls_db.app, rls=RLS_CREDENTIALS)
 
         assert second.returncode == 0, second.stderr
         assert 'mcp_outsider (SELECT)' in second.stderr

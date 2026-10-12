@@ -6,7 +6,6 @@ and resolution of a short id prefix to the canonical 32-character id.
 """
 
 import contextlib
-import os
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -256,9 +255,10 @@ class RetrieveMixin(HarnessCore):
             Constructing Client(wrapper_script) from a bare script path delegates to
             this whitelist, so application-specific env vars (DB_PATH, MCP_TEST_MODE,
             GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY) DO NOT reach the subprocess. This
-            test builds the env dict explicitly via PythonStdioTransport(env=...)
-            using the same safe_keys whitelist plus the four app-specific vars,
-            ensuring the subprocess actually runs with the toggle enabled.
+            test builds the env dict explicitly via PythonStdioTransport(env=...),
+            on SQLite from the same whitelist plus the four app-specific vars and on
+            PostgreSQL from the harness's PostgreSQL server environment, ensuring
+            the subprocess actually runs with the toggle enabled.
 
         Returns:
             bool: True if test passed.
@@ -271,22 +271,17 @@ class RetrieveMixin(HarnessCore):
 
         subprocess_env: dict[str, str]
         if self.backend == 'postgresql':
-            # PG server auto-initializes its schema; no SQLite pre-init. Route to
-            # PostgreSQL and enable the summary-inclusion toggle. DB_PATH is
-            # ignored under the postgresql backend.
-            subprocess_env = {
-                **os.environ,
-                'STORAGE_BACKEND': 'postgresql',
-                'POSTGRESQL_CONNECTION_STRING': self.pg_url or '',
-                'MCP_TEST_MODE': '1',
-                'GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY': 'true',
-                # Make the NULL-summary -> '' wire-normalization assertion
-                # self-contained: neither subsystem is needed here, and disabling
-                # them keeps the result deterministic regardless of any inherited
-                # SUMMARY_MIN_CONTENT_LENGTH / provider configuration.
-                'ENABLE_SUMMARY_GENERATION': 'false',
-                'ENABLE_EMBEDDING_GENERATION': 'false',
-            }
+            # PG server auto-initializes its schema; no SQLite pre-init. It serves
+            # the run's database with the run's row-level security credentials and
+            # the summary-inclusion toggle on. Neither generation subsystem is
+            # needed, and disabling both keeps the NULL-summary -> '' wire
+            # normalization deterministic whatever SUMMARY_MIN_CONTENT_LENGTH or
+            # provider configuration the parent environment carries.
+            subprocess_env = self._postgresql_env(
+                GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY='true',
+                ENABLE_SUMMARY_GENERATION='false',
+                ENABLE_EMBEDDING_GENERATION='false',
+            )
         else:
             # Initialize the schema before the secondary server opens the file
             from app.schemas import load_schema

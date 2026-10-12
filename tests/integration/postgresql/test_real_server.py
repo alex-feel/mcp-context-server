@@ -18,6 +18,13 @@ round-trip tests apply to ``mcp_test``. The harness runs the fp32 vector layout
 (``ENABLE_EMBEDDING_COMPRESSION=false``); the compressed PG path is covered by
 ``test_compression_round_trip.py`` and ``test_search_compressed_postgresql.py``.
 
+The harness runs twice per protocol era. The superuser run serves its database as
+``mcp_test`` with row-level security off, so the application's own conditions alone
+decide what each request reaches. The row-level security run serves the ``pg_rls_db``
+database with ``ENABLE_POSTGRESQL_RLS``: ``mcp_owner`` migrates and owns the tables,
+every request logs in as ``mcp_app``, and the identity each request binds decides what
+the policies and the read view let it reach, beside the application's conditions.
+
 Embedding/semantic/hybrid sub-tests self-gate on Ollama model availability
 inside the harness, so the suite degrades gracefully (skip-as-pass) when no
 model is present; FTS runs unconditionally (native tsvector, no model needed).
@@ -37,6 +44,9 @@ import pytest_asyncio
 from tests.integration._harness import MCPServerIntegrationTest
 from tests.integration._harness.core import CLIENT_MODES
 from tests.integration._harness.core import ClientMode
+from tests.integration.postgresql._rls_catalog import assert_served_with_row_level_security
+from tests.integration.postgresql.conftest import RLS_CREDENTIALS
+from tests.integration.postgresql.conftest import RlsUrls
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
@@ -111,6 +121,32 @@ async def test_real_server_postgresql(pg_parity_db: str, client_mode: ClientMode
         pg_parity_db: Isolated pgvector DSN provided by :func:`pg_parity_db`.
         client_mode: Protocol era the harness client negotiates.
     """
-    test = MCPServerIntegrationTest(backend='postgresql', pg_url=pg_parity_db, client_mode=client_mode)
+    test = MCPServerIntegrationTest(
+        backend='postgresql', pg_url=pg_parity_db, pg_admin_url=pg_parity_db, rls=None, client_mode=client_mode,
+    )
     success = await test.run_all_tests()
     assert success, f'PostgreSQL integration tests failed ({client_mode} client mode)'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('client_mode', CLIENT_MODES)
+async def test_real_server_postgresql_row_level_security(pg_rls_db: RlsUrls, client_mode: ClientMode) -> None:
+    """Run the full real-server harness against PostgreSQL with row-level security.
+
+    Every server the harness starts serves the ``pg_rls_db`` database as ``mcp_app`` with
+    ``ENABLE_POSTGRESQL_RLS`` and ``mcp_owner`` as the migration role, once per protocol
+    era, and the rows no tool shows are counted as the superuser. The same assertions as
+    the superuser run hold, and the catalog afterwards shows that the tables the requests
+    reached carried the policies.
+
+    Args:
+        pg_rls_db: The database ``mcp_owner`` owns, one connection string per role.
+        client_mode: Protocol era the harness client negotiates.
+    """
+    test = MCPServerIntegrationTest(
+        backend='postgresql', pg_url=pg_rls_db.app, pg_admin_url=pg_rls_db.admin, rls=RLS_CREDENTIALS,
+        client_mode=client_mode,
+    )
+    success = await test.run_all_tests()
+    assert success, f'PostgreSQL row-level security integration tests failed ({client_mode} client mode)'
+    await assert_served_with_row_level_security(pg_rls_db)

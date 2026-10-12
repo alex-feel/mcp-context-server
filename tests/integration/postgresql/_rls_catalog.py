@@ -9,6 +9,8 @@ every table in a schema, the OID of every policy, function, trigger and view of 
 whether row-level security is on, and the read view's columns and ACL.
 :func:`install_ddl_log` records the command tag of every DDL statement anyone issues in
 the database from then on, so a test can prove that a step issued none.
+:func:`assert_served_with_row_level_security` proves after a server run that the server
+served ``mcp_app`` under the policies.
 """
 
 import asyncio
@@ -59,6 +61,13 @@ _ROW_SECURITY_SQL: Final = (
 _VIEW_COLUMNS_SQL: Final = (
     'SELECT attname FROM pg_attribute WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped ORDER BY attnum'
 )
+_RELATIONS_SQL: Final = (
+    'SELECT c.relname, c.relkind::text, pg_get_userbyid(c.relowner), c.relrowsecurity, c.relforcerowsecurity FROM pg_class c '
+    "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = ANY($1::text[])"
+)
+# The tables every request reads or writes, and the view plain reads go through.
+_REQUEST_RELATIONS: Final = ('context_entries', 'context_entry_grants', 'tags', 'image_attachments')
+_READ_VIEW: Final = 'context_entries_readable'
 _VIEW_ACL_SQL: Final = (
     "SELECT COALESCE(r.rolname, 'PUBLIC'), a.privilege_type FROM pg_class c "
     'CROSS JOIN LATERAL aclexplode(c.relacl) AS a LEFT JOIN pg_roles r ON r.oid = a.grantee '
@@ -126,6 +135,29 @@ async def install_ddl_log(conn: asyncpg.Connection) -> None:
 async def ddl_log(conn: asyncpg.Connection) -> list[str]:
     """Return the command tags :func:`install_ddl_log` recorded, oldest first."""
     return [str(row[0]) for row in await conn.fetch('SELECT tag FROM public.ddl_log')]
+
+
+async def assert_served_with_row_level_security(urls: RlsUrls) -> None:
+    """Assert that a server started on ``urls.app`` with ``RLS_CREDENTIALS`` served it with row-level security.
+
+    ``mcp_owner`` owns the tables every request touches and the read view, and has enabled
+    row-level security on the tables without forcing it. ``mcp_app`` owns nothing and bypasses
+    nothing, so every request the server served as ``mcp_app`` passed the policies and the
+    read view rather than the application's own conditions alone.
+
+    Args:
+        urls: The ``pg_rls_db`` connection strings; the probe reads the catalog as the superuser.
+    """
+    conn = await asyncpg.connect(urls.admin)
+    try:
+        rows = await conn.fetch(_RELATIONS_SQL, [*_REQUEST_RELATIONS, _READ_VIEW])
+    finally:
+        await conn.close()
+    relations = {str(row[0]): (str(row[1]), str(row[2]), bool(row[3]), bool(row[4])) for row in rows}
+    assert relations == {
+        **dict.fromkeys(_REQUEST_RELATIONS, ('r', 'mcp_owner', True, False)),
+        _READ_VIEW: ('v', 'mcp_owner', False, False),
+    }
 
 
 @asynccontextmanager

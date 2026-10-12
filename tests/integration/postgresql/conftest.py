@@ -42,6 +42,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from tests.helpers import RlsCredentials
+
 COMPOSE_FILE = Path(__file__).parent / 'docker-compose.test.yml'
 
 
@@ -358,6 +360,11 @@ class RlsUrls:
 
 
 _RLS_DATABASE = 'mcp_rls'
+
+# What a server on the ``pg_rls_db`` database starts with to run with row-level security:
+# ``mcp_owner`` migrates and owns the tables, and the policies name ``mcp_context_request``,
+# the role ``mcp_app`` inherits.
+RLS_CREDENTIALS = RlsCredentials(migration_user='mcp_owner', migration_password='mcp_owner', policy_role='mcp_context_request')
 
 
 @pytest_asyncio.fixture

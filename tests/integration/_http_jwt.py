@@ -13,15 +13,16 @@ minted JWTs -- ``alice`` and ``bob`` in group ``team-x``, ``carol`` in none -- a
 server that stamps a group read grant for every author group
 (``ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups``). The application writes no user
 grant and no write grant, so the scenario inserts carol's two grants straight into the
-server's database with ``insert_grant``.
+server's database with ``insert_grant``. PostgreSQL runs the scenario a second time with
+row-level security on, where the database enforces the same grants.
 """
 
 import socket
 import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator
+from collections.abc import Generator
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
@@ -226,7 +227,7 @@ def terminate(proc: 'subprocess.Popen[bytes]') -> None:
 
 
 @contextmanager
-def running_http_server(env: dict[str, str]) -> Iterator[str]:
+def running_http_server(env: dict[str, str]) -> Generator[str]:
     """Run the server with ``env`` until the block exits.
 
     Waits for ``/health`` before yielding and terminates the subprocess afterwards,
@@ -255,7 +256,7 @@ def running_http_server(env: dict[str, str]) -> Iterator[str]:
 @asynccontextmanager
 async def server_database(
     backend: BackendName, database: str, monkeypatch: 'pytest.MonkeyPatch',
-) -> AsyncIterator['StorageBackend']:
+) -> AsyncGenerator['StorageBackend']:
     """Open the database a running server serves, to write what no tool writes.
 
     Args:

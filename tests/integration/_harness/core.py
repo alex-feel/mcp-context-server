@@ -5,6 +5,12 @@ backend, the FastMCP client and the second-server helper, image and result
 extraction, and the result list every check reports into. ``ClientMode``,
 ``CLIENT_MODES`` and ``ERA_PROTOCOL_VERSIONS`` name the protocol eras a
 harness client negotiates.
+
+Every PostgreSQL server the harness starts gets its environment from
+:func:`tests.helpers.postgresql_subprocess_env`: it inherits the provider
+configuration of the parent environment, never its PostgreSQL routing, and
+carries the row-level security credentials of the run when it has them, so
+every server on the run's database starts the way the primary did.
 """
 
 import base64
@@ -12,7 +18,7 @@ import contextlib
 import os
 import tempfile
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 from typing import Literal
@@ -24,6 +30,9 @@ from fastmcp.client.transports import PythonStdioTransport
 from mcp.client.stdio import get_default_environment
 from mcp.types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
+
+from tests.helpers import RlsCredentials
+from tests.helpers import postgresql_subprocess_env
 
 # Protocol era a harness client negotiates. 'auto' adopts the sessionless
 # 2026-07-28 era (no initialize handshake) over stdio and streamable HTTP;
@@ -37,6 +46,21 @@ ERA_PROTOCOL_VERSIONS: dict[ClientMode, tuple[str, ...]] = {
     'legacy': HANDSHAKE_PROTOCOL_VERSIONS,
 }
 
+# Feature settings of the PostgreSQL primary server and of every second server that
+# does not share the primary's environment: the full search surface, low-effort
+# summaries, and the fp32 vector layout. The fp32 layout exercises the pgvector
+# <-> / HNSW / DISTINCT ON path, which the compressed tests leave uncovered, and
+# keeps the run independent of the seed-locked compression_metadata singleton that
+# the dedicated compression round-trip tests seal.
+SERVER_FEATURES: dict[str, str] = {
+    'ENABLE_SEMANTIC_SEARCH': 'true',
+    'ENABLE_FTS': 'true',
+    'ENABLE_HYBRID_SEARCH': 'true',
+    'ENABLE_EMBEDDING_COMPRESSION': 'false',
+    'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
+    'SUMMARY_ANTHROPIC_EFFORT': 'low',
+}
+
 
 class HarnessCore:
     """Server, client and result plumbing shared by every check mixin."""
@@ -47,6 +71,8 @@ class HarnessCore:
         *,
         backend: str = 'sqlite',
         pg_url: str | None = None,
+        pg_admin_url: str | None = None,
+        rls: RlsCredentials | None = None,
         client_mode: ClientMode = 'auto',
     ) -> None:
         """Initialize the integration test suite.
@@ -54,22 +80,46 @@ class HarnessCore:
         Args:
             temp_db_path: Optional path to a temporary SQLite database.
             backend: Storage backend to exercise ('sqlite' or 'postgresql').
-            pg_url: PostgreSQL connection string; required when
+            pg_url: The request connection string every PostgreSQL server is
+                given; required when ``backend='postgresql'``.
+            pg_admin_url: A superuser connection string to the same database,
+                for the checks that count rows no tool shows; required when
                 ``backend='postgresql'``.
+            rls: The row-level security credentials every PostgreSQL server
+                starts with; None starts them with ENABLE_POSTGRESQL_RLS off.
             client_mode: Protocol era every harness client negotiates
                 (see :data:`ClientMode`).
+
+        Raises:
+            ValueError: If the PostgreSQL backend lacks either connection string.
         """
+        if backend == 'postgresql' and (pg_url is None or pg_admin_url is None):
+            raise ValueError('The PostgreSQL harness requires pg_url and pg_admin_url')
         self.client: Client[Any] | None = None
         self.test_results: list[tuple[str, bool, str]] = []
         self.test_thread_id = f'integration_test_{int(time.time())}'
         self.temp_db_path = temp_db_path
         self.backend = backend
         self.pg_url = pg_url
+        self.pg_admin_url = pg_admin_url
+        self.rls = rls
         self.client_mode: ClientMode = client_mode
         self.registered_tools: frozenset[str] = frozenset()
         # The environment the primary server was started with; a second server that
         # shares the primary's database starts from it (see _second_server).
         self.server_env: dict[str, str] | None = None
+
+    def _postgresql_env(self, **overrides: str) -> dict[str, str]:
+        """Return the environment of a server subprocess on the harness's PostgreSQL database.
+
+        Args:
+            overrides: Environment values applied last.
+
+        Returns:
+            The complete environment, carrying the run's row-level security credentials.
+        """
+        assert self.pg_url is not None  # __init__ requires it on PostgreSQL
+        return postgresql_subprocess_env(self.pg_url, rls=self.rls, **overrides)
 
     def _new_client(self, transport: ClientTransport) -> Client[Any]:
         """Build a client that negotiates the harness's protocol era.
@@ -111,35 +161,14 @@ class HarnessCore:
 
             if self.backend == 'postgresql':
                 # PostgreSQL path: the server auto-initializes its schema on
-                # startup, so there is no SQLite pre-init step. The backend and
-                # DSN MUST be passed explicitly via PythonStdioTransport(env=...)
+                # startup, so there is no SQLite pre-init step. The environment
+                # MUST be passed explicitly via PythonStdioTransport(env=...)
                 # because a bare script path applies the MCP SDK env whitelist
-                # that strips app-specific vars. Inherit the parent env (carries
-                # EMBEDDING_MODEL / EMBEDDING_DIM in CI) and override routing.
-                server_env = {
-                    **os.environ,
-                    'STORAGE_BACKEND': 'postgresql',
-                    'POSTGRESQL_CONNECTION_STRING': self.pg_url or '',
-                    'MCP_TEST_MODE': '1',
-                    # Neutralize any DISABLED_TOOLS inherited from the developer's
-                    # shell / .env. The SQLite path starts from the MCP SDK's
-                    # default stdio environment, which carries no DISABLED_TOOLS,
-                    # so it runs the full tool surface; PG must match for true
-                    # parity (an inherited DISABLED_TOOLS would skip whole tools).
-                    'DISABLED_TOOLS': '',
-                    'ENABLE_SEMANTIC_SEARCH': 'true',
-                    'ENABLE_FTS': 'true',
-                    'ENABLE_HYBRID_SEARCH': 'true',
-                    # Run the parity suite against the fp32 vector layout. This
-                    # deliberately exercises the pgvector <-> / HNSW / DISTINCT ON
-                    # path (high-value PG divergence not covered by the compressed
-                    # tests) and keeps the run independent of the seed-locked
-                    # compression_metadata singleton sealed by the dedicated
-                    # compression round-trip tests.
-                    'ENABLE_EMBEDDING_COMPRESSION': 'false',
-                    'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
-                    'SUMMARY_ANTHROPIC_EFFORT': 'low',
-                }
+                # that strips app-specific vars. It inherits the parent's
+                # provider configuration (EMBEDDING_MODEL / EMBEDDING_DIM in CI)
+                # and clears DISABLED_TOOLS, so the full tool surface runs as on
+                # SQLite, whose default stdio environment carries none.
+                server_env = self._postgresql_env(**SERVER_FEATURES)
                 self.server_env = server_env
                 transport = PythonStdioTransport(
                     script_path=str(wrapper_script),
@@ -255,16 +284,17 @@ class HarnessCore:
     @contextlib.asynccontextmanager
     async def _second_server(
         self, extra_env: dict[str, str], *, share_primary_database: bool = False,
-    ) -> AsyncIterator[Client[Any]]:
+    ) -> AsyncGenerator[Client[Any]]:
         """Run a SECOND server subprocess carrying extra environment overrides.
 
         Some behavior is decided once, at server startup -- a feature toggle, a pool
         timeout, the indexed-metadata configuration, the default principal -- so it
         cannot be exercised against the long-lived server ``connect_client`` connected
         to. By default the overrides are applied on top of the harness defaults, and
-        backend routing matches the harness's own: PostgreSQL reuses the shared test
-        database, while SQLite gets an isolated temporary file so the second server
-        never contends with the primary client's database.
+        backend routing matches the harness's own: PostgreSQL reuses the run's
+        database with the run's row-level security credentials, while SQLite gets an
+        isolated temporary file so the second server never contends with the primary
+        client's database.
 
         With ``share_primary_database`` the second server instead starts from the
         primary server's own environment, so it serves the primary's database on
@@ -295,27 +325,19 @@ class HarnessCore:
             if self.server_env is None:
                 raise RuntimeError('The primary server must be started before a second server can share its database')
             server_env = {**self.server_env, **extra_env}
+        elif self.backend == 'postgresql':
+            server_env = self._postgresql_env(**{**SERVER_FEATURES, **extra_env})
         else:
+            second_db_path = Path(tempfile.mkdtemp(prefix='mcp_harness_second_')) / 'second_server.db'
             server_env = {
                 **os.environ,
                 'MCP_TEST_MODE': '1',
                 'DISABLED_TOOLS': '',
-                'ENABLE_SEMANTIC_SEARCH': 'true',
-                'ENABLE_FTS': 'true',
-                'ENABLE_HYBRID_SEARCH': 'true',
-                'ENABLE_EMBEDDING_COMPRESSION': 'false',
-                'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
-                'SUMMARY_ANTHROPIC_EFFORT': 'low',
+                **SERVER_FEATURES,
+                'STORAGE_BACKEND': 'sqlite',
+                'DB_PATH': str(second_db_path),
+                **extra_env,
             }
-            if self.backend == 'postgresql':
-                server_env['STORAGE_BACKEND'] = 'postgresql'
-                server_env['POSTGRESQL_CONNECTION_STRING'] = self.pg_url or ''
-            else:
-                server_env['STORAGE_BACKEND'] = 'sqlite'
-                second_db_dir = tempfile.mkdtemp(prefix='mcp_harness_second_')
-                second_db_path = Path(second_db_dir) / 'second_server.db'
-                server_env['DB_PATH'] = str(second_db_path)
-            server_env.update(extra_env)
 
         transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
         second_client = self._new_client(transport)

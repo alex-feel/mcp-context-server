@@ -4,7 +4,8 @@ Covers ``postgresql_subprocess_env``: a server or command-line subprocess inheri
 parent environment for its provider configuration, while every PostgreSQL routing input
 of the parent (each ``POSTGRESQL_*`` variable and ``ENABLE_POSTGRESQL_RLS``) is removed
 before the helper pins the routing, the row-level security credentials when they are
-given, and the caller's overrides.
+given, and the caller's overrides. ``RlsCredentials.environment`` names the variables
+that start a server with row-level security.
 """
 
 import pytest
@@ -17,6 +18,15 @@ RLS = RlsCredentials(migration_user='mcp_owner', migration_password='mcp_owner',
 RLS_KEYS = (
     'ENABLE_POSTGRESQL_RLS', 'POSTGRESQL_RLS_POLICY_ROLE', 'POSTGRESQL_MIGRATION_USER', 'POSTGRESQL_MIGRATION_PASSWORD',
 )
+
+
+def test_credentials_name_the_row_level_security_environment() -> None:
+    assert RLS.environment() == {
+        'ENABLE_POSTGRESQL_RLS': 'true',
+        'POSTGRESQL_RLS_POLICY_ROLE': 'mcp_context_request',
+        'POSTGRESQL_MIGRATION_USER': 'mcp_owner',
+        'POSTGRESQL_MIGRATION_PASSWORD': 'mcp_owner',
+    }
 
 
 @pytest.fixture
