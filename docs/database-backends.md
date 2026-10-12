@@ -82,16 +82,130 @@ export STORAGE_BACKEND=postgresql
 
 ## Access Isolation by Backend
 
-Both backends enforce the same [Access Model](authentication.md#access-model): apart from the deployment-wide figures in the table below, every query a tool runs against stored entries reaches only the entries the calling principal may read, modify or own, and applies that limit ahead of any `LIMIT`, ranking or aggregation. The enforcement lives in the server's application layer on both backends; neither backend installs database-level row security, so a client that connects to the database directly, outside the server, sees every row.
+Both backends enforce the same [Access Model](authentication.md#access-model): apart from the deployment-wide figures in the table below, every query a tool runs against stored entries reaches only the entries the calling principal may read, modify or own, and applies that limit ahead of any `LIMIT`, ranking or aggregation. The server's application layer enforces it on both backends. PostgreSQL can enforce it in the database as well: with `ENABLE_POSTGRESQL_RLS=true`, row-level security policies hold every request to the same rules even where one of the server's queries got its access condition wrong (see [Row-level security (PostgreSQL)](#row-level-security-postgresql)). Without it, and always on SQLite, a client that connects to the database directly, outside the server, sees every row.
 
-| Aspect                                          | SQLite                                                                                                                   | PostgreSQL                                                         |
-|-------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------|
-| Where the access rules are enforced             | Application layer (SQLite has no row-level security)                                                                     | Application layer                                                  |
-| Results, counts, pages and per-entry statistics | Limited to readable entries                                                                                              | Limited to readable entries                                        |
-| Full-text `fts_score`                           | FTS5 `bm25()` uses whole-index statistics, so entries the caller cannot read shift the scores and order of readable ones | `ts_rank_cd` scores each entry on its own                          |
-| Figures that describe the whole deployment      | `get_statistics` sizes, connection metrics and configuration fields, and the full-text rebuild estimate                  | The same, plus planner row estimates in `explain_query=True` plans |
+| Aspect                                          | SQLite                                                                                                                   | PostgreSQL                                                                                                                                                                   |
+|-------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Where the access rules are enforced             | Application layer (SQLite has no row-level security)                                                                     | Application layer; with `ENABLE_POSTGRESQL_RLS=true`, also the database                                                                                                      |
+| A client connecting to the database directly    | Sees every row                                                                                                           | Sees every row with row-level security off; with it on, a role outside the policy role reads nothing, and the request login role reads only what the bound identity may read |
+| Results, counts, pages and per-entry statistics | Limited to readable entries                                                                                              | Limited to readable entries                                                                                                                                                  |
+| Full-text `fts_score`                           | FTS5 `bm25()` uses whole-index statistics, so entries the caller cannot read shift the scores and order of readable ones | `ts_rank_cd` scores each entry on its own                                                                                                                                    |
+| Figures that describe the whole deployment      | `get_statistics` sizes, connection metrics and configuration fields, and the full-text rebuild estimate                  | The same, plus planner row estimates in `explain_query=True` plans                                                                                                           |
 
-Which entries match and how many land on a page are the same on both backends. For deployments with more than one principal (`MCP_AUTH_PROVIDER=jwt`), use PostgreSQL, whose full-text scores depend on nothing the caller cannot read.
+Which entries match and how many land on a page are the same on both backends. For deployments with more than one principal (`MCP_AUTH_PROVIDER=jwt`), use PostgreSQL, whose full-text scores depend on nothing the caller cannot read, with row-level security enabled.
+
+## Row-level security (PostgreSQL)
+
+With `ENABLE_POSTGRESQL_RLS=true` (default `false`), PostgreSQL enforces the [Access Model](authentication.md#access-model) itself, in addition to the server's application layer. A request reads only the entries its principal may read, changes text, metadata, tags and images only where it owns the entry or holds a write grant, changes visibility and deletes only its own entries, and publishes as `public` only when `ACCESS_CONTROL_PUBLISH_ROLE` allows it. With the flag off, PostgreSQL runs the same statements as without the feature: no identity statement, no extra transaction and no extra cost.
+
+### How it works
+
+- **Policies.** `context_entries` carries one PERMISSIVE policy per command: SELECT applies the read rule, INSERT requires the stored owner to be the caller and a `public` visibility to be publishable, UPDATE applies the write rule, DELETE the owner rule. `context_entry_grants` lets a caller read the grants that name it or one of its groups, and lets an entry's owner insert grants on it. The child tables (`tags`, `image_attachments`, `embedding_metadata`, `vec_context_embeddings`, `vec_context_embeddings_compressed`, `context_index_nodes`) allow a read where the parent entry is readable, and an insert or delete where the caller may write the parent. No child row and no grant is ever updated, so neither has an UPDATE policy. The policy expressions come from the same composer that builds the server's own access condition, so the two cannot drift apart.
+- **Guard trigger.** A policy cannot compare a row with its previous version, so a `BEFORE UPDATE` trigger on `context_entries` (`guard_context_entry_access_columns`) keeps `owner_id` immutable, lets only the owner change `visibility`, and refuses a change to `public` unless the caller may publish.
+- **Policy role.** Every policy applies to one NOLOGIN role, `POSTGRESQL_RLS_POLICY_ROLE` (default `mcp_context_request`), and never to `PUBLIC`. The login role that serves requests is a member of it. Every other role that neither owns the tables nor bypasses row-level security (as a superuser or a `BYPASSRLS` role does) reads nothing from them, whatever privileges it holds.
+- **Identity.** The first statement of every transaction on the request connection binds the caller with one `set_config` call: `app.principal_id`, `app.groups` (an exact `text[]` literal) and `app.may_publish`, all transaction-local, together with `jit = off` for the transaction. Reads run inside such a transaction too. Three helper functions in the schema (`mcp_context_principal_id()`, `mcp_context_groups()`, `mcp_context_may_publish()`) hand the values to the policies and fail closed: an unset or reset identity matches no owner and no grant, so only `public` entries stay readable.
+- **Read view.** A policy's condition is a security barrier: PostgreSQL may use an operator from the query as an index condition only when the operator is marked LEAKPROOF, and the full-text match, the JSON accessors and the numeric casts are not (only a superuser can mark them). Under plain policies the full-text GIN index and the metadata expression indexes would go unused. Plain reads of `context_entries` therefore name the view `context_entries_readable`, which the table owner owns and which carries neither `security_barrier` nor `security_invoker`. Its condition is a role gate, `pg_has_role(current_user, '<policy role>', 'USAGE')`, which PostgreSQL evaluates once per statement, AND the same read rule as the SELECT policy. Because the table owner reads its tables without policies, a query through the view keeps every index the same query uses without row-level security. SELECT on the view is granted to the policy role only, and an `INSTEAD OF` trigger (`reject_writes`) keeps the view read-only. Writes, locking reads and reads of the child tables name the base tables and stay under the policies.
+- **Application condition kept.** Every statement keeps the server's own access condition beside the policies and the view, so both layers apply.
+- **Total conversions.** Inside a read through the view, the server's own conditions, such as a metadata filter, may be evaluated on rows the caller cannot read. Every conversion of a stored JSON value to a non-text type in the server's SQL is total: a value of another type yields NULL instead of raising an error, so no condition can fail on, or reveal through an error, a value the caller cannot read.
+- **Outside row-level security.** `compression_metadata` holds deployment provenance and stays readable to the policy role. The server grants the policy role exactly what requests use: USAGE on the schema; SELECT, INSERT, UPDATE and DELETE on the managed tables; SELECT on `compression_metadata`; USAGE and SELECT on the sequences those tables own; and EXECUTE on `jsonb_merge_patch`. It grants nothing on other tables or sequences of the schema, and no TRUNCATE.
+
+### Roles and credentials
+
+Row-level security needs three roles:
+
+| Role                    | Configured by                                                | What it does                                                                                                                                                                                          |
+|-------------------------|--------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Table owner (migration) | `POSTGRESQL_MIGRATION_USER`, `POSTGRESQL_MIGRATION_PASSWORD` | Owns the tables and runs schema setup, migrations, the privilege grants and the startup checks on a short-lived connection. Row-level security is enabled without FORCE, so the owner reads every row |
+| Policy role (NOLOGIN)   | `POSTGRESQL_RLS_POLICY_ROLE` (default `mcp_context_request`) | The only role the policies name; receives the table privileges                                                                                                                                        |
+| Request login role      | The user of the request connection settings                  | Serves every tool call. Must not own the tables, must be neither superuser nor `BYPASSRLS`, and must be an inheriting member of the policy role                                                       |
+
+The operator creates the policy role, the login role and the membership; the server never creates or alters roles. On an existing deployment the current user keeps owning the tables and becomes the migration user:
+
+```sql
+CREATE ROLE mcp_context_request NOLOGIN;
+CREATE ROLE mcp_app LOGIN PASSWORD 'choose-a-password' NOSUPERUSER NOBYPASSRLS;
+GRANT mcp_context_request TO mcp_app;
+```
+
+| Variable                        | Default               | Purpose                                                     |
+|---------------------------------|-----------------------|-------------------------------------------------------------|
+| `ENABLE_POSTGRESQL_RLS`         | `false`               | Install the policies and the read view and enforce them     |
+| `POSTGRESQL_RLS_POLICY_ROLE`    | `mcp_context_request` | The NOLOGIN role the policies name                          |
+| `POSTGRESQL_MIGRATION_USER`     | _(none)_              | The table owner; required when `ENABLE_POSTGRESQL_RLS=true` |
+| `POSTGRESQL_MIGRATION_PASSWORD` | _(none)_              | The table owner's password                                  |
+
+The migration connection uses the request connection settings, the `POSTGRESQL_CONNECTION_STRING` DSN when it is set and the individual `POSTGRESQL_*` fields otherwise, with `POSTGRESQL_MIGRATION_USER` and `POSTGRESQL_MIGRATION_PASSWORD` replacing the user and the password, each only when it is set. This holds for the DSN form too: the DSN names the request login role, and the migration variables override its user and password for the migration connection. Host, port, database, schema and SSL settings are shared.
+
+The migration user can also be set with `ENABLE_POSTGRESQL_RLS=false`. The server then migrates as the table owner, serves requests as the login role and grants the policy role its privileges on every start, so the policy role and the membership must exist in that setup as well.
+
+### Enabling row-level security
+
+1. Keep the current user, which owns the tables, as `POSTGRESQL_MIGRATION_USER` and its password as `POSTGRESQL_MIGRATION_PASSWORD`. Nothing changes ownership.
+2. As a role administrator, create the policy role and a login role that is its member (the SQL above).
+3. Point the request connection settings at the login role: `POSTGRESQL_USER` and `POSTGRESQL_PASSWORD`, or the user and password in `POSTGRESQL_CONNECTION_STRING`.
+4. Set `ENABLE_POSTGRESQL_RLS=true` and restart.
+
+The first start grants the policy role its privileges, installs the helper functions, the guard trigger, the policies and the read view, and enables row-level security on every managed table, all as the table owner in one transaction under the schema-initialization lock. Every installed object carries a fingerprint comment, so a later start that finds everything current issues no DDL and takes no lock, and several instances can restart side by side. An object changed outside the server is re-created at the next start with a WARNING naming it. A table that appears later, such as `context_index_nodes` when node summaries are switched on or a vector table re-created by `--compress` or `--decompress`, gets its policies and grants at the next start. Changing `POSTGRESQL_RLS_POLICY_ROLE` re-creates every policy and the view at the next start.
+
+During a rolling enable, instances still running with the old configuration keep working, because they connect as the table owner, which bypasses the policies. An instance with the old configuration that restarts is refused (see [Startup checks](#startup-checks)) until its configuration is updated.
+
+The deployment guides show the same steps for [Docker Compose](deployment/docker.md#enabling-row-level-security) and [Helm](deployment/helm.md#row-level-security). For Supabase, see [Row-Level Security on Supabase](#row-level-security-on-supabase).
+
+### Rotating the request login role
+
+Create the new login role, grant it the policy role, point the request connection settings at it and roll the instances: `CREATE ROLE mcp_app_2 LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS; GRANT mcp_context_request TO mcp_app_2;`. The policies name the policy role, not the login role, so no DDL runs and no instance is ever left without a policy that applies to it. Revoke the old role's membership once no instance uses it.
+
+### Privileges on the read view
+
+The privileges on `context_entries_readable`, apart from its owner's, must be exactly SELECT for the policy role. A later `GRANT ... ON ALL TABLES IN SCHEMA <schema> TO <role>`, or an `ALTER DEFAULT PRIVILEGES` that covers views, also reaches the view; this is routine on Supabase, where the usual fix for a permission error grants every table in `public` to `postgres`, `anon`, `authenticated` and `service_role`. The next start revokes every such privilege and logs a WARNING naming each revoked grantee and privilege, so no operator step is needed. Until then the role gate keeps every such grantee at zero rows, so the data is never exposed.
+
+### Startup checks
+
+The server refuses to start (exit code 78) with a message naming the cause and the statement that fixes it when:
+
+- `ENABLE_POSTGRESQL_RLS=true` is set with `STORAGE_BACKEND=sqlite`, without `POSTGRESQL_MIGRATION_USER`, or with `POSTGRESQL_MIGRATION_USER` equal to `POSTGRESQL_USER` while `POSTGRESQL_CONNECTION_STRING` is unset;
+- the request login role is a superuser or has `BYPASSRLS`, the policy role does not exist, or the login role is not its member (checked before any DDL);
+- the request and migration credentials resolve to the same PostgreSQL role. The server compares the `current_user` of both connections, so a pooler that forces a login, a Supabase project-ref user name or an `ALTER ROLE ... SET role` cannot hide it;
+- after setup, the login role lacks a privilege the start granted, a managed table does not have row-level security enabled and applying to the login role, a table has FORCE ROW LEVEL SECURITY, a policy the server did not install applies to the login role (through `PUBLIC`, the policy role, the login role or any role it inherits), an installed object differs from what the server renders, or the read view has another owner, `security_barrier` or `security_invoker` set, a missing write trigger, or a grantee other than the policy role;
+- `ENABLE_POSTGRESQL_RLS=false` is set while the policies or the read view are installed, because the login role would then read only `public` entries and every write would fail. Turn the flag back on, or remove them first (see [Disabling row-level security](#disabling-row-level-security));
+- `ENABLE_POSTGRESQL_RLS=false` is set with split roles while a managed table has row-level security enabled by someone else, for example through a dashboard or a restore.
+
+With `MCP_AUTH_PROVIDER=jwt` on PostgreSQL with an HTTP transport and the flag off, the server logs a WARNING at startup: access isolation is then enforced in the application layer only.
+
+### Disabling row-level security
+
+`mcp-context-server-migrate --disable-rls --source-url <table-owner connection>` removes what the server installed: the read view and its write trigger, every policy of the server, the guard trigger and the helper functions. It disables row-level security only on the tables the server enabled it on and reports each table it leaves enabled, such as a table whose row-level security was on before the server first installed its policies. It must connect as the table owner, runs in one transaction under the schema-initialization lock, and refuses (exit 1) while any session of a member of the policy role is connected to the database; `--force` removes the objects anyway and logs those sessions. `--dry-run` prints what would be removed and changes nothing. Set `POSTGRESQL_SCHEMA` for the CLI when the tables live outside `public`. See [Migrating to the UUIDv7 Schema](migration-v2-to-v3.md#postgresql-row-level-security-and-the-cli) for the CLI's owner requirement.
+
+The removal and the configuration change must happen in order, because an instance started with the flag on installs the objects again, and an instance started with the flag off before the removal is refused:
+
+- **Helm:** set `storage.postgresql.rls.enabled: false` in your values; scale the Deployment to zero so no instance runs; run `--disable-rls` from a one-off pod with the table owner's credentials; then apply the values and scale back up. See [Helm Deployment Guide](deployment/helm.md#row-level-security).
+- **Docker Compose:** stop the app (`docker compose stop mcp-context-server`, keeping a bundled PostgreSQL sidecar running; `docker compose down` with an external database), run `--disable-rls`, set `ENABLE_POSTGRESQL_RLS=false` (or drop the override that enables it), then `docker compose up -d`. See [Docker Deployment Guide](deployment/docker.md#enabling-row-level-security).
+- **STDIO clients:** change every client configuration to `ENABLE_POSTGRESQL_RLS=false` first, then run `--disable-rls` once no session remains.
+
+The request login role can keep its membership: with the flag off and the roles still split, the server keeps granting the policy role its privileges. To return to a single role, point the request connection settings back at the table owner and unset the migration variables.
+
+### Performance
+
+- Reads through the view keep every index the same read uses with row-level security off, the full-text GIN index and the metadata expression indexes included.
+- Each read on the request connection adds three round trips (`BEGIN`, the identity statement, `COMMIT`), and each write transaction adds one. Deployments with the flag off pay nothing.
+- `jit` is off for each request transaction: the policy-heavy plans gain nothing from compilation, and the setting is transaction-local, so it holds through transaction-mode poolers without an extra round trip.
+- Keeping the application condition beside the view costs +0.1 to +1.8 ms on small pages for a caller who reads entries of many principals and +8% to +19% on wide result sets of that kind, and nothing measurable for a single owner.
+
+### Limits
+
+Row-level security protects against defects in how this server builds its queries: a missing or wrong access condition, a future repository method that forgets its scope, or a statement that names the wrong relation. It does not protect against a compromised server process or injected SQL. The server asserts the caller's identity per transaction through `set_config`, as PostgREST and Supabase do with `request.jwt.claims`, and anything that can run arbitrary SQL on the request connection can set those values too.
+
+- **No leakproof barrier inside view reads.** PostgreSQL's leakproof protection does not apply to reads through the view, so the server's own conditions may run on index entries and rows the caller cannot read, as they do with row-level security off. No condition the server generates can raise an error on any stored value, and tests pin that, so a regression is caught by the test suite rather than by the database.
+- **A timing channel.** By timing many requests, a principal can roughly estimate how many entries it cannot read contain a chosen word or metadata value. The channel is coarse, noisy and content-dependent, exists equally with row-level security off, and lies outside what even a `security_barrier` view guarantees (PostgreSQL's documentation on rules and privileges excludes run-time inference).
+- **Deployment-wide figures and planner estimates.** The figures listed in [Access Isolation by Backend](#access-isolation-by-backend) stay global, and `explain_query=True` plans carry row estimates from table-wide statistics.
+- **Foreign-key checks.** PostgreSQL checks foreign keys without applying policies. Entry ids are generated by the server as UUIDv7 values, and the child insert policies reject an entry the caller cannot read with the same error as an entry that does not exist, so a foreign-key check reveals nothing.
+- **Concurrent grant changes.** Each statement evaluates grants as of its own snapshot (READ COMMITTED), so a statement that runs while a grant is added or removed sees the grants as they were when it started.
+
+For deployments with more than one principal, use PostgreSQL with row-level security enabled.
+
+### Backups
+
+Run `pg_dump` as the table owner or a superuser. As the request login role it fails under the policies.
 
 ## External Connection Pooler Compatibility
 
@@ -137,6 +251,8 @@ This list is about the STATEMENT CACHE only. Every pooler in both lists is reach
 - Supabase **Transaction Pooler** (serverless mode)
 - Any pooler that reassigns backend connections
 
+**With [row-level security](#row-level-security-postgresql) on:** the caller's identity and `jit = off` are set transaction-locally inside an explicit transaction, which a transaction-mode pooler keeps on one server connection, so requests are safe through every pooler in both lists. The migration connections set `row_security = off` with a session `SET`, like `search_path`; run the `mcp-context-server-migrate` CLI through a Direct connection or a session-mode endpoint.
+
 ### Example Configuration
 
 For environments using external connection poolers:
@@ -165,11 +281,12 @@ For environments using external connection poolers:
 
 The server sends **no PostgreSQL startup-packet parameters**. Every session parameter it depends on is applied with `SET` on each connection instead:
 
-| Session parameter                              | Value                             | Purpose                                                                                                                |
-|------------------------------------------------|-----------------------------------|------------------------------------------------------------------------------------------------------------------------|
-| `search_path`                                  | `"<POSTGRESQL_SCHEMA>", public`   | Makes bare table names resolve to the configured schema                                                                |
-| `extra_float_digits`                           | `1`                               | Pins float text output to the shortest round-trip form the numeric metadata-filter comparison depends on               |
-| `tcp_keepalives_idle` / `_interval` / `_count` | `POSTGRESQL_TCP_KEEPALIVES_*`     | Server-side keepalive probes; see [Connection Resilience](#connection-resilience)                                      |
+| Session parameter                              | Value                           | Purpose                                                                                                                                             |
+|------------------------------------------------|---------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `search_path`                                  | `"<POSTGRESQL_SCHEMA>", public` | Makes bare table names resolve to the configured schema                                                                                             |
+| `extra_float_digits`                           | `1`                             | Pins float text output to the shortest round-trip form the numeric metadata-filter comparison depends on                                            |
+| `tcp_keepalives_idle` / `_interval` / `_count` | `POSTGRESQL_TCP_KEEPALIVES_*`   | Server-side keepalive probes; see [Connection Resilience](#connection-resilience)                                                                   |
+| `row_security`                                 | `off`                           | Migration connections and the migration CLI only: a read that row-level security would filter raises an error instead of returning a partial answer |
 
 This matters because PgBouncer accepts only `client_encoding`, `datestyle`, `timezone`, `standard_conforming_strings` and `application_name` in the startup packet by default, and **refuses** the connection for anything else with `FATAL: unsupported startup parameter: <name>`. Sending even one non-allowlisted parameter would make a stock `pgbouncer.ini` reject every connection this server opens, before any query runs. Poolers that silently strip unknown startup parameters instead of rejecting them produce a subtler failure: the connection succeeds and the parameter is simply gone, so with a non-default `POSTGRESQL_SCHEMA` every query fails with `relation "context_entries" does not exist`, and float text reverts to the cluster default, which the numeric metadata-filter comparison relies on being pinned.
 
@@ -433,6 +550,22 @@ POSTGRESQL_POOL_MAX = floor(pool_size / replica_count) - 1
 - Connection spikes during pod restarts
 - Other applications sharing the pooler
 
+### Row-Level Security on Supabase
+
+[Row-level security](#row-level-security-postgresql) works on Supabase with dedicated roles:
+
+1. In the SQL Editor, as `postgres`, create the policy role and a login role that is its member: `CREATE ROLE mcp_context_request NOLOGIN; CREATE ROLE mcp_app LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS; GRANT mcp_context_request TO mcp_app;`.
+2. Keep `postgres`, which owns the tables, as `POSTGRESQL_MIGRATION_USER` with its database password as `POSTGRESQL_MIGRATION_PASSWORD`.
+3. Point the request connection at the login role. Through the Session Pooler, user names carry the project reference: `mcp_app.[PROJECT-REF]` for requests and `postgres.[PROJECT-REF]` for migrations. With `POSTGRESQL_CONNECTION_STRING`, put `mcp_app.[PROJECT-REF]` in the DSN and set `POSTGRESQL_MIGRATION_USER=postgres.[PROJECT-REF]`.
+4. Set `ENABLE_POSTGRESQL_RLS=true`.
+
+Supabase grants every table and view in `public` to `anon`, `authenticated` and `service_role` by default, and those grants reach the read view as well. Each start revokes them from the view and logs a WARNING naming them (see [Privileges on the read view](#privileges-on-the-read-view)). For the Data API:
+
+- With row-level security on, `anon` and `authenticated` read zero rows through the base tables and the view, whatever they are granted, because no policy names them and the view's role gate excludes them.
+- `compression_metadata` stays outside row-level security, so revoke `anon` and `authenticated` on it: `REVOKE ALL ON public.compression_metadata FROM anon, authenticated;`.
+- Disabling row-level security restores Data API access to the context tables unless those grants are revoked as well.
+- Tables whose row-level security was enabled before the server first installed its policies stay enabled after `--disable-rls`.
+
 ### "MaxClientsInSessionMode" Error
 
 **Symptom:**
@@ -585,7 +718,7 @@ If a transaction fails due to a connection error, it is automatically retried up
 - Store database password in environment variables, not in code
 - Use Supabase's connection string format for simplicity
 - Enable SSL/TLS by default (handled automatically by Supabase connection)
-- Consider using read-only credentials if your use case only needs read access
+- For deployments with more than one principal, serve requests through a dedicated login role with [row-level security](#row-level-security-postgresql) enabled and keep the table owner's credentials for migrations only
 
 ## Additional Resources
 

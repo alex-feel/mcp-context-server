@@ -160,6 +160,96 @@ storage:
     # Use existing secret instead of password
     existingSecret: ""
     existingSecretKey: "postgresql-password"
+    # Role that owns the tables and runs migrations (POSTGRESQL_MIGRATION_USER and
+    # POSTGRESQL_MIGRATION_PASSWORD); empty keeps the request credentials above
+    migration:
+      user: ""
+      password: ""
+      existingSecret: ""
+      existingSecretKey: "postgresql-migration-password"
+    # Row-level security (ENABLE_POSTGRESQL_RLS, POSTGRESQL_RLS_POLICY_ROLE)
+    rls:
+      enabled: false
+      policyRole: ""  # empty keeps the server default, mcp_context_request
+```
+
+### Row-Level Security
+
+With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access model through row-level security in addition to the server (see [Row-level security (PostgreSQL)](../database-backends.md#row-level-security-postgresql)). Requests then connect as `storage.postgresql.user`, a login role that is a member of the policy role and is neither superuser nor `BYPASSRLS`, while `storage.postgresql.migration.user` owns the tables and runs the migrations inside the server pod at startup; the chart adds no hook Job. Rendering fails when `rls.enabled` is set with `storage.backend` other than `postgresql`, or without `migration.user`, mirroring the checks the server applies at startup. Each migration value renders only when it is set.
+
+**Enabling:**
+
+1. As a role administrator, create the NOLOGIN policy role and a login role that is its member:
+
+   ```sql
+   CREATE ROLE mcp_context_request NOLOGIN;
+   CREATE ROLE mcp_app LOGIN PASSWORD 'choose-a-password' NOSUPERUSER NOBYPASSRLS;
+   GRANT mcp_context_request TO mcp_app;
+   ```
+
+2. Point the request credentials at the login role, keep the current user (which owns the tables) as the migration user, and turn the flag on:
+
+   ```yaml
+   storage:
+     backend: postgresql
+     postgresql:
+       enabled: true
+       user: "mcp_app"
+       existingSecret: "mcp-postgresql"   # key postgresql-password: the login role's password
+       migration:
+         user: "postgres"
+         existingSecret: "mcp-postgresql" # key postgresql-migration-password: the table owner's password
+       rls:
+         enabled: true
+   ```
+
+3. Apply the values with `helm upgrade`. The first pod installs the policies and the read view; pods still running the old configuration keep working during the rollout, because they connect as the table owner.
+
+**Rotating the login role:** create the new login role and grant it the policy role (`CREATE ROLE mcp_app_2 LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS; GRANT mcp_context_request TO mcp_app_2;`), change `storage.postgresql.user` and its password, and `helm upgrade`. The policies name the policy role, so no DDL runs.
+
+**Disabling:** the server refuses to start with the flag off while the policies are installed, and a pod started with the flag on installs them again, so the steps run in this order:
+
+1. Set `storage.postgresql.rls.enabled: false` in your values file, without applying it yet.
+2. Stop every pod. The Deployment uses the default rolling update, which starts new pods before old ones stop, so scale it to zero: `kubectl scale deployment -l app.kubernetes.io/instance=mcp --replicas=0`.
+3. Remove the policies and the read view from a one-off pod, with the table owner's credentials (add `--env POSTGRESQL_SCHEMA=<schema>` when the tables live outside `public`):
+
+   ```bash
+   kubectl run mcp-disable-rls --rm -it --restart=Never \
+     --image=ghcr.io/alex-feel/mcp-context-server:<tag> \
+     --command -- mcp-context-server-migrate --disable-rls \
+     --source-url 'postgresql://postgres:<password>@<host>:5432/mcp_context'
+   ```
+
+4. Apply the values with `helm upgrade`, then scale the Deployment back to its replica count.
+
+The removal refuses while any session of a member of the policy role is connected, which is what step 2 prevents; see [Disabling row-level security](../database-backends.md#disabling-row-level-security).
+
+### Authentication and Access Control
+
+The chart renders each of these values into the server's environment only when it is set, so the server defaults apply otherwise. See the [Authentication Guide](../authentication.md) for what each setting does.
+
+```yaml
+auth:
+  provider: ""          # MCP_AUTH_PROVIDER: none (server default), simple_token or jwt
+  clientId: ""          # MCP_AUTH_CLIENT_ID
+  token: ""             # MCP_AUTH_TOKEN, stored in the chart secret
+  existingSecret: ""    # holds the token (simple_token) or the public key (jwt without jwksUri)
+  tokenSecretKey: "mcp-auth-token"
+  jwt:
+    publicKey: ""       # MCP_AUTH_JWT_PUBLIC_KEY: PEM key or HS* shared secret; set this or jwksUri
+    publicKeySecretKey: "mcp-auth-jwt-public-key"
+    jwksUri: ""         # MCP_AUTH_JWT_JWKS_URI
+    issuer: ""          # MCP_AUTH_JWT_ISSUER
+    audience: ""        # MCP_AUTH_JWT_AUDIENCE
+    algorithm: ""       # MCP_AUTH_JWT_ALGORITHM
+  groupsClaim: ""       # MCP_AUTH_GROUPS_CLAIM
+  rolesClaim: ""        # MCP_AUTH_ROLES_CLAIM
+
+accessControl:
+  defaultPrincipal: ""    # ACCESS_CONTROL_DEFAULT_PRINCIPAL
+  defaultVisibility: ""   # ACCESS_CONTROL_DEFAULT_VISIBILITY: private or public
+  defaultGroupGrants: ""  # ACCESS_CONTROL_DEFAULT_GROUP_GRANTS: none or author_groups
+  publishRole: ""         # ACCESS_CONTROL_PUBLISH_ROLE
 ```
 
 ### Search Configuration
@@ -479,5 +569,6 @@ kubectl logs -l app.kubernetes.io/name=mcp-context-server
 - [Kubernetes Deployment Guide](kubernetes.md) - General Kubernetes deployment
 - [Docker Deployment Guide](docker.md) - Alternative Docker Compose deployment
 - [Summary Generation Guide](../summary-generation.md) - LLM-based summary configuration
-- [Database Backends](../database-backends.md) - Database configuration details
+- [Database Backends](../database-backends.md) - Database configuration details, including row-level security
+- [Authentication Guide](../authentication.md) - HTTP authentication and the access model
 - [Semantic Search](../semantic-search.md) - Ollama and embedding configuration

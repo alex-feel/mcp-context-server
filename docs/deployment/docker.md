@@ -435,6 +435,8 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `POSTGRESQL_PASSWORD` | `postgres`    | PostgreSQL password      |
 | `POSTGRESQL_DATABASE` | `mcp_context` | PostgreSQL database name |
 
+The bundled PostgreSQL files serve requests as the sidecar's bootstrap role with row-level security off. `ENABLE_POSTGRESQL_RLS`, `POSTGRESQL_MIGRATION_USER` and `POSTGRESQL_MIGRATION_PASSWORD` are unset there; see [Enabling row-level security](#enabling-row-level-security) to turn it on.
+
 **Metadata Indexing Settings:**
 
 | Variable                   | Default                 | Description                                              |
@@ -520,6 +522,58 @@ POSTGRESQL_SSL_MODE=require
 ```
 
 See the [Using with Supabase section in the Database Backends Guide](../database-backends.md#using-with-supabase) for detailed connection setup.
+
+### Enabling row-level security
+
+With [row-level security](../database-backends.md#row-level-security-postgresql), PostgreSQL enforces the access model in addition to the server. It needs requests to connect as a login role that does not own the tables, while the role that owns them keeps running the migrations.
+
+**Bundled PostgreSQL files** (`docker-compose.postgresql.*.yml`): the app connects as the sidecar's bootstrap role, which owns the tables, and row-level security stays off. To enable it on a running deployment:
+
+1. Create the NOLOGIN policy role and a login role that is its member, as the bootstrap role (`postgres`, unless you set another `POSTGRESQL_USER` before the first start):
+
+   ```bash
+   docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml exec postgres \
+     psql -U postgres -d mcp_context \
+     -c "CREATE ROLE mcp_context_request NOLOGIN; CREATE ROLE mcp_app LOGIN PASSWORD 'choose-a-password' NOSUPERUSER NOBYPASSRLS; GRANT mcp_context_request TO mcp_app;"
+   ```
+
+2. Create `deploy/docker/docker-compose.override.yml`, which points the app's requests at the login role and keeps the bootstrap role for migrations:
+
+   ```yaml
+   services:
+     mcp-context-server:
+       environment:
+         - POSTGRESQL_USER=mcp_app
+         - POSTGRESQL_PASSWORD=choose-a-password
+         - POSTGRESQL_MIGRATION_USER=postgres
+         - POSTGRESQL_MIGRATION_PASSWORD=postgres
+         - ENABLE_POSTGRESQL_RLS=true
+   ```
+
+3. Start with both files. Compose reads the override only when it is named with a second `-f`, because the stack is started with an explicit `-f`:
+
+   ```bash
+   docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml -f deploy/docker/docker-compose.override.yml up -d
+   ```
+
+The first start installs the policies and the read view as `postgres`; later starts change nothing unless the configuration changed. The sidecar bootstraps its superuser from `POSTGRESQL_MIGRATION_USER` and `POSTGRESQL_MIGRATION_PASSWORD` when they are set and from `POSTGRESQL_USER` and `POSTGRESQL_PASSWORD` otherwise, so the same five variables can also go into `deploy/docker/.env`, which every bundled PostgreSQL file loads, without changing the role that owns the tables.
+
+**External PostgreSQL files** (`docker-compose.postgresql-external.*.yml`): create the two roles in your database as a role administrator, then set the same variables in `deploy/docker/.env`: `POSTGRESQL_USER`/`POSTGRESQL_PASSWORD` (or the user in `POSTGRESQL_CONNECTION_STRING`) for the login role, `POSTGRESQL_MIGRATION_USER`/`POSTGRESQL_MIGRATION_PASSWORD` for the role that owns the tables, and `ENABLE_POSTGRESQL_RLS=true`. For Supabase user names and grants, see [Row-Level Security on Supabase](../database-backends.md#row-level-security-on-supabase).
+
+A misconfigured role setup halts the container with exit code 78 and a log message naming the fix. To turn row-level security off again, remove what the server installed before starting with the flag off:
+
+1. Stop the app, but not the sidecar: `docker compose -f <file> -f deploy/docker/docker-compose.override.yml stop mcp-context-server`. With an external database, run `docker compose -f <file> down`.
+2. Remove the policies and the read view as the table owner, here from a one-off container on the stack's network (with an external database, pass its table owner's connection string instead):
+
+   ```bash
+   docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml run --rm --no-deps \
+     --entrypoint mcp-context-server-migrate mcp-context-server \
+     --disable-rls --source-url postgresql://postgres:postgres@postgres:5432/mcp_context
+   ```
+
+3. Delete the override, or set `ENABLE_POSTGRESQL_RLS=false` in it (or in `deploy/docker/.env` when you enabled it there), and start the stack again with `up -d`.
+
+The full procedure, including the order other deployments follow, is in [Disabling row-level security](../database-backends.md#disabling-row-level-security).
 
 ### Optional .env for Ollama Configurations
 
@@ -951,6 +1005,8 @@ The MCP Context Server uses BSD sysexits.h exit codes to signal different failur
 - Invalid configuration values
 - Embedding model not found (requires `ollama pull` or fix EMBEDDING_MODEL)
 - PostgreSQL authentication errors (wrong password, database doesn't exist, missing pgvector extension)
+- PostgreSQL row-level security misconfiguration (`ENABLE_POSTGRESQL_RLS`, `POSTGRESQL_MIGRATION_USER`, `POSTGRESQL_RLS_POLICY_ROLE`, or the request role's membership and privileges)
+- `ENABLE_POSTGRESQL_RLS=false` over installed policies (run `mcp-context-server-migrate --disable-rls` first)
 
 **For detailed PostgreSQL error scenarios,** see [PostgreSQL Backend Error Scenarios](#postgresql-backend-error-scenarios) below.
 
@@ -1142,12 +1198,13 @@ If your container shows "Running" but the server is not responding:
 ### Production Considerations
 
 1. **Change default PostgreSQL password** in production deployments
-2. **Use named volumes** for data persistence (already configured)
-3. **Configure resource limits** for container memory/CPU
-4. **Set up monitoring** using the `/health` endpoint
-5. **Use reverse proxy** (nginx, traefik) for TLS termination
-6. **Secure OpenAI API key** - never commit `.env` files to version control
-7. **Set restart policies** with limited retry count to prevent infinite loops
+2. **Serve requests through a dedicated login role** with [row-level security](#enabling-row-level-security) when more than one principal uses the server
+3. **Use named volumes** for data persistence (already configured)
+4. **Configure resource limits** for container memory/CPU
+5. **Set up monitoring** using the `/health` endpoint
+6. **Use reverse proxy** (nginx, traefik) for TLS termination
+7. **Secure OpenAI API key** - never commit `.env` files to version control
+8. **Set restart policies** with limited retry count to prevent infinite loops
 
 ## Files Reference
 

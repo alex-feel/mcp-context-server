@@ -276,7 +276,7 @@ Entries written over STDIO, `MCP_AUTH_PROVIDER=none` or `simple_token` are owned
 
 ## Access Model
 
-Every request runs as one principal, and every entry belongs to the principal that stored it. The server enforces the model on every read, update and delete, on SQLite and PostgreSQL alike.
+Every request runs as one principal, and every entry belongs to the principal that stored it. The server enforces the model on every read, update and delete, on SQLite and PostgreSQL alike, and with `ENABLE_POSTGRESQL_RLS=true` PostgreSQL enforces it in the database as well (see [Enforcement and Its Limits](#enforcement-and-its-limits)).
 
 ### Principals
 
@@ -312,14 +312,24 @@ Without `jwt`, every request shares the default principal, which owns every entr
 
 ### Enforcement and Its Limits
 
-The server applies the access rules in the application layer, on both backends: apart from the deployment-wide figures listed below, every query a tool runs against stored entries carries the access condition in SQL, ahead of any `LIMIT`, ranking or aggregation, and tags, images and per-node summaries are read only for entries such a query returned. Entries the caller cannot read therefore never take a slot on a page, in a ranked candidate set or in a top-N list. The database itself enforces nothing: no row-level security policy is installed, and a client that connects to the database directly sees every row.
+The server applies the access rules in the application layer, on both backends: apart from the deployment-wide figures listed below, every query a tool runs against stored entries carries the access condition in SQL, ahead of any `LIMIT`, ranking or aggregation, and tags, images and per-node summaries are read only for entries such a query returned. Entries the caller cannot read therefore never take a slot on a page, in a ranked candidate set or in a top-N list.
 
-Some figures still reflect entries the caller cannot read:
+On PostgreSQL, `ENABLE_POSTGRESQL_RLS=true` adds a database layer: row-level security policies, a guard trigger on ownership and visibility, and a read view apply the same rules to every request, with the caller's identity bound to each transaction, while the application condition stays in every query beside them. The policies name only a dedicated NOLOGIN policy role, so a database role outside it reads nothing, and the read view's role gate returns no row to any other role that obtains SELECT on it. Setup, the roles involved and the startup checks are described in [Row-level security (PostgreSQL)](database-backends.md#row-level-security-postgresql). Without row-level security, and always on SQLite, the database itself enforces nothing, and a client that connects to the database directly sees every row.
 
-- **SQLite full-text scores.** On SQLite, `fts_score` comes from FTS5 `bm25()`, which draws on statistics of the whole index (row count, average length, how many entries contain each term), entries the caller cannot read included. The scores of readable entries and their relative order can therefore shift as other principals' entries change, and the same score feeds the full-text leg of `hybrid_search_context`; which entries match, and how many results a page holds, depend only on what the caller can read. PostgreSQL's `ts_rank_cd` scores each entry on its own. Use PostgreSQL for deployments with more than one principal.
+Row-level security guards against defects in how the server builds its queries: a missing or wrong access condition, a future query that forgets the caller's scope, or a statement that names the wrong relation. It does not guard against a compromised server process or injected SQL. The server asserts the caller's identity per transaction through `set_config`, as PostgREST and Supabase do with `request.jwt.claims`, and SQL running on the server's connection can set those values too.
+
+The isolation has these limits:
+
+- **SQLite full-text scores.** On SQLite, `fts_score` comes from FTS5 `bm25()`, which draws on statistics of the whole index (row count, average length, how many entries contain each term), entries the caller cannot read included. The scores of readable entries and their relative order can therefore shift as other principals' entries change, and the same score feeds the full-text leg of `hybrid_search_context`; which entries match, and how many results a page holds, depend only on what the caller can read. PostgreSQL's `ts_rank_cd` scores each entry on its own.
 - **Deployment-wide statistics.** `get_statistics` reports `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` (query counters and the last error text) and the configuration fields for the whole deployment, identically for every caller. Every entry, thread, image, tag, embedding, index, summary and node figure counts only the entries the caller may read.
 - **Full-text migration progress.** While a full-text index rebuild runs, `fts_search_context` reports `estimated_remaining_seconds` computed from the total entry count.
 - **Query plans.** With `explain_query=True` on PostgreSQL, the returned query plan carries row estimates from table-wide planner statistics.
+- **Timing.** By timing many requests, a principal can roughly estimate how many entries it cannot read contain a chosen word or metadata value. The channel is coarse, noisy and content-dependent, and it exists with and without row-level security.
+- **No leakproof barrier inside view reads.** With row-level security on, plain reads go through a view so that every search index stays usable, and PostgreSQL's leakproof protection therefore does not apply to them: the server's own conditions, such as a metadata filter, may be evaluated on entries the caller cannot read, as they are with row-level security off. No condition the server generates can raise an error on any stored value, and tests pin that.
+- **Foreign-key checks.** PostgreSQL checks foreign keys without applying policies. Entry ids are server-generated UUIDv7 values, and an insert that names an entry the caller cannot read fails with the same error as one that names no entry, so the check reveals nothing.
+- **Concurrent grant changes.** A statement evaluates grants as of its own snapshot, so a statement that runs while a grant is added or removed sees the grants as they were when it started.
+
+For deployments with more than one principal, use PostgreSQL with row-level security enabled.
 
 ## MCP Client Configuration
 
