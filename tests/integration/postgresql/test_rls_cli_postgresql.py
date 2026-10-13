@@ -436,7 +436,6 @@ class TestDisableRls:
         await _prepare(pg_rls_db, monkeypatch, layout='fp32', embeddings=False)
         objects = await _installed_objects(pg_rls_db)
         assert any(name.startswith('policy ') for name in objects)
-        assert {'view context_entries_readable', 'view tags_readable'} <= set(objects)
         return objects
 
     @pytest.mark.asyncio
@@ -445,8 +444,6 @@ class TestDisableRls:
 
         assert run.returncode == 0, run.stderr
         assert '[DRY-RUN] Would issue' in run.stderr
-        tags_drop = run.stderr.index('DROP VIEW IF EXISTS "public".tags_readable')
-        assert tags_drop < run.stderr.index('DROP VIEW IF EXISTS "public".context_entries_readable')
         assert await _installed_objects(pg_rls_db) == installed
 
     @pytest.mark.asyncio

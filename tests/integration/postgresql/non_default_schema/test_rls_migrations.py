@@ -72,7 +72,7 @@ def test_rls_objects_live_in_the_configured_schema_and_come_out_again(
             assert {name for table, name in installed if table == 'context_entry_grants'} == set(
                 policy_names('context_entry_grants'),
             )
-            assert {'view context_entries_readable', 'view tags_readable'} <= set(first)
+            assert 'view context_entries_readable' in first
             assert {'function mcp_context_principal_id', 'function mcp_context_guard_access_columns'} <= set(first)
             assert not any(key.startswith(('policy ', 'view ', 'function mcp_context_')) for key in public_objects)
 

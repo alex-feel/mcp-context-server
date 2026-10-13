@@ -27,8 +27,6 @@ import pytest
 from pydantic import SecretStr
 
 import app.startup.rls_posture as posture_module
-from app.access_scope import READ_VIEW
-from app.access_scope import TAGS_READ_VIEW
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.errors import ConfigurationError
@@ -37,10 +35,10 @@ from app.migrations.request_role_grants import TABLE_PRIVILEGES
 from app.migrations.request_role_grants import HeldPrivileges
 from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
+from app.migrations.rls_ddl import reject_trigger
 from app.migrations.rls_ddl import table_policies
 from app.migrations.rls_state import InstalledView
 from app.migrations.rls_state import RlsState
-from app.migrations.rls_view_ddl import reject_trigger
 from app.settings import AppSettings
 from app.startup.rls_posture import ApplyingPolicy
 from app.startup.rls_posture import Posture
@@ -404,57 +402,43 @@ class TestFlagOn:
         assert trigger.target in problem
 
 
-# Each read view with the table whose owner must own it.
-VIEWS = pytest.mark.parametrize(('view', 'table'), [(READ_VIEW, 'context_entries'), (TAGS_READ_VIEW, 'tags')])
-
-
 class TestReadView:
-    """Each read view is owned by the owner of its table, plain, write protected, readable by the policy role alone."""
+    """The read view is owned by the table owner, plain, write protected, readable by the policy role alone."""
 
     @staticmethod
-    def _with_view(view: str, **changes: Any) -> RlsState:
+    def _with_view(**changes: Any) -> RlsState:
         state = installed_state(dict.fromkeys(TABLES, True))
-        return dataclasses.replace(state, views={**state.views, view: dataclasses.replace(state.views[view], **changes)})
+        assert state.view is not None
+        return dataclasses.replace(state, view=dataclasses.replace(state.view, **changes))
 
-    @VIEWS
-    def test_another_owner_is_refused(self, view: str, table: str) -> None:
-        problems = _problems(_posture(rls=self._with_view(view, owned_by_table_owner=False)), rls_settings())
+    def test_another_owner_is_refused(self) -> None:
+        problems = _problems(_posture(rls=self._with_view(owned_by_table_owner=False)), rls_settings())
 
-        assert any(
-            f'{SCHEMA}.{view} is not owned by the owner of {SCHEMA}.{table}' in problem for problem in problems
-        ), problems
+        assert any('not owned by the owner of' in problem for problem in problems)
 
-    @VIEWS
-    def test_view_options_are_refused(self, view: str, table: str) -> None:
-        _ = table
-        problems = _problems(_posture(rls=self._with_view(view, plain=False)), rls_settings())
+    def test_view_options_are_refused(self) -> None:
+        problems = _problems(_posture(rls=self._with_view(plain=False)), rls_settings())
 
-        assert any(f'{SCHEMA}.{view} carries options such as security_barrier' in problem for problem in problems), problems
+        assert any('security_barrier' in problem for problem in problems)
 
-    @VIEWS
-    def test_a_disabled_write_rejection_trigger_is_refused(self, view: str, table: str) -> None:
-        _ = table
+    def test_a_disabled_write_rejection_trigger_is_refused(self) -> None:
         state = installed_state(dict.fromkeys(TABLES, True))
-        trigger = reject_trigger(SCHEMA, view=view)
+        trigger = reject_trigger(SCHEMA)
         disabled = dataclasses.replace(state.objects[trigger.key], enabled=False)
         rls = dataclasses.replace(state, objects={**state.objects, trigger.key: disabled})
 
         problems = _problems(_posture(rls=rls), rls_settings())
 
-        assert any(
-            'reject_writes' in problem and 'disabled' in problem and f'{SCHEMA}.{view} ' in problem for problem in problems
-        ), problems
+        assert any('reject_writes' in problem and 'disabled' in problem for problem in problems)
 
-    @VIEWS
-    def test_a_grant_beyond_the_policy_roles_select_prints_the_revoke_statements(self, view: str, table: str) -> None:
-        _ = table
-        rls = self._with_view(view, acl={ROLE_NAME: ('INSERT', 'SELECT'), 'mcp_outsider': ('SELECT',), None: ('SELECT',)})
+    def test_a_grant_beyond_the_policy_roles_select_prints_the_revoke_statements(self) -> None:
+        rls = self._with_view(acl={ROLE_NAME: ('INSERT', 'SELECT'), 'mcp_outsider': ('SELECT',), None: ('SELECT',)})
 
         problem = _single(_problems(_posture(rls=rls), rls_settings()))
 
-        assert f'REVOKE ALL ON {SCHEMA}.{view} FROM "mcp_outsider"' in problem
-        assert f'REVOKE ALL ON {SCHEMA}.{view} FROM PUBLIC' in problem
-        assert f'REVOKE INSERT ON {SCHEMA}.{view} FROM {ROLE}' in problem
+        assert f'REVOKE ALL ON {SCHEMA}.context_entries_readable FROM "mcp_outsider"' in problem
+        assert f'REVOKE ALL ON {SCHEMA}.context_entries_readable FROM PUBLIC' in problem
+        assert f'REVOKE INSERT ON {SCHEMA}.context_entries_readable FROM {ROLE}' in problem
         assert 'mcp_outsider (SELECT)' in problem
 
     def test_a_policy_role_that_cannot_execute_the_helpers_is_refused(self) -> None:
@@ -464,16 +448,13 @@ class TestReadView:
 
         assert any('GRANT EXECUTE ON FUNCTION' in problem and ROLE in problem for problem in problems)
 
-    @VIEWS
-    def test_a_missing_view_is_refused(self, view: str, table: str) -> None:
-        _ = table
+    def test_a_missing_view_is_refused(self) -> None:
         state = installed_state(dict.fromkeys(TABLES, True))
-        objects = {key: value for key, value in state.objects.items() if key.name != view}
-        views = {name: installed for name, installed in state.views.items() if name != view}
+        objects = {key: value for key, value in state.objects.items() if key.name != 'context_entries_readable'}
 
-        problems = _problems(_posture(rls=dataclasses.replace(state, objects=objects, views=views)), rls_settings())
+        problems = _problems(_posture(rls=dataclasses.replace(state, objects=objects, view=None)), rls_settings())
 
-        assert any(f'VIEW {SCHEMA}.{view}' in problem for problem in problems), problems
+        assert any('context_entries_readable' in problem for problem in problems)
 
 
 class TestVerifyRlsPosture:
@@ -561,9 +542,7 @@ class TestJwtWarning:
 
 
 def test_the_test_view_state_is_the_one_the_migration_leaves() -> None:
-    """The posture fixtures start from the state of both views the migration itself would leave."""
+    """The posture fixtures start from a view state the migration itself would leave."""
     state = installed_state(dict.fromkeys(TABLES, True))
 
-    assert state.views == dict.fromkeys(
-        (READ_VIEW, TAGS_READ_VIEW), InstalledView(owned_by_table_owner=True, plain=True, acl={ROLE_NAME: ('SELECT',)}),
-    )
+    assert state.view == InstalledView(owned_by_table_owner=True, plain=True, acl={ROLE_NAME: ('SELECT',)})

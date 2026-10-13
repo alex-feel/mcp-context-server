@@ -556,14 +556,14 @@ With [row-level security](../database-backends.md#row-level-security-postgresql)
    docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml -f deploy/docker/docker-compose.override.yml up -d
    ```
 
-The first start installs the policies and the read views as `postgres`; later starts change nothing unless the configuration changed. The sidecar bootstraps its superuser from `POSTGRESQL_MIGRATION_USER` and `POSTGRESQL_MIGRATION_PASSWORD` when they are set and from `POSTGRESQL_USER` and `POSTGRESQL_PASSWORD` otherwise, so the same five variables can also go into `deploy/docker/.env`, which every bundled PostgreSQL file loads, without changing the role that owns the tables.
+The first start installs the policies and the read view as `postgres`; later starts change nothing unless the configuration changed. The sidecar bootstraps its superuser from `POSTGRESQL_MIGRATION_USER` and `POSTGRESQL_MIGRATION_PASSWORD` when they are set and from `POSTGRESQL_USER` and `POSTGRESQL_PASSWORD` otherwise, so the same five variables can also go into `deploy/docker/.env`, which every bundled PostgreSQL file loads, without changing the role that owns the tables.
 
 **External PostgreSQL files** (`docker-compose.postgresql-external.*.yml`): create the two roles in your database as a role administrator, then set the same variables in `deploy/docker/.env`: `POSTGRESQL_USER`/`POSTGRESQL_PASSWORD` (or the user in `POSTGRESQL_CONNECTION_STRING`) for the login role, `POSTGRESQL_MIGRATION_USER`/`POSTGRESQL_MIGRATION_PASSWORD` for the role that owns the tables, and `ENABLE_POSTGRESQL_RLS=true`. For Supabase user names and grants, see [Row-Level Security on Supabase](../database-backends.md#row-level-security-on-supabase).
 
 A misconfigured role setup halts the container with exit code 78 and a log message naming the fix. To turn row-level security off again, remove what the server installed before starting with the flag off:
 
 1. Stop the app, but not the sidecar: `docker compose -f <file> -f deploy/docker/docker-compose.override.yml stop mcp-context-server`. With an external database, run `docker compose -f <file> down`.
-2. Remove the policies and the read views as the table owner, here from a one-off container on the stack's network (with an external database, pass its table owner's connection string instead):
+2. Remove the policies and the read view as the table owner, here from a one-off container on the stack's network (with an external database, pass its table owner's connection string instead):
 
    ```bash
    docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml run --rm --no-deps \

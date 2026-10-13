@@ -1,9 +1,9 @@
 """Fakes shared by the unit tests of the row-level security migration.
 
 :class:`CatalogConnection` answers the catalog reads the migration issues on its own
-connection: the server's deparse of each object, the columns of ``context_entries`` and
-``tags``, the ACL of each read view and the transaction's search path. :class:`FakeBackend`
-runs a migration callable on it the way ``execute_write`` and ``execute_read`` do.
+connection: the server's deparse of each object, the columns of ``context_entries``,
+the ACL of the read view and the transaction's search path. :class:`FakeBackend` runs a
+migration callable on it the way ``execute_write`` and ``execute_read`` do.
 :func:`record_ddl` replaces the lock and the DDL helper of the given modules, so a test
 sees every statement in order with the lock as :data:`LOCK`. :func:`installed_state`
 builds the catalog state of a database whose objects are exactly what the migration
@@ -30,17 +30,14 @@ from app.migrations.rls_ddl import digest
 from app.migrations.rls_ddl import guard_function
 from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
+from app.migrations.rls_ddl import read_view
 from app.migrations.rls_ddl import records_preenabled
+from app.migrations.rls_ddl import reject_function
+from app.migrations.rls_ddl import reject_trigger
 from app.migrations.rls_ddl import table_policies
 from app.migrations.rls_state import InstalledObject
 from app.migrations.rls_state import InstalledView
 from app.migrations.rls_state import RlsState
-from app.migrations.rls_view_ddl import TAGS_TABLE
-from app.migrations.rls_view_ddl import read_view
-from app.migrations.rls_view_ddl import read_views
-from app.migrations.rls_view_ddl import reject_function
-from app.migrations.rls_view_ddl import tags_read_view
-from app.migrations.rls_view_ddl import write_rejection
 from app.settings import AppSettings
 
 SCHEMA = '"tenant one"'
@@ -49,16 +46,11 @@ ROLE = '"mcp_context_request"'
 ROLE_NAME = 'mcp_context_request'
 LOCK = 'begin_migration'
 VIEW = f'{SCHEMA}.context_entries_readable'
-TAGS_VIEW = f'{SCHEMA}.tags_readable'
 COLUMNS = ('id', 'thread_id', 'text_content')
 QUOTED_COLUMNS = tuple(f'"{column}"' for column in COLUMNS)
-TAG_COLUMNS = ('id', 'context_entry_id', 'tag')
-QUOTED_TAG_COLUMNS = tuple(f'"{column}"' for column in TAG_COLUMNS)
 TIMEOUT_S = 300.0
 # What the migration connection's search path reads as before the helpers pin it.
 SEARCH_PATH = '"tenant one", public'
-
-type Acl = list[tuple[str | None, str]]
 
 
 def rls_settings(*, enabled: bool = True, policy_role: str = ROLE_NAME) -> AppSettings:
@@ -81,45 +73,34 @@ def rls_settings(*, enabled: bool = True, policy_role: str = ROLE_NAME) -> AppSe
 
 
 class CatalogConnection:
-    """Answers the catalog reads of the migration: every deparse, the views' columns and ACLs, and the search path.
+    """Answers the catalog reads of the migration: every deparse, the view's columns, its ACL and the search path.
 
-    The first read of a view's ACL answers ``acl`` for the read view of context_entries and
-    ``tags_acl`` for tags_readable; every later read of the same view answers
-    ``recreated_acl`` or ``recreated_tags_acl`` when it is given, which is what a view
-    dropped and created again holds. ``tag_columns`` empty stands for a database without
-    the tags table.
+    The first read of the view's ACL answers ``acl``; every later one answers
+    ``recreated_acl`` when it is given, which is what a view dropped and created again
+    holds.
     """
 
     def __init__(
         self,
         *,
-        acl: Acl | None = None,
-        recreated_acl: Acl | None = None,
-        tags_acl: Acl | None = None,
-        recreated_tags_acl: Acl | None = None,
-        tag_columns: tuple[str, ...] = TAG_COLUMNS,
+        acl: list[tuple[str | None, str]] | None = None,
+        recreated_acl: list[tuple[str | None, str]] | None = None,
     ) -> None:
-        self.acls: dict[str, tuple[Acl, Acl | None]] = {
-            VIEW: (acl or [], recreated_acl),
-            TAGS_VIEW: (tags_acl or [], recreated_tags_acl),
-        }
-        self.columns = {f'{SCHEMA}.context_entries': COLUMNS, f'{SCHEMA}.tags': tag_columns}
+        self.acl = acl or []
+        self.recreated_acl = recreated_acl
         self.reads: list[tuple[str, tuple[object, ...]]] = []
 
     async def fetch(self, sql: str, *args: object) -> list[tuple[object, ...]]:
-        if 'aclexplode' in sql:
-            view = str(args[0])
-            assert args == (view,)
-            read_before = any('aclexplode' in read and read_args == args for read, read_args in self.reads)
-            self.reads.append((sql, args))
-            first, recreated = self.acls[view]
-            if read_before and recreated is not None:
-                return list(recreated)
-            return list(first)
+        acl_read_before = any('aclexplode' in read for read, _ in self.reads)
         self.reads.append((sql, args))
+        if 'aclexplode' in sql:
+            assert args == (VIEW,)
+            if acl_read_before and self.recreated_acl is not None:
+                return list(self.recreated_acl)
+            return list(self.acl)
         assert 'pg_catalog.pg_attribute' in sql
-        assert len(args) == 1
-        return [(column,) for column in self.columns[str(args[0])]]
+        assert args == (f'{SCHEMA}.context_entries',)
+        return [(column,) for column in COLUMNS]
 
     async def fetchval(self, sql: str, *args: object) -> str:
         self.reads.append((sql, args))
@@ -191,17 +172,6 @@ def rendered_view(*, role_name: str = ROLE_NAME) -> RlsObject:
     return read_view(QUOTED_COLUMNS, schema=SCHEMA, role_name=role_name)
 
 
-def rendered_tags_view() -> RlsObject:
-    """Return the tags read view the migration renders for :data:`TAG_COLUMNS`."""
-    return tags_read_view(QUOTED_TAG_COLUMNS, schema=SCHEMA)
-
-
-def table_columns(tables: Iterable[str]) -> dict[str, tuple[str, ...]]:
-    """Return the quoted columns of each table a read view lists among ``tables``, as the catalog reads them."""
-    columns = {CONTEXT_TABLE: QUOTED_COLUMNS, TAGS_TABLE: QUOTED_TAG_COLUMNS}
-    return {table: columns[table] for table in tables if table in columns}
-
-
 def deparse_digest(obj: RlsObject) -> str:
     """Return the digest a fake server deparse of ``obj`` reads as in :func:`installed_state`."""
     return digest(f'deparse of {obj.target}')
@@ -227,28 +197,25 @@ def installed_state(tables: dict[str, bool], *, preenabled: dict[str, bool] | No
         preenabled: The value each table's read policy recorded; false when absent.
 
     Returns:
-        The state; each read view the tables call for is current, with its ACL.
+        The state; the read view and its ACL are current when the context table exists.
     """
     recorded = preenabled or {}
-    columns = table_columns(tables)
     objects: list[RlsObject] = [*helper_functions(SCHEMA), guard_function(SCHEMA), reject_function(SCHEMA)]
     if CONTEXT_TABLE in tables:
-        objects.append(guard_trigger(SCHEMA))
-    views = read_views(columns, schema=SCHEMA, role_name=ROLE_NAME)
-    for view in views:
-        objects.extend((view, *write_rejection(SCHEMA, view=view.name)))
+        objects.extend((guard_trigger(SCHEMA), reject_trigger(SCHEMA), rendered_view()))
     installed_objects = {obj.key: installed(obj) for obj in objects}
     for table in tables:
         for policy in table_policies(table, schema=SCHEMA, role=ROLE):
             installed_objects[policy.key] = installed(
                 policy, preenabled=recorded.get(table, False) if records_preenabled(policy) else None,
             )
+    view = None
+    if CONTEXT_TABLE in tables:
+        view = InstalledView(owned_by_table_owner=True, plain=True, acl={ROLE_NAME: ('SELECT',)})
     return RlsState(
         tables=dict(tables),
         objects=installed_objects,
-        columns=columns,
-        views={
-            view.name: InstalledView(owned_by_table_owner=True, plain=True, acl={ROLE_NAME: ('SELECT',)}) for view in views
-        },
+        columns=QUOTED_COLUMNS if CONTEXT_TABLE in tables else (),
+        view=view,
         helpers_executable=True,
     )

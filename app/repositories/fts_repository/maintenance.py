@@ -344,13 +344,12 @@ class FtsMaintenanceMixin(BaseRepository):
         and recreates it with the new language. The GENERATED ALWAYS AS column is
         automatically populated from text_content on recreation.
 
-        The row-level security read view lists every column of context_entries, and
-        tags_readable reads through it, so the column cannot be dropped while they exist.
-        When the read view exists, both views are dropped first, tags_readable before it,
-        the grants each drop takes away named as the row-level security migration names
-        them, and re-created in the same transaction once the column and its index exist
-        again, the read view listing the new column; the table lock the rewrite holds
-        keeps every other session from seeing them missing.
+        The row-level security read view lists every column of context_entries, so the
+        column cannot be dropped while it exists. When it exists, it is dropped first, the
+        grants the drop takes away named as the row-level security migration names them,
+        and re-created in the same transaction once the column and its index exist again,
+        listing the new column; the table lock the rewrite holds keeps every other
+        session from seeing it missing.
 
         Args:
             new_language: The new language for tsvector (e.g., 'english', 'german')
@@ -391,8 +390,7 @@ class FtsMaintenanceMixin(BaseRepository):
             # aborted transaction and mask the real DDL error) is used.
             await begin_migration(conn, migration_timeout_s)
 
-            # The read view depends on every column of context_entries, this one included,
-            # and tags_readable on the read view; drop_read_view drops both.
+            # The read view depends on every column of context_entries, this one included.
             view_existed = await conn.fetchval('SELECT pg_catalog.to_regclass($1) IS NOT NULL', f'{schema}.{READ_VIEW}')
             if view_existed:
                 await rls.drop_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=migration_timeout_s)

@@ -135,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
         action='store_true',
         help=(
             'Remove the PostgreSQL row-level security this server installed '
-            '(policies, guard trigger, read views and helper functions) and '
+            '(policies, guard trigger, read view and helper functions) and '
             'disable row-level security on the tables it enabled. Stop every '
             "server instance first and connect with the table owner's "
             'credentials; set ENABLE_POSTGRESQL_RLS=false before starting '

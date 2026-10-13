@@ -348,7 +348,7 @@ The owner reads every row because row-level security is enabled without FORCE. `
 
 ### Removing Row-Level Security (`--disable-rls`)
 
-`--disable-rls` removes the row-level security the server installed: the read views and their write triggers, every policy of the server, the guard trigger and the helper functions. It disables row-level security only on the tables the server enabled it on, and reports each table it leaves enabled, such as a table whose row-level security was on before the server first installed its policies. Like the other in-place modes it operates on `--source-url` and ignores `--target-url`.
+`--disable-rls` removes the row-level security the server installed: the read view and its write trigger, every policy of the server, the guard trigger and the helper functions. It disables row-level security only on the tables the server enabled it on, and reports each table it leaves enabled, such as a table whose row-level security was on before the server first installed its policies. Like the other in-place modes it operates on `--source-url` and ignores `--target-url`.
 
 1. **Stop every server instance**, and change the configuration that would start one again to `ENABLE_POSTGRESQL_RLS=false`. An instance started with the flag on installs the objects again; one started with the flag off before the removal refuses to start. The ordered procedure for Helm, Docker Compose and STDIO clients is in [Disabling row-level security](database-backends.md#disabling-row-level-security).
 2. **Preview** with `--dry-run`, which prints the statements and the tables it would disable or leave enabled, and changes nothing:

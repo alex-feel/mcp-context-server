@@ -37,9 +37,8 @@ def create_backend(
     returning a StorageBackend protocol implementation.
 
     A PostgreSQL backend dials the request credentials. With ENABLE_POSTGRESQL_RLS it
-    binds the caller's identity in every transaction and reads the context table and the
-    tags through their read views; without it the application predicate is the whole
-    access control.
+    binds the caller's identity in every transaction and reads the context table through
+    its read view; without it the application predicate is the whole access control.
 
     Args:
         backend_type: Type of backend to create ('sqlite', 'postgresql').
@@ -106,9 +105,8 @@ def create_backend(
 
     # backend_type == 'postgresql'
     # With row-level security on, every transaction binds the caller and plain reads of the
-    # context table and the tags go through their read views; otherwise the application
-    # predicate is the whole access control, so transactions bind nothing and reads name the
-    # base tables.
+    # context table go through its read view; otherwise the application predicate is the
+    # whole access control, so transactions bind nothing and reads name the base tables.
     # The request backend always dials the request credentials.
     profile: SessionProfile = (
         RlsRequestProfile(read_views=RLS_READ_VIEWS)

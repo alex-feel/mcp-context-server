@@ -1,7 +1,7 @@
 """Structural completeness of read routing, read from the source of ``app/``.
 
 A plain read names every routable table it selects from through the repository seam
-``BaseRepository._readable``, which asks the backend for the relation to read. Four
+``BaseRepository._readable``, which asks the backend for the relation to read. Three
 rules hold:
 
 1. No guarded method and no id-keyed child reader names a routable table after ``FROM``
@@ -12,9 +12,6 @@ rules hold:
    so the relation a statement reads is visible in its source.
 3. Child writers and system methods never call ``_readable``: they write, or run outside
    any request, and name their tables directly.
-4. On a request backend under row-level security each call over a mapped table, the
-   context table or tags, names that table's read view under the call's alias, and on
-   every other backend each call names the table itself.
 """
 
 import ast
@@ -25,10 +22,6 @@ from collections.abc import Iterator
 import pytest
 
 from app.backends.base import ROUTABLE_TABLES
-from app.backends.base import base_relation
-from app.backends.postgresql_backend.session_profiles import RLS_READ_VIEWS
-from app.backends.postgresql_backend.session_profiles import RlsRequestProfile
-from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from tests.repositories._access_scope_completeness_model import GUARDED
 from tests.repositories._access_scope_completeness_model import READ_SEAM
 from tests.repositories._access_scope_completeness_model import REGISTRY
@@ -138,36 +131,3 @@ def test_child_writers_and_system_methods_never_route(key: str) -> None:
     node: FunctionNode = repository_methods()[key][0]
 
     assert _seam_calls(node) == []
-
-
-def _literals(call: ast.Call) -> tuple[str, str]:
-    """Return the table and the alias a seam call passes as string literals."""
-    table = call.args[0]
-    alias = call.keywords[0].value
-    assert isinstance(table, ast.Constant)
-    assert isinstance(table.value, str)
-    assert isinstance(alias, ast.Constant)
-    assert isinstance(alias.value, str)
-    return table.value, alias.value
-
-
-@pytest.mark.parametrize('location', sorted(_seam_calls_by_location()))
-def test_seam_call_reads_a_mapped_table_through_its_view_under_row_level_security_alone(location: str) -> None:
-    """A request backend under row-level security reads a mapped table through its view; any other names the table."""
-    table, alias = _literals(_seam_calls_by_location()[location])
-    base = base_relation(table, alias=alias)
-    expected = f'{RLS_READ_VIEWS[table]} AS {alias}' if table in RLS_READ_VIEWS else base
-
-    assert RlsRequestProfile(read_views=RLS_READ_VIEWS).readable_relation(table, alias=alias) == expected
-    assert UnboundProfile().readable_relation(table, alias=alias) == base
-
-
-def test_every_plain_read_of_tags_names_tags_readable_under_row_level_security() -> None:
-    """Every plain read of tags, the tag filters, the tags of an entry and the tag statistics, goes through tags_readable."""
-    profile = RlsRequestProfile(read_views=RLS_READ_VIEWS)
-    aliases = [alias for table, alias in map(_literals, _seam_calls_by_location().values()) if table == 'tags']
-
-    assert aliases
-    assert [profile.readable_relation('tags', alias=alias) for alias in aliases] == [
-        f'tags_readable AS {alias}' for alias in aliases
-    ]

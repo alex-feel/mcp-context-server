@@ -4,7 +4,7 @@ Starting with ``ENABLE_POSTGRESQL_RLS`` off over the row-level security objects 
 refused right after the compression guard, before any provisioning migration runs. The
 request role's grants and then the row-level security migration run last, once every
 table and column this boot provisions exists, so the grants cover every managed table
-and each read view lists every column of its table.
+and the read view lists every column.
 """
 
 import inspect

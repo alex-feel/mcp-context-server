@@ -8,8 +8,8 @@ run time to the migration role although the configured names differ. ``mcp_app``
 and with the flag off a split start over row-level security enabled outside the server is
 refused. The posture checks (:func:`verify_rls_posture`) run directly on a request
 backend after a start: each revoked privilege, foreign policy, forced table and change to
-either read view is named, and the next start repairs what the migration owns, revoking
-every grant on a read view beyond the policy role's SELECT with a WARNING. The jwt
+the read view is named, and the next start repairs what the migration owns, revoking
+every grant on the read view beyond the policy role's SELECT with a WARNING. The jwt
 provider over HTTP without row-level security logs its warning.
 """
 
@@ -54,7 +54,6 @@ BOOT_TIMEOUT_S: Final = 180
 POLICY_ROLE: Final = RLS_CREDENTIALS.policy_role
 PR: Final = f'"{POLICY_ROLE}"'
 VIEW: Final = '"public".context_entries_readable'
-TAGS_VIEW: Final = '"public".tags_readable'
 APP_ROLE: Final = RequestRole(
     name='mcp_app', is_superuser=False, bypass_rls=False, policy_role_exists=True, policy_member=True,
 )
@@ -382,13 +381,8 @@ class TestPosture:
             (f'ALTER VIEW {VIEW} SET (security_barrier = true)', 'security_barrier'),
             (f'DROP TRIGGER reject_writes ON {VIEW}', 'reject_writes'),
             (f'CREATE OR REPLACE VIEW {VIEW} AS SELECT ce.* FROM public.context_entries ce', 'context_entries_readable'),
-            (f'ALTER VIEW {TAGS_VIEW} SET (security_barrier = true)', f'{TAGS_VIEW} carries options'),
-            (f'DROP TRIGGER reject_writes ON {TAGS_VIEW}', f'{TAGS_VIEW} is missing'),
-            (f'CREATE OR REPLACE VIEW {TAGS_VIEW} AS SELECT t.* FROM public.tags t', f'VIEW {TAGS_VIEW}'),
         ],
-        ids=[
-            'security-barrier', 'missing-trigger', 'no-gate', 'tags-security-barrier', 'tags-missing-trigger', 'tags-no-join',
-        ],
+        ids=['security-barrier', 'missing-trigger', 'no-gate'],
     )
     async def test_a_changed_read_view_is_refused_and_the_next_start_repairs_it(
         self, pg_rls_db: RlsUrls, started: AppSettings, change: str, named: str,
@@ -402,26 +396,22 @@ class TestPosture:
         await _passes(pg_rls_db, started)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(('view', 'table'), [(VIEW, '"public".context_entries'), (TAGS_VIEW, '"public".tags')])
-    async def test_a_read_view_of_another_owner_is_refused(
-        self, pg_rls_db: RlsUrls, started: AppSettings, view: str, table: str,
-    ) -> None:
-        await _admin(pg_rls_db, f'ALTER VIEW {view} OWNER TO mcp_outsider')
+    async def test_a_read_view_of_another_owner_is_refused(self, pg_rls_db: RlsUrls, started: AppSettings) -> None:
+        await _admin(pg_rls_db, f'ALTER VIEW {VIEW} OWNER TO mcp_outsider')
 
         refusal = await _refusal(pg_rls_db, started)
 
-        assert f'{view} is not owned by the owner of {table}' in refusal
+        assert 'not owned by the owner of' in refusal
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize('view', [VIEW, TAGS_VIEW])
-    async def test_a_grant_on_a_read_view_after_the_migration_prints_the_revoke(
-        self, pg_rls_db: RlsUrls, started: AppSettings, view: str,
+    async def test_a_grant_on_the_read_view_after_the_migration_prints_the_revoke(
+        self, pg_rls_db: RlsUrls, started: AppSettings,
     ) -> None:
-        await _as_owner(pg_rls_db, f'GRANT SELECT ON {view} TO mcp_outsider')
+        await _as_owner(pg_rls_db, f'GRANT SELECT ON {VIEW} TO mcp_outsider')
 
         refusal = await _refusal(pg_rls_db, started)
 
-        assert f'REVOKE ALL ON {view} FROM "mcp_outsider";' in refusal
+        assert f'REVOKE ALL ON {VIEW} FROM "mcp_outsider";' in refusal
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -430,9 +420,8 @@ class TestPosture:
             (f'GRANT SELECT ON {VIEW} TO mcp_outsider', 'mcp_outsider (SELECT)'),
             ('GRANT ALL ON ALL TABLES IN SCHEMA public TO mcp_outsider', 'mcp_outsider ('),
             (f'GRANT INSERT ON {VIEW} TO {POLICY_ROLE}', f'{POLICY_ROLE} (INSERT)'),
-            (f'GRANT SELECT ON {TAGS_VIEW} TO mcp_outsider', f'{TAGS_VIEW}, where only'),
         ],
-        ids=['view-select', 'schema-wide', 'policy-role-insert', 'tags-view-select'],
+        ids=['view-select', 'schema-wide', 'policy-role-insert'],
     )
     async def test_the_next_start_revokes_a_grant_on_the_read_view_with_a_warning(
         self, pg_rls_db: RlsUrls, started: AppSettings, grant: str, named: str, caplog: pytest.LogCaptureFixture,
@@ -447,6 +436,5 @@ class TestPosture:
         conn = await asyncpg.connect(pg_rls_db.admin)
         try:
             assert await view_acl(conn, VIEW) == [(POLICY_ROLE, 'SELECT')]
-            assert await view_acl(conn, TAGS_VIEW) == [(POLICY_ROLE, 'SELECT')]
         finally:
             await conn.close()

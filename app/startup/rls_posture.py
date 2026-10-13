@@ -19,8 +19,8 @@ role and hold every privilege the start grants it; with the flag off no managed 
 filter it through row-level security enabled outside the server; with the flag on every
 managed table must have row-level security enabled, applying to the request role and not
 forced, no policy but ours may apply to the request role, every object of ours must be
-the one this code renders, and each read view must be owned by the owner of the table it
-lists, carry no options, refuse writes and be readable by the policy role alone. Every refusal is a
+the one this code renders, and the read view must be owned by the table owner, carry no
+options, refuse writes and be readable by the policy role alone. Every refusal is a
 :class:`~app.errors.ConfigurationError` (exit 78) that names the fix.
 :func:`warn_jwt_without_rls` warns when verified JWT identities reach a PostgreSQL
 database that enforces access in the application layer only.
@@ -35,6 +35,7 @@ from typing import cast
 
 import asyncpg
 
+from app.access_scope import READ_VIEW
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
@@ -47,19 +48,19 @@ from app.errors import DependencyError
 from app.migrations.request_role_grants import HeldPrivileges
 from app.migrations.request_role_grants import plan_grants
 from app.migrations.request_role_grants import read_held_privileges
+from app.migrations.rls_ddl import CONTEXT_TABLE
 from app.migrations.rls_ddl import MANAGED_TABLES
+from app.migrations.rls_ddl import REJECT_TRIGGER
 from app.migrations.rls_ddl import disable_statement
 from app.migrations.rls_ddl import enable_statement
 from app.migrations.rls_ddl import helper_grant
 from app.migrations.rls_ddl import policy_names
+from app.migrations.rls_ddl import reject_trigger
 from app.migrations.rls_state import RlsPlan
 from app.migrations.rls_state import RlsState
 from app.migrations.rls_state import plan_rls
 from app.migrations.rls_state import read_rls_state
 from app.migrations.rls_state import view_acl_repair
-from app.migrations.rls_view_ddl import READ_VIEW_TABLES
-from app.migrations.rls_view_ddl import REJECT_TRIGGER
-from app.migrations.rls_view_ddl import reject_trigger
 from app.settings import AppSettings
 
 logger = logging.getLogger(__name__)
@@ -478,7 +479,7 @@ def _table_problems(tables: Mapping[str, TableSecurity], *, schema: str) -> list
         fixes = ' '.join(f'ALTER TABLE {schema}.{table} NO FORCE ROW LEVEL SECURITY;' for table in forced)
         problems.append(
             f'Row-level security is forced on {", ".join(forced)}, which subjects the table owner to the policies and '
-            f'leaves the read views empty. Fix: {fixes}',
+            f'leaves the read view empty. Fix: {fixes}',
         )
     return problems
 
@@ -495,8 +496,9 @@ def _foreign_policy_problem(policy: ApplyingPolicy, *, schema: str) -> str:
 
 
 def _object_problems(state: RlsState, *, schema: str, policy_role: str) -> list[str]:
-    """Return the problems of our row-level security objects and of the read views."""
+    """Return the problems of our row-level security objects and of the read view."""
     role = quote_pg_identifier(policy_role)
+    view = f'{schema}.{READ_VIEW}'
     problems: list[str] = []
     changed = _changed_objects(plan_rls(state, schema=schema, role_name=policy_role))
     if changed:
@@ -504,28 +506,24 @@ def _object_problems(state: RlsState, *, schema: str, policy_role: str) -> list[
             f'These row-level security objects are missing, out of date or changed outside the server: '
             f'{"; ".join(changed)}. Fix: restart, so the migration re-creates them.',
         )
-    for name, table in READ_VIEW_TABLES.items():
-        installed = state.views.get(name)
-        if installed is None or table not in state.tables:
-            continue
-        view = f'{schema}.{name}'
-        if not installed.owned_by_table_owner:
+    if state.view is not None and CONTEXT_TABLE in state.tables:
+        if not state.view.owned_by_table_owner:
             problems.append(
-                f'The read view {view} is not owned by the owner of {schema}.{table}. Fix: restart, so the '
+                f'The read view {view} is not owned by the owner of {schema}.{CONTEXT_TABLE}. Fix: restart, so the '
                 'migration re-creates it.',
             )
-        if not installed.plain:
+        if not state.view.plain:
             problems.append(
                 f'The read view {view} carries options such as security_barrier or security_invoker, which change how '
                 'it reads. Fix: restart, so the migration re-creates it.',
             )
-        trigger = state.objects.get(reject_trigger(schema, view=name).key)
+        trigger = state.objects.get(reject_trigger(schema).key)
         if trigger is None or not trigger.enabled:
             problems.append(
                 f'The trigger {REJECT_TRIGGER} that refuses writes through the read view {view} is '
                 f'{"missing" if trigger is None else "disabled"}. Fix: restart, so the migration re-creates it.',
             )
-        repair = view_acl_repair(installed.acl, schema=schema, view=name, role_name=policy_role)
+        repair = view_acl_repair(state.view.acl, schema=schema, role_name=policy_role)
         if repair.statements:
             granted = f': {"; ".join(repair.revoked)}' if repair.revoked else ''
             problems.append(
@@ -546,7 +544,8 @@ def _changed_objects(plan: RlsPlan) -> list[str]:
     changed.extend(obj.target for obj in (plan.guard_function, plan.guard_trigger) if obj is not None)
     for repair in plan.tables:
         changed.extend(policy.target for policy, _ in repair.policies)
-    changed.extend(view.target for view in plan.views)
+    if plan.view is not None:
+        changed.append(plan.view.target)
     return changed
 
 

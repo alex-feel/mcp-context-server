@@ -269,7 +269,6 @@ class TestRequestBackendProfile:
 
         assert isinstance(backend, PostgreSQLBackend)
         assert backend.readable_relation('context_entries', alias='ce') == 'context_entries ce'
-        assert backend.readable_relation('tags', alias='t') == 'tags t'
 
     def test_rls_on_reads_through_the_view(self, configure_postgresql: ConfigureEnv) -> None:
         configure_postgresql(
@@ -279,8 +278,7 @@ class TestRequestBackendProfile:
         backend = create_backend()
 
         assert backend.readable_relation('context_entries', alias='ce') == 'context_entries_readable AS ce'
-        assert backend.readable_relation('tags', alias='tags') == 'tags_readable AS tags'
-        assert backend.readable_relation('image_attachments', alias='i') == 'image_attachments i'
+        assert backend.readable_relation('tags', alias='tags') == 'tags'
 
     @pytest.mark.asyncio
     async def test_request_backend_dials_the_request_credentials(

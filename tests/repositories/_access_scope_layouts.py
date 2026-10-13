@@ -8,7 +8,7 @@ pinned settings, so it matches what a server with that configuration provisions:
   fp32 one, which is never created, and the provenance row is bootstrapped.
 - ``fp32_rls`` and ``compressed_rls`` (PostgreSQL only): the same storage with
   ``ENABLE_POSTGRESQL_RLS`` on, prepared by the table owner, which grants the policy role
-  the request privileges and installs the policies and the read views.
+  the request privileges and installs the policies and the read view.
 
 :func:`sqlite_scoped_db` prepares the SQLite backend of ``async_db_initialized``;
 :func:`postgresql_scoped_db` prepares an isolated database on the pgvector test container.
@@ -447,11 +447,11 @@ async def postgresql_rls_scoped_db(
     is on and the migration credentials are those of ``maintenance_url``. The maintenance
     backend logs in as the database owner and runs ``prepare_database`` with the role of
     ``request_url`` as the request role, which grants ``policy_role`` the request privileges
-    and installs the policies and the read views; it then writes the seed as the owner, whom
+    and installs the policies and the read view; it then writes the seed as the owner, whom
     the policies do not filter, and serves the seed channel. The request backend logs in
     with the credentials of ``request_url`` under ``request_profile`` and serves the request
     channel, so every statement of the seams under test reaches rows through the policies
-    and the read views. The database itself belongs to the caller.
+    and the read view. The database itself belongs to the caller.
 
     Args:
         request_url: Connection string of the request login role, a member of ``policy_role``.

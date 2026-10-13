@@ -5,8 +5,7 @@ table owner and brings the database to what the code renders: the helper functio
 created under a search path of pg_catalog alone so the names in their bodies are bound
 there, and the policy role's EXECUTE on them, the guard trigger on ``context_entries``,
 the policies of every managed table that exists, ``ENABLE ROW LEVEL SECURITY`` on each
-such table where it is off, and last the read views (:func:`create_read_view`):
-``context_entries_readable`` and then ``tags_readable``, which reads through it, each
+such table where it is off, and last the read view of ``context_entries`` (:func:`create_read_view`)
 with SELECT for the policy role as the only privilege anyone but its owner holds on it.
 Every object carries a fingerprint comment built from the ``sha`` of its rendered
 statement and the digest of the server's own deparse (:func:`read_definition`), read back
@@ -18,26 +17,26 @@ The step uses double-checked locking. It first reads the catalog without any loc
 no lock taken and no DDL issued, which is what rolling restarts of several instances
 need. Otherwise it takes the schema-init lock, reads again and changes only what still
 differs (:func:`~app.migrations.rls_state.plan_rls`), naming in a WARNING every object
-that was changed outside the server and every grantee whose privileges on a view it
-takes away. A view re-created takes every view after it along, and the views are always
-dropped in the reverse order they are created in. Tables created after a boot get their
-policies at the next one. The FTS language rebuild, which must drop the views to drop a
-column, shares :func:`drop_read_view` and :func:`create_read_view`.
+that was changed outside the server and every grantee whose privileges on the view it
+takes away. Tables created after a boot get their policies at the next one. The FTS
+language rebuild, which must drop the view to drop a column, shares
+:func:`drop_read_view` and :func:`create_read_view`.
 """
 
 import logging
-from collections.abc import Collection
 from typing import Any
 from typing import cast
 
 import asyncpg
 
+from app.access_scope import READ_VIEW
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend.session import quote_pg_identifier
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
+from app.migrations.rls_ddl import CONTEXT_TABLE
 from app.migrations.rls_ddl import PIN_SEARCH_PATH
 from app.migrations.rls_ddl import RlsObject
 from app.migrations.rls_ddl import RlsObjectKind
@@ -45,6 +44,10 @@ from app.migrations.rls_ddl import comment_statement
 from app.migrations.rls_ddl import digest
 from app.migrations.rls_ddl import enable_statement
 from app.migrations.rls_ddl import helper_grant
+from app.migrations.rls_ddl import read_view
+from app.migrations.rls_ddl import read_view_drop
+from app.migrations.rls_ddl import reject_function
+from app.migrations.rls_ddl import reject_trigger
 from app.migrations.rls_ddl import restore_search_path
 from app.migrations.rls_state import COLUMNS_SQL
 from app.migrations.rls_state import RlsPlan
@@ -53,10 +56,6 @@ from app.migrations.rls_state import policy_definition
 from app.migrations.rls_state import read_rls_state
 from app.migrations.rls_state import read_view_acl
 from app.migrations.rls_state import view_acl_repair
-from app.migrations.rls_view_ddl import READ_VIEW_TABLES
-from app.migrations.rls_view_ddl import read_view_drop
-from app.migrations.rls_view_ddl import read_views
-from app.migrations.rls_view_ddl import write_rejection
 from app.settings import AppSettings
 
 logger = logging.getLogger(__name__)
@@ -77,13 +76,13 @@ _POLICY_DEFINITION_SQL = (
 
 
 async def apply_rls(backend: StorageBackend, settings: AppSettings) -> None:
-    """Bring the row-level security helpers, guard trigger, policies and read views to what the code renders.
+    """Bring the row-level security helpers, guard trigger, policies and read view to what the code renders.
 
     Runs only on PostgreSQL with ``ENABLE_POSTGRESQL_RLS``; otherwise it returns without
     touching the database. It must run as the table owner, after every table this boot
-    provisions exists: a table created later gets its policies on the next boot, and each
-    read view lists the columns its table has when it runs. A database that already holds
-    exactly what the code renders is only read: no lock, no DDL.
+    provisions exists: a table created later gets its policies on the next boot, and the
+    read view lists the columns ``context_entries`` has when it runs. A database that
+    already holds exactly what the code renders is only read: no lock, no DDL.
 
     Args:
         backend: The maintenance backend, logged in as the table owner.
@@ -124,17 +123,15 @@ async def apply_rls(backend: StorageBackend, settings: AppSettings) -> None:
 
 
 async def create_read_view(conn: asyncpg.Connection, *, schema: str, policy_role: str, timeout_s: float) -> None:
-    """Create the read views, each with SELECT for the policy role alone, read-only and fingerprinted.
+    """Create the read view of ``context_entries`` with SELECT for the policy role alone, read-only and fingerprinted.
 
-    ``context_entries_readable`` is created first and ``tags_readable``, which reads
-    through it, after it, the latter only when ``tags`` exists. Each lists the columns its
-    table has in this transaction, in attribute order. Default privileges may hand others
-    privileges on a new view the moment it is created; every privilege anyone but its
-    owner holds is revoked except the policy role's SELECT, which is granted when missing,
-    and one WARNING per view names each revoked grantee and privilege. The write rejection
-    of each view and the fingerprint comments of the view and of what keeps it read-only
-    follow. It runs inside the caller's migration transaction, as the table owner, and
-    neither view may exist yet.
+    The view lists the columns ``context_entries`` has in this transaction, in attribute
+    order. Default privileges may hand others privileges on the new view the moment it is
+    created; every privilege anyone but its owner holds is revoked except the policy role's
+    SELECT, which is granted when missing, and one WARNING names each revoked grantee and
+    privilege. The trigger that refuses writes through the view and the fingerprint
+    comments of the view, the function and the trigger follow. It runs inside the caller's
+    migration transaction, as the table owner, and the view must not exist yet.
 
     Args:
         conn: The migration transaction's connection, logged in as the table owner.
@@ -142,24 +139,40 @@ async def create_read_view(conn: asyncpg.Connection, *, schema: str, policy_role
         policy_role: The NOLOGIN role the policies and the view's membership test name.
         timeout_s: The server-side budget of each statement, in seconds.
     """
-    await _create_views(conn, tuple(READ_VIEW_TABLES), schema=schema, policy_role=policy_role, timeout_s=timeout_s)
+    quoted_schema = quote_pg_identifier(schema)
+    columns = [
+        quote_pg_identifier(str(row[0])) for row in await conn.fetch(COLUMNS_SQL, f'{quoted_schema}.{CONTEXT_TABLE}')
+    ]
+    view = read_view(columns, schema=quoted_schema, role_name=policy_role)
+    await execute_migration_ddl(conn, view.statement, timeout_s)
+    await _normalize_view_acl(conn, schema=quoted_schema, policy_role=policy_role, timeout_s=timeout_s)
+    function = reject_function(quoted_schema)
+    trigger = reject_trigger(quoted_schema)
+    await execute_migration_ddl(conn, function.statement, timeout_s)
+    await execute_migration_ddl(conn, trigger.statement, timeout_s)
+    for obj in (function, trigger, view):
+        await _fingerprint(conn, obj, timeout_s, preenabled=None)
 
 
 async def drop_read_view(conn: asyncpg.Connection, *, schema: str, policy_role: str, timeout_s: float) -> None:
-    """Drop the read views that exist, ``tags_readable`` first, naming every grant each drop takes away.
+    """Drop the read view of ``context_entries`` when it exists, naming every grant the drop takes away.
 
-    A drop takes every privilege on its view along with it. One WARNING per view names
-    each grantee that held more than the policy role's SELECT, which
-    :func:`create_read_view` grants again, with what it held. It runs inside the caller's
-    migration transaction, as the table owner.
+    The drop takes every privilege on the view along with it. One WARNING names each
+    grantee that held more than the policy role's SELECT, which :func:`create_read_view`
+    grants again, with what it held. It runs inside the caller's migration transaction, as
+    the table owner.
 
     Args:
         conn: The migration transaction's connection, logged in as the table owner.
         schema: The schema of the tables.
         policy_role: The NOLOGIN role the policies and the view's membership test name.
-        timeout_s: The server-side budget of each statement, in seconds.
+        timeout_s: The server-side budget of the statement, in seconds.
     """
-    await _drop_views(conn, tuple(READ_VIEW_TABLES), schema=schema, policy_role=policy_role, timeout_s=timeout_s)
+    quoted_schema = quote_pg_identifier(schema)
+    acl = await read_view_acl(conn, f'{quoted_schema}.{READ_VIEW}')
+    taken = view_acl_repair(acl, schema=quoted_schema, role_name=policy_role)
+    await execute_migration_ddl(conn, read_view_drop(quoted_schema), timeout_s)
+    _warn_revoked(schema=quoted_schema, policy_role=policy_role, revoked=taken.revoked)
 
 
 async def read_definition(conn: asyncpg.Connection, obj: RlsObject) -> str:
@@ -219,13 +232,12 @@ async def _repair(
             await _recreate(conn, policy, timeout_s, preenabled=preenabled)
         if repair.enable:
             await execute_migration_ddl(conn, enable_statement(repair.table, schema=schema), timeout_s)
-    if plan.views:
-        # CREATE OR REPLACE VIEW cannot drop or reorder columns, so a view is re-created.
-        names = tuple(view.name for view in plan.views)
-        await _drop_views(conn, names, schema=schema_name, policy_role=policy_role, timeout_s=timeout_s)
-        await _create_views(conn, names, schema=schema_name, policy_role=policy_role, timeout_s=timeout_s)
-    for view in plan.view_acls:
-        await _normalize_view_acl(conn, schema=schema, view=view, policy_role=policy_role, timeout_s=timeout_s)
+    if plan.view is not None:
+        # CREATE OR REPLACE VIEW cannot drop or reorder columns, so the view is re-created.
+        await drop_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=timeout_s)
+        await create_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=timeout_s)
+    elif plan.view_acl:
+        await _normalize_view_acl(conn, schema=schema, policy_role=policy_role, timeout_s=timeout_s)
 
 
 async def _create_helpers(conn: asyncpg.Connection, helpers: tuple[RlsObject, ...], timeout_s: float) -> None:
@@ -242,64 +254,25 @@ async def _create_helpers(conn: asyncpg.Connection, helpers: tuple[RlsObject, ..
     await execute_migration_ddl(conn, restore_search_path(search_path), timeout_s)
 
 
-async def _create_views(
-    conn: asyncpg.Connection, names: Collection[str], *, schema: str, policy_role: str, timeout_s: float,
-) -> None:
-    """Create the read views named in ``names`` that the existing tables call for, as :func:`create_read_view` does."""
-    quoted_schema = quote_pg_identifier(schema)
-    columns: dict[str, tuple[str, ...]] = {}
-    for table in READ_VIEW_TABLES.values():
-        rows = await conn.fetch(COLUMNS_SQL, f'{quoted_schema}.{table}')
-        if rows:
-            columns[table] = tuple(quote_pg_identifier(str(row[0])) for row in rows)
-    for view in read_views(columns, schema=quoted_schema, role_name=policy_role):
-        if view.name not in names:
-            continue
-        await execute_migration_ddl(conn, view.statement, timeout_s)
-        await _normalize_view_acl(conn, schema=quoted_schema, view=view.name, policy_role=policy_role, timeout_s=timeout_s)
-        rejection = write_rejection(quoted_schema, view=view.name)
-        for obj in rejection:
-            await execute_migration_ddl(conn, obj.statement, timeout_s)
-        for obj in (*rejection, view):
-            await _fingerprint(conn, obj, timeout_s, preenabled=None)
-
-
-async def _drop_views(
-    conn: asyncpg.Connection, names: tuple[str, ...], *, schema: str, policy_role: str, timeout_s: float,
-) -> None:
-    """Drop the read views named in ``names``, given in the order they are created, in the reverse order.
-
-    One WARNING per view names each grantee that held more than the policy role's SELECT.
-    """
-    quoted_schema = quote_pg_identifier(schema)
-    for view in reversed(names):
-        acl = await read_view_acl(conn, f'{quoted_schema}.{view}')
-        taken = view_acl_repair(acl, schema=quoted_schema, view=view, role_name=policy_role)
-        await execute_migration_ddl(conn, read_view_drop(quoted_schema, view=view), timeout_s)
-        _warn_revoked(view=f'{quoted_schema}.{view}', policy_role=policy_role, revoked=taken.revoked)
-
-
-async def _normalize_view_acl(
-    conn: asyncpg.Connection, *, schema: str, view: str, policy_role: str, timeout_s: float,
-) -> None:
-    """Leave the policy role's SELECT as the only privilege anyone but the owner holds on ``view``.
+async def _normalize_view_acl(conn: asyncpg.Connection, *, schema: str, policy_role: str, timeout_s: float) -> None:
+    """Leave the policy role's SELECT as the only privilege anyone but the owner holds on the read view.
 
     Every other grantee, PUBLIC included, loses everything; the policy role loses every
-    privilege but SELECT and gets SELECT when it lacks it. One WARNING names the view and
-    each revoked grantee with the privileges it held.
+    privilege but SELECT and gets SELECT when it lacks it. One WARNING names each revoked
+    grantee with the privileges it held.
     """
-    acl = await read_view_acl(conn, f'{schema}.{view}')
-    repair = view_acl_repair(acl, schema=schema, view=view, role_name=policy_role)
+    acl = await read_view_acl(conn, f'{schema}.{READ_VIEW}')
+    repair = view_acl_repair(acl, schema=schema, role_name=policy_role)
     for statement in repair.statements:
         await execute_migration_ddl(conn, statement, timeout_s)
-    _warn_revoked(view=f'{schema}.{view}', policy_role=policy_role, revoked=repair.revoked)
+    _warn_revoked(schema=schema, policy_role=policy_role, revoked=repair.revoked)
 
 
-def _warn_revoked(*, view: str, policy_role: str, revoked: list[str]) -> None:
-    """Log one WARNING naming ``view`` and each grantee that lost privileges on it, if any did."""
+def _warn_revoked(*, schema: str, policy_role: str, revoked: list[str]) -> None:
+    """Log one WARNING naming each grantee that lost privileges on the read view, if any did."""
     if revoked:
         logger.warning(
-            f'Revoked privileges on {view}, where only the policy role {policy_role} may hold SELECT: '
+            f'Revoked privileges on {schema}.{READ_VIEW}, where only the policy role {policy_role} may hold SELECT: '
             f'{"; ".join(revoked)}',
         )
 
