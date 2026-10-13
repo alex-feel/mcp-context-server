@@ -360,7 +360,7 @@ The owner reads every row because row-level security is enabled without FORCE. `
 3. **Execute** by re-running without `--dry-run`. The removal runs as one transaction under the server's schema-initialization lock. When nothing is installed, it reports that and exits successfully.
 4. **Start the server** with `ENABLE_POSTGRESQL_RLS=false`.
 
-Set `POSTGRESQL_SCHEMA` for the CLI when the tables live outside `public`. The removal refuses, with exit status 1 and the list of sessions, while any session of a member of the policy role is connected to the database, a dry run included; `--force`, valid only with `--disable-rls`, removes the objects anyway and logs those sessions. Exit status is 0 on success, 1 for a refusal, and 2 for an unexpected failure. `--disable-rls` is mutually exclusive with `--compress`, `--decompress`, `--re-embed` and `--reassign-owner`, and a co-passed `--embed-missing` does not run.
+Set `POSTGRESQL_SCHEMA` for the CLI when the tables live outside `public`. The removal refuses, with exit status 1 and the list of sessions, while any session of a member of the policy role is connected to the database, a dry run included. Superuser sessions do not count, because the server refuses to start as a superuser with row-level security on. `--force`, valid only with `--disable-rls`, removes the objects anyway and logs those sessions. Exit status is 0 on success, 1 for a refusal, and 2 for an unexpected failure. `--disable-rls` is mutually exclusive with `--compress`, `--decompress`, `--re-embed` and `--reassign-owner`, and a co-passed `--embed-missing` does not run.
 
 ## End-to-End Checklist: Supabase v2 to v3 With Compression
 

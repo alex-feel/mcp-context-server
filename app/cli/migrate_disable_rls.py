@@ -9,8 +9,8 @@ enabled. ``--dry-run`` prints the same report and changes nothing.
 
 Every server instance must be stopped first: a server started afterwards with
 ``ENABLE_POSTGRESQL_RLS=true`` installs the objects again, and one started with the flag
-off before the removal is refused. The removal refuses while a session of a member of the
-policy role is connected to the database; ``--force`` removes them anyway.
+off before the removal is refused. The removal refuses while a non-superuser session of a
+member of the policy role is connected to the database; ``--force`` removes them anyway.
 
 The CLI is single-backend: the source is the database under operation and
 ``--target-url`` is ignored (mirrors ``--compress``, ``--decompress``, ``--re-embed``,

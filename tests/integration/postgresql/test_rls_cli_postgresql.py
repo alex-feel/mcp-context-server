@@ -10,8 +10,9 @@ with the maintenance session statements suppressed, as behind a pooler that drop
 The integer-to-UUIDv7 migration provisions full-text search on a pre-existing target as
 the owner and refuses ``mcp_app``. ``--disable-rls`` reports in a dry run, removes the
 objects in a real run, and refuses while a member of the policy role is connected unless
-``--force``; its own pooled connections never count, even as a superuser. The startup
-compression guard still refuses fp32 rows only their owner reads.
+``--force``; its own pooled connections never count, even as a superuser, and neither does
+any superuser session. The startup compression guard still refuses fp32 rows only their
+owner reads.
 
 Every command-line subprocess starts from :func:`tests.helpers.postgresql_subprocess_env`.
 """
@@ -483,6 +484,27 @@ class TestDisableRls:
         assert f'pid {pid} ({REQUEST_ROLE}' in run.stderr
         assert '--force' in run.stderr
         assert await _installed_objects(pg_rls_db) == installed
+
+    @pytest.mark.asyncio
+    async def test_a_connected_superuser_session_does_not_refuse_the_removal(
+        self, pg_rls_db: RlsUrls, installed: dict[str, int],
+    ) -> None:
+        """A superuser counts as a member of every role, yet no superuser serves requests with row-level security on."""
+        _ = installed
+        async with _connect(pg_rls_db.admin) as superuser:
+            superuser_pid = superuser.get_server_pid()
+            async with _connect(pg_rls_db.app) as member:
+                member_pid = member.get_server_pid()
+
+                refused = await _run(pg_rls_db.maintenance, '--disable-rls')
+
+            run = await _run(pg_rls_db.maintenance, '--disable-rls')
+
+        assert refused.returncode == 1
+        assert f'pid {member_pid} ({REQUEST_ROLE}' in refused.stderr
+        assert f'pid {superuser_pid} (' not in refused.stderr
+        assert run.returncode == 0, run.stderr
+        assert await _installed_objects(pg_rls_db) == {}
 
     @pytest.mark.asyncio
     async def test_force_removes_while_a_member_is_connected(self, pg_rls_db: RlsUrls, installed: dict[str, int]) -> None:

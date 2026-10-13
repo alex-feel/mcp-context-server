@@ -139,10 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
             'disable row-level security on the tables it enabled. Stop every '
             "server instance first and connect with the table owner's "
             'credentials; set ENABLE_POSTGRESQL_RLS=false before starting '
-            'again. Refuses while a member of the policy role is connected '
-            'unless --force. Reads from --source-url; --target-url is '
-            'ignored. Use --dry-run to print what would be removed. Not '
-            'combinable with --embed-missing.'
+            'again. Refuses while a non-superuser member of the policy role '
+            'is connected unless --force. Reads from --source-url; '
+            '--target-url is ignored. Use --dry-run to print what would be '
+            'removed. Not combinable with --embed-missing.'
         ),
     )
     parser.add_argument(

@@ -7,9 +7,9 @@ gets row-level security enabled outside the server, then a boot with
 in the dry run, and in the real run leave none of the objects behind, disable row-level
 security on every table the migration enabled and keep it on ``tags``, reporting it.
 Afterwards a boot with the flag off starts. The superuser oracle connection stays open
-throughout, and PostgreSQL counts a superuser as a member of every role, so each removal
-here is forced; ``tests/integration/postgresql/test_rls_cli_postgresql.py`` covers the
-refusal while a member is connected.
+throughout and does not refuse a removal, since no superuser session counts as a server
+instance; ``tests/integration/postgresql/test_rls_cli_postgresql.py`` covers the refusal
+while a member is connected.
 """
 
 from collections.abc import AsyncGenerator
@@ -121,14 +121,14 @@ class TestRemoveRls:
         tables = [table for table in MANAGED_TABLES if table in await row_security(admin, SCHEMA_NAME)]
         before = await object_oids(admin, SCHEMA_NAME)
 
-        dry = await remove_rls(installed, rls_settings(), dry_run=True, force=True)
+        dry = await remove_rls(installed, rls_settings(), dry_run=True, force=False)
 
         assert await object_oids(admin, SCHEMA_NAME) == before
         assert dry.disabled == [table for table in tables if table != 'tags']
         assert dry.left_enabled == {'tags': 'preenabled=true'}
         assert any('DROP VIEW' in statement for statement in dry.statements)
 
-        real = await remove_rls(installed, rls_settings(), dry_run=False, force=True)
+        real = await remove_rls(installed, rls_settings(), dry_run=False, force=False)
 
         assert real == dry
         assert await policies(admin, SCHEMA_NAME) == {}
@@ -144,9 +144,9 @@ class TestRemoveRls:
     async def test_after_removal_nothing_is_left_and_the_flag_off_starts(
         self, installed: StorageBackend, admin: asyncpg.Connection,
     ) -> None:
-        await remove_rls(installed, rls_settings(), dry_run=False, force=True)
+        await remove_rls(installed, rls_settings(), dry_run=False, force=False)
 
-        again = await remove_rls(installed, rls_settings(), dry_run=False, force=True)
+        again = await remove_rls(installed, rls_settings(), dry_run=False, force=False)
 
         assert again == RlsRemovalReport(statements=[], disabled=[], left_enabled={'tags': 'no readable comment'})
         flag_off = get_settings()

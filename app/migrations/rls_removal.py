@@ -6,10 +6,10 @@ rejection, every policy of ours on every managed table, the guard trigger and th
 helpers. It disables row-level security only on the tables whose read policy recorded
 that it was off before the migration first enabled it, and reports every table it leaves
 enabled. The objects are found by their fixed names, so removal does not depend on the
-configured policy role. Before it drops anything it refuses while a session of a member
-of a role our policies apply to is connected to the database, since a running server
-instance would go on without the policies it started with; forcing it logs the sessions
-instead.
+configured policy role. Before it drops anything it refuses while a non-superuser session
+of a member of a role our policies apply to is connected to the database, since a running
+server instance would go on without the policies it started with; forcing it logs the
+sessions instead.
 
 :func:`guard_rls_disable_over_enabled` refuses a PostgreSQL start with
 ``ENABLE_POSTGRESQL_RLS`` off while any policy of ours or the read view exists: a request
@@ -59,12 +59,16 @@ _OUR_POLICY_TABLES_SQL: Final = (
     'WHERE n.nspname = $1 AND p.polname = ANY($2::text[])'
 )
 # $1 schema name, $2 and $3 the table and name of every policy of ours: every session in
-# this database whose login role is a member of a role one of those policies applies to,
-# other than the sessions of the role this connection logged in as. Every pooled
-# connection of the removing command logs in as that role, the table owner, whom no
-# policy filters; a superuser owner would otherwise count its own pool as members of
-# every role. pg_stat_activity shows the pid, the role and the application name of every
-# session to any role.
+# this database whose login role is a non-superuser member of a role one of those policies
+# applies to, other than the sessions of the role this connection logged in as.
+# PostgreSQL counts a superuser as a member of every role, but no server instance serves
+# requests as a superuser with row-level security on, so a superuser session never counts.
+# Every pooled connection of the removing command logs in as the table owner, whom no
+# policy filters, and that role may be a member without being a superuser (from
+# PostgreSQL 16 the role that created the policy role holds an ADMIN membership in it),
+# so the command's own role never counts either.
+# pg_stat_activity shows the pid, the role and the application name of every session to
+# any role.
 _MEMBER_SESSIONS_SQL: Final = (
     'WITH policy_roles AS ('
     'SELECT DISTINCT r.roleid FROM pg_catalog.pg_policy p '
@@ -76,7 +80,7 @@ _MEMBER_SESSIONS_SQL: Final = (
     "SELECT a.pid, u.rolname::text, COALESCE(a.application_name, '') "
     'FROM pg_catalog.pg_stat_activity a JOIN pg_catalog.pg_roles u ON u.oid = a.usesysid '
     'WHERE a.datname = pg_catalog.current_database() '
-    'AND u.rolname <> session_user '
+    'AND NOT u.rolsuper AND u.rolname <> session_user '
     "AND EXISTS (SELECT 1 FROM policy_roles pr WHERE pg_catalog.pg_has_role(a.usesysid, pr.roleid, 'MEMBER')) "
     'ORDER BY a.pid'
 )
@@ -150,7 +154,9 @@ async def read_member_sessions(conn: asyncpg.Connection, *, schema_name: str) ->
     """Return the sessions of members of the roles our policies apply to, other than this command's own.
 
     The roles come from the policies themselves, so the answer does not depend on the
-    configured policy role.
+    configured policy role. A superuser session never counts: PostgreSQL makes a
+    superuser a member of every role, but no server instance serves requests as one with
+    row-level security on.
 
     Args:
         conn: A connection to the database, logged in as the table owner.

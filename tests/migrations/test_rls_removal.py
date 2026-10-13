@@ -283,6 +283,7 @@ class TestMemberSessions:
             'pg_catalog.pg_stat_activity',
             'pg_catalog.current_database()',
             "pg_catalog.pg_has_role(a.usesysid, pr.roleid, 'MEMBER')",
+            'NOT u.rolsuper',
             'session_user',
             'p.polroles',
         ):

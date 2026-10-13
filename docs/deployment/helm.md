@@ -222,7 +222,7 @@ With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access mode
 
 4. Apply the values with `helm upgrade`, then scale the Deployment back to its replica count.
 
-The removal refuses while any session of a member of the policy role is connected, which is what step 2 prevents; see [Disabling row-level security](../database-backends.md#disabling-row-level-security).
+The removal refuses while any non-superuser session of a member of the policy role is connected, which is what step 2 prevents; see [Disabling row-level security](../database-backends.md#disabling-row-level-security).
 
 ### Authentication and Access Control
 
