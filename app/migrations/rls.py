@@ -1,10 +1,11 @@
 """PostgreSQL row-level security: keeping the objects :mod:`app.migrations.rls_ddl` renders installed and current.
 
 With ``ENABLE_POSTGRESQL_RLS`` on a PostgreSQL backend, :func:`apply_rls` runs as the
-table owner and brings the database to what the code renders: the helper functions and
-the policy role's EXECUTE on them, the guard trigger on ``context_entries``, the policies
-of every managed table that exists, ``ENABLE ROW LEVEL SECURITY`` on each such table
-where it is off, and last the read view of ``context_entries`` (:func:`create_read_view`)
+table owner and brings the database to what the code renders: the helper functions,
+created under a search path of pg_catalog alone so the names in their bodies are bound
+there, and the policy role's EXECUTE on them, the guard trigger on ``context_entries``,
+the policies of every managed table that exists, ``ENABLE ROW LEVEL SECURITY`` on each
+such table where it is off, and last the read view of ``context_entries`` (:func:`create_read_view`)
 with SELECT for the policy role as the only privilege anyone but its owner holds on it.
 Every object carries a fingerprint comment built from the ``sha`` of its rendered
 statement and the digest of the server's own deparse (:func:`read_definition`), read back
@@ -36,6 +37,7 @@ from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations.rls_ddl import CONTEXT_TABLE
+from app.migrations.rls_ddl import PIN_SEARCH_PATH
 from app.migrations.rls_ddl import RlsObject
 from app.migrations.rls_ddl import RlsObjectKind
 from app.migrations.rls_ddl import comment_statement
@@ -46,6 +48,7 @@ from app.migrations.rls_ddl import read_view
 from app.migrations.rls_ddl import read_view_drop
 from app.migrations.rls_ddl import reject_function
 from app.migrations.rls_ddl import reject_trigger
+from app.migrations.rls_ddl import restore_search_path
 from app.migrations.rls_state import COLUMNS_SQL
 from app.migrations.rls_state import RlsPlan
 from app.migrations.rls_state import plan_rls
@@ -57,6 +60,7 @@ from app.settings import AppSettings
 
 logger = logging.getLogger(__name__)
 
+_SEARCH_PATH_SQL = "SELECT pg_catalog.current_setting('search_path')"
 _FUNCTION_DEFINITION_SQL = 'SELECT pg_catalog.pg_get_functiondef(pg_catalog.to_regprocedure($1))'
 _VIEW_DEFINITION_SQL = 'SELECT pg_catalog.pg_get_viewdef(pg_catalog.to_regclass($1), true)'
 _TRIGGER_DEFINITION_SQL = (
@@ -212,8 +216,8 @@ async def _repair(
     schema = quote_pg_identifier(schema_name)
     for target in plan.drifted:
         logger.warning(f'{target} was changed outside the server; re-creating it')
-    for helper in plan.helpers:
-        await execute_migration_ddl(conn, helper.statement, timeout_s)
+    if plan.helpers:
+        await _create_helpers(conn, plan.helpers, timeout_s)
     if plan.grant_helpers:
         await execute_migration_ddl(conn, helper_grant(schema, quote_pg_identifier(policy_role)), timeout_s)
     for helper in plan.helpers:
@@ -234,6 +238,20 @@ async def _repair(
         await create_read_view(conn, schema=schema_name, policy_role=policy_role, timeout_s=timeout_s)
     elif plan.view_acl:
         await _normalize_view_acl(conn, schema=schema, policy_role=policy_role, timeout_s=timeout_s)
+
+
+async def _create_helpers(conn: asyncpg.Connection, helpers: tuple[RlsObject, ...], timeout_s: float) -> None:
+    """Create or replace ``helpers`` with every name in their bodies resolved in pg_catalog, then restore the search path.
+
+    Their SQL-standard bodies are bound when they are created, so the pinned search path
+    decides what they call for good. The connection's own search path is set back for the
+    rest of the transaction, under which the fingerprints read every deparse.
+    """
+    search_path = str(await conn.fetchval(_SEARCH_PATH_SQL))
+    await execute_migration_ddl(conn, PIN_SEARCH_PATH, timeout_s)
+    for helper in helpers:
+        await execute_migration_ddl(conn, helper.statement, timeout_s)
+    await execute_migration_ddl(conn, restore_search_path(search_path), timeout_s)
 
 
 async def _normalize_view_acl(conn: asyncpg.Connection, *, schema: str, policy_role: str, timeout_s: float) -> None:

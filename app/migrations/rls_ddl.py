@@ -4,8 +4,9 @@ Row-level security enforces the access model of :mod:`app.access_scope` in the d
 for the NOLOGIN policy role every request login role is a member of. This module renders
 the objects that do it:
 
-- three helper functions that hand the transaction's bound identity to the policies, and
-  the grant that lets the policy role execute them;
+- three helper functions that hand the transaction's bound identity to the policies, the
+  statements that bind the names in their bodies to pg_catalog while they are created,
+  and the grant that lets the policy role execute them;
 - per-command PERMISSIVE policies on ``context_entries`` (READ for SELECT, the owner
   stamp and the publish gate for INSERT, WRITE for UPDATE, OWNER for DELETE), on
   ``context_entry_grants`` (the caller's own grants; inserts by the entry's owner) and on
@@ -89,22 +90,26 @@ _ACL_PRIVILEGES: Final = frozenset({
     'ALL', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN',
 })
 
-# Each helper reads one transaction-local setting the request profile binds. An unset
+# Each helper returns one transaction-local setting the request profile binds. An unset
 # setting reads NULL and a setting cleared by COMMIT or RESET ALL reads '', and NULLIF turns
 # both into no principal, no groups and no publish right.
 _HELPER_BODIES: Final = (
-    (PRINCIPAL_FUNCTION, 'text', "SELECT NULLIF(pg_catalog.current_setting('app.principal_id', true), '')"),
+    (PRINCIPAL_FUNCTION, 'text', "NULLIF(pg_catalog.current_setting('app.principal_id', true), '')"),
     (
         GROUPS_FUNCTION,
         'text[]',
-        "SELECT COALESCE(NULLIF(pg_catalog.current_setting('app.groups', true), '')::text[], '{}'::text[])",
+        "COALESCE(NULLIF(pg_catalog.current_setting('app.groups', true), '')::pg_catalog.text[], '{}'::pg_catalog.text[])",
     ),
     (
         MAY_PUBLISH_FUNCTION,
         'boolean',
-        "SELECT COALESCE(NULLIF(pg_catalog.current_setting('app.may_publish', true), '') = 'on', false)",
+        "COALESCE(NULLIF(pg_catalog.current_setting('app.may_publish', true), '') = 'on', false)",
     ),
 )
+# Run before the helpers are created, so every name in their bodies, the operators and casts
+# NULLIF and COALESCE apply included, resolves in pg_catalog alone, whatever search path the
+# migration connection uses. SET LOCAL ends with the transaction.
+PIN_SEARCH_PATH: Final = 'SET LOCAL search_path = pg_catalog, pg_temp'
 
 
 class RlsObjectKind(StrEnum):
@@ -287,8 +292,12 @@ def comment_statement(obj: RlsObject, *, definition: str, preenabled: bool | Non
 def helper_functions(schema: str) -> tuple[RlsObject, RlsObject, RlsObject]:
     """Return the principal, groups and publish-right helpers the policy operands call.
 
-    They are STABLE and PARALLEL SAFE SQL functions running as the invoker with a pinned
-    search_path.
+    They are STABLE and PARALLEL SAFE SQL functions running as the invoker, each with a
+    SQL-standard ``RETURN`` body and no SET clause, so the planner inlines every call into
+    the expression around it: a policy evaluated once per row pays no function call. A
+    SQL-standard body is parsed when the function is created, so its names stay bound to
+    what they resolved to then; the migration creates the helpers after
+    :data:`PIN_SEARCH_PATH`, and no search path a caller sets can change them.
 
     Args:
         schema: The schema of the tables, quoted.
@@ -303,13 +312,28 @@ def helper_functions(schema: str) -> tuple[RlsObject, RlsObject, RlsObject]:
             anchor=f'{schema}.{name}()',
             statement=(
                 f'CREATE OR REPLACE FUNCTION {schema}.{name}() RETURNS {returns} '
-                'LANGUAGE sql STABLE PARALLEL SAFE SET search_path = pg_catalog, pg_temp '
-                f'AS $$ {body} $$'
+                f'LANGUAGE sql STABLE PARALLEL SAFE RETURN {body}'
             ),
         )
         for name, returns, body in _HELPER_BODIES
     )
     return principal, groups, may_publish
+
+
+def restore_search_path(search_path: str) -> str:
+    """Return the statement that sets the search path back after :data:`PIN_SEARCH_PATH`, until the transaction ends.
+
+    The statements that follow the helpers in the migration transaction read back the
+    server's deparse of what they create, which names a relation outside the search path
+    with its schema, so they must run under the connection's own search path.
+
+    Args:
+        search_path: The search path as ``current_setting('search_path')`` read it before the pin.
+
+    Returns:
+        The ``set_config`` call, the value as a string literal.
+    """
+    return f"SELECT pg_catalog.set_config('search_path', {_string_literal(search_path)}, true)"
 
 
 def helper_grant(schema: str, role: str) -> str:
@@ -504,6 +528,8 @@ def _grants_clauses(schema: str) -> tuple[tuple[str, str], ...]:
     with a subquery that is reached again while its own table's policies expand, and the
     insert check reaches the read policy again: it reads ``context_entries``, whose read
     policy reads this table. A read policy without a subquery ends the expansion there.
+    The planner inlines the helper calls, so the policy, evaluated once per grant row, calls
+    no function.
 
     Returns:
         The SELECT and INSERT commands with their clauses.

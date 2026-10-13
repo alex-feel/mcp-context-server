@@ -18,6 +18,7 @@ import pytest
 
 from app.backends import StorageBackend
 from app.migrations import rls as rls_module
+from app.migrations.rls_ddl import PIN_SEARCH_PATH
 from app.migrations.rls_ddl import Fingerprint
 from app.migrations.rls_ddl import RlsObject
 from app.migrations.rls_ddl import enable_statement
@@ -29,6 +30,7 @@ from app.migrations.rls_ddl import read_view_drop
 from app.migrations.rls_ddl import read_view_revoke
 from app.migrations.rls_ddl import reject_function
 from app.migrations.rls_ddl import reject_trigger
+from app.migrations.rls_ddl import restore_search_path
 from app.migrations.rls_ddl import table_policies
 from app.migrations.rls_state import InstalledObject
 from app.migrations.rls_state import RlsState
@@ -39,6 +41,7 @@ from tests.migrations._rls_fakes import QUOTED_COLUMNS
 from tests.migrations._rls_fakes import ROLE
 from tests.migrations._rls_fakes import ROLE_NAME
 from tests.migrations._rls_fakes import SCHEMA
+from tests.migrations._rls_fakes import SEARCH_PATH
 from tests.migrations._rls_fakes import CatalogConnection
 from tests.migrations._rls_fakes import FakeBackend
 from tests.migrations._rls_fakes import fingerprinted
@@ -50,6 +53,8 @@ from tests.migrations._rls_fakes import rls_settings
 
 TABLES = {'context_entries': True, 'context_entry_grants': True, 'tags': True}
 CHANGED_OUT_OF_BAND = 'f' * 64
+# The sha of a statement this module no longer renders, as an object created by an earlier release carries it.
+EARLIER_STATEMENT = 'e' * 64
 
 
 def _policy(table: str, command: str) -> RlsObject:
@@ -425,6 +430,33 @@ class TestDoubleCheckedLock:
         await rls_module.apply_rls(cast(StorageBackend, FakeBackend(CatalogConnection())), rls_settings())
 
         assert recorded == [LOCK, helper_grant(SCHEMA, ROLE)]
+
+    @pytest.mark.asyncio
+    async def test_helpers_rendered_in_an_earlier_form_are_replaced_under_the_pinned_search_path_silently(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        recorded = record_ddl(monkeypatch, [rls_module])
+        helpers = helper_functions(SCHEMA)
+        state = installed_state(TABLES)
+        for helper in helpers:
+            earlier = installed(helper)
+            assert earlier.fingerprint is not None
+            fingerprint = dataclasses.replace(earlier.fingerprint, sha=EARLIER_STATEMENT)
+            state = _with_object(state, helper, dataclasses.replace(earlier, fingerprint=fingerprint))
+        _serve(monkeypatch, state, state)
+        conn = CatalogConnection()
+
+        with caplog.at_level(logging.INFO, logger='app.migrations.rls'):
+            await rls_module.apply_rls(cast(StorageBackend, FakeBackend(conn)), rls_settings())
+
+        assert recorded == [
+            LOCK,
+            PIN_SEARCH_PATH,
+            *(helper.statement for helper in helpers),
+            restore_search_path(SEARCH_PATH),
+            *[await fingerprinted(conn, helper) for helper in helpers],
+        ]
+        assert [record.levelno for record in caplog.records] == [logging.INFO]
 
 
 class TestViewRepair:

@@ -22,6 +22,7 @@ from app.backends.postgresql_backend.session_profiles import BIND_IDENTITY_STATE
 from app.migrations import rls_ddl
 from app.migrations.rls_ddl import CHILD_PARENT_KEYS
 from app.migrations.rls_ddl import MANAGED_TABLES
+from app.migrations.rls_ddl import PIN_SEARCH_PATH
 from app.migrations.rls_ddl import Fingerprint
 from app.migrations.rls_ddl import ObjectKey
 from app.migrations.rls_ddl import RlsObject
@@ -37,6 +38,7 @@ from app.migrations.rls_ddl import helper_grant
 from app.migrations.rls_ddl import parse_fingerprint
 from app.migrations.rls_ddl import policy_names
 from app.migrations.rls_ddl import records_preenabled
+from app.migrations.rls_ddl import restore_search_path
 from app.migrations.rls_ddl import table_policies
 
 SCHEMA = '"public"'
@@ -95,23 +97,54 @@ def test_helper_functions_read_the_bound_identity_and_fail_closed() -> None:
     assert statements == {
         'mcp_context_principal_id': (
             f'CREATE OR REPLACE FUNCTION {SCHEMA}.mcp_context_principal_id() RETURNS text '
-            'LANGUAGE sql STABLE PARALLEL SAFE SET search_path = pg_catalog, pg_temp '
-            "AS $$ SELECT NULLIF(pg_catalog.current_setting('app.principal_id', true), '') $$"
+            'LANGUAGE sql STABLE PARALLEL SAFE '
+            "RETURN NULLIF(pg_catalog.current_setting('app.principal_id', true), '')"
         ),
         'mcp_context_groups': (
             f'CREATE OR REPLACE FUNCTION {SCHEMA}.mcp_context_groups() RETURNS text[] '
-            'LANGUAGE sql STABLE PARALLEL SAFE SET search_path = pg_catalog, pg_temp '
-            "AS $$ SELECT COALESCE(NULLIF(pg_catalog.current_setting('app.groups', true), '')::text[], '{}'::text[]) $$"
+            'LANGUAGE sql STABLE PARALLEL SAFE '
+            "RETURN COALESCE(NULLIF(pg_catalog.current_setting('app.groups', true), '')::pg_catalog.text[], "
+            "'{}'::pg_catalog.text[])"
         ),
         'mcp_context_may_publish': (
             f'CREATE OR REPLACE FUNCTION {SCHEMA}.mcp_context_may_publish() RETURNS boolean '
-            'LANGUAGE sql STABLE PARALLEL SAFE SET search_path = pg_catalog, pg_temp '
-            "AS $$ SELECT COALESCE(NULLIF(pg_catalog.current_setting('app.may_publish', true), '') = 'on', false) $$"
+            'LANGUAGE sql STABLE PARALLEL SAFE '
+            "RETURN COALESCE(NULLIF(pg_catalog.current_setting('app.may_publish', true), '') = 'on', false)"
         ),
     }
     for helper in helper_functions(SCHEMA):
         assert helper.kind is RlsObjectKind.FUNCTION
         assert 'SECURITY DEFINER' not in helper.statement
+
+
+def test_helper_functions_have_inlinable_bodies_bound_at_creation() -> None:
+    """A SQL-standard body and no SET clause: the planner inlines the call, and the body's names are bound when it is created.
+
+    A ``SET`` clause keeps PostgreSQL from inlining a SQL function, and a string body is
+    parsed again, under the caller's search path, every time it is inlined.
+    """
+    for helper in helper_functions(SCHEMA):
+        assert ' RETURN ' in helper.statement
+        assert ' SET ' not in helper.statement
+        assert '$$' not in helper.statement
+        assert ' AS ' not in helper.statement
+
+
+def test_helpers_are_created_under_a_search_path_of_pg_catalog_alone() -> None:
+    """The statement that pins name resolution while the helpers are created changes nothing past the transaction."""
+    assert PIN_SEARCH_PATH == 'SET LOCAL search_path = pg_catalog, pg_temp'
+
+
+@pytest.mark.parametrize(
+    ('search_path', 'expected'),
+    [
+        ('"tenant one", public', "SELECT pg_catalog.set_config('search_path', '\"tenant one\", public', true)"),
+        ("\"o'brien\", public", "SELECT pg_catalog.set_config('search_path', '\"o''brien\", public', true)"),
+    ],
+)
+def test_the_search_path_is_restored_transaction_locally_as_a_string_literal(search_path: str, expected: str) -> None:
+    """The restore sets the value read before the pin for the rest of the transaction, its quotes doubled."""
+    assert restore_search_path(search_path) == expected
 
 
 def test_helpers_read_exactly_the_settings_the_bind_statement_sets() -> None:

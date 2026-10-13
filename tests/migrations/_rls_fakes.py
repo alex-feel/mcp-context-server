@@ -1,12 +1,13 @@
 """Fakes shared by the unit tests of the row-level security migration.
 
 :class:`CatalogConnection` answers the catalog reads the migration issues on its own
-connection: the server's deparse of each object, the columns of ``context_entries``
-and the ACL of the read view. :class:`FakeBackend` runs a migration callable on it the
-way ``execute_write`` and ``execute_read`` do. :func:`record_ddl` replaces the lock and
-the DDL helper of the given modules, so a test sees every statement in order with
-the lock as :data:`LOCK`. :func:`installed_state` builds the catalog state of a database
-whose objects are exactly what the migration renders.
+connection: the server's deparse of each object, the columns of ``context_entries``,
+the ACL of the read view and the transaction's search path. :class:`FakeBackend` runs a
+migration callable on it the way ``execute_write`` and ``execute_read`` do.
+:func:`record_ddl` replaces the lock and the DDL helper of the given modules, so a test
+sees every statement in order with the lock as :data:`LOCK`. :func:`installed_state`
+builds the catalog state of a database whose objects are exactly what the migration
+renders.
 """
 
 from collections.abc import Awaitable
@@ -48,6 +49,8 @@ VIEW = f'{SCHEMA}.context_entries_readable'
 COLUMNS = ('id', 'thread_id', 'text_content')
 QUOTED_COLUMNS = tuple(f'"{column}"' for column in COLUMNS)
 TIMEOUT_S = 300.0
+# What the migration connection's search path reads as before the helpers pin it.
+SEARCH_PATH = '"tenant one", public'
 
 
 def rls_settings(*, enabled: bool = True, policy_role: str = ROLE_NAME) -> AppSettings:
@@ -70,7 +73,7 @@ def rls_settings(*, enabled: bool = True, policy_role: str = ROLE_NAME) -> AppSe
 
 
 class CatalogConnection:
-    """Answers the catalog reads of the migration: every deparse, the view's columns and its ACL.
+    """Answers the catalog reads of the migration: every deparse, the view's columns, its ACL and the search path.
 
     The first read of the view's ACL answers ``acl``; every later one answers
     ``recreated_acl`` when it is given, which is what a view dropped and created again
@@ -101,6 +104,8 @@ class CatalogConnection:
 
     async def fetchval(self, sql: str, *args: object) -> str:
         self.reads.append((sql, args))
+        if "current_setting('search_path')" in sql:
+            return SEARCH_PATH
         if 'pg_get_functiondef' in sql:
             return f'functiondef of {args[0]}'
         if 'pg_get_viewdef' in sql:

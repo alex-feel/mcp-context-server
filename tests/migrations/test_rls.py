@@ -2,8 +2,9 @@
 
 Covers app.migrations.rls: ``apply_rls`` runs only on PostgreSQL with
 ``ENABLE_POSTGRESQL_RLS``; on a database holding none of the objects it takes the
-schema-init lock and creates the helper functions and grants them, the guard trigger
-and the policies of every managed table that exists, enables row-level security
+schema-init lock and creates the helper functions under a search path of pg_catalog
+alone, restores the transaction's own search path and grants them, creates the guard
+trigger and the policies of every managed table that exists, enables row-level security
 where it is off, creates the read view of ``context_entries`` last, and
 fingerprints every object with the ``sha`` of its rendered statement and the digest
 of the server's own deparse read back in the same transaction, each table's read
@@ -27,6 +28,7 @@ from app.migrations.rls import apply_rls
 from app.migrations.rls import create_read_view
 from app.migrations.rls import drop_read_view
 from app.migrations.rls import read_definition
+from app.migrations.rls_ddl import PIN_SEARCH_PATH
 from app.migrations.rls_ddl import enable_statement
 from app.migrations.rls_ddl import guard_function
 from app.migrations.rls_ddl import guard_trigger
@@ -38,6 +40,7 @@ from app.migrations.rls_ddl import read_view_revoke
 from app.migrations.rls_ddl import records_preenabled
 from app.migrations.rls_ddl import reject_function
 from app.migrations.rls_ddl import reject_trigger
+from app.migrations.rls_ddl import restore_search_path
 from app.migrations.rls_ddl import table_policies
 from app.migrations.rls_state import RlsState
 from tests.migrations._rls_fakes import LOCK
@@ -46,6 +49,7 @@ from tests.migrations._rls_fakes import ROLE
 from tests.migrations._rls_fakes import ROLE_NAME
 from tests.migrations._rls_fakes import SCHEMA
 from tests.migrations._rls_fakes import SCHEMA_NAME
+from tests.migrations._rls_fakes import SEARCH_PATH
 from tests.migrations._rls_fakes import TIMEOUT_S
 from tests.migrations._rls_fakes import VIEW
 from tests.migrations._rls_fakes import CatalogConnection
@@ -150,7 +154,9 @@ class TestApplyToAnEmptyDatabase:
         trigger = guard_trigger(SCHEMA)
         expected = [
             LOCK,
+            PIN_SEARCH_PATH,
             *(helper.statement for helper in helpers),
+            restore_search_path(SEARCH_PATH),
             helper_grant(SCHEMA, ROLE),
             *[await fingerprinted(conn, helper) for helper in helpers],
             function.statement,
