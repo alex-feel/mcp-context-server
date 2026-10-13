@@ -16,11 +16,12 @@ statement to the rows the scope may read, modify or owns:
 row instead: the child's key must name an entry the scope may read.
 
 :func:`build_policy_predicate` renders the same three modes for PostgreSQL
-row-level security policies and the read view: the identity comes from
-:func:`policy_operands`, scalar subqueries around the schema's identity
-functions, instead of bound parameters. Both renderers compose their arms
-through one function, so the application predicate and the database policies
-cannot drift apart.
+row-level security policies: the identity comes from :func:`policy_operands`,
+scalar subqueries around the schema's identity functions, instead of bound
+parameters. :func:`build_gated_read_predicate` renders the ``READ`` mode for the
+read view, with a membership gate folded into those operands and into the public
+arm. Every renderer composes its arms through one function, so the application
+predicate, the database policies and the read view cannot drift apart.
 
 A grant carries no visibility condition, so it is effective under either
 visibility, and a write grant implies read. Comparisons are exact and
@@ -190,6 +191,7 @@ def build_access_predicate(
         grantee_operand=grantee_operand,
         group_membership=group_membership,
         grants_relation='context_entry_grants',
+        public_gate=None,
     )
     params: list[str | list[str]] = [principal] if mode is AccessMode.OWNER else [principal, principal, groups_param]
     return AccessPredicate(sql=sql, params=params)
@@ -222,7 +224,8 @@ GROUPS_FUNCTION: Final = 'mcp_context_groups'
 MAY_PUBLISH_FUNCTION: Final = 'mcp_context_may_publish'
 
 # The view through which a request backend under row-level security reads
-# context_entries: owned by the table owner, its condition is the READ predicate.
+# context_entries: owned by the table owner, its condition is the READ predicate
+# gated on membership of the policy role (build_gated_read_predicate).
 READ_VIEW: Final = 'context_entries_readable'
 
 
@@ -249,15 +252,13 @@ def build_policy_predicate(mode: AccessMode, *, outer: str, schema: str) -> str:
     The arms are those of :func:`build_access_predicate`; only the operands
     differ. The principal and the groups are the :func:`policy_operands` of
     ``schema``, and the grants table is qualified by ``schema``. The text binds
-    no parameter, so it serves as a policy expression and as the read view's
-    ``WHERE`` conjunct alike.
+    no parameter, so it serves as a policy expression.
 
     Args:
         mode: ``READ``, ``WRITE`` or ``OWNER``.
         outer: The table name or alias of ``context_entries`` the predicate
             qualifies, a trusted identifier: the table name in a policy on
-            ``context_entries``, the alias in the read view or in a child
-            table's policy subquery.
+            ``context_entries``, the alias in a child table's policy subquery.
         schema: The schema holding the tables and the identity functions,
             already quoted as a SQL identifier, so this module needs nothing
             beyond the standard library.
@@ -273,6 +274,48 @@ def build_policy_predicate(mode: AccessMode, *, outer: str, schema: str) -> str:
         grantee_operand=operands.principal,
         group_membership=f'= ANY({operands.groups})',
         grants_relation=f'{schema}.context_entry_grants',
+        public_gate=None,
+    )
+
+
+def build_gated_read_predicate(*, outer: str, schema: str, gate: str) -> str:
+    """Render the ``READ`` policy predicate that admits rows only while ``gate`` holds.
+
+    The arms and the grants relation are those of :func:`build_policy_predicate`.
+    The gate is folded into them rather than added as a conjunct: the principal
+    is the identity function's value when the gate holds and NULL otherwise, the
+    groups are the identity function's value or an empty array, and the public
+    arm also requires the gate. Each is a scalar subquery the planner evaluates
+    once per statement, so when the gate fails no arm matches any row.
+
+    A gate written as a conjunct of its own names no column, so the planner
+    applies it above every join of the predicate's relation as a pseudoconstant
+    filter, and it does not memoize the unique inner side of a join carrying
+    one: a join of the tags to the read view then loses the plan that reads the
+    tags in tag order. Inside the operands the gate leaves the join's conditions
+    alone.
+
+    Args:
+        outer: The alias of ``context_entries`` the predicate qualifies, a
+            trusted identifier.
+        schema: The schema holding the tables and the identity functions,
+            already quoted as a SQL identifier.
+        gate: A boolean SQL expression that names no column, a trusted
+            constant such as a role-membership test.
+
+    Returns:
+        The predicate text.
+    """
+    principal = f'(SELECT CASE WHEN {gate} THEN {schema}.{PRINCIPAL_FUNCTION}() END)'
+    groups = f"(SELECT CASE WHEN {gate} THEN {schema}.{GROUPS_FUNCTION}() ELSE '{{}}'::text[] END)::text[]"
+    return _compose(
+        AccessMode.READ,
+        outer=outer,
+        owner_operand=principal,
+        grantee_operand=principal,
+        group_membership=f'= ANY({groups})',
+        grants_relation=f'{schema}.context_entry_grants',
+        public_gate=f'(SELECT {gate})',
     )
 
 
@@ -284,6 +327,7 @@ def _compose(
     grantee_operand: str,
     group_membership: str,
     grants_relation: str,
+    public_gate: str | None,
 ) -> str:
     """Compose the arms of the ``mode`` predicate around the given operands.
 
@@ -297,6 +341,8 @@ def _compose(
         group_membership: The test a group grant's ``principal_id`` must pass,
             written to follow the column, such as ``= ANY(...)``.
         grants_relation: The grants table as the statement names it.
+        public_gate: A condition the ``READ`` public arm also requires, or
+            ``None`` for a public arm on visibility alone.
 
     Returns:
         ``<outer>.owner_id = <owner>`` for ``OWNER``; otherwise the owner arm,
@@ -308,7 +354,8 @@ def _compose(
         return owner_arm
 
     if mode is AccessMode.READ:
-        public_arm = f" OR {outer}.visibility = 'public'"
+        public = f"{outer}.visibility = 'public'"
+        public_arm = f' OR {public}' if public_gate is None else f' OR ({public} AND {public_gate})'
         permission = "g.permission IN ('read', 'write')"
     else:  # WRITE
         public_arm = ''

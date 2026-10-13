@@ -45,7 +45,7 @@ class _PgStubConnection:
             return self._avg_value
         if 'COUNT(DISTINCT thread_id)' in normalized:
             return 2
-        if 'COUNT(DISTINCT t.tag)' in normalized:
+        if 'SELECT DISTINCT t.tag' in normalized:
             return 3
         if 'COUNT(*)' in normalized:
             return 20

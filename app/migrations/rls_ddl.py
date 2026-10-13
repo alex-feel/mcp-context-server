@@ -19,13 +19,15 @@ the objects that do it:
   that leave SELECT for the policy role as the only privilege on it, and the function and
   INSTEAD OF trigger that keep it read-only.
 
-Every policy expression of ``context_entries`` and of a child's parent, and the read
-view's condition, come from :func:`app.access_scope.build_policy_predicate`, the composer
-the application predicate uses, so they cannot drift apart. Policies apply to the policy
-role only, never to PUBLIC, so every other role without the table owner's bypass reads
-nothing. Row-level security is enabled without FORCE: the table owner, which runs
-migrations and the command-line tools, keeps reading every row, and so does the read view
-it owns, which carries the read predicate as an ordinary condition.
+Every policy expression of ``context_entries`` and of a child's parent comes from
+:func:`app.access_scope.build_policy_predicate`, and the read view's condition from
+:func:`app.access_scope.build_gated_read_predicate`; both use the composer the application
+predicate uses, so they cannot drift apart. Policies apply to the policy role only, never
+to PUBLIC, so every other role without the table owner's bypass reads nothing.
+Row-level security is enabled without FORCE: the table owner, which runs migrations and
+the command-line tools, keeps reading every row, and so does the read view it owns, which
+carries the read predicate, gated on membership of the policy role, as an ordinary
+condition.
 
 Every object carries a fingerprint comment: the ``sha`` of its rendered statement, which
 changes whenever this module renders something different, and the digest of the server's
@@ -51,6 +53,7 @@ from app.access_scope import MAY_PUBLISH_FUNCTION
 from app.access_scope import PRINCIPAL_FUNCTION
 from app.access_scope import READ_VIEW
 from app.access_scope import AccessMode
+from app.access_scope import build_gated_read_predicate
 from app.access_scope import build_policy_predicate
 from app.access_scope import policy_operands
 
@@ -577,9 +580,13 @@ def read_view(columns: Sequence[str], *, schema: str, role_name: str) -> RlsObje
     of the policy role and the bound identity may read the row. It carries no option: it
     runs as its owner, the table owner, whom the policies do not filter, and the planner
     pulls it up into the query, so its conditions and the query's own compete by cost
-    alone and the query's conditions keep their indexes. The membership test names no
-    column, so the planner evaluates it once per statement, and a role outside the policy
-    role that obtains SELECT on the view reads nothing, as the policies give it nothing.
+    alone and the query's conditions keep their indexes. The membership test sits inside
+    the identity operands and the public arm of the read predicate
+    (:func:`app.access_scope.build_gated_read_predicate`), each a scalar subquery the
+    planner evaluates once per statement, so it never stands above a join of the view as
+    a condition of its own. For a role outside the policy role the identity is NULL, the
+    groups are empty and the public arm is false, so such a role that obtains SELECT on
+    the view reads nothing, as the policies give it nothing.
 
     Args:
         columns: Every column of ``context_entries``, quoted, in attribute order.
@@ -597,14 +604,14 @@ def read_view(columns: Sequence[str], *, schema: str, role_name: str) -> RlsObje
         raise ValueError('the read view needs at least one column of context_entries')
     select_list = ', '.join(f'{_PARENT}.{column}' for column in columns)
     gate = f"pg_catalog.pg_has_role(CURRENT_USER, {_string_literal(role_name)}, 'USAGE')"
-    readable = build_policy_predicate(AccessMode.READ, outer=_PARENT, schema=schema)
+    readable = build_gated_read_predicate(outer=_PARENT, schema=schema, gate=gate)
     return RlsObject(
         kind=RlsObjectKind.VIEW,
         name=READ_VIEW,
         anchor=f'{schema}.{READ_VIEW}',
         statement=(
             f'CREATE VIEW {schema}.{READ_VIEW} AS SELECT {select_list} '
-            f'FROM {schema}.{CONTEXT_TABLE} AS {_PARENT} WHERE {gate} AND {readable}'
+            f'FROM {schema}.{CONTEXT_TABLE} AS {_PARENT} WHERE {readable}'
         ),
     )
 

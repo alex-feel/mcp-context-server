@@ -6,8 +6,9 @@ count, one group bind whatever the group count, contiguous PostgreSQL
 placeholders from ``start``); the empty SystemScope predicate; the
 readable-parent predicate that tests a child row's parent key for membership in
 the readable entries; the policy predicate, whose arms equal the PostgreSQL
-predicate's modulo operands and whose READ text with outer ``ce`` is the read
-view's conjunct; the scope value objects, the publish permission included;
+predicate's modulo operands; the read view's gated READ predicate, the SELECT
+policy's text with the policy-role gate folded into its identity operands and its
+public arm; the scope value objects, the publish permission included;
 which rows each predicate admits in a real SQLite database seeded with owners,
 visibilities and grants; and the module's standard-library-only imports.
 """
@@ -31,6 +32,7 @@ from app.access_scope import AccessPredicate
 from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
+from app.access_scope import build_gated_read_predicate
 from app.access_scope import build_policy_predicate
 from app.access_scope import build_readable_parent_predicate
 from app.access_scope import policy_operands
@@ -286,6 +288,9 @@ def test_readable_parent_predicate_is_empty_for_the_system_scope(backend_type: s
 _SCHEMA = '"public"'
 _POLICY_PRINCIPAL = f'(SELECT {_SCHEMA}.mcp_context_principal_id())'
 _POLICY_GROUPS = f'(SELECT {_SCHEMA}.mcp_context_groups())::text[]'
+_GATE = "pg_catalog.pg_has_role(CURRENT_USER, 'mcp_context_request', 'USAGE')"
+_GATED_PRINCIPAL = f'(SELECT CASE WHEN {_GATE} THEN {_SCHEMA}.mcp_context_principal_id() END)'
+_GATED_GROUPS = f"(SELECT CASE WHEN {_GATE} THEN {_SCHEMA}.mcp_context_groups() ELSE '{{}}'::text[] END)::text[]"
 
 _POLICY_CASES = [
     pytest.param(
@@ -345,13 +350,39 @@ def test_policy_predicate_qualifies_every_relation_and_casts_the_group_operand(m
     assert '?' not in sql
 
 
-def test_view_conjunct_is_the_select_policy_text_with_outer_ce() -> None:
-    """The read view's READ conjunct and the SELECT policy differ only in the outer qualifier."""
-    policy = build_policy_predicate(AccessMode.READ, outer='context_entries', schema=_SCHEMA)
-    view = build_policy_predicate(AccessMode.READ, outer='ce', schema=_SCHEMA)
+def test_gated_read_predicate_exact_text() -> None:
+    """The gate sits inside each identity operand and the public arm, each a scalar subquery the planner runs once."""
+    assert build_gated_read_predicate(outer='ce', schema=_SCHEMA, gate=_GATE) == (
+        f"(ce.owner_id = {_GATED_PRINCIPAL} OR (ce.visibility = 'public' AND (SELECT {_GATE})) OR EXISTS (SELECT 1 "
+        f'FROM "public".context_entry_grants g WHERE g.context_entry_id = ce.id AND g.permission IN '
+        f"('read', 'write') AND ((g.principal_type = 'user' AND g.principal_id = {_GATED_PRINCIPAL}) OR "
+        f"(g.principal_type = 'group' AND g.principal_id = ANY({_GATED_GROUPS})))))"
+    )
 
-    assert view != policy
-    assert view == policy.replace('context_entries.', 'ce.')
+
+def test_gated_read_predicate_is_the_select_policy_text_with_gated_operands() -> None:
+    """The read view's predicate and the SELECT policy come from one composer: the operands and the public arm differ."""
+    policy = build_policy_predicate(AccessMode.READ, outer='context_entries', schema=_SCHEMA)
+    gated = build_gated_read_predicate(outer='ce', schema=_SCHEMA, gate=_GATE)
+
+    assert gated == (
+        policy
+        .replace('context_entries.', 'ce.')
+        .replace(_POLICY_PRINCIPAL, _GATED_PRINCIPAL)
+        .replace(_POLICY_GROUPS, _GATED_GROUPS)
+        .replace("ce.visibility = 'public'", f"(ce.visibility = 'public' AND (SELECT {_GATE}))")
+    )
+
+
+def test_gated_read_predicate_has_no_conjunct_of_the_gate_alone() -> None:
+    """Every use of the gate is the condition of a scalar subquery, so no condition of the predicate names no column."""
+    gated = build_gated_read_predicate(outer='ce', schema=_SCHEMA, gate=_GATE)
+
+    assert gated.count(_GATE) == 4
+    assert gated.count(f'(SELECT CASE WHEN {_GATE} THEN ') == 3
+    assert gated.count(f'(SELECT {_GATE})') == 1
+    assert f'{_GATE} AND' not in gated
+    assert f'g.principal_id = ANY({_GATED_GROUPS})' in gated
 
 
 def test_policy_operands_are_the_scalar_subqueries_of_the_identity_functions() -> None:

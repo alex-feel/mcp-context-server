@@ -1,22 +1,15 @@
 """Tests for deterministic top-N windows: the grouping-key tiebreak and byte-wise text collation on both backends."""
 
 import sqlite3
-from collections.abc import Awaitable
-from collections.abc import Callable
-from typing import Any
-from typing import TypeVar
 from typing import cast
 
 import pytest
 
 from app.backends.base import MAINTENANCE
-from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
-from app.backends.base import base_relation
 from app.repositories.statistics_repository import StatisticsRepository
 from tests.helpers import LOCAL_SCOPE
-
-T = TypeVar('T')
+from tests.repositories._statistics_recording import RecordingPgBackend
 
 
 class TestTopNTiebreakDeterminism:
@@ -96,78 +89,6 @@ class TestTopNTiebreakDeterminism:
         assert second['top_tags'] == first['top_tags']
 
 
-class _SqlRecordingPgConnection:
-    """Async connection stub recording every statement the PostgreSQL paths emit."""
-
-    def __init__(self) -> None:
-        self.queries: list[str] = []
-
-    async def fetch(self, query: str, *_args: object) -> list[dict[str, object]]:
-        """Record the statement and return no rows.
-
-        Args:
-            query: SQL text emitted by the repository.
-            _args: Bound parameters (unused).
-
-        Returns:
-            An empty row list.
-        """
-        self.queries.append(' '.join(query.split()))
-        return []
-
-    async def fetchrow(self, query: str, *_args: object) -> dict[str, object] | None:
-        """Record the statement and return no row.
-
-        Args:
-            query: SQL text emitted by the repository.
-            _args: Bound parameters (unused).
-
-        Returns:
-            ``None``, which every caller tolerates as an empty result.
-        """
-        self.queries.append(' '.join(query.split()))
-        return None
-
-    async def fetchval(self, query: str, *_args: object) -> int:
-        """Record the statement and return a zero scalar.
-
-        Args:
-            query: SQL text emitted by the repository.
-            _args: Bound parameters (unused).
-
-        Returns:
-            Zero.
-        """
-        self.queries.append(' '.join(query.split()))
-        return 0
-
-
-class _SqlRecordingPgBackend:
-    """Backend stub selecting the PostgreSQL branch and capturing its SQL."""
-
-    backend_type = 'postgresql'
-
-    def __init__(self) -> None:
-        self.connection = _SqlRecordingPgConnection()
-
-    def readable_relation(self, table: str, *, alias: str) -> str:
-        """Name every table by its own name, as a backend without access views does."""
-        return base_relation(table, alias=alias)
-
-    async def execute_read(self, operation: Callable[[Any], Awaitable[T]], *, access_scope: BackendAccess) -> T:
-        """Run the repository's async closure against the recording connection.
-
-        Args:
-            operation: The async closure the repository passes to the backend.
-            access_scope: The identity the read runs as; the fake binds nothing.
-
-        Returns:
-            Whatever the closure returns.
-        """
-        _ = access_scope
-        return await operation(self.connection)
-
-
 @pytest.mark.asyncio
 class TestTextOrderingIsByteWiseOnBothBackends:
     """Text sort terms compare bytes on both backends, so top-N membership matches.
@@ -223,7 +144,7 @@ class TestTextOrderingIsByteWiseOnBothBackends:
 
     async def test_postgresql_top_windows_force_byte_collation(self) -> None:
         """Both LIMIT-carrying tiebreaks in get_database_statistics are byte-wise."""
-        backend = _SqlRecordingPgBackend()
+        backend = RecordingPgBackend()
         repo = StatisticsRepository(cast(StorageBackend, backend))
 
         await repo.get_database_statistics(scope=LOCAL_SCOPE)

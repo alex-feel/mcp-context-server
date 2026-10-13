@@ -1,11 +1,12 @@
 """Tests for the rendering of the row-level security read view of ``context_entries``.
 
 Covers app.migrations.rls_ddl: the owner-owned view request roles read the context
-table through, its policy-role gate and READ conjunct, its column list, the
-function and INSTEAD OF trigger that keep it read-only, and the statements that
-grant the policy role SELECT on it and revoke what anyone else holds. The READ
-conjunct comes from the one predicate composer in app.access_scope, so it is
-asserted against the context_entries read policy's own text.
+table through, its READ condition with the policy-role gate folded into the identity
+operands and the public arm, its column list, the function and INSTEAD OF trigger
+that keep it read-only, and the statements that grant the policy role SELECT on it
+and revoke what anyone else holds. The condition comes from the one predicate
+composer in app.access_scope, so it is asserted against the context_entries read
+policy's own text.
 """
 
 import hashlib
@@ -14,8 +15,7 @@ import re
 import pytest
 
 from app.access_scope import READ_VIEW
-from app.access_scope import AccessMode
-from app.access_scope import build_policy_predicate
+from app.access_scope import build_gated_read_predicate
 from app.backends.postgresql_backend.session_profiles import RLS_READ_VIEWS
 from app.migrations.rls_ddl import RlsObjectKind
 from app.migrations.rls_ddl import comment_statement
@@ -33,6 +33,10 @@ ROLE_NAME = 'mcp_context_request'
 COLUMNS = ('"id"', '"thread_id"', '"text_content"', '"owner_id"', '"visibility"')
 GATE = "pg_catalog.pg_has_role(CURRENT_USER, 'mcp_context_request', 'USAGE')"
 VIEW = f'{SCHEMA}.context_entries_readable'
+POLICY_PRINCIPAL = f'(SELECT {SCHEMA}.mcp_context_principal_id())'
+POLICY_GROUPS = f'(SELECT {SCHEMA}.mcp_context_groups())::text[]'
+GATED_PRINCIPAL = f'(SELECT CASE WHEN {GATE} THEN {SCHEMA}.mcp_context_principal_id() END)'
+GATED_GROUPS = f"(SELECT CASE WHEN {GATE} THEN {SCHEMA}.mcp_context_groups() ELSE '{{}}'::text[] END)::text[]"
 
 
 def _read_policy_using() -> str:
@@ -48,26 +52,42 @@ def _read_policy_using() -> str:
 # ============================================================================
 
 
-def test_read_view_selects_every_column_through_the_gate_and_the_read_predicate() -> None:
+def test_read_view_selects_every_column_through_the_gated_read_predicate() -> None:
     """The view lists the given columns in order and keeps a row only for policy-role members that may read it."""
     view = read_view(COLUMNS, schema=SCHEMA, role_name=ROLE_NAME)
-    read = build_policy_predicate(AccessMode.READ, outer='ce', schema=SCHEMA)
+    read = build_gated_read_predicate(outer='ce', schema=SCHEMA, gate=GATE)
 
     assert view.statement == (
         f'CREATE VIEW {VIEW} AS SELECT ce."id", ce."thread_id", ce."text_content", ce."owner_id", ce."visibility" '
-        f'FROM {SCHEMA}.context_entries AS ce WHERE {GATE} AND {read}'
+        f'FROM {SCHEMA}.context_entries AS ce WHERE {read}'
     )
     assert view.kind is RlsObjectKind.VIEW
     assert view.name == 'context_entries_readable'
     assert view.anchor == VIEW
 
 
-def test_read_view_conjunct_is_the_read_policy_text_with_the_view_alias() -> None:
-    """The view and the SELECT policy read through one predicate, differing only in what qualifies the columns."""
+def test_read_view_condition_is_the_read_policy_text_with_the_gate_in_its_operands() -> None:
+    """The view and the SELECT policy read through one predicate; the view gates its identity operands and public arm."""
     view = read_view(COLUMNS, schema=SCHEMA, role_name=ROLE_NAME)
-    conjunct = view.statement.partition(f' WHERE {GATE} AND ')[2]
+    condition = view.statement.partition(' FROM "public".context_entries AS ce WHERE ')[2]
 
-    assert conjunct == _read_policy_using().replace('context_entries.', 'ce.')
+    assert condition == (
+        _read_policy_using()
+        .replace('context_entries.', 'ce.')
+        .replace(POLICY_PRINCIPAL, GATED_PRINCIPAL)
+        .replace(POLICY_GROUPS, GATED_GROUPS)
+        .replace("ce.visibility = 'public'", f"(ce.visibility = 'public' AND (SELECT {GATE}))")
+    )
+
+
+def test_read_view_has_no_conjunct_of_the_gate_alone() -> None:
+    """The gate is never a condition of its own, which the planner would hoist over every join with the view."""
+    statement = read_view(COLUMNS, schema=SCHEMA, role_name=ROLE_NAME).statement
+
+    assert f'WHERE {GATE}' not in statement
+    assert f'{GATE} AND' not in statement
+    assert statement.count(GATE) == statement.count(f'(SELECT CASE WHEN {GATE} THEN ') + statement.count(f'(SELECT {GATE})')
+    assert f'g.principal_id = ANY({GATED_GROUPS})' in statement
 
 
 def test_read_view_carries_no_option_that_would_cost_the_indexes() -> None:

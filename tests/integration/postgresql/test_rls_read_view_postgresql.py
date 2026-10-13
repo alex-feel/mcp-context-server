@@ -6,9 +6,11 @@ those the bound identity may read, and only for members of the policy role. Thes
 prove that the view returns exactly the readable rows of every identity of the policy
 matrix through the repositories with no application predicate, that it refuses every
 write and locking read, that a role outside the policy role reads nothing through it
-whatever it is granted, that a dropped policy role fails every read, that privileges
-default privileges hand out on the view are revoked when it is created, and that the
-fingerprint of the view detects a definition replaced without the gate.
+whatever it is granted, public rows included, that a dropped policy role fails every
+read, that privileges default privileges hand out on the view are revoked when it is
+created, that the fingerprint of the view detects a definition replaced without the
+gate, and that a view an earlier release created with the gate as a condition of its
+own is replaced at the next boot, after which a boot issues no DDL.
 """
 
 import logging
@@ -22,17 +24,22 @@ import pytest_asyncio
 from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessMode
 from app.access_scope import AccessScope
+from app.access_scope import build_gated_read_predicate
+from app.access_scope import build_policy_predicate
 from app.backends.postgresql_backend.session import quote_pg_identifier
 from app.migrations import apply_rls
 from app.migrations import create_read_view
 from app.migrations.rls import read_definition
 from app.migrations.rls_ddl import RlsObject
 from app.migrations.rls_ddl import RlsObjectKind
+from app.migrations.rls_ddl import comment_statement
 from app.migrations.rls_ddl import digest
 from app.migrations.rls_ddl import fingerprint
 from app.migrations.rls_ddl import read_view
 from app.migrations.rls_ddl import reject_function
 from app.migrations.rls_ddl import reject_trigger
+from tests.integration.postgresql._rls_catalog import ddl_log
+from tests.integration.postgresql._rls_catalog import install_ddl_log
 from tests.integration.postgresql._rls_matrix import MATRIX_SCOPES
 from tests.integration.postgresql._rls_matrix import MATRIX_VISIBILITY
 from tests.integration.postgresql._rls_matrix import POLICY_ROLE
@@ -49,6 +56,7 @@ pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
 SCHEMA = '"public"'
 VIEW = f'{SCHEMA}.context_entries_readable'
+GATE = f"pg_catalog.pg_has_role(CURRENT_USER, '{POLICY_ROLE}', 'USAGE')"
 ALICE = AccessScope('alice', frozenset())
 REFUSED = asyncpg.exceptions.InsufficientPrivilegeError
 MIGRATION_TIMEOUT_S = 300.0
@@ -181,14 +189,28 @@ class TestOutsiders:
     """A role outside the policy role reads nothing through the view and writes nothing, whatever it holds."""
 
     @pytest.mark.asyncio
-    async def test_a_view_grant_gives_an_outsider_no_row(self, admin_conn: asyncpg.Connection, pg_rls_db: RlsUrls) -> None:
-        """SELECT on the view, granted out of band, reads zero rows with and without a bound identity."""
+    async def test_a_view_grant_gives_an_outsider_no_row(
+        self, matrix_db: ScopedDb, admin_conn: asyncpg.Connection, pg_rls_db: RlsUrls,
+    ) -> None:
+        """SELECT on the view, granted out of band, reads no row under any identity of the matrix, public rows included."""
+        public_count = 'SELECT count(*) FROM context_entries_readable WHERE visibility = $1'
+        member = await asyncpg.connect(pg_rls_db.app)
+        try:
+            async with scoped_transaction(member, None):
+                public_rows = labels(matrix_db, await member.fetch('SELECT id FROM context_entries_readable'))
+                assert await member.fetchval(public_count, 'public') == len(public_rows)
+        finally:
+            await member.close()
+        assert public_rows
+        assert public_rows == MATRIX_VISIBILITY[AccessMode.READ]['unset']
+
         await admin_conn.execute(f'GRANT SELECT ON {VIEW} TO mcp_outsider')
         conn = await asyncpg.connect(pg_rls_db.outsider)
         try:
-            for scope in (None, ALICE):
+            for name, scope in MATRIX_SCOPES.items():
                 async with scoped_transaction(conn, scope):
-                    assert await conn.fetchval('SELECT count(*) FROM context_entries_readable') == 0
+                    assert await conn.fetchval('SELECT count(*) FROM context_entries_readable') == 0, name
+                    assert await conn.fetchval(public_count, 'public') == 0, name
         finally:
             await conn.close()
 
@@ -290,11 +312,12 @@ class TestInstalledView:
         """A view replaced out of band keeps its comment, whose definition digest differs from that of the new definition."""
         view = await _rendered_view(admin_conn)
         before = digest(await read_definition(admin_conn, view))
-        gate = f"pg_catalog.pg_has_role(CURRENT_USER, '{POLICY_ROLE}', 'USAGE') AND "
-        assert gate in view.statement
+        gated = build_gated_read_predicate(outer='ce', schema=SCHEMA, gate=GATE)
+        ungated = build_policy_predicate(AccessMode.READ, outer='ce', schema=SCHEMA)
+        assert view.statement.endswith(f' WHERE {gated}')
         owner = await asyncpg.connect(pg_rls_db.maintenance)
         try:
-            await owner.execute(view.statement.replace('CREATE VIEW', 'CREATE OR REPLACE VIEW').replace(gate, ''))
+            await owner.execute(view.statement.replace('CREATE VIEW', 'CREATE OR REPLACE VIEW').replace(gated, ungated))
         finally:
             await owner.close()
 
@@ -342,3 +365,47 @@ class TestInstalledView:
         finally:
             await conn.close()
         assert rows == MATRIX_VISIBILITY[AccessMode.READ]['alice']
+
+
+class TestUpgrade:
+    """A view an earlier release created with the gate as a condition of its own is replaced once."""
+
+    @pytest.mark.asyncio
+    async def test_a_view_gated_by_a_condition_of_its_own_is_re_created_once(
+        self, matrix_db: ScopedDb, admin_conn: asyncpg.Connection, pg_rls_db: RlsUrls, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The next boot drops and re-creates the view with the gate in its operands; the boot after it issues no DDL."""
+        view = await _rendered_view(admin_conn)
+        gated = build_gated_read_predicate(outer='ce', schema=SCHEMA, gate=GATE)
+        ungated = build_policy_predicate(AccessMode.READ, outer='ce', schema=SCHEMA)
+        statement = view.statement.replace(f' WHERE {gated}', f' WHERE {GATE} AND {ungated}')
+        assert statement != view.statement
+        earlier = RlsObject(kind=RlsObjectKind.VIEW, name=view.name, anchor=view.anchor, statement=statement)
+        owner = await asyncpg.connect(pg_rls_db.maintenance)
+        try:
+            await owner.execute(statement.replace('CREATE VIEW', 'CREATE OR REPLACE VIEW'))
+            definition = digest(await read_definition(owner, earlier))
+            await owner.execute(comment_statement(earlier, definition=definition, preenabled=None))
+        finally:
+            await owner.close()
+        await install_ddl_log(admin_conn)
+
+        with caplog.at_level(logging.INFO, logger='app.migrations.rls'):
+            await apply_rls(matrix_db.seed_backend, rls_settings())
+
+        assert (await ddl_log(admin_conn))[:2] == ['DROP VIEW', 'CREATE VIEW']
+        definition = digest(await read_definition(admin_conn, view))
+        assert await _comment(admin_conn, view) == fingerprint(sha=view.sha, definition=definition, preenabled=None)
+        assert await _view_acl(admin_conn) == [(POLICY_ROLE, 'SELECT')]
+        assert [record.levelno for record in caplog.records if record.name == 'app.migrations.rls'] == [logging.INFO]
+        conn = await asyncpg.connect(pg_rls_db.app)
+        try:
+            async with scoped_transaction(conn, ALICE):
+                rows = labels(matrix_db, await conn.fetch('SELECT id FROM context_entries_readable'))
+        finally:
+            await conn.close()
+        assert rows == MATRIX_VISIBILITY[AccessMode.READ]['alice']
+
+        await admin_conn.execute('TRUNCATE public.ddl_log')
+        await apply_rls(matrix_db.seed_backend, rls_settings())
+        assert await ddl_log(admin_conn) == []

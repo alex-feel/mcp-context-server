@@ -1,18 +1,23 @@
-"""Plans of the routed search statements under row-level security, planned as the request login role.
+"""Plans of the routed read statements under row-level security, planned as the request login role.
 
 Policies are security conditions, and PostgreSQL turns a query's own condition into an index
 condition beside them only when every function in it is leakproof; the full-text match and the
 JSON accessors are not. The repositories of a row-level security request backend therefore read
 ``context_entries`` through its read view, which the table owner reads without policies and which
 the planner pulls up into the query, so the view's conditions and the query's compete by cost
-alone. These tests capture the SQL the repositories send as ``mcp_app`` (the browse with a string
-equality and with a string IN, the full-text page, the hybrid full-text leg, and the vector
-search with a metadata filter in both embedding layouts), plan each with sequential scans
-disabled and assert that the plan scans the index its own filter can use and evaluates the
-policy-role gate once, as a One-Time Filter: with the application predicate, as the request
-profile sends it, and without it, as the repositories send it for the system scope. Each plan
-is paired with the same statement naming the base table, whose plan under the policies scans no
-such index.
+alone. The view evaluates its policy-role gate inside the identity operands and the public arm,
+each a scalar subquery the planner runs once as an InitPlan, so no condition of the view names no
+column: such a condition would sit above every join with the view as a One-Time Filter and keep
+the planner from memoizing the view side of that join.
+
+These tests capture the SQL the repositories send as ``mcp_app`` and plan it. The browse with a
+string equality and with a string IN, the full-text page, the hybrid full-text leg, and the
+vector search with a metadata filter in both embedding layouts, each planned with sequential
+scans disabled, scan the index their own filter can use and evaluate the gate in InitPlans alone,
+while the same statement naming the base table scans no such index under the policies. The
+unique-tags count and the top tags of the statistics, which join the tags to the view, carry no
+One-Time Filter and no condition naming the gate. Each runs with the application predicate, as the
+request profile sends it, and without it, as the repositories send it for the system scope.
 """
 
 import json
@@ -59,6 +64,10 @@ VIEW_RELATION = 'context_entries_readable AS '
 BASE_RELATION = 'context_entries AS '
 FTS_INDEX = 'idx_text_search_gin'
 METADATA_INDEX = f'idx_metadata_{FIELD}'
+GATE_FUNCTION = 'pg_has_role'
+TAG_COLUMN = 't.tag'
+# The plan-node keys that hold a condition the node applies.
+CONDITION_KEYS = ('Index Cond', 'Recheck Cond', 'Filter', 'Join Filter', 'Hash Cond', 'Merge Cond', 'One-Time Filter')
 # Target rows: the filters below select exactly these among the filler rows.
 TARGETS: tuple[tuple[str, str, Visibility], ...] = (
     ('plan_alice_private', 'alice', 'private'),
@@ -243,37 +252,53 @@ def _walk(node: object) -> list[dict[str, object]]:
 
 @dataclass(frozen=True, slots=True)
 class PlanFacts:
-    """Which indexes a plan searches with a condition, and whether it gates on the policy role once.
+    """Which indexes a plan searches with a condition, and where it evaluates the policy-role gate.
 
     An index scanned without a condition does not count: with sequential scans disabled the
     planner may read a whole partial index whose predicate the query implies, and apply the
     query's condition to every row it returns.
+
+    Attributes:
+        searched_indexes: The indexes scanned with an index condition.
+        gate_initplans: How many InitPlans compute a value from the gate.
+        gated_conditions: Every node condition, One-Time Filters included, that names the gate.
+        one_time_filters: Every One-Time Filter of the plan.
+        text: The statement and one line per plan node, for failure messages.
     """
 
     searched_indexes: frozenset[str]
-    gated_once: bool
+    gate_initplans: int
+    gated_conditions: tuple[str, ...]
+    one_time_filters: tuple[str, ...]
     text: str
 
 
-async def _plan(backend: PostgreSQLBackend, statement: Captured) -> PlanFacts:
-    """Plan ``statement`` as the request role bound to alice, with sequential scans disabled."""
+async def _plan(backend: PostgreSQLBackend, statement: Captured, *, disable_seqscan: bool) -> PlanFacts:
+    """Plan ``statement`` verbosely as the request role bound to alice."""
 
     async def _explain(conn: asyncpg.Connection) -> str:
-        await conn.execute('SET LOCAL enable_seqscan = off')
-        return str(await conn.fetchval(f'EXPLAIN (FORMAT JSON) {statement.sql}', *statement.args))
+        if disable_seqscan:
+            await conn.execute('SET LOCAL enable_seqscan = off')
+        return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.args))
 
     document = await backend.execute_read(_explain, access_scope=ALICE)
     nodes = _walk(json.loads(document))
+    conditions = [str(node[key]) for node in nodes for key in CONDITION_KEYS if key in node]
     return PlanFacts(
         searched_indexes=frozenset(str(node['Index Name']) for node in nodes if 'Index Name' in node and 'Index Cond' in node),
-        gated_once=any('pg_has_role' in str(node.get('One-Time Filter', '')) for node in nodes),
+        gate_initplans=sum(
+            1 for node in nodes
+            if node.get('Parent Relationship') == 'InitPlan' and GATE_FUNCTION in str(node.get('Output', ''))
+        ),
+        gated_conditions=tuple(condition for condition in conditions if GATE_FUNCTION in condition),
+        one_time_filters=tuple(str(node['One-Time Filter']) for node in nodes if 'One-Time Filter' in node),
         text='\n'.join([statement.sql, *(_describe(node) for node in nodes)]),
     )
 
 
 def _describe(node: dict[str, object]) -> str:
-    """Return one line naming a plan node, what it scans and the conditions it applies."""
-    keys = ('Relation Name', 'Alias', 'Index Name', 'Index Cond', 'Recheck Cond', 'Filter', 'One-Time Filter')
+    """Return one line naming a plan node, what it scans, what it computes for its parent and its conditions."""
+    keys = ('Parent Relationship', 'Relation Name', 'Alias', 'Index Name', 'Output', *CONDITION_KEYS)
     return ' | '.join([str(node['Node Type']), *(f'{key}: {node[key]}' for key in keys if key in node)])
 
 
@@ -293,16 +318,26 @@ async def _captured_plans(
         for statement in searches:
             assert (variant == 'app-predicate') is ('owner_id' in statement.sql), statement.sql
             base = Captured(statement.sql.replace(VIEW_RELATION, BASE_RELATION), statement.args)
-            plans.append((await _plan(capturing.backend, statement), await _plan(capturing.backend, base)))
+            plans.append((
+                await _plan(capturing.backend, statement, disable_seqscan=True),
+                await _plan(capturing.backend, base, disable_seqscan=True),
+            ))
         return plans
+
+
+def _assert_gate_in_initplans_alone(facts: PlanFacts) -> None:
+    assert facts.gate_initplans > 0, facts.text
+    assert facts.gated_conditions == (), facts.text
+    assert facts.one_time_filters == (), facts.text
 
 
 def _assert_index_through_the_view_only(plans: list[tuple[PlanFacts, PlanFacts]], index: str) -> None:
     for through_view, through_base in plans:
         assert index in through_view.searched_indexes, through_view.text
-        assert through_view.gated_once, through_view.text
+        _assert_gate_in_initplans_alone(through_view)
         assert index not in through_base.searched_indexes, through_base.text
-        assert not through_base.gated_once, through_base.text
+        assert through_base.gate_initplans == 0, through_base.text
+        assert through_base.gated_conditions == (), through_base.text
 
 
 @pytest.mark.parametrize('variant', list(VARIANTS))
@@ -330,6 +365,26 @@ async def test_vector_search_with_a_metadata_filter_keeps_the_metadata_index_thr
     plans = await _captured_plans(pg_rls_db.app, variant, _vector_metadata, f"'{FIELD}'")
 
     _assert_index_through_the_view_only(plans, METADATA_INDEX)
+
+
+@pytest.mark.parametrize('variant', list(VARIANTS))
+@pytest.mark.asyncio
+async def test_tag_aggregates_join_the_view_without_a_one_time_filter(
+    variant: str, plan_db: ScopedDb, pg_rls_db: RlsUrls,
+) -> None:
+    """The unique-tags count and the top tags evaluate the gate in InitPlans, never as a condition over the join."""
+    _ = plan_db
+    profile_factory, scope = VARIANTS[variant]
+    async with capturing_repositories(pg_rls_db.app, profile_factory()) as (repos, capturing):
+        stats = await repos.statistics.get_database_statistics(scope=scope)
+        aggregates = [statement for statement in capturing.statements if TAG_COLUMN in statement.sql]
+        assert len(aggregates) == 2, [statement.sql for statement in aggregates]
+        plans = [await _plan(capturing.backend, statement, disable_seqscan=False) for statement in aggregates]
+
+    assert stats['unique_tags'] > 0
+    for statement, facts in zip(aggregates, plans, strict=True):
+        assert VIEW_RELATION in statement.sql, statement.sql
+        _assert_gate_in_initplans_alone(facts)
 
 
 @pytest.mark.asyncio

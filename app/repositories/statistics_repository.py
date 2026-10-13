@@ -217,13 +217,18 @@ class StatisticsRepository(BaseRepository):
             )
             readable_images = f'{image_rows}{images.where_clause()}'
             readable_tags = f'{tag_rows}{tags.where_clause()}'
+            unique_tags_sql = f'SELECT COUNT(DISTINCT t.tag) AS count FROM {readable_tags}'
         else:
             images = tags = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
             parent_rows = self._readable('context_entries', alias='ce')
             readable_images = f'{image_rows} JOIN {parent_rows} ON ce.id = i.context_entry_id{images.where_clause()}'
             readable_tags = f'{tag_rows} JOIN {parent_rows} ON ce.id = t.context_entry_id{tags.where_clause()}'
+            # Counted through a DISTINCT subquery, which PostgreSQL can plan as a read of the
+            # tags in tag order from idx_tags_tag with no sort. For COUNT(DISTINCT) it costs a
+            # sort of every readable tag row about the same as that ordered read and can pick
+            # the sort, which on a large tag set takes far longer than its estimate.
+            unique_tags_sql = f'SELECT COUNT(*) AS count FROM (SELECT DISTINCT t.tag FROM {readable_tags}) AS d'
         images_sql = f'SELECT COUNT(*) AS count FROM {readable_images}'
-        unique_tags_sql = f'SELECT COUNT(DISTINCT t.tag) AS count FROM {readable_tags}'
         threads_sql = f'SELECT COUNT(DISTINCT thread_id) AS count FROM {entry_rows}{entry_filter}'
         average_sql = (
             'SELECT AVG(entry_count) AS avg_entries FROM '
