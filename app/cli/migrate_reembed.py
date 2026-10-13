@@ -44,7 +44,10 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
+from app.cli._backend import assert_maintenance_connection
 from app.cli._backend import make_backend
+from app.cli._backend import owner_refusal
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
 from app.cli._embedding_introspect import dimension_conflict_error
@@ -87,6 +90,9 @@ def run_reembed(source_url: str, *, dry_run: bool) -> int:
     Returns:
         Process exit code: 0 success or success-no-op, 1 invalid input or
         provider unavailable, 2 unrecoverable failure.
+        A connection row-level security filters, or a privilege error, is not a
+        failure of this mode: it propagates to the dispatcher, which prints the
+        owner remediation and exits 1.
     """
     masked = mask_credentials(source_url)
     _print_warning(source_url=masked, dry_run=dry_run)
@@ -103,6 +109,8 @@ def run_reembed(source_url: str, *, dry_run: bool) -> int:
     try:
         return asyncio.run(_reembed_async(source_url, dry_run=dry_run))
     except Exception as exc:
+        if owner_refusal(exc) is not None:
+            raise
         logger.exception('re-embed failed: %s', exc)
         return 2
 
@@ -126,6 +134,8 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
     backend = make_backend(source_url)
     await backend.initialize()
     try:
+        await assert_maintenance_connection(backend, get_settings().storage.postgresql_schema)
+
         from app.repositories import RepositoryContainer
         from app.tools._generation import generate_compression_with_timeout
         from app.tools._generation import generate_embeddings_with_timeout
@@ -213,14 +223,15 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
                 # never left without embeddings: delete_all_chunks removes the
                 # old vectors + embedding_metadata, store_chunked writes the
                 # new ones (and the new model_name).
-                async with backend.begin_transaction() as txn:
-                    await repos.embeddings.delete_all_chunks(entry_id, txn=txn)
+                async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
+                    await repos.embeddings.delete_all_chunks(entry_id, txn=txn, scope=MAINTENANCE)
                     await repos.embeddings.store_chunked(
                         context_id=entry_id,
                         chunk_embeddings=chunk_embeddings,
                         model=configured_model,
                         txn=txn,
                         upsert=False,
+                        scope=MAINTENANCE,
                     )
                 succeeded += 1
 
@@ -270,7 +281,7 @@ async def _find_all_entries(backend: StorageBackend) -> list[tuple[str, str]]:
             )
             return [(str(r[0]), str(r[1])) for r in cursor.fetchall()]
 
-        return await backend.execute_read(_read_sqlite)
+        return await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
 
     async def _read_pg(conn: asyncpg.Connection) -> list[tuple[str, str]]:
         rows = await conn.fetch(
@@ -279,7 +290,7 @@ async def _find_all_entries(backend: StorageBackend) -> list[tuple[str, str]]:
         )
         return [(str(r['id']), str(r['text_content'])) for r in rows]
 
-    return await backend.execute_read(cast(Any, _read_pg))
+    return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)
 
 
 __all__ = ['run_reembed']

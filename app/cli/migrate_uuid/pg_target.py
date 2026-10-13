@@ -39,6 +39,11 @@ async def initialize_target_postgresql(
     width matches the data being copied (mirrors the SQLite path's
     ``detect_source_embedding_dim`` -> ``initialize_target_sqlite`` flow).
 
+    The backend is the maintenance one with the credentials of ``target_url``. After
+    provisioning, and before the caller copies any row, it refuses a role that
+    row-level security filters by raising
+    :class:`app.cli._backend.MaintenanceConnectionError`.
+
     Args:
         target_url: asyncpg DSN for the target database.
         embedding_dim: SOURCE embedding dimension, templated into the semantic
@@ -123,8 +128,9 @@ async def initialize_target_postgresql(
 
     import asyncpg
 
-    from app.backends import create_backend
     from app.backends.postgresql_backend.session import quote_pg_identifier
+    from app.cli._backend import assert_maintenance_connection
+    from app.cli._backend import make_backend
     from app.migrations.chunking import apply_chunking_migration
     from app.migrations.fts import apply_fts_migration
     from app.migrations.index_tree import apply_index_tree_migration
@@ -187,11 +193,7 @@ async def initialize_target_postgresql(
     # extension guaranteed by the block above (created or failed loudly), while
     # a vector-free target must not let the CLI process's env-driven gate force
     # pgvector provisioning it cannot satisfy on a pgvector-less host.
-    backend = create_backend(
-        backend_type='postgresql',
-        connection_string=target_url,
-        provision_vector=with_semantic,
-    )
+    backend = make_backend(target_url, provision_vector=with_semantic)
     await backend.initialize()
     try:
         await init_database(backend=backend)
@@ -217,6 +219,9 @@ async def initialize_target_postgresql(
         # server-initialized DB. force=True mirrors the SQLite path; the table is
         # harmless when the node-summary feature is later disabled.
         await apply_index_tree_migration(backend, force=True)
+        # The copy that follows writes as this role: it must be one row-level
+        # security does not filter on the tables just provisioned.
+        await assert_maintenance_connection(backend, schema)
     finally:
         await backend.shutdown()
 
@@ -255,7 +260,9 @@ async def ensure_target_pg_fts(
     so the backstop PROVISIONS it instead. It MUST run before the data copy
     so the generated column populates as rows are INSERTed. Mirrors the
     SQLite target path, which re-applies the IF-NOT-EXISTS FTS DDL keyed only
-    on source presence.
+    on source presence. The DDL runs on the maintenance backend of ``target_url``,
+    which first refuses a role that row-level security filters
+    (:class:`app.cli._backend.MaintenanceConnectionError`).
 
     Args:
         target_url: asyncpg DSN for the target database.
@@ -280,20 +287,18 @@ async def ensure_target_pg_fts(
         )
         return
 
-    from app.backends import create_backend
+    from app.cli._backend import assert_maintenance_connection
+    from app.cli._backend import make_backend
     from app.migrations.fts import apply_fts_migration
 
     # provision_vector=False: this backend runs FTS DDL only (tsvector column +
     # GIN index), which never touches the vector type, and the pre-existing
     # target may be a pgvector-less host (a compressed deployment) -- the CLI
     # process's env-driven gate must not force pgvector provisioning here.
-    backend = create_backend(
-        backend_type='postgresql',
-        connection_string=target_url,
-        provision_vector=False,
-    )
+    backend = make_backend(target_url, provision_vector=False)
     await backend.initialize()
     try:
+        await assert_maintenance_connection(backend, target_schema)
         await apply_fts_migration(backend, force=True)
     finally:
         await backend.shutdown()

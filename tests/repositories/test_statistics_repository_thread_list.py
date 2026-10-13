@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories.statistics_repository import StatisticsRepository
@@ -36,7 +37,7 @@ class TestThreadListDetails:
                 (generate_id(),),
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         threads = await stats_repo.get_thread_list(scope=LOCAL_SCOPE)
         assert len(threads) == 1
@@ -164,7 +165,7 @@ class TestGetThreadListPagination:
         stats_repo: StatisticsRepository,
     ) -> None:
         """Default (no limit) returns every thread in the canonical order."""
-        await stats_test_db.execute_write(self._insert_five_threads)
+        await stats_test_db.execute_write(self._insert_five_threads, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE)
 
@@ -177,7 +178,7 @@ class TestGetThreadListPagination:
         stats_repo: StatisticsRepository,
     ) -> None:
         """Explicit limit=None is identical to the default (no LIMIT clause)."""
-        await stats_test_db.execute_write(self._insert_five_threads)
+        await stats_test_db.execute_write(self._insert_five_threads, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE, limit=None)
 
@@ -190,7 +191,7 @@ class TestGetThreadListPagination:
         stats_repo: StatisticsRepository,
     ) -> None:
         """limit returns the first N threads of the canonical order."""
-        await stats_test_db.execute_write(self._insert_five_threads)
+        await stats_test_db.execute_write(self._insert_five_threads, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE, limit=2)
 
@@ -203,7 +204,7 @@ class TestGetThreadListPagination:
         stats_repo: StatisticsRepository,
     ) -> None:
         """limit + offset returns the correct page slice in canonical order."""
-        await stats_test_db.execute_write(self._insert_five_threads)
+        await stats_test_db.execute_write(self._insert_five_threads, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE, limit=2, offset=2)
 
@@ -216,7 +217,7 @@ class TestGetThreadListPagination:
         stats_repo: StatisticsRepository,
     ) -> None:
         """An offset past the last row yields an empty page, not an error."""
-        await stats_test_db.execute_write(self._insert_five_threads)
+        await stats_test_db.execute_write(self._insert_five_threads, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE, limit=5, offset=10)
 
@@ -229,7 +230,7 @@ class TestGetThreadListPagination:
         stats_repo: StatisticsRepository,
     ) -> None:
         """A limit exceeding the thread count returns every thread."""
-        await stats_test_db.execute_write(self._insert_five_threads)
+        await stats_test_db.execute_write(self._insert_five_threads, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE, limit=100)
 
@@ -242,7 +243,7 @@ class TestGetThreadListPagination:
         stats_repo: StatisticsRepository,
     ) -> None:
         """Walking pages of size 2 reconstructs the full ordered list exactly once."""
-        await stats_test_db.execute_write(self._insert_five_threads)
+        await stats_test_db.execute_write(self._insert_five_threads, access_scope=MAINTENANCE)
 
         page1 = await stats_repo.get_thread_list(scope=LOCAL_SCOPE, limit=2, offset=0)
         page2 = await stats_repo.get_thread_list(scope=LOCAL_SCOPE, limit=2, offset=2)

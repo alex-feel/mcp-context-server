@@ -148,8 +148,9 @@ def validate_store_entry(
     # transaction. Mirrors the single-entry store_context boundary guard.
     # The same chokepoint also enforces the LENGTH caps on the values that land
     # in a PostgreSQL btree index (thread_id, and every INDEXED metadata field)
-    # and the CAST compatibility of a typed indexed field: an oversized or
-    # uncastable value aborts the PostgreSQL INSERT where SQLite stores it.
+    # and the DECLARED TYPE of a typed indexed field: an oversized value, or one
+    # an integer or boolean index cannot cast, aborts the PostgreSQL INSERT where
+    # SQLite stores it.
     entry_error = entry_boundary_error(
         thread_id=thread_id,
         text=text,
@@ -303,9 +304,10 @@ async def validate_update_entry(
     # so the update would succeed on SQLite but hard-fail on PostgreSQL after a
     # wasted generation pass, charging the circuit breaker inside the transaction.
     # The same chokepoint also enforces the length cap and, for a typed field,
-    # the cast compatibility of every INDEXED metadata field, in both the
-    # replacement and the merge-patch form: an oversized or uncastable value
-    # aborts the PostgreSQL UPDATE on idx_metadata_<field> where SQLite stores it.
+    # the declared type of every INDEXED metadata field, in both the replacement
+    # and the merge-patch form: an oversized value, or one an integer or boolean
+    # index cannot cast, aborts the PostgreSQL UPDATE on idx_metadata_<field>
+    # where SQLite stores it.
     entry_error = entry_boundary_error(
         text=text,
         tags=cast('object', tags_field),

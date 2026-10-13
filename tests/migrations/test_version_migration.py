@@ -27,6 +27,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.migrations.version import apply_version_migration
 
@@ -57,7 +58,7 @@ async def _columns(backend: StorageBackend) -> list[str]:
         cursor = conn.execute('PRAGMA table_info(context_entries)')
         return [row[1] for row in cursor.fetchall()]
 
-    return await backend.execute_read(_check)
+    return await backend.execute_read(_check, access_scope=MAINTENANCE)
 
 
 @pytest_asyncio.fixture
@@ -111,7 +112,7 @@ class TestVersionMigration:
                 (new_id,),
             )
 
-        await backend_pre_migration.execute_write(_insert)
+        await backend_pre_migration.execute_write(_insert, access_scope=MAINTENANCE)
 
         def _read_version(conn: sqlite3.Connection) -> int | None:
             cursor = conn.execute(
@@ -120,7 +121,7 @@ class TestVersionMigration:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        assert await backend_pre_migration.execute_read(_read_version) == 0
+        assert await backend_pre_migration.execute_read(_read_version, access_scope=MAINTENANCE) == 0
 
     @pytest.mark.asyncio
     async def test_preexisting_row_backfills_default_zero(self, backend_pre_migration: StorageBackend) -> None:
@@ -139,7 +140,7 @@ class TestVersionMigration:
                 (legacy_id,),
             )
 
-        await backend_pre_migration.execute_write(_insert_legacy)
+        await backend_pre_migration.execute_write(_insert_legacy, access_scope=MAINTENANCE)
 
         await apply_version_migration(backend_pre_migration)
 
@@ -150,7 +151,7 @@ class TestVersionMigration:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        assert await backend_pre_migration.execute_read(_read_version) == 0
+        assert await backend_pre_migration.execute_read(_read_version, access_scope=MAINTENANCE) == 0
 
     @pytest.mark.asyncio
     async def test_migration_idempotent(self, backend_pre_migration: StorageBackend) -> None:

@@ -10,6 +10,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
 from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
 from app.metadata_types import non_finite_metadata_error
@@ -145,7 +146,7 @@ async def store_context(
         # publish gate on the EFFECTIVE value: a caller-omitted visibility that
         # defaults to 'public' is still a publish and still needs the role.
         principal = resolve_effective_principal()
-        scope = principal.access_scope()
+        scope = resolve_write_scope(principal)
         effective_visibility: str = (
             visibility if visibility is not None else settings.access_control.default_visibility
         )
@@ -187,9 +188,10 @@ async def store_context(
         # Reject an over-long thread_id or indexed metadata value for the same reason,
         # and at the same point: each also lands in a PostgreSQL btree index whose
         # index-tuple ceiling aborts the INSERT inside the transaction where SQLite
-        # stores the identical value. The same guard rejects a value that cannot
-        # survive the SQL cast a typed METADATA_INDEXED_FIELDS entry puts inside its
-        # expression index, which PostgreSQL evaluates on every INSERT.
+        # stores the identical value. The same guard rejects a value that does not
+        # parse as the type a typed METADATA_INDEXED_FIELDS entry declares; for an
+        # integer or boolean field that type is a cast inside its expression index,
+        # which PostgreSQL evaluates on every INSERT.
         reject_invalid_indexed_values(thread_id=thread_id, metadata=metadata)
 
         # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===
@@ -230,7 +232,7 @@ async def store_context(
         run_embedding = False
         if get_embedding_provider() is not None:
             if likely_duplicate_id is not None:
-                run_embedding = not await repos.embeddings.exists(likely_duplicate_id)
+                run_embedding = not await repos.embeddings.exists(likely_duplicate_id, scope=scope)
                 if not run_embedding:
                     logger.debug(
                         'Pre-check: skipping embedding generation for likely duplicate '
@@ -291,7 +293,7 @@ async def store_context(
 
         while True:
             try:
-                async with backend.begin_transaction() as txn:
+                async with backend.begin_transaction(access_scope=scope) as txn:
                     context_id, was_updated, embedding_stored = await execute_store_in_transaction(
                         repos, txn,
                         thread_id=thread_id,

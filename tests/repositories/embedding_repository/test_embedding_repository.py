@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -189,7 +190,7 @@ class TestEmbeddingRepository:
         embedding_repo = EmbeddingRepository(backend)
 
         # Check non-existent ID
-        exists = await embedding_repo.exists(generate_id())
+        exists = await embedding_repo.exists(generate_id(), scope=LOCAL_SCOPE)
         assert exists is False
 
     @requires_sqlite_vec
@@ -394,7 +395,7 @@ async def test_get_statistics_with_compression_sqlite(
             _make_compressed_chunk(j, f'P{i}-{j}'.encode())
             for j in range(chunks_per_entry)
         ]
-        await repo.store_chunked(cid, chunks, model='test-model')
+        await repo.store_chunked(cid, chunks, model='test-model', scope=LOCAL_SCOPE)
 
     stats = await repo.get_statistics(scope=LOCAL_SCOPE)
 
@@ -463,13 +464,14 @@ class TestBulkChunkCleanup:
                     ),
                 ],
                 model='test-model',
+                scope=LOCAL_SCOPE,
             )
             stored_ids.append(context_id)
 
         removed = stored_ids[:3]
         survivor = stored_ids[3]
 
-        deleted = await embedding_repo.delete_all_chunks_bulk(removed)
+        deleted = await embedding_repo.delete_all_chunks_bulk(removed, scope=LOCAL_SCOPE)
         assert deleted == 6  # two chunks per removed entry
 
         def _counts(conn: sqlite3.Connection) -> tuple[int, int, int]:
@@ -488,15 +490,15 @@ class TestBulkChunkCleanup:
             ).fetchone()[0]
             return int(gone_meta), int(gone_chunks), int(survivor_chunks)
 
-        gone_meta, gone_chunks, survivor_chunks = await backend.execute_read(_counts)
+        gone_meta, gone_chunks, survivor_chunks = await backend.execute_read(_counts, access_scope=MAINTENANCE)
         assert gone_meta == 0
         assert gone_chunks == 0
         assert survivor_chunks == 2
 
         # The survivor's vectors are still reachable, so the vec0 delete was scoped.
-        assert await embedding_repo.exists(survivor) is True
+        assert await embedding_repo.exists(survivor, scope=LOCAL_SCOPE) is True
         for context_id in removed:
-            assert await embedding_repo.exists(context_id) is False
+            assert await embedding_repo.exists(context_id, scope=LOCAL_SCOPE) is False
 
     @requires_sqlite_vec
     async def test_bulk_delete_of_an_empty_list_is_a_no_op(
@@ -506,7 +508,7 @@ class TestBulkChunkCleanup:
         from app.repositories.embedding_repository import EmbeddingRepository
 
         embedding_repo = EmbeddingRepository(async_db_with_embeddings)
-        assert await embedding_repo.delete_all_chunks_bulk([]) == 0
+        assert await embedding_repo.delete_all_chunks_bulk([], scope=LOCAL_SCOPE) == 0
 
     @requires_sqlite_vec
     async def test_bulk_delete_chunks_a_list_beyond_the_bind_parameter_limit(
@@ -541,6 +543,7 @@ class TestBulkChunkCleanup:
                     ),
                 ],
                 model='test-model',
+                scope=LOCAL_SCOPE,
             )
             stored_ids.append(context_id)
 
@@ -548,6 +551,6 @@ class TestBulkChunkCleanup:
         # chunk boundary the repository applies.
         padded = stored_ids + [generate_id() for _ in range(1200)]
 
-        assert await embedding_repo.delete_all_chunks_bulk(padded) == 3
+        assert await embedding_repo.delete_all_chunks_bulk(padded, scope=LOCAL_SCOPE) == 3
         for context_id in stored_ids:
-            assert await embedding_repo.exists(context_id) is False
+            assert await embedding_repo.exists(context_id, scope=LOCAL_SCOPE) is False

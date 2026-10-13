@@ -12,6 +12,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
 from app.errors import format_exception_message
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -97,7 +98,7 @@ async def store_context_batch(
         # under, and the author-group grant policy; the publish gate is then
         # enforced per entry on each entry's EFFECTIVE visibility.
         principal = resolve_effective_principal()
-        scope = principal.access_scope()
+        scope = resolve_write_scope(principal)
         author_group_grants: frozenset[str] = (
             principal.groups
             if settings.access_control.default_group_grants == 'author_groups'
@@ -201,7 +202,7 @@ async def store_context_batch(
             # Embedding task (with pre-check optimization)
             if embedding_provider is not None:
                 if likely_duplicate_id is not None:
-                    has_embeddings = await repos.embeddings.exists(likely_duplicate_id)
+                    has_embeddings = await repos.embeddings.exists(likely_duplicate_id, scope=scope)
                     if has_embeddings:
                         logger.debug(
                             'Pre-check: skipping embedding generation for likely duplicate '
@@ -424,7 +425,7 @@ async def store_context_batch(
                     # retries and reconciliation passes never double-count.
                     stored_count_attempt = 0
 
-                    async with backend.begin_transaction() as txn:
+                    async with backend.begin_transaction(access_scope=scope) as txn:
                         for idx, (ve_idx, entry) in enumerate(validated_entries_filtered):
                             original_idx = entry['index']
 
@@ -575,7 +576,7 @@ async def store_context_batch(
 
                 while True:
                     try:
-                        async with backend.begin_transaction() as txn:
+                        async with backend.begin_transaction(access_scope=scope) as txn:
                             context_id, was_updated, embedding_stored = (
                                 await execute_store_in_transaction(
                                     repos, txn,

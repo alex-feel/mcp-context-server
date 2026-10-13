@@ -3,6 +3,7 @@
 import pytest
 
 from app.metadata_sql import _FLOAT8_OVERFLOW
+from app.metadata_sql import pg_numeric_accessor
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.query_builder import MetadataQueryBuilder
@@ -98,7 +99,7 @@ class TestGeneratedClauseTextBudget:
         )
         assert 'trunc(' in clause  # integral / int64 / canonical-double probe
         assert '::float8)::text::NUMERIC' in clause
-        assert "(metadata->>'k')::NUMERIC IN ($1, $2)" in clause  # exact arm
+        assert f"{pg_numeric_accessor('k')} IN ($1, $2)" in clause  # exact arm
         assert '($1)::float8, ($2)::float8' in clause  # double arm
         assert "jsonb_typeof(metadata->'k') = 'number'" in clause
 
@@ -109,7 +110,7 @@ class TestGeneratedClauseTextBudget:
         clause, params = builder.build_where_clause()
         # Binding order still follows the caller's list; only the SQL grouping differs.
         assert params == [7, 1.5, 9]
-        assert "(metadata->>'k')::NUMERIC IN ($1, $3)" in clause  # int members, no probe
+        assert f"{pg_numeric_accessor('k')} IN ($1, $3)" in clause  # int members, no probe
         assert '($2)::float8' in clause  # the float member's double arm
         # An int-only list needs no discriminator at all.
         int_only = self._build(

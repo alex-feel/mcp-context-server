@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.cli.migrate_embeddings import run_embed_missing
 from app.cli.migrate_reembed import run_reembed
 from app.embeddings.base import EmbeddingProvider
@@ -195,7 +196,7 @@ def _seed_fp32(
                         (context_id, model, DIM, 1),
                     )
 
-                await backend.execute_write(_write)
+                await backend.execute_write(_write, access_scope=MAINTENANCE)
 
             missing: list[str] = []
             for i in range(n_missing):

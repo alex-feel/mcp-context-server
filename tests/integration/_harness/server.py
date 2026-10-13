@@ -7,14 +7,7 @@ server, a stand-in Starlette ``/health`` route (the live route is checked in
 session-pooler check staying inert on SQLite.
 """
 
-import contextlib
-import os
-import tempfile
-from pathlib import Path
 from typing import Any
-
-from anyio import Path as AsyncPath
-from fastmcp.client.transports import PythonStdioTransport
 
 from tests.integration._harness.core import ERA_PROTOCOL_VERSIONS
 from tests.integration._harness.core import HarnessCore
@@ -160,12 +153,12 @@ class ServerMixin(HarnessCore):
     async def test_force_off_removes_search_tool(self) -> bool:
         """Verify ENABLE_FTS=false force-off removes fts_search_context end to end.
 
-        Opens a SECOND server subprocess whose environment matches connect_client()
-        except ENABLE_FTS is forced to 'false' while ENABLE_SEMANTIC_SEARCH and
-        ENABLE_HYBRID_SEARCH stay enabled. The tri-state toggle should drop
-        fts_search_context from the registered tool surface while leaving
-        semantic_search_context and hybrid_search_context registered. This proves
-        the force-off path on BOTH SQLite and PostgreSQL.
+        Opens a SECOND server subprocess (``_second_server``) with ENABLE_FTS
+        forced to 'false' while ENABLE_SEMANTIC_SEARCH and ENABLE_HYBRID_SEARCH
+        stay enabled. The tri-state toggle should drop fts_search_context from the
+        registered tool surface while leaving semantic_search_context and
+        hybrid_search_context registered. This proves the force-off path on BOTH
+        SQLite and PostgreSQL.
 
         When no embedding provider is available (no Ollama model in the
         environment), semantic_search_context cannot register and
@@ -178,55 +171,16 @@ class ServerMixin(HarnessCore):
         """
         test_name = 'force_off_removes_search_tool'
         assert self.client is not None
-        wrapper_script = Path(__file__).parents[2] / 'run_server.py'
-
-        # Build a server env mirroring connect_client(), then force FTS off.
-        # PythonStdioTransport(env=...) passes the dict explicitly on both
-        # backends (the MCP SDK env whitelist applied to a bare script path would
-        # strip app-specific vars), so the forced ENABLE_FTS reaches the server.
-        server_env: dict[str, str] = {
-            **os.environ,
-            'MCP_TEST_MODE': '1',
-            'DISABLED_TOOLS': '',
-            'ENABLE_SEMANTIC_SEARCH': 'true',
-            'ENABLE_FTS': 'false',
-            'ENABLE_HYBRID_SEARCH': 'true',
-            'ENABLE_EMBEDDING_COMPRESSION': 'false',
-            'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
-            'SUMMARY_ANTHROPIC_EFFORT': 'low',
-        }
-
-        second_db_path: Path | None = None
-        if self.backend == 'postgresql':
-            server_env['STORAGE_BACKEND'] = 'postgresql'
-            server_env['POSTGRESQL_CONNECTION_STRING'] = self.pg_url or ''
-        else:
-            # SQLite needs an isolated temp DB so the second server does not
-            # contend with the primary client's database file.
-            server_env['STORAGE_BACKEND'] = 'sqlite'
-            second_db_dir = tempfile.mkdtemp(prefix='mcp_force_off_')
-            second_db_path = Path(second_db_dir) / 'force_off.db'
-            server_env['DB_PATH'] = str(second_db_path)
-
-        transport = PythonStdioTransport(
-            script_path=str(wrapper_script),
-            env=server_env,
-        )
-        second_client = self._new_client(transport)
-
         try:
-            await second_client.__aenter__()
-
-            # Determine whether an embedding provider is available; if not,
-            # semantic_search_context cannot register and (with FTS forced off)
-            # hybrid_search_context has no search mode, so skip those presence
-            # assertions while still asserting FTS absence.
-            stats_data = self._extract_content(await second_client.call_tool('get_statistics', {}))
-            semantic_info = stats_data.get('semantic_search', {})
-            semantic_available = bool(semantic_info.get('available', False))
-
-            tools = await second_client.list_tools()
-            tool_names = {t.name for t in tools}
+            async with self._second_server({'ENABLE_FTS': 'false'}) as second_client:
+                # Determine whether an embedding provider is available; if not,
+                # semantic_search_context cannot register and (with FTS forced off)
+                # hybrid_search_context has no search mode, so skip those presence
+                # assertions while still asserting FTS absence.
+                stats_data = self._extract_content(await second_client.call_tool('get_statistics', {}))
+                semantic_info = stats_data.get('semantic_search', {})
+                semantic_available = bool(semantic_info.get('available', False))
+                tool_names = {t.name for t in await second_client.list_tools()}
 
             if 'fts_search_context' in tool_names:
                 self.test_results.append(
@@ -259,18 +213,6 @@ class ServerMixin(HarnessCore):
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
-        finally:
-            with contextlib.suppress(Exception):
-                await second_client.__aexit__(None, None, None)
-            if second_db_path is not None:
-                async_second_db = AsyncPath(second_db_path)
-                for suffix in ('-wal', '-shm', ''):
-                    candidate = AsyncPath(str(second_db_path) + suffix)
-                    with contextlib.suppress(Exception):
-                        if await candidate.exists():
-                            await candidate.unlink()
-                with contextlib.suppress(Exception):
-                    await AsyncPath(async_second_db.parent).rmdir()
 
     async def test_health_endpoint_returns_ok(self) -> bool:
         """Verify a stand-in Starlette /health route returns HTTP 200 with {"status": "ok"}.

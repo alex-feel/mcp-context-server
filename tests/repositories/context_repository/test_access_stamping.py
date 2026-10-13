@@ -14,6 +14,7 @@ import pytest
 
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.repositories.context_repository import ContextRepository
 from tests.helpers import insert_grant
 
@@ -32,7 +33,7 @@ async def _read_access_columns(backend: StorageBackend, context_id: str) -> tupl
         assert row is not None
         return row[0], row[1], row[2]
 
-    return await backend.execute_read(_read)
+    return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
 
 class TestStoreStamping:

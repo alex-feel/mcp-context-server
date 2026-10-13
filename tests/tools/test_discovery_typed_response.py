@@ -33,6 +33,8 @@ import pytest_asyncio
 import app.tools.discovery as discovery_module
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from app.compression.provenance import insert_compression_metadata
 from app.compression.types import CompressionMetadata
 from app.migrations.compression import apply_compression_migration
@@ -261,7 +263,11 @@ def test_postgresql_connection_metric_keys_are_all_declared() -> None:
     """
     from app.backends.postgresql_backend import PostgreSQLBackend
 
-    backend = PostgreSQLBackend(connection_string='postgresql://u:p@localhost:5432/db')
+    backend = PostgreSQLBackend(
+        connection_string='postgresql://u:p@localhost:5432/db',
+        profile=UnboundProfile(),
+        credentials=NO_CREDENTIAL_OVERRIDE,
+    )
 
     class _StubPool:
         """Minimal asyncpg pool stand-in exposing only the size accessors."""

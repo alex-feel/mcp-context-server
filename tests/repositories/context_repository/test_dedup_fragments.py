@@ -20,6 +20,9 @@ from app.repositories.context_repository import dedup
 
 SCOPE = AccessScope('alice', frozenset({'team-x'}))
 
+# A relation a backend that reads through an access view names for ``context_entries``.
+VIEW_RELATION = 'context_entries_readable AS context_entries'
+
 type Statement = tuple[str, list[object]]
 
 
@@ -49,13 +52,23 @@ class TestCandidateSql:
         self, backend_type: str, thread_source: str, groups_param: object,
     ) -> None:
         """The READ predicate follows the thread and source terms, before ORDER BY and LIMIT."""
-        sql, params = dedup._candidate_sql(backend_type, 'thread-1', 'agent', scope=SCOPE)
+        sql, params = dedup._candidate_sql(
+            backend_type, 'thread-1', 'agent', scope=SCOPE, relation='context_entries',
+        )
 
         assert _words(sql) == _words(
             'SELECT id, content_hash, text_content, summary, owner_id FROM context_entries '
             f'WHERE {thread_source} AND {_read_predicate(backend_type, 3)} ORDER BY id DESC LIMIT 1',
         )
         assert params == ['thread-1', 'agent', 'alice', 'alice', groups_param]
+
+    def test_candidate_reads_the_given_relation(self) -> None:
+        """The statement selects from the relation the repository named for the backend."""
+        sql, _ = dedup._candidate_sql(
+            'postgresql', 'thread-1', 'agent', scope=SCOPE, relation=VIEW_RELATION,
+        )
+
+        assert f'FROM {VIEW_RELATION} WHERE' in sql
 
 
 class TestInterleaveSql:
@@ -70,7 +83,9 @@ class TestInterleaveSql:
     )
     def test_turn_check_is_read_scoped(self, backend_type: str, leading_terms: str) -> None:
         """The READ predicate follows the candidate-id term."""
-        sql, params = dedup._interleave_sql(backend_type, 'thread-1', 'agent', 'candidate-id', scope=SCOPE)
+        sql, params = dedup._interleave_sql(
+            backend_type, 'thread-1', 'agent', 'candidate-id', scope=SCOPE, relation='context_entries',
+        )
 
         assert _words(sql) == _words(
             f'SELECT 1 FROM context_entries WHERE {leading_terms} AND {_read_predicate(backend_type, 4)} LIMIT 1',
@@ -81,9 +96,19 @@ class TestInterleaveSql:
     @pytest.mark.parametrize(('source', 'opposite'), [('agent', 'user'), ('user', 'agent')])
     def test_turn_check_looks_for_the_opposite_source(self, source: str, opposite: str) -> None:
         """A user store looks for agent turns and an agent store for user turns."""
-        _, params = dedup._interleave_sql('sqlite', 'thread-1', source, 'candidate-id', scope=SCOPE)
+        _, params = dedup._interleave_sql(
+            'sqlite', 'thread-1', source, 'candidate-id', scope=SCOPE, relation='context_entries',
+        )
 
         assert params[1] == opposite
+
+    def test_turn_check_reads_the_given_relation(self) -> None:
+        """The statement selects from the relation the repository named for the backend."""
+        sql, _ = dedup._interleave_sql(
+            'postgresql', 'thread-1', 'agent', 'candidate-id', scope=SCOPE, relation=VIEW_RELATION,
+        )
+
+        assert f'FROM {VIEW_RELATION} WHERE' in sql
 
 
 class TestDedupUpdateSql:

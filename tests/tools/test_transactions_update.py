@@ -138,7 +138,7 @@ class TestExecuteUpdateInTransaction:
         assert 'images' in updated_fields
         assert 'content_type' in updated_fields
         mock_repos.images.replace_images_for_context.assert_called_once_with(
-            '0190abcdef1234567890abcd00000001', [], txn=mock_txn,
+            '0190abcdef1234567890abcd00000001', [], txn=mock_txn, scope=LOCAL_SCOPE,
         )
         mock_repos.context.update_content_type.assert_called_once_with(
             '0190abcdef1234567890abcd00000001', 'text', scope=LOCAL_SCOPE, txn=mock_txn,
@@ -167,7 +167,7 @@ class TestExecuteUpdateInTransaction:
         )
         assert 'embedding' in updated_fields
         mock_repos.embeddings.delete_all_chunks.assert_called_once_with(
-            '0190abcdef1234567890abcd00000001', txn=mock_txn,
+            '0190abcdef1234567890abcd00000001', txn=mock_txn, scope=LOCAL_SCOPE,
         )
         mock_repos.embeddings.store_chunked.assert_called_once()
 
@@ -205,7 +205,7 @@ class TestExecuteUpdateInTransaction:
 
         assert 'embedding' in updated_fields
         mock_repos.embeddings.delete_all_chunks.assert_called_once_with(
-            '0190abcdef1234567890abcd00000001', txn=mock_txn,
+            '0190abcdef1234567890abcd00000001', txn=mock_txn, scope=LOCAL_SCOPE,
         )
         mock_repos.embeddings.store_chunked.assert_not_called()
 

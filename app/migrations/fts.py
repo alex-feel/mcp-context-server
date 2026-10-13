@@ -21,6 +21,7 @@ import asyncpg
 
 from app.access_scope import SYSTEM_SCOPE
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.repositories.fts_repository import FtsRepository
@@ -141,7 +142,7 @@ async def apply_fts_migration(
 
     try:
         # Check if FTS is already initialized
-        fts_exists = await fts_repo.is_available()
+        fts_exists = await fts_repo.is_available(scope=MAINTENANCE)
 
         if fts_exists:
             # FTS exists - check if tokenizer/language matches current settings
@@ -167,7 +168,7 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
 
     if backend_type == 'sqlite':
         # Check current tokenizer
-        current_tokenizer = await fts_repo.get_current_tokenizer()
+        current_tokenizer = await fts_repo.get_current_tokenizer(scope=MAINTENANCE)
         desired_tokenizer = await fts_repo.get_desired_tokenizer(settings.fts.language)
 
         if current_tokenizer != desired_tokenizer:
@@ -194,7 +195,7 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
 
             try:
                 # Perform migration
-                result = await fts_repo.migrate_tokenizer(desired_tokenizer)
+                result = await fts_repo.migrate_tokenizer(desired_tokenizer, scope=MAINTENANCE)
                 logger.info(
                     f'FTS tokenizer migration completed: {result["entries_migrated"]} entries '
                     f'migrated from "{result["old_tokenizer"]}" to "{result["new_tokenizer"]}"',
@@ -207,7 +208,7 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
 
     else:  # postgresql
         # Check current language
-        current_language = await fts_repo.get_current_language()
+        current_language = await fts_repo.get_current_language(scope=MAINTENANCE)
         desired_language = settings.fts.language
 
         if current_language and current_language != desired_language:
@@ -234,7 +235,7 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
 
             try:
                 # Perform migration
-                result = await fts_repo.migrate_language(desired_language)
+                result = await fts_repo.migrate_language(desired_language, scope=MAINTENANCE)
                 logger.info(
                     f'FTS language migration completed: {result["entries_migrated"]} entries '
                     f'migrated from "{result["old_language"]}" to "{result["new_language"]}"',
@@ -275,7 +276,7 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         def _apply_fts_sqlite(conn: sqlite3.Connection) -> None:
             conn.executescript(migration_sql)
 
-        await manager.execute_write(_apply_fts_sqlite)
+        await manager.execute_write(_apply_fts_sqlite, access_scope=MAINTENANCE)
         logger.info(f'Applied FTS migration (SQLite FTS5) with tokenizer: {tokenizer}')
 
     else:  # postgresql
@@ -324,5 +325,5 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
                 if stmt and not stmt.startswith('--'):
                     await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-        await manager.execute_write(cast(Any, _apply_fts_pg))
+        await manager.execute_write(cast(Any, _apply_fts_pg), access_scope=MAINTENANCE)
         logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts.language}')

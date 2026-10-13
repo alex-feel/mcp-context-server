@@ -5,6 +5,7 @@ from unittest import mock
 import pytest
 
 from app.cli.migrate_uuid.records import MigrationOptions
+from tests.cli._owner_connection import AnswersAsOwner
 
 
 @pytest.mark.asyncio
@@ -24,7 +25,7 @@ async def test_pg_pg_migration_closes_source_when_target_connect_fails(
 
     closed = {'source': False}
 
-    class _FakeConn:
+    class _FakeConn(AnswersAsOwner):
         async def execute(self, _sql: str, *_args: object) -> str:
             """Accept the session-parameter statements applied right after the dial."""
             return 'SET'
@@ -52,7 +53,7 @@ async def test_pg_pg_migration_closes_source_when_target_connect_fails(
     assert closed['source'] is True
 
 
-class _FakeMigrationSourceConn:
+class _FakeMigrationSourceConn(AnswersAsOwner):
     """Minimal stand-in for the read-only PG->PG source connection."""
 
     async def execute(self, _sql: str) -> None:
@@ -70,7 +71,7 @@ class _FakeMigrationSourceConn:
         return None
 
 
-class _FakeMigrationTargetConn:
+class _FakeMigrationTargetConn(AnswersAsOwner):
     """Minimal stand-in for the PG->PG target connection."""
 
     async def execute(self, _sql: str) -> None:

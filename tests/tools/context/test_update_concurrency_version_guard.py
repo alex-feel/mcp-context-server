@@ -39,6 +39,7 @@ import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
 from app.access_scope import Scope
+from app.backends.base import MAINTENANCE
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -195,7 +196,7 @@ class TestUpdateContextVersionGuard:
                         (context_id,),
                     )
 
-                await backend.execute_write(_bump)
+                await backend.execute_write(_bump, access_scope=MAINTENANCE)
             return result
 
         with (
@@ -261,7 +262,7 @@ class TestUpdateContextVersionGuard:
                         (context_id,),
                     )
 
-                await backend.execute_write(_bump)
+                await backend.execute_write(_bump, access_scope=MAINTENANCE)
             return result
 
         # No text -> no generation; only metadata changes. Providers are None.

@@ -199,8 +199,9 @@ class ContextSearchMixin(BaseRepository):
                 self._placeholder(len(params) + i + 1)
                 for i in range(len(normalized_tags))
             ])
+            tag_rows = self._readable('tags', alias='tags')
             clauses.append(
-                f' AND id IN (SELECT DISTINCT context_entry_id FROM tags WHERE tag IN ({tag_placeholders}))',
+                f' AND id IN (SELECT DISTINCT context_entry_id FROM {tag_rows} WHERE tag IN ({tag_placeholders}))',
             )
             params.extend(normalized_tags)
 
@@ -272,7 +273,8 @@ class ContextSearchMixin(BaseRepository):
 
                 # Build query with indexed fields first for optimization
                 # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
-                query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
+                entries = self._readable('context_entries', alias='context_entries')
+                query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM {entries} WHERE 1=1'
                 where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
                     scope=scope,
                     thread_id=thread_id,
@@ -340,7 +342,7 @@ class ContextSearchMixin(BaseRepository):
                 # Return list of rows and statistics
                 return list(rows), stats
 
-            return await self.backend.execute_read(_search_sqlite)
+            return await self.backend.execute_read(_search_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _search_postgresql(conn: 'asyncpg.Connection') -> tuple[list[Any], dict[str, Any]]:
@@ -348,7 +350,8 @@ class ContextSearchMixin(BaseRepository):
 
             # Build query with indexed fields first for optimization
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
-            query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
+            entries = self._readable('context_entries', alias='context_entries')
+            query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM {entries} WHERE 1=1'
             where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
                 scope=scope,
                 thread_id=thread_id,
@@ -403,7 +406,7 @@ class ContextSearchMixin(BaseRepository):
             # Return list of rows and statistics
             return list(rows), stats
 
-        return await self.backend.execute_read(_search_postgresql)
+        return await self.backend.execute_read(_search_postgresql, access_scope=scope)
 
     async def grep_scan_text_contents(
         self,
@@ -460,6 +463,7 @@ class ContextSearchMixin(BaseRepository):
             ``validation_errors`` (list, only when a metadata filter is invalid).
         """
         backend_type = self.backend.backend_type
+        entries = self._readable('context_entries', alias='context_entries')
         where_sql, base_params, _filter_count, validation_errors = self._build_context_filter_clause(
             scope=scope,
             thread_id=thread_id,
@@ -503,7 +507,7 @@ class ContextSearchMixin(BaseRepository):
                         look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
                         look_params.append(boundary_id)
                     cursor.execute(
-                        f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
+                        f'SELECT 1 FROM {entries} WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
                         tuple(look_params),
                     )
                     return cursor.fetchone() is not None
@@ -519,7 +523,7 @@ class ContextSearchMixin(BaseRepository):
                         page_params.append(last_id)
                     page_limit = min(page_size, max_entries_scanned - scanned)
                     query = (
-                        f'SELECT id, text_content FROM context_entries WHERE 1=1{clause} '
+                        f'SELECT id, text_content FROM {entries} WHERE 1=1{clause} '
                         f'ORDER BY id DESC LIMIT {self._placeholder(len(page_params) + 1)}'
                     )
                     page_params.append(page_limit)
@@ -557,7 +561,7 @@ class ContextSearchMixin(BaseRepository):
                         break
                 return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'sqlite'}
 
-            return await self.backend.execute_read(_scan_sqlite)
+            return await self.backend.execute_read(_scan_sqlite, access_scope=scope)
 
         async def _scan_postgresql(conn: 'asyncpg.Connection') -> tuple[list[tuple[str, str]], dict[str, Any]]:
             out: list[tuple[str, str]] = []
@@ -580,7 +584,7 @@ class ContextSearchMixin(BaseRepository):
                     look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
                     look_params.append(boundary_id)
                 look_hit = await conn.fetchval(
-                    f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
+                    f'SELECT 1 FROM {entries} WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
                     *look_params,
                 )
                 return look_hit is not None
@@ -596,7 +600,7 @@ class ContextSearchMixin(BaseRepository):
                     page_params.append(last_id)
                 page_limit = min(page_size, max_entries_scanned - scanned)
                 query = (
-                    f'SELECT id, text_content FROM context_entries WHERE 1=1{clause} '
+                    f'SELECT id, text_content FROM {entries} WHERE 1=1{clause} '
                     f'ORDER BY id DESC LIMIT {self._placeholder(len(page_params) + 1)}'
                 )
                 page_params.append(page_limit)
@@ -632,4 +636,4 @@ class ContextSearchMixin(BaseRepository):
                     break
             return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'postgresql'}
 
-        return await self.backend.execute_read(_scan_postgresql)
+        return await self.backend.execute_read(_scan_postgresql, access_scope=scope)

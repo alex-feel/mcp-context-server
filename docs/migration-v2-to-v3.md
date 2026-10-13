@@ -85,7 +85,7 @@ On every migration path -- same-backend and cross-backend alike -- each copied `
 
 A SQLite source may hold a value that SQLite stores happily but a PostgreSQL target cannot bind. Two byte sequences are unstorable in any column: an embedded NUL (`U+0000`) and an unpaired UTF-16 surrogate (a code point that cannot be encoded as UTF-8). The `jsonb` columns -- `context_entries.metadata` and `image_attachments.image_metadata` -- carry two further hazards: a metadata NUL serialized as its six-character JSON escape sequence (which the target's `::jsonb` cast rejects even though the raw bytes contain no literal NUL), and metadata that is not valid JSON at all (which the `::jsonb` cast also rejects). Any of these, bound blindly, would abort the whole cross-backend transaction mid-run and roll back every already-copied row.
 
-A THIRD class is about the target's INDEXES rather than its column types. PostgreSQL refuses to store an index tuple larger than roughly 2.7 KB, and it evaluates a metadata expression index -- including any SQL cast an `integer`/`boolean`/`float` `METADATA_INDEXED_FIELDS` type hint puts in it -- on every INSERT. SQLite's equivalent indexes have no size limit and apply no cast, so a source predating the write-path caps can hold an oversized `thread_id`, an oversized tag, or an indexed metadata value the target cannot index at all (an oversized one, or `{"priority": "high"}` under an `integer`-typed field). This class is checked in EVERY direction that writes to PostgreSQL, including PostgreSQL to PostgreSQL: the metadata expression indexes are deliberately absent from the base schema, so a source that was only ever initialized by this CLI can carry such a value even though it is itself a PostgreSQL database.
+A THIRD class is about the target's INDEXES rather than its column types. PostgreSQL refuses to store an index tuple larger than roughly 2.7 KB, and it evaluates a metadata expression index -- including the SQL cast an `integer`/`boolean` `METADATA_INDEXED_FIELDS` type hint puts in it -- on every INSERT. SQLite's equivalent indexes have no size limit and apply no cast, so a source predating the write-path caps can hold an oversized `thread_id`, an oversized tag, or an indexed metadata value the target cannot index at all (an oversized one, or `{"priority": "high"}` under an `integer`-typed field). The same pre-check also skips a value that is not a valid number under a `float`-typed field: the `float` index reads JSON numbers only and could hold it, but the field's declared type is `float`, and the server refuses such a value on both backends. This class is checked in EVERY direction that writes to PostgreSQL, including PostgreSQL to PostgreSQL: the metadata expression indexes are deliberately absent from the base schema, so a source that was only ever initialized by this CLI can carry such a value even though it is itself a PostgreSQL database.
 
 Rather than crash, the CLI pre-checks each source row and SKIPS an offending row instead of aborting: it records the source row id and the offending column in the run's `errors`, and skips that row's `tags` and `image_attachments` children too (with a warning) so no child is left referencing a never-inserted parent (which would itself raise a foreign-key violation on PostgreSQL). Clean rows in the same run still migrate and the transaction commits. `--dry-run` surfaces every such row without inserting, so you can preview the full set before a real run.
 
@@ -331,6 +331,36 @@ Steps:
 4. **Restart the server.**
 
 The statement sets `updated_at` on every reassigned entry and leaves `context_entry_grants` unchanged: a grant's `granted_by` records who created it, and grantee rows name principals, not owners. `FROM` and `TO` must both be non-empty and must differ; otherwise the CLI exits with status 1 and writes nothing. `--reassign-owner` is mutually exclusive with `--compress`, `--decompress` and `--re-embed`, and a co-passed `--embed-missing` does not run: run it separately.
+
+## PostgreSQL Row-Level Security and the CLI
+
+Every PostgreSQL mode of `mcp-context-server-migrate` must connect with the credentials of the role that owns the tables: the source and target of the UUIDv7 migration, `--compress`, `--decompress`, `--re-embed`, `--embed-missing`, `--reassign-owner` and `--disable-rls`. The credentials in `--source-url` and `--target-url` are used as given; `POSTGRESQL_MIGRATION_USER` and `POSTGRESQL_MIGRATION_PASSWORD` do not apply to them. With [row-level security](database-backends.md#row-level-security-postgresql) enabled, the request login role sees only the rows its identity may read, so a mode running as that role would copy, compress, re-embed or reassign a partial set of rows.
+
+Each mode therefore checks, before it reads any data, whether row-level security filters its role on any of the server's tables, and refuses with exit status 1 when it does:
+
+```text
+This command must connect with the table owner's credentials: row-level security filters mcp_app on context_entries, tags. Rerun with the owner's connection string (docs/migration-v2-to-v3.md).
+```
+
+A statement the database refuses with insufficient privilege (SQLSTATE 42501) at any later point ends the run with the same remediation and exit status 1. Every PostgreSQL connection the CLI opens also sets `row_security = off`, so a read that row-level security would filter raises an error instead of returning partial results. That setting is a session `SET`, so run the CLI through a Direct connection or a session-mode pooler endpoint rather than a transaction-mode pooler.
+
+The owner reads every row because row-level security is enabled without FORCE. `--reassign-owner` binds no caller identity, which the trigger guarding `owner_id` lets through, so it can rewrite owners with row-level security on. The UUIDv7 migration initializes a PostgreSQL target without row-level security, and `--compress` and `--decompress` replace a vector table with one that carries no policies; in each case the next server start with `ENABLE_POSTGRESQL_RLS=true` installs the missing policies and grants.
+
+### Removing Row-Level Security (`--disable-rls`)
+
+`--disable-rls` removes the row-level security the server installed: the read view and its write trigger, every policy of the server, the guard trigger and the helper functions. It disables row-level security only on the tables the server enabled it on, and reports each table it leaves enabled, such as a table whose row-level security was on before the server first installed its policies. Like the other in-place modes it operates on `--source-url` and ignores `--target-url`.
+
+1. **Stop every server instance**, and change the configuration that would start one again to `ENABLE_POSTGRESQL_RLS=false`. An instance started with the flag on installs the objects again; one started with the flag off before the removal refuses to start. The ordered procedure for Helm, Docker Compose and STDIO clients is in [Disabling row-level security](database-backends.md#disabling-row-level-security).
+2. **Preview** with `--dry-run`, which prints the statements and the tables it would disable or leave enabled, and changes nothing:
+
+   ```bash
+   mcp-context-server-migrate --source-url postgresql://owner:password@host:5432/mcp_context --disable-rls --dry-run
+   ```
+
+3. **Execute** by re-running without `--dry-run`. The removal runs as one transaction under the server's schema-initialization lock. When nothing is installed, it reports that and exits successfully.
+4. **Start the server** with `ENABLE_POSTGRESQL_RLS=false`.
+
+Set `POSTGRESQL_SCHEMA` for the CLI when the tables live outside `public`. The removal refuses, with exit status 1 and the list of sessions, while any session of a member of the policy role is connected to the database, a dry run included. Superuser sessions do not count, because the server refuses to start as a superuser with row-level security on. `--force`, valid only with `--disable-rls`, removes the objects anyway and logs those sessions. Exit status is 0 on success, 1 for a refusal, and 2 for an unexpected failure. `--disable-rls` is mutually exclusive with `--compress`, `--decompress`, `--re-embed` and `--reassign-owner`, and a co-passed `--embed-missing` does not run.
 
 ## End-to-End Checklist: Supabase v2 to v3 With Compression
 

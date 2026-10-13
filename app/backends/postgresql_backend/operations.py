@@ -1,7 +1,11 @@
-"""Pooled connection access and the read and write entry points of the PostgreSQL backend.
+"""Pooled connection access, the read and write entry points and the readable relations of the PostgreSQL backend.
 
 Every operation acquires through ``get_connection``, which applies the circuit breaker and
-its fault accounting; ``execute_write`` adds the retry loop and the per-write transaction.
+its fault accounting; ``execute_write`` adds the retry loop and the per-write transaction,
+and ``execute_read`` runs inside a transaction that binds the caller's identity when the
+session profile wraps reads. A statement the database refuses under its privileges or
+policies (SQLSTATE 42501) is logged and re-raised, neither retried nor charged.
+``readable_relation`` names relations through the profile.
 """
 
 import asyncio
@@ -18,9 +22,11 @@ from typing import overload
 
 import asyncpg
 
+from app.backends.base import BackendAccess
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
 from app.backends.postgresql_backend.acquire_faults import track_acquire
 from app.backends.postgresql_backend.core import PostgreSQLBackendCore
+from app.backends.postgresql_backend.core import operation_name
 from app.errors import ControlFlowError
 from app.settings import get_settings
 
@@ -33,7 +39,7 @@ T = TypeVar('T')
 
 
 class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
-    """Acquire pooled connections with breaker accounting, and run reads and retried writes."""
+    """Acquire pooled connections with breaker accounting, run reads and retried writes, and name relations."""
 
     @asynccontextmanager
     async def get_connection(
@@ -62,6 +68,9 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
             RuntimeError: If backend is shut down or circuit breaker is open
             ControlFlowError: Re-raised from the connection scope without recording a
                 circuit-breaker failure (normal control flow, not a database fault)
+            asyncpg.exceptions.InsufficientPrivilegeError: Re-raised from the connection
+                scope without recording a circuit-breaker failure (the database refused a
+                statement under its privileges or policies)
             ConnectionEstablishmentTimeoutError: If dialing a new connection for the
                 acquire timed out (an unreachable database; charged so the outage
                 can open the breaker)
@@ -116,6 +125,13 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                         # inside the connection scope), NOT a database fault: do not record
                         # a breaker failure, or a client repeatedly sending invalid input
                         # opens the breaker and rejects every caller's healthy requests.
+                        raise
+                    except asyncpg.exceptions.InsufficientPrivilegeError:
+                        # The database refused a statement under its privileges, a
+                        # row-level security check or a trigger: the application and the
+                        # policy disagree, which no retry or breaker opening can resolve,
+                        # so it is not charged. The entry point that ran the statement logs
+                        # it under the operation's name.
                         raise
                     except Exception as e:
                         # The single accounting site for a body fault: execute_read
@@ -233,6 +249,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         validate_connection: bool = False,
         **kwargs: Any,
     ) -> T: ...
@@ -242,6 +259,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., T],
         *args: Any,
+        access_scope: BackendAccess,
         validate_connection: bool = False,
         **kwargs: Any,
     ) -> T: ...
@@ -250,6 +268,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         validate_connection: bool = False,
         **kwargs: Any,
     ) -> T:
@@ -259,6 +278,9 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
             operation: Async callable that performs the write operation.
                       Signature: async def operation(conn: asyncpg.Connection, *args, **kwargs) -> T
             *args: Positional arguments to pass to operation
+            access_scope: The identity the write runs as, handed to the session profile as
+                the first statement of every attempt's transaction; it never reaches
+                ``operation``.
             validate_connection: If True, validate connection state before operation.
                                 Use for batch operations that are sensitive to protocol state.
             **kwargs: Keyword arguments to pass to operation
@@ -269,6 +291,8 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         Raises:
             RuntimeError: If backend is shut down or circuit breaker is open
             asyncpg.exceptions.ConnectionDoesNotExistError: If connection validation fails
+            asyncpg.exceptions.InsufficientPrivilegeError: If the database refused the
+                write under its privileges or policies (logged, neither retried nor charged)
             ConnectionEstablishmentTimeoutError: If a new connection could not be
                 established within the connect timeout during the acquire (charged --
                 an unreachable database must be able to open the breaker)
@@ -317,6 +341,9 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                             )
 
                         async with conn.transaction():
+                            # Every attempt holds a fresh connection and transaction, so the
+                            # identity is bound again before the operation runs.
+                            await self._profile.bind(conn, access_scope)
                             # Cast to async callable since PostgreSQLBackend only uses async operations
                             async_operation = cast(Callable[..., Awaitable[T]], operation)
                             result = await async_operation(conn, *args, **kwargs)
@@ -410,6 +437,13 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                     await self._record_charged_failure(e)
                     raise
 
+                except asyncpg.exceptions.InsufficientPrivilegeError as e:
+                    # The database refused the write under its privileges, a row-level
+                    # security check or a trigger. Another attempt gets the same answer and
+                    # the refusal is no database fault, so it is neither retried nor charged.
+                    self._log_refused_statement(e, operation_name(operation))
+                    raise
+
                 except Exception as e:
                     # A circuit-breaker rejection raised by get_connection mid-loop (e.g.
                     # a concurrent writer opened the breaker after the up-front check) is
@@ -441,6 +475,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -449,6 +484,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., T],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T: ...
 
@@ -456,6 +492,7 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        access_scope: BackendAccess,
         **kwargs: Any,
     ) -> T:
         """Execute a read operation with proper connection handling.
@@ -465,14 +502,27 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                       Signature: async def operation(conn: asyncpg.Connection, *args, **kwargs) -> T
                       Note: Although protocol accepts sync or async, PostgreSQLBackend only uses async.
             *args: Positional arguments to pass to operation
+            access_scope: The identity the read runs as. When the session profile wraps
+                reads, it is bound as the first statement of the transaction the read
+                runs in; it never reaches ``operation``.
             **kwargs: Keyword arguments to pass to operation
 
         Returns:
             Result of the operation (type preserved via TypeVar)
 
+        Raises:
+            asyncpg.exceptions.InsufficientPrivilegeError: If the database refused a
+                statement of the read under its privileges or policies (logged with the
+                operation's name, not charged)
+
         Note:
             PostgreSQLBackend expects ASYNC callables (not sync). The operation is executed
             with await.
+
+            A transaction-local identity expires with the statement that sets it unless a
+            transaction holds it, so a profile that binds reads runs each read inside one
+            transaction: the bind and every statement of the callable share it. A profile
+            that does not wrap reads runs the callable as issued, with no transaction.
 
             Every fault raised by the read callable propagates unchanged; failure
             ACCOUNTING belongs to the enclosing ``get_connection`` body arms, which
@@ -486,6 +536,29 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
         async with self.get_connection(readonly=True) as conn:
             # Cast to async callable since PostgreSQLBackend only uses async operations
             async_operation = cast(Callable[..., Awaitable[T]], operation)
-            result = await async_operation(conn, *args, **kwargs)
+            try:
+                if self._profile.wraps_reads:
+                    async with conn.transaction():
+                        await self._profile.bind(conn, access_scope)
+                        result = await async_operation(conn, *args, **kwargs)
+                else:
+                    result = await async_operation(conn, *args, **kwargs)
+            except asyncpg.exceptions.InsufficientPrivilegeError as e:
+                # Logged here, where the operation's name is known; get_connection's body
+                # arm leaves the refusal uncharged.
+                self._log_refused_statement(e, operation_name(operation))
+                raise
             self.metrics.total_queries += 1
             return result
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name the relation a plain read selects ``table``'s rows from, as the session profile decides.
+
+        Args:
+            table: A routable table.
+            alias: The name the statement qualifies the table's columns with.
+
+        Returns:
+            The FROM or JOIN item the profile renders.
+        """
+        return self._profile.readable_relation(table, alias=alias)

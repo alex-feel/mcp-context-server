@@ -12,11 +12,16 @@ single place that applies ``AccessControlSettings`` policy:
   owner identity.
 - :func:`resolve_access_scope` returns that same identity as the
   :class:`~app.access_scope.AccessScope` that limits which context entries the
-  request may read and write.
-- :func:`visibility_denied_reason` enforces ``ACCESS_CONTROL_PUBLISH_ROLE``:
-  when the setting names a role, only callers whose verified roles claim
-  carries it may set visibility 'public'.
+  request may read and write. It asserts no publish permission, so it serves
+  every tool that never sets visibility.
+- :func:`may_publish` holds the ``ACCESS_CONTROL_PUBLISH_ROLE`` rule: when the
+  setting names a role, only callers whose verified roles claim carries it may
+  set visibility 'public'. :func:`visibility_denied_reason` enforces it in the
+  write tools, and :func:`resolve_write_scope` carries its answer in the scope
+  the write tools run under.
 """
+
+from dataclasses import replace
 
 from app.access_scope import AccessScope
 from app.auth.principal import RequestPrincipal
@@ -46,12 +51,42 @@ def resolve_effective_principal() -> RequestPrincipal:
 def resolve_access_scope() -> AccessScope:
     """Resolve the scope the current request reads and writes context entries as.
 
+    The scope asserts no publish permission; the write tools, which may set
+    visibility, build theirs with :func:`resolve_write_scope` instead.
+
     Returns:
         The effective principal's id and groups: the verified jwt principal's,
         or ``ACCESS_CONTROL_DEFAULT_PRINCIPAL`` with no groups for every other
         request.
     """
     return resolve_effective_principal().access_scope()
+
+
+def resolve_write_scope(principal: RequestPrincipal) -> AccessScope:
+    """Return the scope a write tool reads and writes context entries as.
+
+    Args:
+        principal: The effective principal making the request.
+
+    Returns:
+        The principal's id and groups, with ``may_publish`` set to whether the
+        principal may set visibility 'public'.
+    """
+    return replace(principal.access_scope(), may_publish=may_publish(principal))
+
+
+def may_publish(principal: RequestPrincipal) -> bool:
+    """Decide whether a principal may set visibility 'public'.
+
+    Args:
+        principal: The effective principal making the request.
+
+    Returns:
+        True when ``ACCESS_CONTROL_PUBLISH_ROLE`` is unset or names a role the
+        principal's verified roles carry, False otherwise.
+    """
+    publish_role = get_settings().access_control.publish_role
+    return publish_role is None or publish_role in principal.roles
 
 
 def visibility_denied_reason(visibility: str, principal: RequestPrincipal) -> str | None:
@@ -70,11 +105,9 @@ def visibility_denied_reason(visibility: str, principal: RequestPrincipal) -> st
         A human-readable denial reason when the principal may not set the
         requested visibility, or None when it is allowed.
     """
-    if visibility != 'public':
+    if visibility != 'public' or may_publish(principal):
         return None
     publish_role = get_settings().access_control.publish_role
-    if publish_role is None or publish_role in principal.roles:
-        return None
     return (
         f"Setting visibility 'public' requires the '{publish_role}' role "
         '(ACCESS_CONTROL_PUBLISH_ROLE), which the caller does not have'

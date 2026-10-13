@@ -35,7 +35,8 @@ def _make_mock_txn() -> tuple[MagicMock, object]:
     mock_txn.backend_type = 'sqlite'
 
     @asynccontextmanager
-    async def mock_begin_transaction():
+    async def mock_begin_transaction(*, access_scope):
+        _ = access_scope
         yield mock_txn
 
     return mock_txn, mock_begin_transaction

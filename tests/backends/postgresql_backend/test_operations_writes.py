@@ -9,8 +9,11 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 
 
 class TestExecuteWriteStatementTimeoutRetry:
@@ -20,6 +23,8 @@ class TestExecuteWriteStatementTimeoutRetry:
     def _make_backend() -> PostgreSQLBackend:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         # Tight, deterministic retry config: enough attempts, no real sleeping.
         backend.retry_config.max_retries = 3
@@ -66,7 +71,7 @@ class TestExecuteWriteStatementTimeoutRetry:
                 )
             return value
 
-        result = await backend.execute_write(operation, 'committed-once')
+        result = await backend.execute_write(operation, 'committed-once', access_scope=MAINTENANCE)
 
         assert result == 'committed-once'
         # Exactly two invocations: one cancelled, one successful. No third
@@ -99,7 +104,7 @@ class TestExecuteWriteStatementTimeoutRetry:
             raise asyncpg.exceptions.QueryCanceledError('still timing out')
 
         with pytest.raises(asyncpg.exceptions.QueryCanceledError):
-            await backend.execute_write(operation)
+            await backend.execute_write(operation, access_scope=MAINTENANCE)
 
 
 class TestExecuteWriteDeadlockRetry:
@@ -116,6 +121,8 @@ class TestExecuteWriteDeadlockRetry:
     def _make_backend() -> PostgreSQLBackend:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend.retry_config.max_retries = 3
         backend.retry_config.base_delay = 0.0
@@ -159,7 +166,7 @@ class TestExecuteWriteDeadlockRetry:
                 raise asyncpg.exceptions.DeadlockDetectedError('deadlock detected')
             return value
 
-        result = await backend.execute_write(operation, 'committed-once')
+        result = await backend.execute_write(operation, 'committed-once', access_scope=MAINTENANCE)
 
         assert result == 'committed-once'
         assert call_count['n'] == 2
@@ -180,7 +187,7 @@ class TestExecuteWriteDeadlockRetry:
             raise asyncpg.exceptions.DeadlockDetectedError('still deadlocked')
 
         with pytest.raises(asyncpg.exceptions.DeadlockDetectedError):
-            await backend.execute_write(operation)
+            await backend.execute_write(operation, access_scope=MAINTENANCE)
 
         record_failure.assert_awaited_once()
 
@@ -202,6 +209,8 @@ class TestExecuteWritePoolAcquireTimeout:
     def _make_backend() -> PostgreSQLBackend:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend.retry_config.max_retries = 3
         backend.retry_config.base_delay = 0.0
@@ -254,7 +263,7 @@ class TestExecuteWritePoolAcquireTimeout:
             call_count['n'] += 1
 
         with pytest.raises(TimeoutError):
-            await backend.execute_write(operation)
+            await backend.execute_write(operation, access_scope=MAINTENANCE)
 
         assert call_count['n'] == 0
         record_failure.assert_not_called()
@@ -290,7 +299,7 @@ class TestExecuteWritePoolAcquireTimeout:
             call_count['n'] += 1
 
         with pytest.raises(ConnectionEstablishmentTimeoutError):
-            await backend.execute_write(operation)
+            await backend.execute_write(operation, access_scope=MAINTENANCE)
 
         assert call_count['n'] == 0
         record_failure.assert_awaited_once()
@@ -325,7 +334,7 @@ class TestExecuteWritePoolAcquireTimeout:
             raise TimeoutError('statement exceeded pool command_timeout')
 
         with pytest.raises(TimeoutError):
-            await backend.execute_write(operation)
+            await backend.execute_write(operation, access_scope=MAINTENANCE)
 
         record_failure.assert_awaited_once()
         assert backend.metrics.failed_queries == 1
@@ -346,6 +355,8 @@ class TestExecuteWriteFinalAttemptBackoff:
         """With two attempts, exactly one inter-attempt backoff sleep occurs."""
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend.retry_config.max_retries = 2
         backend.retry_config.base_delay = 0.01
@@ -373,7 +384,7 @@ class TestExecuteWriteFinalAttemptBackoff:
             raise asyncpg.exceptions.DeadlockDetectedError('still deadlocked')
 
         with pytest.raises(asyncpg.exceptions.DeadlockDetectedError):
-            await backend.execute_write(operation)
+            await backend.execute_write(operation, access_scope=MAINTENANCE)
 
         # One backoff between attempt one and attempt two; none after the final
         # attempt (the exhaustion tail raises immediately).

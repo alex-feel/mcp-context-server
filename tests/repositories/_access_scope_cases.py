@@ -6,11 +6,20 @@ share everything here:
 
 - The case type :class:`AccessCase`, one per seam case (unfiltered, filtered or another
   variant), each naming the database layout it runs on (``fp32`` or ``compressed``, built
-  by :mod:`tests.repositories._access_scope_layouts`), and the runner :func:`run_case`.
+  by :mod:`tests.repositories._access_scope_layouts`; on PostgreSQL every case also runs on
+  the row-level security build of its layout), and the runners :func:`run_case` and
+  :func:`run_case_with_scope`.
 - The seed: :data:`SEED_ROWS`, eight entries owned by alice and bob covering every
   visibility and grant arrangement the access model distinguishes, written by
   :func:`seed_access_rows` through the repositories, with grants through the raw-SQL
   ``insert_grant`` helper because no production path writes user or write grants.
+- The two channels of a :class:`ScopedDb`. Cases call the seam under test through the
+  request channel (``backend`` and ``repos``). Every row a case does not create through
+  that seam (the seed, the rows of a case's ``setup`` and every child row), every raw
+  statement and every expectation read goes through the seed channel (``seed_backend``
+  and ``seed``), which writes and reads as the table owner, so no seed row passes through
+  a request transaction that a database policy would filter. On a single-role database the
+  seed channel is a second repository container over the request backend.
 - The scopes the cases run as (:data:`SCOPES`) and the seed rows each scope reads, writes
   and owns (:data:`READABLE`, :data:`WRITABLE`, :data:`OWNED`, in seed order).
 
@@ -28,7 +37,8 @@ design names its backend and runs on that entry point only.
 Rows beyond the seed (page-fill rows that out-rank the visible ones, hidden threads or tags
 with higher counts, a second turn in a thread) come from the case's ``setup`` hook, which
 runs on the freshly seeded database before the invoker and adds rows through
-:meth:`ScopedDb.add_entry`. Every vector lies in one plane at an angle from
+:meth:`ScopedDb.add_entry`, raw statements through :meth:`ScopedDb.execute` and further
+child rows through the seed repositories. Every vector lies in one plane at an angle from
 :data:`QUERY_VECTOR`, so the nearest-first order of any set of rows is their ascending
 angle order under both the fp32 L2 distance and the compressed inner product. Seed rows sit
 at :data:`SEED_ANGLE_START` plus :data:`SEED_ANGLE_STEP` per position in :data:`SEED_ROWS`,
@@ -61,6 +71,7 @@ from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.compression.factory import get_cached_compression_provider
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -100,11 +111,14 @@ SEED_ANGLE_STEP = 0.1
 # A 1x1 PNG, the smallest image attachment the image repository stores.
 _PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
+# The scopes the cases run as. The cases set no publish role, so every request scope may
+# publish, exactly as the write tools resolve it; under row-level security the database
+# enforces that right, and the access predicates never read it.
 SCOPES: dict[str, Scope] = {
-    'alice': AccessScope('alice', frozenset()),
-    'bob': AccessScope('bob', frozenset()),
-    'carol': AccessScope('carol', frozenset({TEAM_GROUP})),
-    'dave': AccessScope('dave', frozenset()),
+    'alice': AccessScope('alice', frozenset(), may_publish=True),
+    'bob': AccessScope('bob', frozenset(), may_publish=True),
+    'carol': AccessScope('carol', frozenset({TEAM_GROUP}), may_publish=True),
+    'dave': AccessScope('dave', frozenset(), may_publish=True),
     'system': SYSTEM_SCOPE,
 }
 
@@ -227,6 +241,18 @@ def per_scope[T](build: Callable[[str], T]) -> dict[str, T]:
     return {scope_name: build(scope_name) for scope_name in SCOPES}
 
 
+def per_request_scope[T](build: Callable[[str], T]) -> dict[str, T]:
+    """Return the expectation of every request scope a case runs as, leaving out the system scope.
+
+    Args:
+        build: Builds the expected observable for one scope name.
+
+    Returns:
+        ``build(scope_name)`` keyed by the name of every :class:`AccessScope` in :data:`SCOPES`.
+    """
+    return {scope_name: build(scope_name) for scope_name, scope in SCOPES.items() if isinstance(scope, AccessScope)}
+
+
 def in_seed_order(labels: Iterable[str]) -> tuple[str, ...]:
     """Sort labels by their position in :data:`SEED_ROWS`, with labels added by cases last by name.
 
@@ -253,17 +279,23 @@ def _plain(value: object) -> object:
 
 @dataclass(slots=True)
 class ScopedDb:
-    """A seeded database of one layout, the repositories over it and the label of every entry.
+    """A seeded database of one layout, its request and seed channels and the label of every entry.
 
     Attributes:
-        backend: The storage backend.
-        repos: The repository container over the backend.
+        backend: The request backend, which the seams under test run on.
+        repos: The request channel: the repository container over the request backend.
+        seed_backend: The backend that writes and reads as the table owner; the request
+            backend itself on a single-role database.
+        seed: The seed channel: the repository container over the seed backend, which
+            writes every seed row and child row.
         layout: The database layout.
         ids: Entry id by label, for the seed and every row a case added.
     """
 
     backend: StorageBackend
     repos: RepositoryContainer
+    seed_backend: StorageBackend
+    seed: RepositoryContainer
     layout: Layout
     ids: dict[str, str] = field(default_factory=dict[str, str])
 
@@ -296,7 +328,7 @@ class ScopedDb:
         index_node: bool = False,
         grants: Sequence[Grant] = (),
     ) -> str:
-        """Store one entry with its children and grants, and record its label.
+        """Store one entry with its children and grants through the seed channel, and record its label.
 
         Args:
             label: Unique label of the entry.
@@ -323,7 +355,7 @@ class ScopedDb:
             raise ValueError(f'label {label!r} is already in use')
         body = text if text is not None else seed_text(label)
         entry_metadata = metadata if metadata is not None else {'author': owner, 'label': label, 'corpus': 'seed'}
-        context_id, merged = await self.repos.context.store_with_deduplication(
+        context_id, merged = await self.seed.context.store_with_deduplication(
             thread_id=thread_id,
             source=source,
             content_type='multimodal' if image else 'text',
@@ -337,9 +369,13 @@ class ScopedDb:
             raise ValueError(f'entry {label!r} merged into the latest entry of its thread and source')
         self.ids[label] = context_id
 
-        await self.repos.tags.store_tags(context_id, list(tags if tags is not None else ('seed', f'owner-{owner}')))
+        await self.seed.tags.store_tags(
+            context_id, list(tags if tags is not None else ('seed', f'owner-{owner}')), scope=MAINTENANCE,
+        )
         if image:
-            await self.repos.images.store_images(context_id, [{'data': _PNG_BASE64, 'mime_type': 'image/png'}])
+            await self.seed.images.store_images(
+                context_id, [{'data': _PNG_BASE64, 'mime_type': 'image/png'}], scope=MAINTENANCE,
+            )
         if angle is not None:
             await self._store_embedding(context_id, body, vector_at(angle))
         if index_node:
@@ -347,22 +383,24 @@ class ScopedDb:
                 node_id=label, level=1, ordinal=1, title=label,
                 node_summary=f'Summary of {label}.', char_start=0, char_end=len(body),
             )
-            await self.repos.index_nodes.replace_nodes_for_context(context_id, [node])
+            await self.seed.index_nodes.replace_nodes_for_context(context_id, [node], scope=MAINTENANCE)
         for grant in grants:
-            await insert_grant(self.backend, context_id, grant.principal_type, grant.principal_id, grant.permission, owner)
+            await insert_grant(
+                self.seed_backend, context_id, grant.principal_type, grant.principal_id, grant.permission, owner,
+            )
         return context_id
 
     async def _store_embedding(self, context_id: str, text: str, vector: list[float]) -> None:
-        """Store one chunk embedding, compressed on the compressed layout."""
+        """Store one chunk embedding through the seed channel, compressed on the compressed layout."""
         payload: bytes | None = None
         if self.layout == 'compressed':
             provider = await get_cached_compression_provider()
             payload = provider.encode_sync(np.asarray([vector], dtype=np.float32))
         chunk = ChunkEmbedding(embedding=vector, start_index=0, end_index=len(text), payload=payload)
-        await self.repos.embeddings.store_chunked(context_id, [chunk], model=get_settings().embedding.model)
+        await self.seed.embeddings.store_chunked(context_id, [chunk], model=get_settings().embedding.model, scope=MAINTENANCE)
 
     async def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[tuple[object, ...]]:
-        """Run one read statement on either backend.
+        """Run one read statement through the seed channel on either backend.
 
         Write ``sql`` with ``?`` placeholders; on PostgreSQL each ``?`` becomes the next
         ``$n``. Text that already carries PostgreSQL placeholders, such as an access
@@ -375,12 +413,12 @@ class ScopedDb:
         Returns:
             The rows as tuples, with UUID values as 32-character hex strings.
         """
-        if self.backend.backend_type == 'sqlite':
+        if self.seed_backend.backend_type == 'sqlite':
 
             def _fetch_sqlite(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
                 return [tuple(row) for row in conn.execute(sql, tuple(params)).fetchall()]
 
-            return await self.backend.execute_read(_fetch_sqlite)
+            return await self.seed_backend.execute_read(_fetch_sqlite, access_scope=MAINTENANCE)
 
         native_sql = _numbered_placeholders(sql)
 
@@ -388,21 +426,21 @@ class ScopedDb:
             rows = await conn.fetch(native_sql, *params)
             return [tuple(_plain(value) for value in row) for row in rows]
 
-        return await self.backend.execute_read(_fetch_postgresql)
+        return await self.seed_backend.execute_read(_fetch_postgresql, access_scope=MAINTENANCE)
 
     async def execute(self, sql: str, params: Sequence[object] = ()) -> None:
-        """Run one write statement on either backend, such as backdating or re-publishing a row.
+        """Run one write statement through the seed channel on either backend, such as backdating or re-publishing a row.
 
         Args:
             sql: The statement, with ``?`` placeholders as in :meth:`fetch_all`.
             params: Values to bind.
         """
-        if self.backend.backend_type == 'sqlite':
+        if self.seed_backend.backend_type == 'sqlite':
 
             def _execute_sqlite(conn: sqlite3.Connection) -> None:
                 conn.execute(sql, tuple(params))
 
-            await self.backend.execute_write(_execute_sqlite)
+            await self.seed_backend.execute_write(_execute_sqlite, access_scope=MAINTENANCE)
             return
 
         native_sql = _numbered_placeholders(sql)
@@ -410,7 +448,7 @@ class ScopedDb:
         async def _execute_postgresql(conn: 'asyncpg.Connection') -> None:
             await conn.execute(native_sql, *params)
 
-        await self.backend.execute_write(_execute_postgresql)
+        await self.seed_backend.execute_write(_execute_postgresql, access_scope=MAINTENANCE)
 
     async def labels_selected_by(self, scope: Scope, mode: AccessMode = AccessMode.READ) -> tuple[str, ...]:
         """Return the labels of the entries the access predicate admits for ``scope`` in ``mode``.
@@ -423,7 +461,7 @@ class ScopedDb:
             The admitted labels in seed order.
         """
         predicate = build_access_predicate(
-            scope, mode=mode, backend_type=self.backend.backend_type, outer='context_entries',
+            scope, mode=mode, backend_type=self.seed_backend.backend_type, outer='context_entries',
         )
         rows = await self.fetch_all(f'SELECT id FROM context_entries{predicate.where_clause()}', predicate.params)
         return in_seed_order(self.labels_of(str(row[0]) for row in rows))
@@ -466,6 +504,10 @@ class AccessCase:
         setup: Adds the rows the case needs beyond the seed, before the invoker runs.
         backend: Runs the case on this backend's entry point only, for a behavior the two
             backends differ in by design; None runs it on both.
+        reports_write_access: The observable reports whether the scope may modify or owns
+            each row it reads, which the seam computes with the application predicate in the
+            statement's select list. The database's own answer decides only which rows the
+            scope reads, so the run that leaves the database as the only filter skips it.
     """
 
     case_id: str
@@ -476,6 +518,7 @@ class AccessCase:
     variant: str = ''
     setup: Setup | None = None
     backend: BackendType | None = None
+    reports_write_access: bool = False
 
     @property
     def param_id(self) -> str:
@@ -545,9 +588,26 @@ async def run_case(db: ScopedDb, case: AccessCase, scope_name: str) -> None:
         case: The case.
         scope_name: The scope to run as, a key of ``case.expected``.
     """
+    await run_case_with_scope(db, case, scope_name, scope=SCOPES[scope_name])
+
+
+async def run_case_with_scope(db: ScopedDb, case: AccessCase, scope_name: str, *, scope: Scope) -> None:
+    """Run one case with its seams called as ``scope`` and compare the observable with that of ``scope_name``.
+
+    :func:`run_case` passes the scope ``scope_name`` names. The row-level security run
+    passes the system scope, which renders no application predicate, on a request backend
+    that binds the identity of ``scope_name`` in every transaction, so the database alone
+    must produce what the scope observes.
+
+    Args:
+        db: The freshly seeded database of the case's layout.
+        case: The case.
+        scope_name: The scope whose observable is expected, a key of ``case.expected``.
+        scope: The scope the invoker calls the seams as.
+    """
     if case.setup is not None:
         await case.setup(db)
-    observed = await case.invoker(db, SCOPES[scope_name])
+    observed = await case.invoker(db, scope)
     expected = case.expected[scope_name]
     assert observed == expected, f'{case.param_id} as {scope_name}: observed {observed!r}, expected {expected!r}'
 

@@ -1,15 +1,172 @@
 """PostgreSQL connection parameters shared by the pool and every one-off connection.
 
-Identifier quoting, the asyncpg connect kwargs, the session ``SET`` statements every connection
-runs, and the server-side statement timeout derived from the client command timeout.
+The request connection string, identifier quoting, the asyncpg connect kwargs with an optional
+credential override, the remediation a refused login names, the session ``SET`` statements every
+connection runs, and the server-side statement timeout derived from the client command timeout.
 """
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import asyncpg
+from pydantic import SecretStr
 
 from app.settings import AppSettings
 from app.settings import get_settings
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialOverride:
+    """The user and password a backend logs in with in place of those of its connection string.
+
+    asyncpg gives explicit ``user=`` and ``password=`` connect kwargs precedence over the
+    credentials of a URL or key=value DSN, so a backend can dial the request connection
+    settings as another role without rewriting the DSN. An unset or empty field keeps the
+    connection string's own value.
+
+    Attributes:
+        user: The role to log in as, or None to keep the connection string's user.
+        password: That role's password, or None to keep the connection string's password.
+    """
+
+    user: str | None
+    password: SecretStr | None
+
+    def connect_kwargs(self) -> dict[str, str]:
+        """Return the asyncpg connect kwargs for the fields that are set.
+
+        Returns:
+            ``user`` and ``password`` entries for the non-empty fields only.
+        """
+        kwargs: dict[str, str] = {}
+        if self.user:
+            kwargs['user'] = self.user
+        if self.password is not None and self.password.get_secret_value():
+            kwargs['password'] = self.password.get_secret_value()
+        return kwargs
+
+
+NO_CREDENTIAL_OVERRIDE = CredentialOverride(user=None, password=None)
+
+
+def login_remediation(credentials: CredentialOverride, *, explicit_connection_string: bool) -> str:
+    """Return the advice for a login the server refused (SQLSTATE class 28).
+
+    The advice names where the refused user and password come from, as
+    :func:`_login_variables` resolves them.
+
+    Args:
+        credentials: The backend's credential override.
+        explicit_connection_string: Whether the backend dials a connection string it was
+            handed rather than the request connection settings.
+
+    Returns:
+        The remediation sentence.
+    """
+    user, password = _login_variables(credentials, explicit_connection_string=explicit_connection_string)
+    if user is None and password is None:
+        return 'Check the user and password of the connection string and the server pg_hba.conf rules.'
+    return (
+        f'Check {user or "the user of the connection string"}, '
+        f'{password or "the password of the connection string"} and the server pg_hba.conf rules.'
+    )
+
+
+def connect_privilege_remediation(credentials: CredentialOverride, *, explicit_connection_string: bool) -> str:
+    """Return the advice for a login the server refused to connect to the database (SQLSTATE 42501).
+
+    Args:
+        credentials: The backend's credential override.
+        explicit_connection_string: Whether the backend dials a connection string it was
+            handed rather than the request connection settings.
+
+    Returns:
+        The remediation sentence naming the role that needs the grant and the database.
+    """
+    user, _ = _login_variables(credentials, explicit_connection_string=explicit_connection_string)
+    if user is None:
+        return 'Grant the user of the connection string access to its database.'
+    database = 'the database of the connection string' if explicit_connection_string else 'POSTGRESQL_DATABASE'
+    return f'Grant the configured {user} access to {database}.'
+
+
+def _login_variables(credentials: CredentialOverride, *, explicit_connection_string: bool) -> tuple[str | None, str | None]:
+    """Return the variables that supply the user and the password of a backend's login.
+
+    A field the override sets wins over the connection string's own, as asyncpg applies
+    it, and comes from the migration variables: the server's one override is the
+    table-owner login of the maintenance backend. A field the override leaves unset
+    comes from the connection string the backend was handed, or else from the request
+    variables.
+
+    Args:
+        credentials: The backend's credential override.
+        explicit_connection_string: Whether the backend dials a connection string it was
+            handed rather than the request connection settings.
+
+    Returns:
+        The user variable and the password variable, None for a field the connection
+        string the backend was handed supplies.
+    """
+    overridden = credentials.connect_kwargs()
+    unset_user, unset_password = (None, None) if explicit_connection_string else ('POSTGRESQL_USER', 'POSTGRESQL_PASSWORD')
+    return (
+        'POSTGRESQL_MIGRATION_USER' if 'user' in overridden else unset_user,
+        'POSTGRESQL_MIGRATION_PASSWORD' if 'password' in overridden else unset_password,
+    )
+
+
+def request_connection_string(app_settings: AppSettings) -> str:
+    """Return the request connection settings as one connection string.
+
+    ``POSTGRESQL_CONNECTION_STRING`` when it is set, otherwise a DSN built from the
+    component fields. Supports self-hosted PostgreSQL and Supabase alike; for Supabase,
+    use the connection string or the component fields with the Supabase host. The user,
+    password and database name are URL-encoded, so characters such as ``#``, ``@``,
+    ``:``, ``/`` and ``?`` cannot break the URL parsing in asyncpg.
+
+    Args:
+        app_settings: Resolved application settings.
+
+    Returns:
+        The connection string for asyncpg.
+    """
+    storage = app_settings.storage
+    if storage.postgresql_connection_string:
+        return storage.postgresql_connection_string.get_secret_value()
+
+    # URL-encode every user-controlled component of the DSN, not only the password: a
+    # colon in the user reads as the start of the password, an @ in the user or database
+    # reads as the host boundary, and a / or ? in the database reads as the start of the
+    # path or query string -- any of which corrupts the parsed DSN. safe='' encodes ALL
+    # special characters (e.g. # becomes %23); asyncpg automatically URL-decodes the
+    # connection string.
+    encoded_user = quote(storage.postgresql_user, safe='')
+    encoded_password = quote(storage.postgresql_password.get_secret_value(), safe='')
+    encoded_database = quote(storage.postgresql_database, safe='')
+
+    # An IPv6 host literal contains colons, which the DSN authority parses as the
+    # host:port separator; bracket it (RFC 3986 IP-literal) so ::1 or a full IPv6
+    # address interpolates as [::1]:port rather than corrupting the parse. Bracketing
+    # is idempotent: a host already in bracket form (e.g. '[::1]', a natural
+    # copy-paste from URI-style examples) is left as-is, because wrapping it again
+    # would produce '[[::1]]', which asyncpg rejects at DSN parse with a plain
+    # ValueError that never names the bracket cause. A hostname or IPv4 literal has
+    # no colon and is left as-is.
+    host = storage.postgresql_host
+    if host.startswith('[') and host.endswith(']'):
+        host_part = host
+    elif ':' in host:
+        host_part = f'[{host}]'
+    else:
+        host_part = host
+
+    conn_str = f'postgresql://{encoded_user}:{encoded_password}@{host_part}:{storage.postgresql_port}/{encoded_database}'
+    if storage.postgresql_ssl_mode != 'prefer':
+        conn_str += f'?sslmode={storage.postgresql_ssl_mode}'
+    return conn_str
 
 
 def quote_pg_identifier(name: str) -> str:
@@ -30,7 +187,11 @@ def quote_pg_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dict[str, Any]:
+def build_asyncpg_connect_kwargs(
+    app_settings: AppSettings | None = None,
+    *,
+    credentials: CredentialOverride,
+) -> dict[str, Any]:
     """Build the asyncpg connection kwargs shared by the pool and the migration CLI.
 
     Returns a dict suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``
@@ -60,6 +221,9 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
     parameter this server needs is applied with ``SET`` instead -- see
     :func:`session_guc_set_statements`, which every connection path runs.
 
+    - ``user`` and ``password``: the fields of ``credentials`` that are set,
+      which asyncpg applies over the credentials of the DSN.
+
     SSL is intentionally NOT included: asyncpg parses ``sslmode`` natively from
     the DSN query string, so SSL is carried by the connection URL itself.
 
@@ -67,12 +231,18 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
         app_settings: Resolved application settings. Defaults to
             ``get_settings()`` so callers in a different process (the CLI)
             pick up that process's environment.
+        credentials: The login that replaces the DSN's own, field by field;
+            :data:`NO_CREDENTIAL_OVERRIDE` dials the DSN as written.
 
     Returns:
-        Mapping with the ``statement_cache_size`` key.
+        Mapping with the ``statement_cache_size`` key, plus ``user`` and
+        ``password`` for the overridden fields.
     """
     resolved = app_settings if app_settings is not None else get_settings()
-    return {'statement_cache_size': resolved.storage.postgresql_statement_cache_size}
+    return {
+        'statement_cache_size': resolved.storage.postgresql_statement_cache_size,
+        **credentials.connect_kwargs(),
+    }
 
 
 def session_guc_set_statements(app_settings: AppSettings | None = None) -> list[str]:
@@ -130,7 +300,12 @@ def session_guc_set_statements(app_settings: AppSettings | None = None) -> list[
     return statements
 
 
-async def apply_session_gucs(conn: asyncpg.Connection, app_settings: AppSettings | None = None) -> None:
+async def apply_session_gucs(
+    conn: asyncpg.Connection,
+    app_settings: AppSettings | None = None,
+    *,
+    profile_statements: Sequence[str],
+) -> None:
     """Apply the session parameters to a connection that bypasses the pool.
 
     The pool applies them through its ``setup`` callback on every acquire; a
@@ -141,13 +316,16 @@ async def apply_session_gucs(conn: asyncpg.Connection, app_settings: AppSettings
     instead of ``POSTGRESQL_SCHEMA`` -- and the server's default
     ``extra_float_digits``.
 
-    All statements go out in ONE simple-query round trip.
+    All statements go out in ONE simple-query round trip, the session profile's
+    statements after the server's own.
 
     Args:
         conn: The freshly established connection.
         app_settings: Resolved application settings. Defaults to ``get_settings()``.
+        profile_statements: The session statements of the profile the connection
+            serves (``SessionProfile.session_statements``).
     """
-    await conn.execute('; '.join(session_guc_set_statements(app_settings)))
+    await conn.execute('; '.join([*session_guc_set_statements(app_settings), *profile_statements]))
 
 
 def statement_timeout_ms(command_timeout_s: float) -> int:

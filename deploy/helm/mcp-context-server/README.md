@@ -52,27 +52,32 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 ### Key Values
 
-| Parameter                         | Description                                                      | Default                                |
-|-----------------------------------|------------------------------------------------------------------|----------------------------------------|
-| `image.repository`                | Image repository                                                 | `ghcr.io/alex-feel/mcp-context-server` |
-| `image.tag`                       | Image tag                                                        | `Chart.appVersion`                     |
-| `replicaCount`                    | Number of replicas                                               | `1`                                    |
-| `env.FASTMCP_STATELESS_HTTP`      | Stateless HTTP mode (enabled by default)                         | `"true"`                               |
-| `env.FASTMCP_ENABLE_RICH_LOGGING` | Rich log formatting (disable for containers)                     | `"false"`                              |
-| `service.type`                    | Kubernetes service type                                          | `ClusterIP`                            |
-| `service.port`                    | Service port                                                     | `8000`                                 |
-| `storage.backend`                 | Storage backend (sqlite/postgresql)                              | `sqlite`                               |
-| `search.fts.enabled`              | Full-text search tool (`true`=auto-register, `false`=off)        | `true`                                 |
-| `search.semantic.enabled`         | Semantic search + embedding subsystem (`true`=auto, `false`=off) | `false`                                |
-| `search.hybrid.enabled`           | Hybrid search tool (`true`=auto-register, `false`=off)           | `true`                                 |
-| `search.chunking.enabled`         | Enable text chunking for embeddings                              | `true`                                 |
-| `search.chunking.size`            | Chunk size in characters                                         | `1500`                                 |
-| `search.reranking.enabled`        | Enable cross-encoder reranking                                   | `true`                                 |
-| `search.reranking.model`          | Reranking model name                                             | `ms-marco-MiniLM-L-12-v2`              |
-| `search.summary.enabled`          | Enable LLM-based summary generation (opt-in; needs a provider)   | `false`                                |
-| `search.summary.provider`         | Summary provider (ollama/openai/anthropic)                       | `"ollama"`                             |
-| `search.summary.model`            | Summary generation model                                         | `"qwen3:0.6b"`                         |
-| `ollama.enabled`                  | Enable Ollama sidecar                                            | `false`                                |
+| Parameter                           | Description                                                      | Default                                |
+|-------------------------------------|------------------------------------------------------------------|----------------------------------------|
+| `image.repository`                  | Image repository                                                 | `ghcr.io/alex-feel/mcp-context-server` |
+| `image.tag`                         | Image tag                                                        | `Chart.appVersion`                     |
+| `replicaCount`                      | Number of replicas                                               | `1`                                    |
+| `env.FASTMCP_STATELESS_HTTP`        | Stateless HTTP mode (enabled by default)                         | `"true"`                               |
+| `env.FASTMCP_ENABLE_RICH_LOGGING`   | Rich log formatting (disable for containers)                     | `"false"`                              |
+| `service.type`                      | Kubernetes service type                                          | `ClusterIP`                            |
+| `service.port`                      | Service port                                                     | `8000`                                 |
+| `storage.backend`                   | Storage backend (sqlite/postgresql)                              | `sqlite`                               |
+| `storage.postgresql.migration.user` | Role that owns the tables and runs migrations                    | `""` (request user)                    |
+| `storage.postgresql.rls.enabled`    | PostgreSQL row-level security (`ENABLE_POSTGRESQL_RLS`)          | `false`                                |
+| `storage.postgresql.rls.policyRole` | NOLOGIN role the policies name                                   | `""` (`mcp_context_request`)           |
+| `auth.provider`                     | HTTP authentication (`none`, `simple_token` or `jwt`)            | `""` (`none`)                          |
+| `accessControl.publishRole`         | Role required to publish entries as `public`                     | `""` (any owner may publish)           |
+| `search.fts.enabled`                | Full-text search tool (`true`=auto-register, `false`=off)        | `true`                                 |
+| `search.semantic.enabled`           | Semantic search + embedding subsystem (`true`=auto, `false`=off) | `false`                                |
+| `search.hybrid.enabled`             | Hybrid search tool (`true`=auto-register, `false`=off)           | `true`                                 |
+| `search.chunking.enabled`           | Enable text chunking for embeddings                              | `true`                                 |
+| `search.chunking.size`              | Chunk size in characters                                         | `1500`                                 |
+| `search.reranking.enabled`          | Enable cross-encoder reranking                                   | `true`                                 |
+| `search.reranking.model`            | Reranking model name                                             | `ms-marco-MiniLM-L-12-v2`              |
+| `search.summary.enabled`            | Enable LLM-based summary generation (opt-in; needs a provider)   | `false`                                |
+| `search.summary.provider`           | Summary provider (ollama/openai/anthropic)                       | `"ollama"`                             |
+| `search.summary.model`              | Summary generation model                                         | `"qwen3:0.6b"`                         |
+| `ollama.enabled`                    | Enable Ollama sidecar                                            | `false`                                |
 
 ### Storage Configuration
 
@@ -113,6 +118,32 @@ storage:
     existingSecret: "my-postgres-secret"
     existingSecretKey: "password"
 ```
+
+#### Row-Level Security
+
+PostgreSQL can enforce the access model through row-level security as well. Requests then connect as a login role that is a member of a NOLOGIN policy role and is neither superuser nor `BYPASSRLS`, while the role that owns the tables runs the migrations inside the server pod at startup. Create the roles first:
+
+```sql
+CREATE ROLE mcp_context_request NOLOGIN;
+CREATE ROLE mcp_app LOGIN PASSWORD 'choose-a-password' NOSUPERUSER NOBYPASSRLS;
+GRANT mcp_context_request TO mcp_app;
+```
+
+```yaml
+storage:
+  backend: postgresql
+  postgresql:
+    enabled: true
+    user: "mcp_app"
+    existingSecret: "mcp-postgresql"   # key postgresql-password
+    migration:
+      user: "postgres"
+      existingSecret: "mcp-postgresql" # key postgresql-migration-password
+    rls:
+      enabled: true
+```
+
+Rendering fails when `rls.enabled` is set without `migration.user` or with the SQLite backend. To rotate the login role, create a new one, grant it the policy role, change `storage.postgresql.user` and upgrade; no DDL runs. To disable, set `rls.enabled: false` in your values, scale the Deployment to zero, run `mcp-context-server-migrate --disable-rls` from a one-off pod with the table owner's credentials, then upgrade and scale back up. The [Helm Deployment Guide](../../../docs/deployment/helm.md#row-level-security) has the full procedure, and the `auth` and `accessControl` values are listed there too.
 
 ### Search Features
 

@@ -11,7 +11,10 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
+from app.cli._backend import assert_maintenance_connection
 from app.cli._backend import make_backend
+from app.cli._backend import owner_refusal
 from app.cli._backend import shutdown_backend
 from app.cli._database_url import mask_credentials
 from app.cli.migrate_compression.compress_execution import execute_compress
@@ -43,6 +46,9 @@ def run_compress(source_url: str, *, dry_run: bool) -> int:
         Process exit code (0 success or success-no-op, 1 invalid input,
         2 unrecoverable failure, 78 EX_CONFIG on an invalid environment
         configuration).
+        A connection row-level security filters, or a privilege error, is not a
+        failure of this mode: it propagates to the dispatcher, which prints the
+        owner remediation and exits 1.
     """
     masked = mask_credentials(source_url)
     settings = load_cli_settings()
@@ -81,6 +87,8 @@ def run_compress(source_url: str, *, dry_run: bool) -> int:
     try:
         return asyncio.run(_compress_async(source_url, dry_run=dry_run))
     except Exception as exc:
+        if owner_refusal(exc) is not None:
+            raise
         logger.exception('compression failed: %s', exc)
         return 2
 
@@ -94,6 +102,7 @@ async def _compress_async(source_url: str, *, dry_run: bool) -> int:
     backend = make_backend(source_url)
     await backend.initialize()
     try:
+        await assert_maintenance_connection(backend, settings.storage.postgresql_schema)
         existing = await read_compression_metadata(backend)
         if existing is not None:
             print(
@@ -213,7 +222,7 @@ async def _read_fp32_probe(
                 ))
             return rows
 
-        return await backend.execute_read(_read)
+        return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
     async def _read_pg(
         conn: asyncpg.Connection,
@@ -235,4 +244,4 @@ async def _read_fp32_probe(
             ))
         return out
 
-    return await backend.execute_read(cast(Any, _read_pg))
+    return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)

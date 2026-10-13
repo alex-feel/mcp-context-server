@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -107,7 +108,7 @@ class TestStatisticsBackendField:
             content_type='text',
             text_content='Tagged entry',
         )
-        await repos.tags.store_tags(ctx_id, ['python', 'testing'])
+        await repos.tags.store_tags(ctx_id, ['python', 'testing'], scope=LOCAL_SCOPE)
 
         result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
@@ -140,7 +141,7 @@ class TestStatisticsBackendField:
                 (generate_id(),),
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         active = result['most_active_threads']

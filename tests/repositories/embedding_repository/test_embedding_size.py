@@ -19,6 +19,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.settings import get_settings
 
@@ -111,10 +112,10 @@ class TestEmbeddingsSizeSqlite:
                 (b'x' * payload_bytes,),
             )
 
-        await emb_backend.execute_write(_seed)
+        await emb_backend.execute_write(_seed, access_scope=MAINTENANCE)
 
         repo = EmbeddingRepository(emb_backend)
-        size_mb, estimated = await repo.get_embeddings_size()
+        size_mb, estimated = await repo.get_embeddings_size(scope=MAINTENANCE)
         assert type(size_mb) is float
         assert size_mb == 2.0
         assert estimated is False
@@ -131,10 +132,10 @@ class TestEmbeddingsSizeSqlite:
                 "VALUES ('c1', 'test-model', 1024, 3)",
             )
 
-        await emb_backend.execute_write(_seed)
+        await emb_backend.execute_write(_seed, access_scope=MAINTENANCE)
 
         repo = EmbeddingRepository(emb_backend)
-        size_mb, estimated = await repo.get_embeddings_size()
+        size_mb, estimated = await repo.get_embeddings_size(scope=MAINTENANCE)
         # 3 chunks * 1024 dims * 4 bytes = 12288 bytes.
         assert type(size_mb) is float
         assert size_mb == round(12288 / (1024 * 1024), 2)
@@ -146,7 +147,7 @@ class TestEmbeddingsSizeSqlite:
         monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
         get_settings.cache_clear()
         repo = EmbeddingRepository(emb_backend)
-        size_mb, estimated = await repo.get_embeddings_size()
+        size_mb, estimated = await repo.get_embeddings_size(scope=MAINTENANCE)
         assert type(size_mb) is float
         assert size_mb == 0.0
         assert estimated is False
@@ -159,7 +160,7 @@ class TestEmbeddingsSizeSqlite:
         monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
         get_settings.cache_clear()
         repo = EmbeddingRepository(async_db_initialized)
-        size_mb, estimated = await repo.get_embeddings_size()
+        size_mb, estimated = await repo.get_embeddings_size(scope=MAINTENANCE)
         assert size_mb == 0.0
         assert estimated is False
 

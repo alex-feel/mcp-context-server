@@ -18,6 +18,7 @@ from fastmcp.exceptions import ToolError
 
 import app.tools
 from app.access_scope import AccessScope
+from app.backends.base import BackendAccess
 from app.repositories.context_repository.records import DuplicateCandidate
 from tests.helpers import as_principal
 
@@ -274,7 +275,7 @@ class TestStoreScope:
         ):
             result = await store_context(thread_id='scope-thread', source='user', text='Re-sent text')
 
-        expected = AccessScope('bob', frozenset({'team-x'}))
+        expected = AccessScope('bob', frozenset({'team-x'}), may_publish=True)
         precheck_call = precheck.await_args
         store_call = mock_store.await_args
         assert result['context_id'] == 'dup-id'
@@ -285,6 +286,7 @@ class TestStoreScope:
 
 
 @asynccontextmanager
-async def _mock_begin_transaction() -> AsyncIterator[MagicMock]:
+async def _mock_begin_transaction(*, access_scope: BackendAccess) -> AsyncIterator[MagicMock]:
     """Yield a mock transaction for a mocked backend."""
+    _ = access_scope
     yield MagicMock()

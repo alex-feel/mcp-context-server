@@ -119,7 +119,7 @@ class ContextDeleteMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_delete_by_ids_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_delete_by_ids_sqlite)
+            return await self.backend.execute_write(_delete_by_ids_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _delete_by_ids_postgresql(conn: 'asyncpg.Connection') -> int:
@@ -133,7 +133,7 @@ class ContextDeleteMixin(BaseRepository):
 
         if txn:
             return await _delete_by_ids_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(_delete_by_ids_postgresql)
+        return await self.backend.execute_write(_delete_by_ids_postgresql, access_scope=scope)
 
     async def get_ids_matching_batch_criteria(
         self,
@@ -179,6 +179,7 @@ class ContextDeleteMixin(BaseRepository):
             List of matching context entry IDs.
         """
         backend_type = self.backend.backend_type
+        entries = self._readable('context_entries', alias='context_entries')
 
         def _chunk_statement(
             id_chunk: list[str] | None, thread_chunk: list[str] | None,
@@ -217,7 +218,7 @@ class ContextDeleteMixin(BaseRepository):
             access = build_access_predicate(
                 scope, mode=mode, backend_type=backend_type, outer='context_entries', start=len(params) + 1,
             )
-            query = f'SELECT id FROM context_entries WHERE {" AND ".join(conditions)}{access.and_clause()}'
+            query = f'SELECT id FROM {entries} WHERE {" AND ".join(conditions)}{access.and_clause()}'
             return query, [*params, *access.params]
 
         statements = [
@@ -238,7 +239,7 @@ class ContextDeleteMixin(BaseRepository):
                     matched.extend(str(row[0]) for row in cursor.fetchall())
                 return matched
 
-            return await self.backend.execute_read(_select_ids_sqlite)
+            return await self.backend.execute_read(_select_ids_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _select_ids_postgresql(conn: 'asyncpg.Connection') -> list[str]:
@@ -249,4 +250,4 @@ class ContextDeleteMixin(BaseRepository):
                 matched.extend(normalize_id(str(row['id'])) for row in await conn.fetch(query, *params))
             return matched
 
-        return await self.backend.execute_read(_select_ids_postgresql)
+        return await self.backend.execute_read(_select_ids_postgresql, access_scope=scope)

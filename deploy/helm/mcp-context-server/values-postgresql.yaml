@@ -15,6 +15,21 @@ storage:
     password: ""
     database: "mcp_context"
     sslMode: "prefer"
+    # Row-level security (off by default): uncomment to have PostgreSQL also enforce the
+    # access model. Create the NOLOGIN policy role and a login role that is its member
+    # first, point `user` above at that login role, and keep the role that owns the tables
+    # as migration.user. See docs/deployment/helm.md.
+    #   CREATE ROLE mcp_context_request NOLOGIN;
+    #   CREATE ROLE mcp_app LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
+    #   GRANT mcp_context_request TO mcp_app;
+    # migration:
+    #   user: "postgres"
+    #   # Set via --set storage.postgresql.migration.password=xxx or use existingSecret
+    #   password: ""
+    #   existingSecret: ""
+    # rls:
+    #   enabled: true
+    #   policyRole: "mcp_context_request"
 
 search:
   fts:

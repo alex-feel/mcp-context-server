@@ -15,6 +15,7 @@ import asyncpg
 import pytest
 
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.migrations.semantic import apply_semantic_search_migration
 from app.settings import get_settings
 from app.startup import init_database
@@ -161,7 +162,7 @@ def test_production_pool_search_path_survives_reset_all(
             # confirm the configured schema governs bare-name resolution. Each
             # begin_transaction acquires a pooled connection and releases it on
             # exit, which runs the pool's RESET ALL.
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                 conn = cast('asyncpg.Connection', txn.connection)
                 pid = await conn.fetchval('SELECT pg_backend_pid()')
                 sp1 = await conn.fetchval('SHOW search_path')
@@ -179,7 +180,7 @@ def test_production_pool_search_path_survives_reset_all(
             landed2 = ''
             reused = False
             for _ in range(50):
-                async with backend.begin_transaction() as txn:
+                async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                     conn = cast('asyncpg.Connection', txn.connection)
                     if await conn.fetchval('SELECT pg_backend_pid()') != pid:
                         continue

@@ -14,6 +14,8 @@ from typing import cast
 import pytest
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.errors import ConfigurationError
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
@@ -48,7 +50,7 @@ async def test_sqlite_migration_refuses_first_time_with_populated_fp32(
             (b'\x00\x01\x02\x03',),
         )
 
-    await backend.execute_write(_create_populated_legacy)
+    await backend.execute_write(_create_populated_legacy, access_scope=MAINTENANCE)
 
     with pytest.raises(ConfigurationError, match='mcp-context-server-migrate'):
         await apply_compression_migration(backend=backend)
@@ -56,7 +58,7 @@ async def test_sqlite_migration_refuses_first_time_with_populated_fp32(
     def _survives(conn: sqlite3.Connection) -> int:
         return int(conn.execute('SELECT COUNT(*) FROM vec_context_embeddings').fetchone()[0])
 
-    assert await backend.execute_read(_survives) == 1
+    assert await backend.execute_read(_survives, access_scope=MAINTENANCE) == 1
 
 
 @pytest.mark.asyncio
@@ -81,7 +83,7 @@ async def test_sqlite_migration_proceeds_with_populated_fp32_when_provenance_pre
             ('turboquant', 4, 'ip', 42, 1024),
         )
 
-    await backend.execute_write(_insert_provenance)
+    await backend.execute_write(_insert_provenance, access_scope=MAINTENANCE)
 
     def _create_populated_legacy(conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -93,7 +95,7 @@ async def test_sqlite_migration_proceeds_with_populated_fp32_when_provenance_pre
             (b'\x00\x01\x02\x03',),
         )
 
-    await backend.execute_write(_create_populated_legacy)
+    await backend.execute_write(_create_populated_legacy, access_scope=MAINTENANCE)
 
     # Must not raise: the provenance row proves the compressed table is the
     # authoritative store, so the stray fp32 table is dropped.
@@ -106,7 +108,7 @@ async def test_sqlite_migration_proceeds_with_populated_fp32_when_provenance_pre
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_exists) is False
+    assert await backend.execute_read(_exists, access_scope=MAINTENANCE) is False
 
 
 @pytest.mark.asyncio
@@ -133,7 +135,7 @@ async def test_sqlite_migration_refuses_generation_off_flip_over_populated_fp32(
             "VALUES ('abc', x'00')",
         )
 
-    await backend.execute_write(_seed_fp32)
+    await backend.execute_write(_seed_fp32, access_scope=MAINTENANCE)
 
     enable_compression(monkeypatch)
     monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
@@ -185,15 +187,17 @@ class _FakeProbeBackend:
     def __init__(self, conn: _FakeVecConnection) -> None:
         self._conn = conn
 
-    async def execute_read(self, operation: Callable[[Any], bool]) -> bool:
+    async def execute_read(self, operation: Callable[[Any], bool], *, access_scope: BackendAccess) -> bool:
         """Run the probe callable against the fake connection.
 
         Args:
             operation: The probe closure.
+            access_scope: The identity the read runs as; the fake binds nothing.
 
         Returns:
             Whatever the closure returns.
         """
+        _ = access_scope
         return operation(self._conn)
 
 

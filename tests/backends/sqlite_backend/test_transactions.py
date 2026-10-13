@@ -10,6 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from app.access_scope import SYSTEM_SCOPE
+from app.access_scope import AccessScope
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.backends.base import TransactionContext
 from app.backends.sqlite_backend import SQLiteBackend
 from app.backends.sqlite_backend.transactions import SQLiteTransactionContext
@@ -36,7 +40,7 @@ class TestSQLiteTransactionContext:
         await backend.initialize()
 
         try:
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                 assert txn.backend_type == 'sqlite'
                 conn = txn.connection
                 assert isinstance(conn, sqlite3.Connection)
@@ -76,7 +80,7 @@ class TestSQLiteTransactionContext:
 
         async def insert_and_fail(backend: SQLiteBackend) -> None:
             """Insert data and then raise an intentional error."""
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                 txn.connection.execute(
                     "INSERT INTO context_entries (id, thread_id, source, text_content, content_type, owner_id) "
                     "VALUES (?, ?, ?, ?, ?, 'local')",
@@ -115,7 +119,7 @@ class TestSQLiteTransactionContext:
         await backend.initialize()
 
         try:
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                 conn = txn.connection
 
                 # Insert context entry
@@ -172,7 +176,7 @@ class TestSQLiteTransactionContext:
 
         async def insert_with_fk_violation(backend: SQLiteBackend) -> None:
             """Insert data with a foreign key violation to trigger rollback."""
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                 conn = txn.connection
 
                 # Enable foreign key constraints
@@ -226,7 +230,7 @@ class TestSQLiteTransactionContext:
 
         # Attempting to begin transaction should raise
         with pytest.raises(RuntimeError, match='shutting down'):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 pass
 
 
@@ -282,7 +286,7 @@ class TestTransactionContextIntegration:
         try:
             connection_ids: list[int] = []
 
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                 # Record the connection id
                 connection_ids.append(id(txn.connection))
 
@@ -341,7 +345,7 @@ class TestControlFlowSignalCircuitBreaker:
             # Far more than failure_threshold consecutive control-flow rollbacks.
             for _ in range(backend.circuit_breaker.failure_threshold + 5):
                 with pytest.raises(VersionConflictError):
-                    async with backend.begin_transaction():
+                    async with backend.begin_transaction(access_scope=MAINTENANCE):
                         raise VersionConflictError('ctx-under-contention')
             # No failure recorded for any control-flow rollback: breaker stays HEALTHY.
             assert backend.circuit_breaker.failures == 0
@@ -357,9 +361,28 @@ class TestControlFlowSignalCircuitBreaker:
             # failure; failure_threshold consecutive faults open the breaker.
             for _ in range(backend.circuit_breaker.failure_threshold):
                 with pytest.raises(ValueError, match='genuine fault'):
-                    async with backend.begin_transaction():
+                    async with backend.begin_transaction(access_scope=MAINTENANCE):
                         raise ValueError('genuine fault')
             assert backend.circuit_breaker.failures >= backend.circuit_breaker.failure_threshold
             assert backend.circuit_breaker.is_open() is True
+        finally:
+            await backend.shutdown()
+
+
+class TestAccessScopeDiscard:
+    """SQLite enforces access in the application layer, so a transaction accepts and drops the identity."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'access',
+        [AccessScope('alice', frozenset({'team-x'}), may_publish=True), SYSTEM_SCOPE, MAINTENANCE],
+        ids=['request', 'system', 'maintenance'],
+    )
+    async def test_transaction_runs_for_every_identity(self, tmp_path: Path, access: BackendAccess) -> None:
+        backend = await TestControlFlowSignalCircuitBreaker._initialized_backend(tmp_path, 'access_scope.db')
+        try:
+            async with backend.begin_transaction(access_scope=access) as txn:
+                cursor = txn.connection.execute('SELECT 7')
+                assert cursor.fetchone()[0] == 7
         finally:
             await backend.shutdown()

@@ -18,7 +18,6 @@ unit suite under
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +26,8 @@ import asyncpg
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
+
+from tests.helpers import postgresql_subprocess_env
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
@@ -40,28 +41,25 @@ def _build_server_env(
     generation: str = 'false',
 ) -> dict[str, str]:
     """Build the env dict for the spawned server with compression enabled."""
-    return {
-        **os.environ,
-        'STORAGE_BACKEND': 'postgresql',
-        'POSTGRESQL_CONNECTION_STRING': pg_url,
-        'MCP_TEST_MODE': '1',
-        'ENABLE_SEMANTIC_SEARCH': 'false',
-        'ENABLE_FTS': 'false',
-        'ENABLE_HYBRID_SEARCH': 'false',
-        'ENABLE_EMBEDDING_GENERATION': generation,
-        'ENABLE_SUMMARY_GENERATION': 'false',
-        'ENABLE_EMBEDDING_COMPRESSION': 'true',
-        'COMPRESSION_BITS': bits,
-        'COMPRESSION_VARIANT': variant,
-        'COMPRESSION_SEED': seed,
-        'COMPRESSION_MAX_CONCURRENT': '2',
+    return postgresql_subprocess_env(
+        pg_url,
+        ENABLE_SEMANTIC_SEARCH='false',
+        ENABLE_FTS='false',
+        ENABLE_HYBRID_SEARCH='false',
+        ENABLE_EMBEDDING_GENERATION=generation,
+        ENABLE_SUMMARY_GENERATION='false',
+        ENABLE_EMBEDDING_COMPRESSION='true',
+        COMPRESSION_BITS=bits,
+        COMPRESSION_VARIANT=variant,
+        COMPRESSION_SEED=seed,
+        COMPRESSION_MAX_CONCURRENT='2',
         # Pin the dim so the spawned server always matches the pre-seeded
-        # provenance row: the dict spreads the ambient os.environ first, and
+        # provenance row: the helper inherits the parent environment, and
         # CI exports EMBEDDING_DIM=384 for the unit suite, which would
         # otherwise reach the seed-locked validator as a dim mismatch and
         # kill the server with exit 78 before the client connects.
-        'EMBEDDING_DIM': '1024',
-    }
+        EMBEDDING_DIM='1024',
+    )
 
 
 async def _preseed_compression_schema(pg_url: str, *, seed: int = 42) -> None:

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from tests.helpers import LOCAL_SCOPE
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ class TestTransactionExecutorOffload:
             seen['thread'] = threading.get_ident()
             return int(conn.execute('SELECT 1').fetchone()[0])
 
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
             result = await BaseRepository._run_sqlite_txn(
                 _closure, cast(sqlite3.Connection, txn.connection),
             )
@@ -76,14 +77,14 @@ class TestTransactionExecutorOffload:
             return await original(closure, conn)
 
         with patch.object(BaseRepository, '_run_sqlite_txn', staticmethod(_spy)):
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
                 context_id, _ = await repos.context.store_with_deduplication(
                     scope=LOCAL_SCOPE,
                     visibility='private',
                     thread_id='offload-1', source='user', content_type='text',
                     text_content='offloaded txn write', metadata=None, txn=txn,
                 )
-                await repos.tags.store_tags(context_id, ['alpha'], txn=txn)
+                await repos.tags.store_tags(context_id, ['alpha'], txn=txn, scope=LOCAL_SCOPE)
 
         assert '_store_sqlite' in calls
         assert '_store_tags_sqlite' in calls
@@ -113,7 +114,7 @@ class TestTransactionExecutorOffload:
                 asyncio.CancelledError: Always, after the partial write, to
                     model task cancellation unwinding mid-transaction.
             """
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
                 await repos.context.store_with_deduplication(
                     scope=LOCAL_SCOPE,
                     visibility='private',
@@ -176,7 +177,7 @@ class TestTransactionExecutorOffload:
             )
 
         async def _txn_task() -> None:
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                 await BaseRepository._run_sqlite_txn(
                     _slow_write, cast(sqlite3.Connection, txn.connection),
                 )
@@ -274,7 +275,7 @@ class TestTransactionExecutorOffload:
             Raises:
                 RuntimeError: Always, to model a body failure that must roll back.
             """
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
                 await repos.context.store_with_deduplication(
                     scope=LOCAL_SCOPE,
                     visibility='private',
@@ -285,7 +286,7 @@ class TestTransactionExecutorOffload:
 
         with patch('app.backends.sqlite_backend.transactions.run_in_executor_uninterruptible', _spy):
             # Success path -> commit routes through the drain.
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
                 await repos.context.store_with_deduplication(
                     scope=LOCAL_SCOPE,
                     visibility='private',
@@ -376,7 +377,7 @@ class TestTransactionExecutorOffload:
             completed['value'] = value
             return value
 
-        task = asyncio.create_task(backend.execute_read(_slow_read))
+        task = asyncio.create_task(backend.execute_read(_slow_read, access_scope=MAINTENANCE))
         await asyncio.to_thread(started.wait, 10)
         task.cancel()
         # The drain holds the cancellation open while the query runs.

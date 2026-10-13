@@ -15,6 +15,14 @@ statement to the rows the scope may read, modify or owns:
 :func:`build_readable_parent_predicate` renders the ``READ`` predicate for a child
 row instead: the child's key must name an entry the scope may read.
 
+:func:`build_policy_predicate` renders the same three modes for PostgreSQL
+row-level security policies: the identity comes from :func:`policy_operands`,
+scalar subqueries around the schema's identity functions, instead of bound
+parameters. :func:`build_gated_read_predicate` renders the ``READ`` mode for the
+read view, with a membership gate folded into those operands and into the public
+arm. Every renderer composes its arms through one function, so the application
+predicate, the database policies and the read view cannot drift apart.
+
 A grant carries no visibility condition, so it is effective under either
 visibility, and a write grant implies read. Comparisons are exact and
 case-sensitive, matching how owner ids and grant principals are stored.
@@ -32,8 +40,10 @@ This module imports only the standard library, so the repositories and
 """
 
 import json
+from dataclasses import KW_ONLY
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Final
 from typing import final
 
 
@@ -45,10 +55,16 @@ class AccessScope:
         principal_id: The caller's principal id, matched against ``owner_id``
             and against user grants.
         groups: The caller's group ids, matched against group grants.
+        may_publish: Whether the caller may set visibility ``public`` under
+            ``ACCESS_CONTROL_PUBLISH_ROLE``. It is part of the caller's identity,
+            not a row filter: the access predicates never read it. Only scopes
+            built for the write tools assert it.
     """
 
     principal_id: str
     groups: frozenset[str]
+    _: KW_ONLY
+    may_publish: bool = False
 
     def groups_list(self) -> list[str]:
         """Return the groups sorted, so the bound value is deterministic across processes.
@@ -158,35 +174,198 @@ def build_access_predicate(
 
     principal = scope.principal_id
     if backend_type == 'sqlite':
-        owner_placeholder = '?'
-        grantee_placeholder = '?'
-        group_membership = 'g.principal_id IN (SELECT value FROM json_each(?))'
+        owner_operand = '?'
+        grantee_operand = '?'
+        group_membership = 'IN (SELECT value FROM json_each(?))'
         groups_param: str | list[str] = scope.groups_json()
     else:  # postgresql
-        owner_placeholder = f'${start}'
-        grantee_placeholder = f'${start + 1}'
-        group_membership = f'g.principal_id = ANY(${start + 2}::text[])'
+        owner_operand = f'${start}'
+        grantee_operand = f'${start + 1}'
+        group_membership = f'= ANY(${start + 2}::text[])'
         groups_param = scope.groups_list()
 
-    owner_arm = f'{outer}.owner_id = {owner_placeholder}'
+    sql = _compose(
+        mode,
+        outer=outer,
+        owner_operand=owner_operand,
+        grantee_operand=grantee_operand,
+        group_membership=group_membership,
+        grants_relation='context_entry_grants',
+        public_gate=None,
+    )
+    params: list[str | list[str]] = [principal] if mode is AccessMode.OWNER else [principal, principal, groups_param]
+    return AccessPredicate(sql=sql, params=params)
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyOperands:
+    """The SQL operands through which PostgreSQL policies read the transaction's bound identity.
+
+    Each is a scalar subquery around one of the schema's identity functions, so
+    PostgreSQL evaluates it once per statement.
+
+    Attributes:
+        principal: The bound principal; NULL when none is bound.
+        groups: The bound groups as a ``text[]``; empty when none are bound. The
+            explicit cast makes ``= ANY(<groups>)`` compare with the elements of
+            the array: without it, ``= ANY((SELECT ...))`` compares with each row
+            of the subquery.
+        may_publish: Whether the bound caller may set visibility ``public``.
+    """
+
+    principal: str
+    groups: str
+    may_publish: str
+
+
+# The schema functions that hand the bound identity to the policies.
+PRINCIPAL_FUNCTION: Final = 'mcp_context_principal_id'
+GROUPS_FUNCTION: Final = 'mcp_context_groups'
+MAY_PUBLISH_FUNCTION: Final = 'mcp_context_may_publish'
+
+# The view through which a request backend under row-level security reads
+# context_entries: owned by the table owner, its condition is the READ predicate
+# gated on membership of the policy role (build_gated_read_predicate).
+READ_VIEW: Final = 'context_entries_readable'
+
+
+def policy_operands(schema: str) -> PolicyOperands:
+    """Return the operands of the identity functions in ``schema``.
+
+    Args:
+        schema: The schema holding the identity functions, already quoted as a
+            SQL identifier.
+
+    Returns:
+        The principal, groups and publish-right operands.
+    """
+    return PolicyOperands(
+        principal=f'(SELECT {schema}.{PRINCIPAL_FUNCTION}())',
+        groups=f'(SELECT {schema}.{GROUPS_FUNCTION}())::text[]',
+        may_publish=f'(SELECT {schema}.{MAY_PUBLISH_FUNCTION}())',
+    )
+
+
+def build_policy_predicate(mode: AccessMode, *, outer: str, schema: str) -> str:
+    """Render the PostgreSQL row-level security form of the ``mode`` predicate.
+
+    The arms are those of :func:`build_access_predicate`; only the operands
+    differ. The principal and the groups are the :func:`policy_operands` of
+    ``schema``, and the grants table is qualified by ``schema``. The text binds
+    no parameter, so it serves as a policy expression.
+
+    Args:
+        mode: ``READ``, ``WRITE`` or ``OWNER``.
+        outer: The table name or alias of ``context_entries`` the predicate
+            qualifies, a trusted identifier: the table name in a policy on
+            ``context_entries``, the alias in a child table's policy subquery.
+        schema: The schema holding the tables and the identity functions,
+            already quoted as a SQL identifier, so this module needs nothing
+            beyond the standard library.
+
+    Returns:
+        The predicate text.
+    """
+    operands = policy_operands(schema)
+    return _compose(
+        mode,
+        outer=outer,
+        owner_operand=operands.principal,
+        grantee_operand=operands.principal,
+        group_membership=f'= ANY({operands.groups})',
+        grants_relation=f'{schema}.context_entry_grants',
+        public_gate=None,
+    )
+
+
+def build_gated_read_predicate(*, outer: str, schema: str, gate: str) -> str:
+    """Render the ``READ`` policy predicate that admits rows only while ``gate`` holds.
+
+    The arms and the grants relation are those of :func:`build_policy_predicate`.
+    The gate is folded into them rather than added as a conjunct: the principal
+    is the identity function's value when the gate holds and NULL otherwise, the
+    groups are the identity function's value or an empty array, and the public
+    arm also requires the gate. Each is a scalar subquery the planner evaluates
+    once per statement, so when the gate fails no arm matches any row.
+
+    A gate written as a conjunct of its own names no column, so the planner
+    applies it above every join of the predicate's relation as a pseudoconstant
+    filter, and it does not memoize the unique inner side of a join carrying
+    one: a join of the tags to the read view then loses the plan that reads the
+    tags in tag order. Inside the operands the gate leaves the join's conditions
+    alone.
+
+    Args:
+        outer: The alias of ``context_entries`` the predicate qualifies, a
+            trusted identifier.
+        schema: The schema holding the tables and the identity functions,
+            already quoted as a SQL identifier.
+        gate: A boolean SQL expression that names no column, a trusted
+            constant such as a role-membership test.
+
+    Returns:
+        The predicate text.
+    """
+    principal = f'(SELECT CASE WHEN {gate} THEN {schema}.{PRINCIPAL_FUNCTION}() END)'
+    groups = f"(SELECT CASE WHEN {gate} THEN {schema}.{GROUPS_FUNCTION}() ELSE '{{}}'::text[] END)::text[]"
+    return _compose(
+        AccessMode.READ,
+        outer=outer,
+        owner_operand=principal,
+        grantee_operand=principal,
+        group_membership=f'= ANY({groups})',
+        grants_relation=f'{schema}.context_entry_grants',
+        public_gate=f'(SELECT {gate})',
+    )
+
+
+def _compose(
+    mode: AccessMode,
+    *,
+    outer: str,
+    owner_operand: str,
+    grantee_operand: str,
+    group_membership: str,
+    grants_relation: str,
+    public_gate: str | None,
+) -> str:
+    """Compose the arms of the ``mode`` predicate around the given operands.
+
+    Args:
+        mode: ``READ``, ``WRITE`` or ``OWNER``.
+        outer: The table name or alias of ``context_entries``; it qualifies
+            ``id``, ``owner_id`` and ``visibility``, because the grant subquery's
+            own table also has an ``id`` column.
+        owner_operand: The value ``owner_id`` must equal.
+        grantee_operand: The value a user grant's ``principal_id`` must equal.
+        group_membership: The test a group grant's ``principal_id`` must pass,
+            written to follow the column, such as ``= ANY(...)``.
+        grants_relation: The grants table as the statement names it.
+        public_gate: A condition the ``READ`` public arm also requires, or
+            ``None`` for a public arm on visibility alone.
+
+    Returns:
+        ``<outer>.owner_id = <owner>`` for ``OWNER``; otherwise the owner arm,
+        for ``READ`` the public arm, and the grant arm, parenthesized as one
+        disjunction.
+    """
+    owner_arm = f'{outer}.owner_id = {owner_operand}'
     if mode is AccessMode.OWNER:
-        return AccessPredicate(sql=owner_arm, params=[principal])
+        return owner_arm
 
     if mode is AccessMode.READ:
-        public_arm = f" OR {outer}.visibility = 'public'"
+        public = f"{outer}.visibility = 'public'"
+        public_arm = f' OR {public}' if public_gate is None else f' OR ({public} AND {public_gate})'
         permission = "g.permission IN ('read', 'write')"
     else:  # WRITE
         public_arm = ''
         permission = "g.permission = 'write'"
     grant_arm = (
-        f'EXISTS (SELECT 1 FROM context_entry_grants g WHERE g.context_entry_id = {outer}.id AND {permission} '
-        f"AND ((g.principal_type = 'user' AND g.principal_id = {grantee_placeholder}) "
-        f"OR (g.principal_type = 'group' AND {group_membership})))"
+        f'EXISTS (SELECT 1 FROM {grants_relation} g WHERE g.context_entry_id = {outer}.id AND {permission} '
+        f"AND ((g.principal_type = 'user' AND g.principal_id = {grantee_operand}) "
+        f"OR (g.principal_type = 'group' AND g.principal_id {group_membership})))"
     )
-    return AccessPredicate(
-        sql=f'({owner_arm}{public_arm} OR {grant_arm})',
-        params=[principal, principal, groups_param],
-    )
+    return f'({owner_arm}{public_arm} OR {grant_arm})'
 
 
 def build_readable_parent_predicate(

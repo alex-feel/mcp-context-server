@@ -12,6 +12,7 @@ import pytest
 
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.repositories.context_repository import ContextRepository
 from app.repositories.grant_repository import GrantRepository
 from tests.helpers import read_grants
@@ -39,7 +40,7 @@ class TestStoreGroupReadGrants:
         context_id = await _store_entry(async_db_initialized)
         grants_repo = GrantRepository(async_db_initialized)
 
-        await grants_repo.store_group_read_grants(context_id, {'team-b', 'team-a'}, granted_by='alice')
+        await grants_repo.store_group_read_grants(context_id, {'team-b', 'team-a'}, granted_by='alice', scope=MAINTENANCE)
 
         assert await read_grants(async_db_initialized, context_id) == [
             ('group', 'team-a', 'read', 'alice'),
@@ -52,8 +53,8 @@ class TestStoreGroupReadGrants:
         context_id = await _store_entry(async_db_initialized)
         grants_repo = GrantRepository(async_db_initialized)
 
-        await grants_repo.store_group_read_grants(context_id, ['team-a'], granted_by='alice')
-        await grants_repo.store_group_read_grants(context_id, ['team-a'], granted_by='alice')
+        await grants_repo.store_group_read_grants(context_id, ['team-a'], granted_by='alice', scope=MAINTENANCE)
+        await grants_repo.store_group_read_grants(context_id, ['team-a'], granted_by='alice', scope=MAINTENANCE)
 
         assert await read_grants(async_db_initialized, context_id) == [
             ('group', 'team-a', 'read', 'alice'),
@@ -65,7 +66,7 @@ class TestStoreGroupReadGrants:
         context_id = await _store_entry(async_db_initialized)
         grants_repo = GrantRepository(async_db_initialized)
 
-        await grants_repo.store_group_read_grants(context_id, [], granted_by='alice')
+        await grants_repo.store_group_read_grants(context_id, [], granted_by='alice', scope=MAINTENANCE)
 
         assert await read_grants(async_db_initialized, context_id) == []
 
@@ -74,7 +75,7 @@ class TestStoreGroupReadGrants:
         """Deleting the parent entry removes its grant rows (FK ON DELETE CASCADE)."""
         context_id = await _store_entry(async_db_initialized)
         grants_repo = GrantRepository(async_db_initialized)
-        await grants_repo.store_group_read_grants(context_id, ['team-a'], granted_by='alice')
+        await grants_repo.store_group_read_grants(context_id, ['team-a'], granted_by='alice', scope=MAINTENANCE)
 
         await ContextRepository(async_db_initialized).delete_by_ids(
             [context_id], scope=AccessScope('alice', frozenset()),
@@ -87,4 +88,4 @@ class TestStoreGroupReadGrants:
             )
             return int(cursor.fetchone()[0])
 
-        assert await async_db_initialized.execute_read(_count) == 0
+        assert await async_db_initialized.execute_read(_count, access_scope=MAINTENANCE) == 0

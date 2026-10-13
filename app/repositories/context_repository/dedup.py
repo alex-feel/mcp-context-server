@@ -42,7 +42,9 @@ def _param(backend_type: str, position: int) -> str:
     return '?' if backend_type == 'sqlite' else f'${position}'
 
 
-def _candidate_sql(backend_type: str, thread_id: str, source: str, *, scope: AccessScope) -> Statement:
+def _candidate_sql(
+    backend_type: str, thread_id: str, source: str, *, scope: AccessScope, relation: str,
+) -> Statement:
     """Build the statement selecting the dedup candidate of a store.
 
     The candidate is the latest entry of the thread and source that ``scope``
@@ -56,6 +58,8 @@ def _candidate_sql(backend_type: str, thread_id: str, source: str, *, scope: Acc
         thread_id: Thread of the store.
         source: Source of the store.
         scope: The caller's scope.
+        relation: The relation the backend reads ``context_entries`` rows from, under
+            the alias ``context_entries``.
 
     Returns:
         The statement and its parameters.
@@ -64,7 +68,7 @@ def _candidate_sql(backend_type: str, thread_id: str, source: str, *, scope: Acc
         scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=3,
     )
     sql = (
-        'SELECT id, content_hash, text_content, summary, owner_id FROM context_entries '
+        f'SELECT id, content_hash, text_content, summary, owner_id FROM {relation} '
         f'WHERE thread_id = {_param(backend_type, 1)} AND source = {_param(backend_type, 2)}{read.and_clause()} '
         'ORDER BY id DESC LIMIT 1'
     )
@@ -72,7 +76,7 @@ def _candidate_sql(backend_type: str, thread_id: str, source: str, *, scope: Acc
 
 
 def _interleave_sql(
-    backend_type: str, thread_id: str, source: str, candidate_id: object, *, scope: AccessScope,
+    backend_type: str, thread_id: str, source: str, candidate_id: object, *, scope: AccessScope, relation: str,
 ) -> Statement:
     """Build the statement looking for a new conversational turn after the candidate.
 
@@ -86,6 +90,8 @@ def _interleave_sql(
         source: Source of the store; the statement looks for the other one.
         candidate_id: ID of the dedup candidate.
         scope: The caller's scope.
+        relation: The relation the backend reads ``context_entries`` rows from, under
+            the alias ``context_entries``.
 
     Returns:
         The statement and its parameters.
@@ -95,7 +101,7 @@ def _interleave_sql(
         scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=4,
     )
     sql = (
-        'SELECT 1 FROM context_entries '
+        f'SELECT 1 FROM {relation} '
         f'WHERE thread_id = {_param(backend_type, 1)} AND source = {_param(backend_type, 2)} '
         f'AND id > {_param(backend_type, 3)}{read.and_clause()} '
         'LIMIT 1'
@@ -270,7 +276,8 @@ class ContextDedupMixin(BaseRepository):
         # The candidate is matched by content hash; its text is compared only for
         # rows stored before content hashes existed (NULL hash).
         content_hash = compute_content_hash(text_content)
-        candidate_sql, candidate_params = _candidate_sql(backend_type, thread_id, source, scope=scope)
+        entries = self._readable('context_entries', alias='context_entries')
+        candidate_sql, candidate_params = _candidate_sql(backend_type, thread_id, source, scope=scope, relation=entries)
 
         def _update_statement(candidate_id: object, observed_hash: str | None) -> Statement:
             return _dedup_update_sql(
@@ -305,7 +312,9 @@ class ContextDedupMixin(BaseRepository):
                     # A readable opposite-source entry after the candidate means this is a
                     # new conversational turn, not a retransmit: keep the chronological
                     # order by inserting instead.
-                    cursor.execute(*_interleave_sql(backend_type, thread_id, source, candidate['id'], scope=scope))
+                    cursor.execute(*_interleave_sql(
+                        backend_type, thread_id, source, candidate['id'], scope=scope, relation=entries,
+                    ))
                     is_duplicate = cursor.fetchone() is None
 
                 if is_duplicate:
@@ -335,7 +344,7 @@ class ContextDedupMixin(BaseRepository):
 
             if txn:
                 return await self._run_sqlite_txn(_store_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_write(_store_sqlite)
+            return await self.backend.execute_write(_store_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _store_postgresql(conn: 'asyncpg.Connection') -> tuple[str, bool]:
@@ -349,7 +358,9 @@ class ContextDedupMixin(BaseRepository):
                 # A readable opposite-source entry after the candidate means this is a
                 # new conversational turn, not a retransmit: keep the chronological
                 # order by inserting instead.
-                turn_sql, turn_params = _interleave_sql(backend_type, thread_id, source, candidate['id'], scope=scope)
+                turn_sql, turn_params = _interleave_sql(
+                    backend_type, thread_id, source, candidate['id'], scope=scope, relation=entries,
+                )
                 is_duplicate = await conn.fetchrow(turn_sql, *turn_params) is None
 
             if is_duplicate and candidate is not None:
@@ -385,7 +396,7 @@ class ContextDedupMixin(BaseRepository):
 
         if txn:
             return await _store_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_write(_store_postgresql)
+        return await self.backend.execute_write(_store_postgresql, access_scope=scope)
 
     async def check_latest_is_duplicate(
         self,
@@ -435,7 +446,8 @@ class ContextDedupMixin(BaseRepository):
         """
         content_hash = compute_content_hash(text_content)
         backend_type = self.backend.backend_type
-        candidate_sql, candidate_params = _candidate_sql(backend_type, thread_id, source, scope=scope)
+        entries = self._readable('context_entries', alias='context_entries')
+        candidate_sql, candidate_params = _candidate_sql(backend_type, thread_id, source, scope=scope, relation=entries)
 
         if backend_type == 'sqlite':
 
@@ -448,7 +460,9 @@ class ContextDedupMixin(BaseRepository):
                     scope=scope, content_hash=content_hash, text_content=text_content,
                 ):
                     return None
-                cursor.execute(*_interleave_sql(backend_type, thread_id, source, row['id'], scope=scope))
+                cursor.execute(*_interleave_sql(
+                    backend_type, thread_id, source, row['id'], scope=scope, relation=entries,
+                ))
                 if cursor.fetchone() is not None:
                     return None
                 return DuplicateCandidate(
@@ -456,7 +470,7 @@ class ContextDedupMixin(BaseRepository):
                     summary=cast(str | None, row['summary']),
                 )
 
-            return await self.backend.execute_read(_check_sqlite)
+            return await self.backend.execute_read(_check_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _check_postgresql(conn: 'asyncpg.Connection') -> DuplicateCandidate | None:
@@ -466,7 +480,9 @@ class ContextDedupMixin(BaseRepository):
                 scope=scope, content_hash=content_hash, text_content=text_content,
             ):
                 return None
-            turn_sql, turn_params = _interleave_sql(backend_type, thread_id, source, row['id'], scope=scope)
+            turn_sql, turn_params = _interleave_sql(
+                backend_type, thread_id, source, row['id'], scope=scope, relation=entries,
+            )
             if await conn.fetchrow(turn_sql, *turn_params) is not None:
                 return None
             return DuplicateCandidate(
@@ -474,4 +490,4 @@ class ContextDedupMixin(BaseRepository):
                 summary=cast(str | None, row['summary']),
             )
 
-        return await self.backend.execute_read(_check_postgresql)
+        return await self.backend.execute_read(_check_postgresql, access_scope=scope)

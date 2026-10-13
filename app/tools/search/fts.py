@@ -316,11 +316,11 @@ async def fts_search_context(
             # Get normalized tags
             context_id = result.get('id')
             if context_id:
-                tags_result = await repos.tags.get_tags_for_context(str(context_id))
+                tags_result = await repos.tags.get_tags_for_context(str(context_id), scope=scope)
                 result['tags'] = tags_result
                 # Fetch images if requested and applicable
                 if include_images and result.get('content_type') == 'multimodal':
-                    images_result = await repos.images.get_images_for_context(str(context_id), include_data=True)
+                    images_result = await repos.images.get_images_for_context(str(context_id), include_data=True, scope=scope)
                     result['images'] = images_result
             else:
                 result['tags'] = []

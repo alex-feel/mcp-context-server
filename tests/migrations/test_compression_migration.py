@@ -15,6 +15,7 @@ import sqlite3
 import pytest
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.migrations.compression import apply_compression_migration
 from tests.helpers import disable_compression
 from tests.helpers import enable_compression
@@ -47,7 +48,7 @@ async def test_sqlite_migration_creates_tables(
             present[name] = cur.fetchone() is not None
         return present
 
-    found = await backend.execute_read(_check)
+    found = await backend.execute_read(_check, access_scope=MAINTENANCE)
     assert found == {
         'vec_context_embeddings_compressed': True,
         'compression_metadata': True,
@@ -73,7 +74,7 @@ async def test_sqlite_migration_skips_when_disabled(
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_check) is False
+    assert await backend.execute_read(_check, access_scope=MAINTENANCE) is False
 
 
 @pytest.mark.asyncio
@@ -95,7 +96,7 @@ async def test_sqlite_migration_is_idempotent(
         )
         return int(cur.fetchone()[0])
 
-    assert await backend.execute_read(_count) == 2
+    assert await backend.execute_read(_count, access_scope=MAINTENANCE) == 2
 
 
 @pytest.mark.asyncio
@@ -116,7 +117,7 @@ async def test_sqlite_singleton_check_enforced(
         )
 
     with pytest.raises(sqlite3.IntegrityError):
-        await backend.execute_write(_insert_second)
+        await backend.execute_write(_insert_second, access_scope=MAINTENANCE)
 
 
 @pytest.mark.asyncio
@@ -136,9 +137,9 @@ async def test_sqlite_singleton_unique_id(
             ('turboquant', 4, 'ip', 42, 1024),
         )
 
-    await backend.execute_write(_insert)
+    await backend.execute_write(_insert, access_scope=MAINTENANCE)
     with pytest.raises(sqlite3.IntegrityError):
-        await backend.execute_write(_insert)
+        await backend.execute_write(_insert, access_scope=MAINTENANCE)
 
 
 @pytest.mark.asyncio
@@ -160,7 +161,7 @@ async def test_sqlite_migration_drops_legacy_vec_table(
             '(rowid INTEGER PRIMARY KEY, embedding BLOB)',
         )
 
-    await backend.execute_write(_create_legacy)
+    await backend.execute_write(_create_legacy, access_scope=MAINTENANCE)
 
     await apply_compression_migration(backend=backend)
 
@@ -171,4 +172,4 @@ async def test_sqlite_migration_drops_legacy_vec_table(
         )
         return cur.fetchone() is not None
 
-    assert await backend.execute_read(_exists) is False
+    assert await backend.execute_read(_exists, access_scope=MAINTENANCE) is False

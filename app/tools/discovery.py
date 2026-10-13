@@ -126,7 +126,7 @@ async def get_statistics() -> StatisticsResponseDict:
         # deployments. Degrades to 0.0 if the sub-block computation fails.
         if settings.embedding.generation_enabled or settings.compression.enabled:
             try:
-                embeddings_size_mb, embeddings_size_estimated = await repos.embeddings.get_embeddings_size()
+                embeddings_size_mb, embeddings_size_estimated = await repos.embeddings.get_embeddings_size(scope=scope)
                 stats['embeddings_size_mb'] = embeddings_size_mb
                 stats['embeddings_size_estimated'] = embeddings_size_estimated
             except Exception as e:
@@ -170,7 +170,7 @@ async def get_statistics() -> StatisticsResponseDict:
 
         # Add FTS metrics if available
         if settings.fts.enabled:
-            fts_available = await repos.fts.is_available()
+            fts_available = await repos.fts.is_available(scope=scope)
             if fts_available:
                 fts_stats = await repos.fts.get_statistics(scope=scope)
                 stats['fts'] = {

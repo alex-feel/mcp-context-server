@@ -12,6 +12,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
 from app.errors import format_exception_message
 from app.repositories.context_repository.records import VersionConflictError
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -104,7 +105,7 @@ async def update_context_batch(
         # an entry exists: id resolution and the existence probes below see only the
         # entries the caller may read, and the publish gate needs the caller's roles.
         principal = resolve_effective_principal()
-        scope = principal.access_scope()
+        scope = resolve_write_scope(principal)
 
         # === PHASE 1: Validate all updates before processing ===
         validated_updates: list[dict[str, Any]] = []
@@ -419,7 +420,7 @@ async def update_context_batch(
                     # Reset each attempt because a rolled-back attempt did not commit.
                     live_versions = dict(entry_versions)
 
-                    async with backend.begin_transaction() as txn:
+                    async with backend.begin_transaction(access_scope=scope) as txn:
                         for idx, (vu_idx, update) in enumerate(validated_updates_final):
                             original_idx = update['index']
                             context_id = update['context_id']
@@ -540,7 +541,7 @@ async def update_context_batch(
 
                 while True:
                     try:
-                        async with backend.begin_transaction() as txn:
+                        async with backend.begin_transaction(access_scope=scope) as txn:
                             update_images = update.get('images')
                             updated_fields_list, summary_cleared = (
                                 await execute_update_in_transaction(

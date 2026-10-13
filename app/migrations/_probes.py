@@ -24,6 +24,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 
 
 async def embedding_metadata_table_exists(backend: StorageBackend) -> bool:
@@ -44,7 +45,7 @@ async def embedding_metadata_table_exists(backend: StorageBackend) -> bool:
             )
             return cursor.fetchone() is not None
 
-        return await backend.execute_read(_probe_sqlite)
+        return await backend.execute_read(_probe_sqlite, access_scope=MAINTENANCE)
 
     async def _probe_pg(conn: asyncpg.Connection) -> bool:
         exists = await conn.fetchval(
@@ -52,4 +53,4 @@ async def embedding_metadata_table_exists(backend: StorageBackend) -> bool:
         )
         return bool(exists)
 
-    return await backend.execute_read(cast(Any, _probe_pg))
+    return await backend.execute_read(cast(Any, _probe_pg), access_scope=MAINTENANCE)

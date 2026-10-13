@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
 from tests.backends.postgresql_backend._builders import build_backend
 from tests.backends.postgresql_backend._builders import fast_retries
@@ -169,7 +170,7 @@ class TestCancelledDialCharging:
         backend = _backend_with_cancelled_dial()
 
         with pytest.raises(TimeoutError):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 pass
 
         assert backend.circuit_breaker.failures == 1
@@ -185,7 +186,7 @@ class TestCancelledDialCharging:
             raise AssertionError('the operation must never run')
 
         with pytest.raises(TimeoutError):
-            await backend.execute_write(operation)
+            await backend.execute_write(operation, access_scope=MAINTENANCE)
 
         assert backend.circuit_breaker.failures == 1
         assert backend.metrics.failed_queries == 1
@@ -212,7 +213,7 @@ class TestCancelledDialCharging:
             raise AssertionError('the operation must never run')
 
         with pytest.raises(TimeoutError):
-            await backend.execute_write(operation)
+            await backend.execute_write(operation, access_scope=MAINTENANCE)
 
         assert backend.circuit_breaker.failures == 0
         assert backend.metrics.failed_queries == 0

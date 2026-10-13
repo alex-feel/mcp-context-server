@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from app.backends._executor import run_in_executor_uninterruptible
+from app.backends.base import BackendAccess
 from app.backends.sqlite_backend.connections import SQLiteConnectionsMixin
 from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.errors import ControlFlowError
@@ -46,7 +47,7 @@ class SQLiteTransactionMixin(SQLiteConnectionsMixin):
     """Run several operations atomically in one transaction on the shared writer."""
 
     @asynccontextmanager
-    async def begin_transaction(self) -> AsyncGenerator[SQLiteTransactionContext, None]:
+    async def begin_transaction(self, *, access_scope: BackendAccess) -> AsyncGenerator[SQLiteTransactionContext, None]:
         """Begin an atomic transaction spanning multiple operations.
 
         This method bypasses the write queue and acquires the writer connection
@@ -60,6 +61,10 @@ class SQLiteTransactionMixin(SQLiteConnectionsMixin):
         - On successful context exit: COMMIT
         - On exception: ROLLBACK
 
+        Args:
+            access_scope: The identity the transaction runs as. SQLite enforces access in
+                the application layer only, so it is accepted and discarded.
+
         Yields:
             SQLiteTransactionContext with the writer connection
 
@@ -69,7 +74,7 @@ class SQLiteTransactionMixin(SQLiteConnectionsMixin):
         Example:
             from app.ids import generate_id
 
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=scope) as txn:
                 conn = txn.connection
                 # All operations use the same connection and transaction
                 context_id = generate_id()
@@ -83,6 +88,7 @@ class SQLiteTransactionMixin(SQLiteConnectionsMixin):
                 )
                 # COMMIT on exit
         """
+        _ = access_scope
         assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
 
         if self._shutdown:

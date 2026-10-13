@@ -5,13 +5,17 @@ qualifier; the parameter shape every predicate guarantees (a constant bind
 count, one group bind whatever the group count, contiguous PostgreSQL
 placeholders from ``start``); the empty SystemScope predicate; the
 readable-parent predicate that tests a child row's parent key for membership in
-the readable entries; the scope value objects; which rows each predicate admits
-in a real SQLite database seeded with owners, visibilities and grants; and the
-module's standard-library-only imports.
+the readable entries; the policy predicate, whose arms equal the PostgreSQL
+predicate's modulo operands; the read view's gated READ predicate, the SELECT
+policy's text with the policy-role gate folded into its identity operands and its
+public arm; the scope value objects, the publish permission included;
+which rows each predicate admits in a real SQLite database seeded with owners,
+visibilities and grants; and the module's standard-library-only imports.
 """
 
 import ast
 import dataclasses
+import inspect
 import itertools
 import json
 import re
@@ -28,8 +32,12 @@ from app.access_scope import AccessPredicate
 from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
+from app.access_scope import build_gated_read_predicate
+from app.access_scope import build_policy_predicate
 from app.access_scope import build_readable_parent_predicate
+from app.access_scope import policy_operands
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from tests.helpers import insert_grant
 from tests.helpers import read_grants
@@ -274,6 +282,122 @@ def test_readable_parent_predicate_is_empty_for_the_system_scope(backend_type: s
 
 
 # ============================================================================
+# Policy predicate
+# ============================================================================
+
+_SCHEMA = '"public"'
+_POLICY_PRINCIPAL = f'(SELECT {_SCHEMA}.mcp_context_principal_id())'
+_POLICY_GROUPS = f'(SELECT {_SCHEMA}.mcp_context_groups())::text[]'
+_GATE = "pg_catalog.pg_has_role(CURRENT_USER, 'mcp_context_request', 'USAGE')"
+_GATED_PRINCIPAL = f'(SELECT CASE WHEN {_GATE} THEN {_SCHEMA}.mcp_context_principal_id() END)'
+_GATED_GROUPS = f"(SELECT CASE WHEN {_GATE} THEN {_SCHEMA}.mcp_context_groups() ELSE '{{}}'::text[] END)::text[]"
+
+_POLICY_CASES = [
+    pytest.param(
+        AccessMode.READ, 'context_entries', _SCHEMA,
+        f"(context_entries.owner_id = {_POLICY_PRINCIPAL} OR context_entries.visibility = 'public' OR EXISTS (SELECT 1 "
+        f'FROM "public".context_entry_grants g WHERE g.context_entry_id = context_entries.id AND g.permission IN '
+        f"('read', 'write') AND ((g.principal_type = 'user' AND g.principal_id = {_POLICY_PRINCIPAL}) OR "
+        f"(g.principal_type = 'group' AND g.principal_id = ANY({_POLICY_GROUPS})))))",
+        id='read-context_entries',
+    ),
+    pytest.param(
+        AccessMode.WRITE, 'ce', '"tenant one"',
+        "(ce.owner_id = (SELECT \"tenant one\".mcp_context_principal_id()) OR EXISTS (SELECT 1 FROM \"tenant one\"."
+        "context_entry_grants g WHERE g.context_entry_id = ce.id AND g.permission = 'write' AND ((g.principal_type = "
+        "'user' AND g.principal_id = (SELECT \"tenant one\".mcp_context_principal_id())) OR (g.principal_type = 'group' "
+        'AND g.principal_id = ANY((SELECT "tenant one".mcp_context_groups())::text[])))))',
+        id='write-ce-quoted-schema',
+    ),
+    pytest.param(
+        AccessMode.OWNER, 'context_entries', _SCHEMA, f'context_entries.owner_id = {_POLICY_PRINCIPAL}',
+        id='owner-context_entries',
+    ),
+]
+
+
+@pytest.mark.parametrize(('mode', 'outer', 'schema', 'expected_sql'), _POLICY_CASES)
+def test_policy_predicate_exact_text(mode: AccessMode, outer: str, schema: str, expected_sql: str) -> None:
+    """The policy form reads the identity from the schema's helper functions and binds nothing."""
+    assert build_policy_predicate(mode, outer=outer, schema=schema) == expected_sql
+
+
+@pytest.mark.parametrize('outer', ['context_entries', 'ce'])
+@pytest.mark.parametrize('mode', list(AccessMode))
+def test_policy_predicate_arms_equal_the_application_predicate_modulo_operands(mode: AccessMode, outer: str) -> None:
+    """Both forms come from one composer: only the operands and the grants relation differ."""
+    application = build_access_predicate(BOB_TEAMS, mode=mode, backend_type='postgresql', outer=outer)
+    expected = (
+        application.sql
+        .replace('$1', _POLICY_PRINCIPAL)
+        .replace('$2', _POLICY_PRINCIPAL)
+        .replace('$3::text[]', _POLICY_GROUPS)
+        .replace('FROM context_entry_grants g', f'FROM {_SCHEMA}.context_entry_grants g')
+    )
+
+    assert build_policy_predicate(mode, outer=outer, schema=_SCHEMA) == expected
+
+
+@pytest.mark.parametrize('mode', [AccessMode.READ, AccessMode.WRITE])
+def test_policy_predicate_qualifies_every_relation_and_casts_the_group_operand(mode: AccessMode) -> None:
+    """Every grants reference carries the schema, and the groups subquery is cast so ANY reads it as an array."""
+    sql = build_policy_predicate(mode, outer='context_entries', schema=_SCHEMA)
+
+    assert sql.count('context_entry_grants') == sql.count(f'{_SCHEMA}.context_entry_grants') == 1
+    assert sql.count('mcp_context_principal_id()') == sql.count(f'{_SCHEMA}.mcp_context_principal_id()') == 2
+    assert f'g.principal_id = ANY({_POLICY_GROUPS})' in sql
+    assert '$' not in sql
+    assert '?' not in sql
+
+
+def test_gated_read_predicate_exact_text() -> None:
+    """The gate sits inside each identity operand and the public arm, each a scalar subquery the planner runs once."""
+    assert build_gated_read_predicate(outer='ce', schema=_SCHEMA, gate=_GATE) == (
+        f"(ce.owner_id = {_GATED_PRINCIPAL} OR (ce.visibility = 'public' AND (SELECT {_GATE})) OR EXISTS (SELECT 1 "
+        f'FROM "public".context_entry_grants g WHERE g.context_entry_id = ce.id AND g.permission IN '
+        f"('read', 'write') AND ((g.principal_type = 'user' AND g.principal_id = {_GATED_PRINCIPAL}) OR "
+        f"(g.principal_type = 'group' AND g.principal_id = ANY({_GATED_GROUPS})))))"
+    )
+
+
+def test_gated_read_predicate_is_the_select_policy_text_with_gated_operands() -> None:
+    """The read view's predicate and the SELECT policy come from one composer: the operands and the public arm differ."""
+    policy = build_policy_predicate(AccessMode.READ, outer='context_entries', schema=_SCHEMA)
+    gated = build_gated_read_predicate(outer='ce', schema=_SCHEMA, gate=_GATE)
+
+    assert gated == (
+        policy
+        .replace('context_entries.', 'ce.')
+        .replace(_POLICY_PRINCIPAL, _GATED_PRINCIPAL)
+        .replace(_POLICY_GROUPS, _GATED_GROUPS)
+        .replace("ce.visibility = 'public'", f"(ce.visibility = 'public' AND (SELECT {_GATE}))")
+    )
+
+
+def test_gated_read_predicate_has_no_conjunct_of_the_gate_alone() -> None:
+    """Every use of the gate is the condition of a scalar subquery, so no condition of the predicate names no column."""
+    gated = build_gated_read_predicate(outer='ce', schema=_SCHEMA, gate=_GATE)
+
+    assert gated.count(_GATE) == 4
+    assert gated.count(f'(SELECT CASE WHEN {_GATE} THEN ') == 3
+    assert gated.count(f'(SELECT {_GATE})') == 1
+    assert f'{_GATE} AND' not in gated
+    assert f'g.principal_id = ANY({_GATED_GROUPS})' in gated
+
+
+def test_policy_operands_are_the_scalar_subqueries_of_the_identity_functions() -> None:
+    """Each operand calls one schema function once per statement; the policy predicate uses two of them."""
+    operands = policy_operands('"tenant one"')
+
+    assert operands.principal == '(SELECT "tenant one".mcp_context_principal_id())'
+    assert operands.groups == '(SELECT "tenant one".mcp_context_groups())::text[]'
+    assert operands.may_publish == '(SELECT "tenant one".mcp_context_may_publish())'
+    sql = build_policy_predicate(AccessMode.READ, outer='ce', schema='"tenant one"')
+    assert f'ce.owner_id = {operands.principal} ' in sql
+    assert f'g.principal_id = ANY({operands.groups})' in sql
+
+
+# ============================================================================
 # Scope value objects
 # ============================================================================
 
@@ -302,7 +426,7 @@ class TestAccessScope:
         assert scope.groups_json() == '[]'
 
     def test_equality_and_hashing(self) -> None:
-        """Scopes compare and hash by principal and group set."""
+        """Scopes compare and hash by principal, group set and publish permission."""
         first = AccessScope('alice', frozenset({'team-x', 'team-y'}))
         same = AccessScope('alice', frozenset({'team-y', 'team-x'}))
 
@@ -311,6 +435,25 @@ class TestAccessScope:
         assert len({first, same}) == 1
         assert first != AccessScope('bob', frozenset({'team-x', 'team-y'}))
         assert first != AccessScope('alice', frozenset({'team-x'}))
+        assert first != AccessScope('alice', frozenset({'team-x', 'team-y'}), may_publish=True)
+
+    def test_may_publish_is_a_keyword_only_flag_that_defaults_to_false(self) -> None:
+        """A scope asserts the publish permission only when built with it explicitly."""
+        parameter = inspect.signature(AccessScope).parameters['may_publish']
+
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert AccessScope('alice', frozenset()).may_publish is False
+        assert AccessScope('alice', frozenset(), may_publish=True).may_publish is True
+
+    @pytest.mark.parametrize('mode', list(AccessMode))
+    @pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
+    def test_publish_permission_never_changes_the_predicate(self, mode: AccessMode, backend_type: str) -> None:
+        """The access predicates filter rows by identity alone; the publish permission is not a row filter."""
+        publisher = AccessScope('bob', BOB_TEAMS.groups, may_publish=True)
+
+        assert build_access_predicate(publisher, mode=mode, backend_type=backend_type, outer='ce') == (
+            build_access_predicate(BOB_TEAMS, mode=mode, backend_type=backend_type, outer='ce')
+        )
 
     def test_scope_is_immutable(self) -> None:
         """AccessScope is a frozen value object."""
@@ -336,7 +479,7 @@ async def _insert_entry(backend: StorageBackend, label: str, owner_id: str, visi
             (context_id, label, owner_id, visibility),
         )
 
-    await backend.execute_write(_insert)
+    await backend.execute_write(_insert, access_scope=MAINTENANCE)
     return context_id
 
 
@@ -369,7 +512,7 @@ async def _admitted(backend: StorageBackend, scope: Scope, mode: AccessMode, out
     def _select(conn: sqlite3.Connection) -> set[str]:
         return {row[0] for row in conn.execute(query, ('scope-thread', *predicate.params)).fetchall()}
 
-    return await backend.execute_read(_select)
+    return await backend.execute_read(_select, access_scope=MAINTENANCE)
 
 
 _ALL_LABELS = {
@@ -459,13 +602,13 @@ async def test_readable_parent_predicate_admits_children_of_readable_rows(
             'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', [(entry_id, label) for label, entry_id in ids.items()],
         )
 
-    await async_db_initialized.execute_write(_tag_every_entry)
+    await async_db_initialized.execute_write(_tag_every_entry, access_scope=MAINTENANCE)
     predicate = build_readable_parent_predicate(scope, child_key=child_key, parent_key=parent_key, backend_type='sqlite')
 
     def _select(conn: sqlite3.Connection) -> set[str]:
         return {row[0] for row in conn.execute(f'{child_select}{predicate.where_clause()}', predicate.params).fetchall()}
 
-    assert await async_db_initialized.execute_read(_select) == expected
+    assert await async_db_initialized.execute_read(_select, access_scope=MAINTENANCE) == expected
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from tests.helpers import LOCAL_SCOPE
 
 
@@ -62,7 +63,7 @@ class TestMalformedStoredImageMetadata:
                 (context_id, b'binary-image-bytes', 'image/png', raw_metadata, 0),
             )
 
-        await backend.execute_write(_insert)
+        await backend.execute_write(_insert, access_scope=MAINTENANCE)
         return context_id
 
     async def test_single_context_reader_omits_unreadable_metadata(
@@ -75,7 +76,7 @@ class TestMalformedStoredImageMetadata:
         context_id = await self._seed_entry_with_raw_metadata(backend, 'not json at all')
         repos = RepositoryContainer(backend)
 
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
 
         assert len(images) == 1
         assert images[0]['mime_type'] == 'image/png'
@@ -93,7 +94,7 @@ class TestMalformedStoredImageMetadata:
 
         before = backend.get_metrics()
         for _ in range(3):
-            await repos.images.get_images_for_context(context_id)
+            await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         after = backend.get_metrics()
 
         assert after['failed_queries'] == before['failed_queries']
@@ -109,7 +110,7 @@ class TestMalformedStoredImageMetadata:
         context_id = await self._seed_entry_with_raw_metadata(backend, 'nope')
         repos = RepositoryContainer(backend)
 
-        images = await repos.images.get_images_for_context(context_id, include_data=False)
+        images = await repos.images.get_images_for_context(context_id, include_data=False, scope=LOCAL_SCOPE)
 
         assert len(images) == 1
         assert 'data' not in images[0]
@@ -125,7 +126,7 @@ class TestMalformedStoredImageMetadata:
         context_id = await self._seed_entry_with_raw_metadata(backend, '{"caption": "ok"}')
         repos = RepositoryContainer(backend)
 
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
 
         assert images[0].get('metadata') == {'caption': 'ok'}
 
@@ -175,9 +176,9 @@ class TestPerImageMetadataValueFidelity:
             metadata=None,
         )
 
-        await repos.images.store_images(context_id, [self._image('')])
+        await repos.images.store_images(context_id, [self._image('')], scope=LOCAL_SCOPE)
 
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert 'metadata' in images[0]
         assert images[0]['metadata'] == ''
 
@@ -198,10 +199,10 @@ class TestPerImageMetadataValueFidelity:
             metadata=None,
         )
 
-        await repos.images.store_images(context_id, [self._image('original caption')])
-        await repos.images.replace_images_for_context(context_id, [self._image('')])
+        await repos.images.store_images(context_id, [self._image('original caption')], scope=LOCAL_SCOPE)
+        await repos.images.replace_images_for_context(context_id, [self._image('')], scope=LOCAL_SCOPE)
 
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert images[0].get('metadata') == ''
 
     async def test_empty_mapping_metadata_round_trips(
@@ -224,7 +225,7 @@ class TestPerImageMetadataValueFidelity:
             metadata=None,
         )
 
-        await repos.images.store_images(context_id, [self._image({})])
+        await repos.images.store_images(context_id, [self._image({})], scope=LOCAL_SCOPE)
 
         def _stored_metadata(conn: sqlite3.Connection) -> object:
             row = conn.execute(
@@ -232,8 +233,8 @@ class TestPerImageMetadataValueFidelity:
             ).fetchone()
             return row[0]
 
-        assert await async_db_initialized.execute_read(_stored_metadata) == '{}'
-        images = await repos.images.get_images_for_context(context_id)
+        assert await async_db_initialized.execute_read(_stored_metadata, access_scope=MAINTENANCE) == '{}'
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert 'metadata' in images[0]
         assert images[0]['metadata'] == {}
 
@@ -260,7 +261,8 @@ class TestPerImageMetadataValueFidelity:
                 'data': base64.b64encode(b'no metadata bytes').decode('utf-8'),
                 'mime_type': 'image/png',
             }],
+            scope=LOCAL_SCOPE,
         )
 
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert 'metadata' not in images[0]

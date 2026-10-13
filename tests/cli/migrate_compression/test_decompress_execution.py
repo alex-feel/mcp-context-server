@@ -23,6 +23,8 @@ import pytest
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.backends.base import TransactionContext
 from app.cli.migrate_compression import storage
 from app.cli.migrate_compression.compress import run_compress
@@ -197,7 +199,7 @@ def _seed_compressed_database(
                         (context_id, 'test-model', DIM, 1),
                     )
 
-                await backend.execute_write(_write)
+                await backend.execute_write(_write, access_scope=MAINTENANCE)
 
             def _write_provenance(conn: sqlite3.Connection) -> None:
                 conn.execute(
@@ -213,7 +215,7 @@ def _seed_compressed_database(
                     ),
                 )
 
-            await backend.execute_write(_write_provenance)
+            await backend.execute_write(_write_provenance, access_scope=MAINTENANCE)
         finally:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(backend.shutdown(), timeout=10.0)
@@ -365,7 +367,8 @@ class _StubBackend:
         return 'postgresql'
 
     @asynccontextmanager
-    async def begin_transaction(self) -> AsyncGenerator[TransactionContext, None]:
+    async def begin_transaction(self, *, access_scope: BackendAccess) -> AsyncGenerator[TransactionContext, None]:
+        _ = access_scope
         yield cast(TransactionContext, self._txn)
 
 

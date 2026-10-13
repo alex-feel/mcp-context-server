@@ -18,6 +18,9 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
+from app.backends.base import base_relation
 from app.ids import generate_id_with_timestamp
 from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories import RepositoryContainer
@@ -60,9 +63,14 @@ class _RaisingReadBackend:
     def __init__(self, error: sqlite3.OperationalError) -> None:
         self._conn = _RaisingConnection(error)
 
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name every table by its own name, as a backend without access views does."""
+        return base_relation(table, alias=alias)
+
     async def execute_read(
-        self, operation: Callable[[object], _T], *args: object, **kwargs: object,
+        self, operation: Callable[[object], _T], *args: object, access_scope: BackendAccess, **kwargs: object,
     ) -> _T:
+        _ = access_scope
         return operation(self._conn, *args, **kwargs)
 
 
@@ -101,7 +109,7 @@ async def repos_with_table(tmp_path: Path) -> AsyncGenerator[tuple[StorageBacken
             (cid, 't', 'agent', 'text', '# A\nbody'),
         )
 
-    await backend.execute_write(_insert)
+    await backend.execute_write(_insert, access_scope=MAINTENANCE)
     try:
         yield backend, repos, cid
     finally:
@@ -118,8 +126,9 @@ class TestReplaceAndGet:
         await repos.index_nodes.replace_nodes_for_context(
             cid,
             [_row('intro', 'About intro', span=(0, 10)), _row('setup', 'About setup', span=(10, 25))],
+            scope=LOCAL_SCOPE,
         )
-        summaries = await repos.index_nodes.get_nodes_for_context(cid)
+        summaries = await repos.index_nodes.get_nodes_for_context(cid, scope=LOCAL_SCOPE)
         # The node-id index carries each row's stored span so the reader can
         # validate an id hit before trusting it (node ids are
         # algorithm-versioned and can collide across slug-rule changes).
@@ -137,9 +146,9 @@ class TestReplaceAndGet:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first'), _row('b', 'second')])
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'updated')])
-        summaries = await repos.index_nodes.get_nodes_for_context(cid)
+        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first'), _row('b', 'second')], scope=LOCAL_SCOPE)
+        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'updated')], scope=LOCAL_SCOPE)
+        summaries = await repos.index_nodes.get_nodes_for_context(cid, scope=LOCAL_SCOPE)
         assert summaries.by_node_id == {'a': StoredNodeSummary(0, 10, 'updated')}
 
     @pytest.mark.asyncio
@@ -148,9 +157,9 @@ class TestReplaceAndGet:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first')])
-        await repos.index_nodes.replace_nodes_for_context(cid, [])
-        assert (await repos.index_nodes.get_nodes_for_context(cid)).by_node_id == {}
+        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first')], scope=LOCAL_SCOPE)
+        await repos.index_nodes.replace_nodes_for_context(cid, [], scope=LOCAL_SCOPE)
+        assert (await repos.index_nodes.get_nodes_for_context(cid, scope=LOCAL_SCOPE)).by_node_id == {}
 
     @pytest.mark.asyncio
     async def test_count_all_nodes(
@@ -158,7 +167,9 @@ class TestReplaceAndGet:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'x'), _row('b', 'y'), _row('c', 'z')])
+        await repos.index_nodes.replace_nodes_for_context(
+            cid, [_row('a', 'x'), _row('b', 'y'), _row('c', 'z')], scope=LOCAL_SCOPE,
+        )
         assert await repos.index_nodes.count_all_nodes(scope=LOCAL_SCOPE) == 3
 
 
@@ -169,10 +180,10 @@ class TestCascadeDelete:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'x')])
+        await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'x')], scope=LOCAL_SCOPE)
         deleted = await repos.context.delete_by_ids([cid], scope=LOCAL_SCOPE)
         assert deleted == 1
-        assert (await repos.index_nodes.get_nodes_for_context(cid)).by_node_id == {}
+        assert (await repos.index_nodes.get_nodes_for_context(cid, scope=LOCAL_SCOPE)).by_node_id == {}
 
 
 class TestTableAbsent:
@@ -190,7 +201,7 @@ class TestTableAbsent:
         repos = RepositoryContainer(backend)
         try:
             # No index_tree migration applied -> table absent.
-            absent = await repos.index_nodes.get_nodes_for_context('0' * 32)
+            absent = await repos.index_nodes.get_nodes_for_context('0' * 32, scope=LOCAL_SCOPE)
             assert absent.by_node_id == {}
             assert absent.by_span == {}
             assert await repos.index_nodes.count_all_nodes(scope=LOCAL_SCOPE) == 0
@@ -211,7 +222,7 @@ class TestTableAbsent:
         """
         repo = IndexNodeRepository(_locked_backend())
         with pytest.raises(sqlite3.OperationalError, match='database is locked'):
-            await repo.get_nodes_for_context('0' * 32)
+            await repo.get_nodes_for_context('0' * 32, scope=LOCAL_SCOPE)
         with pytest.raises(sqlite3.OperationalError, match='database is locked'):
             await repo.count_all_nodes(scope=LOCAL_SCOPE)
 
@@ -223,7 +234,7 @@ class TestTableAbsent:
         feature-disabled path: the table-absence probe still returns empty.
         """
         repo = IndexNodeRepository(_missing_table_backend())
-        assert (await repo.get_nodes_for_context('0' * 32)).by_node_id == {}
+        assert (await repo.get_nodes_for_context('0' * 32, scope=LOCAL_SCOPE)).by_node_id == {}
         assert await repo.count_all_nodes(scope=LOCAL_SCOPE) == 0
 
     @pytest.mark.asyncio
@@ -247,7 +258,7 @@ class TestTableAbsent:
         try:
             # Writing nodes against the absent table must NOT raise; it is a no-op
             # and the read side still degrades to empty.
-            await repos.index_nodes.replace_nodes_for_context('0' * 32, [_row('a', 'x')])
-            assert (await repos.index_nodes.get_nodes_for_context('0' * 32)).by_node_id == {}
+            await repos.index_nodes.replace_nodes_for_context('0' * 32, [_row('a', 'x')], scope=LOCAL_SCOPE)
+            assert (await repos.index_nodes.get_nodes_for_context('0' * 32, scope=LOCAL_SCOPE)).by_node_id == {}
         finally:
             await backend.shutdown()

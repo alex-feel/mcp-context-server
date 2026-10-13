@@ -165,6 +165,7 @@ async def _seed_fp32_pg(
                     ),
                 ],
                 model='test-model',
+                scope=LOCAL_SCOPE,
             )
         return n_docs
     finally:

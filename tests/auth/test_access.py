@@ -3,19 +3,24 @@
 Covers app.auth.access: resolve_effective_principal (verified-token passthrough
 and the fallback to the configured default principal for requests without a jwt
 identity, simple_token included), resolve_access_scope (the same identity as
-the scope every read and write runs under, roles excluded) and
-visibility_denied_reason (the ACCESS_CONTROL_PUBLISH_ROLE publish gate).
+the scope every read runs under, roles excluded), may_publish and
+visibility_denied_reason (the ACCESS_CONTROL_PUBLISH_ROLE publish gate, one rule
+for both) and resolve_write_scope (the write tools' scope, which carries the
+caller's publish permission).
 """
 
 import os
 from unittest.mock import patch
 
+import pytest
 from fastmcp.server.auth import AccessToken
 
 import app.auth
 from app.access_scope import AccessScope
+from app.auth.access import may_publish
 from app.auth.access import resolve_access_scope
 from app.auth.access import resolve_effective_principal
+from app.auth.access import resolve_write_scope
 from app.auth.access import visibility_denied_reason
 from app.auth.principal import RequestPrincipal
 from app.settings import get_settings
@@ -200,3 +205,61 @@ class TestVisibilityDeniedReason:
             get_settings.cache_clear()
             principal = self._principal(roles=frozenset({'publisher', 'other'}))
             assert visibility_denied_reason('public', principal) is None
+
+
+_PUBLISH_CASES = [
+    pytest.param(None, frozenset[str](), True, id='role-unset'),
+    pytest.param('publisher', frozenset({'publisher', 'other'}), True, id='role-held'),
+    pytest.param('publisher', frozenset({'other'}), False, id='role-missing'),
+]
+
+
+class TestPublishPermission:
+    """Tests for may_publish and resolve_write_scope."""
+
+    def setup_method(self) -> None:
+        """Reset the settings singleton so per-test env vars take effect."""
+        get_settings.cache_clear()
+
+    def teardown_method(self) -> None:
+        """Drop settings built from per-test env vars."""
+        get_settings.cache_clear()
+
+    @staticmethod
+    def _env(publish_role: str | None) -> dict[str, str]:
+        return {} if publish_role is None else {'ACCESS_CONTROL_PUBLISH_ROLE': publish_role}
+
+    @pytest.mark.parametrize(('publish_role', 'roles', 'expected'), _PUBLISH_CASES)
+    def test_may_publish_follows_the_publish_role(
+        self, publish_role: str | None, roles: frozenset[str], expected: bool,
+    ) -> None:
+        """Any caller may publish when no role is configured; otherwise only a caller holding it."""
+        principal = RequestPrincipal(principal_id='p', groups=frozenset(), roles=roles)
+        with patch.dict(os.environ, self._env(publish_role), clear=False):
+            get_settings.cache_clear()
+            assert may_publish(principal) is expected
+            assert (visibility_denied_reason('public', principal) is None) is expected
+
+    @pytest.mark.parametrize(('publish_role', 'roles', 'expected'), _PUBLISH_CASES)
+    def test_write_scope_carries_the_publish_permission(
+        self, publish_role: str | None, roles: frozenset[str], expected: bool,
+    ) -> None:
+        """The write scope is the principal's id and groups plus whether it may publish."""
+        principal = RequestPrincipal(principal_id='alice', groups=frozenset({'team-a'}), roles=roles)
+        with patch.dict(os.environ, self._env(publish_role), clear=False):
+            get_settings.cache_clear()
+            scope = resolve_write_scope(principal)
+        assert scope == AccessScope('alice', frozenset({'team-a'}), may_publish=expected)
+
+    def test_read_scope_never_asserts_the_publish_permission(self) -> None:
+        """resolve_access_scope serves reads, which publish nothing, so it leaves the permission unset."""
+        with as_principal('alice', roles=['publisher']):
+            scope = resolve_access_scope()
+            principal = resolve_effective_principal()
+        assert may_publish(principal)
+        assert scope.may_publish is False
+
+    def test_write_scope_is_exported_from_auth_package(self) -> None:
+        """The write tools import resolve_write_scope from app.auth."""
+        assert app.auth.resolve_write_scope is resolve_write_scope
+        assert 'resolve_write_scope' in app.auth.__all__

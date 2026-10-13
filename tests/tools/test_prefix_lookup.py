@@ -23,6 +23,7 @@ import app.startup
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id_with_timestamp
 from app.repositories import RepositoryContainer
 from app.tools.batch.delete import delete_context_batch
@@ -89,7 +90,7 @@ class TestPrefixLookupMinimumLength:
                 (canonical, 't', 'user', 'text', 'original'),
             )
 
-        await backend.execute_write(_insert)
+        await backend.execute_write(_insert, access_scope=MAINTENANCE)
 
         result = await update_context(context_id=canonical, text='updated')
         assert result['success'] is True
@@ -118,7 +119,7 @@ class TestPrefixLookupAmbiguity:
                     (entry_id, 't', 'user', 'text', 'x'),
                 )
 
-        await backend.execute_write(_insert)
+        await backend.execute_write(_insert, access_scope=MAINTENANCE)
 
         shared_prefix = base[:8]
         with pytest.raises((ToolError, ValueError), match='[Aa]mbiguous'):
@@ -141,7 +142,7 @@ class TestPrefixLookupAmbiguity:
                 (full_id, 't', 'user', 'text', 'original'),
             )
 
-        await backend.execute_write(_insert)
+        await backend.execute_write(_insert, access_scope=MAINTENANCE)
 
         prefix = full_id[:8]
         result = await update_context(context_id=prefix, text='updated')
@@ -175,7 +176,7 @@ class TestPrefixLookupUniformAcrossTools:
         """A unique 8-char prefix resolves to the full entry in get_context_by_ids."""
         backend, _repos = backend_with_repos
         full_id = generate_id_with_timestamp(datetime(2024, 1, 1, tzinfo=UTC))
-        await backend.execute_write(lambda conn: _insert_entry(conn, full_id, 'hello'))
+        await backend.execute_write(lambda conn: _insert_entry(conn, full_id, 'hello'), access_scope=MAINTENANCE)
 
         entries = await get_context_by_ids(context_ids=[full_id[:8]])
         assert len(entries) == 1
@@ -200,8 +201,8 @@ class TestPrefixLookupUniformAcrossTools:
         backend, _repos = backend_with_repos
         base = generate_id_with_timestamp(datetime(2024, 1, 1, tzinfo=UTC))
         sibling = base[:8] + 'b' * 24
-        await backend.execute_write(lambda conn: _insert_entry(conn, base))
-        await backend.execute_write(lambda conn: _insert_entry(conn, sibling))
+        await backend.execute_write(lambda conn: _insert_entry(conn, base), access_scope=MAINTENANCE)
+        await backend.execute_write(lambda conn: _insert_entry(conn, sibling), access_scope=MAINTENANCE)
 
         with pytest.raises((ToolError, ValueError), match='[Aa]mbiguous'):
             await get_context_by_ids(context_ids=[base[:8]])
@@ -214,7 +215,7 @@ class TestPrefixLookupUniformAcrossTools:
         """A unique prefix deletes the matching entry via delete_context."""
         backend, _repos = backend_with_repos
         full_id = generate_id_with_timestamp(datetime(2024, 1, 1, tzinfo=UTC))
-        await backend.execute_write(lambda conn: _insert_entry(conn, full_id, 'gone soon'))
+        await backend.execute_write(lambda conn: _insert_entry(conn, full_id, 'gone soon'), access_scope=MAINTENANCE)
 
         result = await delete_context(context_ids=[full_id[:8]])
         assert result['success'] is True
@@ -239,7 +240,7 @@ class TestPrefixLookupUniformAcrossTools:
         """A unique prefix deletes the matching entry via delete_context_batch."""
         backend, _repos = backend_with_repos
         full_id = generate_id_with_timestamp(datetime(2024, 1, 1, tzinfo=UTC))
-        await backend.execute_write(lambda conn: _insert_entry(conn, full_id, 'batch gone'))
+        await backend.execute_write(lambda conn: _insert_entry(conn, full_id, 'batch gone'), access_scope=MAINTENANCE)
 
         result = await delete_context_batch(context_ids=[full_id[:8]])
         assert result['success'] is True
@@ -260,8 +261,10 @@ class TestPrefixLookupScoping:
         """Insert an entry of the default principal and a hidden sibling sharing its 8-char prefix."""
         visible_id = generate_id_with_timestamp(datetime(2024, 1, 1, tzinfo=UTC))
         hidden_id = visible_id[:8] + 'b' * 24
-        await backend.execute_write(lambda conn: _insert_entry(conn, visible_id, 'visible'))
-        await backend.execute_write(lambda conn: _insert_entry(conn, hidden_id, 'hidden', owner='alice'))
+        await backend.execute_write(lambda conn: _insert_entry(conn, visible_id, 'visible'), access_scope=MAINTENANCE)
+        await backend.execute_write(
+            lambda conn: _insert_entry(conn, hidden_id, 'hidden', owner='alice'), access_scope=MAINTENANCE,
+        )
         return visible_id, hidden_id
 
     @pytest.mark.asyncio

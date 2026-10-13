@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.repositories.fts_repository import FtsRepository
 
 
@@ -40,13 +42,14 @@ class TestFtsIsAvailablePropagatesOperationalFaults:
         class _Backend:
             backend_type = 'sqlite'
 
-            async def execute_read(self, operation: Callable[[object], bool]) -> bool:
+            async def execute_read(self, operation: Callable[[object], bool], *, access_scope: BackendAccess) -> bool:
+                _ = access_scope
                 return operation(_LockedConnection())
 
         repo = FtsRepository(cast(StorageBackend, _Backend()))
 
         with pytest.raises(sqlite3.OperationalError, match='database is locked'):
-            await repo.is_available()
+            await repo.is_available(scope=MAINTENANCE)
 
     @pytest.mark.asyncio
     async def test_sqlite_probe_reports_absent_table_as_false(self) -> None:
@@ -67,12 +70,13 @@ class TestFtsIsAvailablePropagatesOperationalFaults:
         class _Backend:
             backend_type = 'sqlite'
 
-            async def execute_read(self, operation: Callable[[object], bool]) -> bool:
+            async def execute_read(self, operation: Callable[[object], bool], *, access_scope: BackendAccess) -> bool:
+                _ = access_scope
                 return operation(_Connection())
 
         repo = FtsRepository(cast(StorageBackend, _Backend()))
 
-        assert await repo.is_available() is False
+        assert await repo.is_available(scope=MAINTENANCE) is False
 
     @pytest.mark.asyncio
     async def test_postgresql_probe_error_propagates(self) -> None:
@@ -90,13 +94,16 @@ class TestFtsIsAvailablePropagatesOperationalFaults:
         class _Backend:
             backend_type = 'postgresql'
 
-            async def execute_read(self, operation: Callable[[object], Awaitable[bool]]) -> bool:
+            async def execute_read(
+                self, operation: Callable[[object], Awaitable[bool]], *, access_scope: BackendAccess,
+            ) -> bool:
+                _ = access_scope
                 return await operation(_BrokenConnection())
 
         repo = FtsRepository(cast(StorageBackend, _Backend()))
 
         with pytest.raises(OSError, match='connection reset by peer'):
-            await repo.is_available()
+            await repo.is_available(scope=MAINTENANCE)
 
     @pytest.mark.asyncio
     async def test_postgresql_probe_reports_absent_column_as_false(self) -> None:
@@ -114,12 +121,15 @@ class TestFtsIsAvailablePropagatesOperationalFaults:
         class _Backend:
             backend_type = 'postgresql'
 
-            async def execute_read(self, operation: Callable[[object], Awaitable[bool]]) -> bool:
+            async def execute_read(
+                self, operation: Callable[[object], Awaitable[bool]], *, access_scope: BackendAccess,
+            ) -> bool:
+                _ = access_scope
                 return await operation(_Connection())
 
         repo = FtsRepository(cast(StorageBackend, _Backend()))
 
-        assert await repo.is_available() is False
+        assert await repo.is_available(scope=MAINTENANCE) is False
 
     def test_is_available_pg_probe_is_schema_aware(self) -> None:
         """The PG availability probe resolves context_entries via search_path.
@@ -197,7 +207,7 @@ class TestFtsTokenizerSelection:
         backend.execute_read = AsyncMock(return_value=None)
         repo = FtsRepository(backend)
 
-        tokenizer = await repo.get_current_tokenizer()
+        tokenizer = await repo.get_current_tokenizer(scope=MAINTENANCE)
         assert tokenizer is None
 
     @pytest.mark.asyncio
@@ -207,7 +217,7 @@ class TestFtsTokenizerSelection:
         backend.backend_type = 'postgresql'
         repo = FtsRepository(backend)
 
-        tokenizer = await repo.get_current_tokenizer()
+        tokenizer = await repo.get_current_tokenizer(scope=MAINTENANCE)
         assert tokenizer is None
 
 
@@ -233,7 +243,7 @@ class TestFtsLanguageDetection:
         backend.backend_type = 'sqlite'
         repo = FtsRepository(backend)
 
-        language = await repo.get_current_language()
+        language = await repo.get_current_language(scope=MAINTENANCE)
         assert language is None
 
     @pytest.mark.asyncio
@@ -247,5 +257,102 @@ class TestFtsLanguageDetection:
         backend.execute_read = AsyncMock(return_value=None)
         repo = FtsRepository(backend)
 
-        language = await repo.get_current_language()
+        language = await repo.get_current_language(scope=MAINTENANCE)
         assert language is None
+
+
+class TestFtsLanguageMigrationKeepsTheReadView:
+    """The PostgreSQL language rebuild drops the row-level security read view before the column and re-creates it after.
+
+    The read view lists every column of context_entries, so dropping text_search_vector would
+    fail while it exists. When the view exists the rebuild drops it under the lock, before the
+    column, the way the row-level security migration drops it, naming the grants the drop
+    takes away, and re-creates it in the same transaction once the column and its index
+    exist again; when it does not exist, the rebuild creates none.
+    """
+
+    @staticmethod
+    def _run(monkeypatch: pytest.MonkeyPatch, *, view_exists: bool) -> list[tuple[object, ...]]:
+        import asyncio
+        from collections.abc import Awaitable
+        from collections.abc import Callable
+        from types import SimpleNamespace
+        from typing import cast
+
+        import app.migrations._pg_ddl as pg_ddl
+        import app.migrations.rls as rls_module
+        import app.settings as settings_module
+        from app.backends.base import StorageBackend
+
+        events: list[tuple[object, ...]] = []
+
+        class _Connection:
+            async def fetchval(self, sql: str, *args: object, **kwargs: object) -> object:
+                if 'to_regclass' in sql:
+                    events.append(('probe', sql, args))
+                    return view_exists
+                assert 'COUNT(*)' in sql
+                assert kwargs['timeout'] is not None
+                return 3
+
+        class _Backend:
+            backend_type = 'postgresql'
+
+            async def execute_write(
+                self, operation: Callable[[object], Awaitable[object]], *, access_scope: BackendAccess,
+            ) -> object:
+                assert access_scope is MAINTENANCE
+                return await operation(_Connection())
+
+        async def _begin(_conn: object, timeout_s: float) -> None:
+            events.append(('lock', timeout_s))
+
+        async def _execute(_conn: object, statement: str, timeout_s: float) -> None:
+            events.append(('ddl', ' '.join(statement.split()), timeout_s))
+
+        async def _drop_read_view(_conn: object, *, schema: str, policy_role: str, timeout_s: float) -> None:
+            events.append(('drop_read_view', schema, policy_role, timeout_s))
+
+        async def _create_read_view(_conn: object, *, schema: str, policy_role: str, timeout_s: float) -> None:
+            events.append(('create_read_view', schema, policy_role, timeout_s))
+
+        async def _language(*, scope: BackendAccess) -> str:
+            _ = scope
+            return 'english'
+
+        settings = SimpleNamespace(
+            storage=SimpleNamespace(postgresql_migration_timeout_s=300.0, postgresql_schema='tenant one'),
+            access_control=SimpleNamespace(postgresql_rls_policy_role='mcp_context_request'),
+        )
+        monkeypatch.setattr(pg_ddl, 'begin_migration', _begin)
+        monkeypatch.setattr(pg_ddl, 'execute_migration_ddl', _execute)
+        monkeypatch.setattr(rls_module, 'drop_read_view', _drop_read_view)
+        monkeypatch.setattr(rls_module, 'create_read_view', _create_read_view)
+        monkeypatch.setattr(settings_module, 'get_settings', lambda: settings)
+        repo = FtsRepository(cast(StorageBackend, _Backend()))
+        monkeypatch.setattr(repo, 'get_current_language', _language)
+
+        result = asyncio.run(repo.migrate_language('german', scope=MAINTENANCE))
+
+        assert result['entries_migrated'] == 3
+        return events
+
+    def test_an_existing_view_is_dropped_before_the_column_and_re_created_after_the_index(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        events = self._run(monkeypatch, view_exists=True)
+
+        kinds = [event[0] for event in events]
+        assert kinds == ['lock', 'probe', 'drop_read_view', 'ddl', 'ddl', 'ddl', 'create_read_view']
+        assert events[1][2] == ('"tenant one".context_entries_readable',)
+        assert events[2] == ('drop_read_view', 'tenant one', 'mcp_context_request', 300.0)
+        assert 'DROP COLUMN IF EXISTS text_search_vector' in str(events[3][1])
+        assert "to_tsvector('german'" in str(events[4][1])
+        assert 'CREATE INDEX IF NOT EXISTS idx_text_search_gin' in str(events[5][1])
+        assert events[6] == ('create_read_view', 'tenant one', 'mcp_context_request', 300.0)
+
+    def test_without_the_view_the_rebuild_creates_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        events = self._run(monkeypatch, view_exists=False)
+
+        assert [event[0] for event in events] == ['lock', 'probe', 'ddl', 'ddl', 'ddl']
+        assert not any('context_entries_readable' in str(event) for event in events if event[0] == 'ddl')

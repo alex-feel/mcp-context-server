@@ -11,6 +11,7 @@ import asyncpg
 from app.backends.postgresql_backend.core import PostgreSQLBackendCore
 from app.backends.postgresql_backend.session import apply_session_gucs
 from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
+from app.backends.postgresql_backend.session import login_remediation
 from app.errors import ConfigurationError
 from app.errors import DependencyError
 from app.settings import get_settings
@@ -27,7 +28,10 @@ class PostgreSQLProvisioningMixin(PostgreSQLBackendCore):
 
         Creates a temporary connection to enable the pgvector extension,
         then immediately closes it. This allows pool connections to
-        successfully register pgvector types during initialization.
+        successfully register pgvector types during initialization. The
+        connection logs in and configures its session exactly as the pool
+        does: the backend's credential override and its session profile's
+        statements.
 
         STRICT MODE: Fails fast if extension cannot be created.
         On Supabase: Enable via Dashboard → Extensions → vector (recommended).
@@ -40,10 +44,10 @@ class PostgreSQLProvisioningMixin(PostgreSQLBackendCore):
             conn = await asyncpg.connect(
                 self.connection_string,
                 timeout=settings.storage.postgresql_connect_timeout_s,
-                **build_asyncpg_connect_kwargs(settings),
+                **build_asyncpg_connect_kwargs(settings, credentials=self._credentials),
             )
             try:
-                await apply_session_gucs(conn, settings)
+                await apply_session_gucs(conn, settings, profile_statements=self._profile.session_statements())
                 await conn.execute('CREATE EXTENSION IF NOT EXISTS vector;')
                 logger.debug('pgvector extension ensured before pool creation')
             finally:
@@ -94,7 +98,7 @@ class PostgreSQLProvisioningMixin(PostgreSQLBackendCore):
             logger.error(f'PostgreSQL authentication failed: {e}')
             raise ConfigurationError(
                 f'PostgreSQL authentication failed: {e}. '
-                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                + login_remediation(self._credentials, explicit_connection_string=self._explicit_connection_string),
             ) from e
 
         except asyncpg.exceptions.InvalidCatalogNameError as e:
@@ -170,7 +174,7 @@ class PostgreSQLProvisioningMixin(PostgreSQLBackendCore):
         if settings.embedding.generation_enabled and not settings.compression.enabled:
             return True
         compression_enabled = settings.compression.enabled
-        connect_kwargs = build_asyncpg_connect_kwargs()
+        connect_kwargs = build_asyncpg_connect_kwargs(credentials=self._credentials)
         # A connect fault propagates DELIBERATELY. Swallowing it and returning False
         # would answer a question the probe never got to ask: on a
         # generation-off/compression-off database that already carries
@@ -188,7 +192,7 @@ class PostgreSQLProvisioningMixin(PostgreSQLBackendCore):
         try:
             # The to_regclass probes below resolve through search_path, so the session
             # parameters must be in place before the first one runs.
-            await apply_session_gucs(conn)
+            await apply_session_gucs(conn, profile_statements=self._profile.session_statements())
             fp32_present = bool(
                 await conn.fetchval("SELECT to_regclass('vec_context_embeddings') IS NOT NULL"),
             )

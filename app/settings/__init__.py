@@ -277,6 +277,49 @@ class AppSettings(CommonSettings):
             )
         return self
 
+    @model_validator(mode='after')
+    def validate_postgresql_rls_configuration(self) -> Self:
+        """Reject a row-level security configuration that cannot enforce anything.
+
+        Row-level security is a PostgreSQL feature, and it filters only a role that
+        does not own the tables: the migration role must own them and requests must
+        connect as a different role. This check sees configured names only, so it
+        compares the two users only in the component form; with
+        POSTGRESQL_CONNECTION_STRING the request user lives inside the secret, and
+        startup compares the roles both connections actually resolve to, which also
+        covers pooler-suffixed names and forced logins.
+
+        Returns:
+            The validated settings instance.
+
+        Raises:
+            ValueError: If row-level security is enabled with the SQLite backend,
+                without a migration user, or with a migration user equal to the
+                configured request user.
+        """
+        if not self.access_control.postgresql_rls_enabled:
+            return self
+        if self.storage.backend_type != 'postgresql':
+            raise ValueError('ENABLE_POSTGRESQL_RLS requires STORAGE_BACKEND=postgresql')
+        migration_user = self.storage.postgresql_migration_user
+        if not migration_user:
+            raise ValueError(
+                'Row-level security needs a separate migration role that owns the tables: '
+                'set POSTGRESQL_MIGRATION_USER and POSTGRESQL_MIGRATION_PASSWORD',
+            )
+        # An empty connection string selects the component form, as in the backend's connection builder.
+        if not self.storage.postgresql_connection_string and migration_user == self.storage.postgresql_user:
+            # The role grammar excludes the double quote, so wrapping the name yields its quoted identifier.
+            policy_role = f'"{self.access_control.postgresql_rls_policy_role}"'
+            raise ValueError(
+                f"ENABLE_POSTGRESQL_RLS=true, but POSTGRESQL_MIGRATION_USER and POSTGRESQL_USER name the same "
+                f"PostgreSQL role '{migration_user}'. The table owner bypasses row-level security, so nothing "
+                f'would be enforced. Create a separate login role for requests (CREATE ROLE {policy_role} NOLOGIN; '
+                f"CREATE ROLE <login> LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS; GRANT {policy_role} TO <login>;) "
+                f"and set POSTGRESQL_USER to it (docs/database-backends.md, 'Row-level security (PostgreSQL)').",
+            )
+        return self
+
     def _get_truncation_setting_for_provider(self) -> bool:
         """Get current truncation setting for the configured provider.
 

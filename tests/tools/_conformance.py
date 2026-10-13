@@ -49,9 +49,9 @@ async def read_db_entry(context_id: str) -> dict[str, Any]:
     assert len(rows) == 1, f'Expected 1 row for id {context_id}, got {len(rows)}'
     row = rows[0]
 
-    tags = await repos.tags.get_tags_for_context(context_id)
+    tags = await repos.tags.get_tags_for_context(context_id, scope=LOCAL_SCOPE)
     sorted_tags = sorted(tags)
-    image_count = await repos.images.count_images_for_context(context_id)
+    image_count = await repos.images.count_images_for_context(context_id, scope=LOCAL_SCOPE)
 
     raw_metadata = row['metadata']
     if isinstance(raw_metadata, str):

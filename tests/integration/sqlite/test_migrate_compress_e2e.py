@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.cli.migrate_compression.compress import run_compress
 from app.cli.migrate_compression.decompress import run_decompress
 from app.repositories import RepositoryContainer
@@ -160,7 +161,7 @@ def _seed_fp32_database(
                         (context_id, 'test-model', DIM, 1),
                     )
 
-                await backend.execute_write(_write_chunk)
+                await backend.execute_write(_write_chunk, access_scope=MAINTENANCE)
             return planted
         finally:
             with contextlib.suppress(TimeoutError):

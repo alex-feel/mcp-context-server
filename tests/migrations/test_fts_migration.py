@@ -9,6 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
+
 
 class TestApplyFtsMigration:
     """Tests for apply_fts_migration()."""
@@ -80,14 +83,14 @@ class TestApplyFtsMigration:
                 fts_repo = FtsRepository(backend)
 
                 # Check FTS not available yet
-                fts_available_before = await fts_repo.is_available()
+                fts_available_before = await fts_repo.is_available(scope=MAINTENANCE)
                 assert fts_available_before is False
 
                 # Apply migration
                 await apply_fts_migration(backend=backend)
 
                 # Check FTS is now available
-                fts_available_after = await fts_repo.is_available()
+                fts_available_after = await fts_repo.is_available(scope=MAINTENANCE)
                 assert fts_available_after is True
             finally:
                 await backend.shutdown()
@@ -127,15 +130,15 @@ class TestApplyFtsMigration:
         await backend.initialize()
         try:
             fts_repo = FtsRepository(backend)
-            assert await fts_repo.is_available() is False
+            assert await fts_repo.is_available(scope=MAINTENANCE) is False
 
             # ENABLE_FTS=false: a normal migration is a no-op.
             await fts_module.apply_fts_migration(backend=backend)
-            assert await fts_repo.is_available() is False
+            assert await fts_repo.is_available(scope=MAINTENANCE) is False
 
             # force=True provisions FTS regardless of the disabled toggle.
             await fts_module.apply_fts_migration(backend=backend, force=True)
-            assert await fts_repo.is_available() is True
+            assert await fts_repo.is_available(scope=MAINTENANCE) is True
         finally:
             await backend.shutdown()
 
@@ -191,9 +194,11 @@ class TestApplyFtsMigration:
         fts_repo.get_current_language = AsyncMock(return_value='german')
         fts_repo.get_statistics = AsyncMock(return_value={'total_entries': 42})
         records_counted: list[int | None] = []
+        migrated_as: list[BackendAccess] = []
 
-        async def _migrate(_target: str) -> dict[str, object]:
+        async def _migrate(_target: str, *, scope: BackendAccess) -> dict[str, object]:
             records_counted.append(fts_module.get_fts_migration_status().records_count)
+            migrated_as.append(scope)
             return {
                 'entries_migrated': 42, 'old_tokenizer': 'unicode61', 'new_tokenizer': 'porter unicode61',
                 'old_language': 'german', 'new_language': 'english',
@@ -211,6 +216,7 @@ class TestApplyFtsMigration:
 
         fts_repo.get_statistics.assert_awaited_once_with(scope=SYSTEM_SCOPE)
         assert records_counted == [42]
+        assert migrated_as == [MAINTENANCE]
 
     @pytest.mark.asyncio
     async def test_tokenizer_migration_detection(self, tmp_path: Path) -> None:
@@ -250,7 +256,7 @@ class TestApplyFtsMigration:
                 fts_repo = FtsRepository(backend)
 
                 # Verify FTS exists with unicode61
-                current_tokenizer = await fts_repo.get_current_tokenizer()
+                current_tokenizer = await fts_repo.get_current_tokenizer(scope=MAINTENANCE)
                 assert current_tokenizer is not None
                 assert 'unicode61' in current_tokenizer
 
@@ -258,7 +264,7 @@ class TestApplyFtsMigration:
                 await apply_fts_migration(backend=backend)
 
                 # Verify tokenizer changed to porter
-                new_tokenizer = await fts_repo.get_current_tokenizer()
+                new_tokenizer = await fts_repo.get_current_tokenizer(scope=MAINTENANCE)
                 assert new_tokenizer is not None
                 assert 'porter' in new_tokenizer
             finally:

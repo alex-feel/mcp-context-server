@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 from app.types import ImageDict
@@ -118,6 +119,8 @@ class ImageRepository(BaseRepository):
         context_id: str,
         images: list[dict[str, Any]],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Store multiple image attachments for a context entry.
 
@@ -128,6 +131,8 @@ class ImageRepository(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
@@ -171,7 +176,7 @@ class ImageRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_store_images_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_store_images_sqlite)
+                await self.backend.execute_write(_store_images_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _store_images_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -209,18 +214,21 @@ class ImageRepository(BaseRepository):
             if txn:
                 await _store_images_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
-                await self.backend.execute_write(cast(Any, _store_images_postgresql))
+                await self.backend.execute_write(cast(Any, _store_images_postgresql), access_scope=scope)
 
     async def get_images_for_context(
         self,
         context_id: str,
         include_data: bool = True,
+        *,
+        scope: BackendAccess,
     ) -> list[ImageDict]:
         """Get all images for a specific context entry.
 
         Args:
             context_id: ID of the context entry
             include_data: Whether to include the actual image data
+            scope: The identity the read runs as.
 
         Returns:
             List of image dictionaries
@@ -229,18 +237,19 @@ class ImageRepository(BaseRepository):
 
             def _get_images_sqlite(conn: sqlite3.Connection) -> list[ImageDict]:
                 cursor = conn.cursor()
+                image_rows = self._readable('image_attachments', alias='image_attachments')
 
                 if include_data:
                     query = f'''
                         SELECT image_data, mime_type, image_metadata, position
-                        FROM image_attachments
+                        FROM {image_rows}
                         WHERE context_entry_id = {self._placeholder(1)}
                         ORDER BY position
                     '''
                 else:
                     query = f'''
                         SELECT mime_type, image_metadata, position
-                        FROM image_attachments
+                        FROM {image_rows}
                         WHERE context_entry_id = {self._placeholder(1)}
                         ORDER BY position
                     '''
@@ -264,22 +273,23 @@ class ImageRepository(BaseRepository):
                     images.append(img_data)
                 return images
 
-            return await self.backend.execute_read(_get_images_sqlite)
+            return await self.backend.execute_read(_get_images_sqlite, access_scope=scope)
 
         # postgresql
 
         async def _get_images_postgresql(conn: 'asyncpg.Connection') -> list[ImageDict]:
+            image_rows = self._readable('image_attachments', alias='image_attachments')
             if include_data:
                 query = f'''
                         SELECT image_data, mime_type, image_metadata, position
-                        FROM image_attachments
+                        FROM {image_rows}
                         WHERE context_entry_id = {self._placeholder(1)}
                         ORDER BY position
                     '''
             else:
                 query = f'''
                         SELECT mime_type, image_metadata, position
-                        FROM image_attachments
+                        FROM {image_rows}
                         WHERE context_entry_id = {self._placeholder(1)}
                         ORDER BY position
                     '''
@@ -303,9 +313,15 @@ class ImageRepository(BaseRepository):
                 images.append(img_data)
             return images
 
-        return await self.backend.execute_read(_get_images_postgresql)
+        return await self.backend.execute_read(_get_images_postgresql, access_scope=scope)
 
-    async def count_images_for_context(self, context_id: str, txn: 'TransactionContext | None' = None) -> int:
+    async def count_images_for_context(
+        self,
+        context_id: str,
+        txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
+    ) -> int:
         """Count the number of images for a context entry.
 
         Args:
@@ -314,6 +330,8 @@ class ImageRepository(BaseRepository):
                 transaction's own connection instead of acquiring a second pooled
                 connection, avoiding a nested pool acquire while a transaction
                 connection is already held (PostgreSQL pool-starvation hazard).
+            scope: The identity a standalone read runs as; a count on ``txn`` runs as the
+                identity its transaction bound.
 
         Returns:
             Number of images attached to the context
@@ -323,31 +341,35 @@ class ImageRepository(BaseRepository):
 
             def _count_images_sqlite(conn: sqlite3.Connection) -> int:
                 cursor = conn.cursor()
-                query = f'SELECT COUNT(*) as count FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
+                image_rows = self._readable('image_attachments', alias='image_attachments')
+                query = f'SELECT COUNT(*) as count FROM {image_rows} WHERE context_entry_id = {self._placeholder(1)}'
                 cursor.execute(query, (context_id,))
                 result = cursor.fetchone()
                 return int(result['count']) if result else 0
 
             if txn is not None:
                 return await self._run_sqlite_txn(_count_images_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_count_images_sqlite)
+            return await self.backend.execute_read(_count_images_sqlite, access_scope=scope)
 
         # postgresql
 
         async def _count_images_postgresql(conn: 'asyncpg.Connection') -> int:
-            query = f'SELECT COUNT(*) as count FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
+            image_rows = self._readable('image_attachments', alias='image_attachments')
+            query = f'SELECT COUNT(*) as count FROM {image_rows} WHERE context_entry_id = {self._placeholder(1)}'
             result = await conn.fetchrow(query, context_id)
             return int(result['count']) if result else 0
 
         if txn is not None:
             return await _count_images_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_count_images_postgresql)
+        return await self.backend.execute_read(_count_images_postgresql, access_scope=scope)
 
     async def replace_images_for_context(
         self,
         context_id: str,
         images: list[dict[str, Any]],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Replace all images for a context entry.
 
@@ -362,6 +384,8 @@ class ImageRepository(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
@@ -408,7 +432,7 @@ class ImageRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_replace_images_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_replace_images_sqlite)
+                await self.backend.execute_write(_replace_images_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _replace_images_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -448,4 +472,4 @@ class ImageRepository(BaseRepository):
             if txn:
                 await _replace_images_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
-                await self.backend.execute_write(cast(Any, _replace_images_postgresql))
+                await self.backend.execute_write(cast(Any, _replace_images_postgresql), access_scope=scope)

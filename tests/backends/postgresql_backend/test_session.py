@@ -1,8 +1,8 @@
 """Tests for app/backends/postgresql_backend/session.py: connection parameters.
 
-Covers the asyncpg connect kwargs (an empty startup packet), the session GUCs
-delivered as SET statements, identifier quoting, and the statement-timeout
-derivation.
+Covers the asyncpg connect kwargs (an empty startup packet), the remediation a
+refused login names, the session GUCs delivered as SET statements, identifier
+quoting, and the statement-timeout derivation.
 """
 
 import pytest
@@ -47,20 +47,22 @@ class TestBuildAsyncpgConnectKwargs:
 
     def test_statement_cache_zero_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """statement_cache_size=0 (transaction-pooler mode) propagates verbatim."""
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
         from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
         from app.settings import AppSettings
 
         monkeypatch.setenv('POSTGRESQL_STATEMENT_CACHE_SIZE', '0')
-        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        kwargs = build_asyncpg_connect_kwargs(AppSettings(), credentials=NO_CREDENTIAL_OVERRIDE)
         assert kwargs['statement_cache_size'] == 0
 
     def test_statement_cache_default_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The default prepared-statement cache size is forwarded unchanged."""
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
         from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
         from app.settings import AppSettings
 
         monkeypatch.delenv('POSTGRESQL_STATEMENT_CACHE_SIZE', raising=False)
-        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        kwargs = build_asyncpg_connect_kwargs(AppSettings(), credentials=NO_CREDENTIAL_OVERRIDE)
         assert kwargs['statement_cache_size'] == 100
 
     def test_startup_packet_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,6 +75,7 @@ class TestBuildAsyncpgConnectKwargs:
         configuration -- and a pooler that strips instead of refusing silently drops
         search_path, resolving every query against the wrong schema.
         """
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
         from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
         from app.settings import AppSettings
 
@@ -80,7 +83,7 @@ class TestBuildAsyncpgConnectKwargs:
         monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_IDLE_S', '15')
         monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S', '5')
         monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_COUNT', '3')
-        assert 'server_settings' not in build_asyncpg_connect_kwargs(AppSettings())
+        assert 'server_settings' not in build_asyncpg_connect_kwargs(AppSettings(), credentials=NO_CREDENTIAL_OVERRIDE)
 
     def test_session_gucs_are_set_statements(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every session parameter is delivered as a SET statement."""
@@ -123,14 +126,15 @@ class TestBuildAsyncpgConnectKwargs:
         from app.backends.postgresql_backend.pool_callbacks import setup_pool_connection
 
         conn = AsyncMock()
-        await setup_pool_connection(conn)
+        await setup_pool_connection(conn, profile_statements=['SET row_security = off'])
 
         statement = conn.execute.await_args.args[0]
         assert 'SET statement_timeout' in statement
         assert 'SET search_path' in statement
         assert 'SET extra_float_digits' in statement
         assert 'SET tcp_keepalives_idle' in statement
-        # One round trip: the whole session configuration goes out together.
+        # The session profile's statements follow the server's own, in the same round trip.
+        assert statement.endswith('; SET row_security = off')
         assert conn.execute.await_count == 1
 
     @pytest.mark.asyncio
@@ -146,12 +150,174 @@ class TestBuildAsyncpgConnectKwargs:
         from app.backends.postgresql_backend.session import apply_session_gucs
 
         conn = AsyncMock()
-        await apply_session_gucs(conn)
+        await apply_session_gucs(conn, profile_statements=['SET row_security = off'])
 
         statement = conn.execute.await_args.args[0]
         assert 'SET search_path' in statement
         assert 'SET extra_float_digits' in statement
+        assert statement.endswith('; SET row_security = off')
         assert conn.execute.await_count == 1
+
+
+class TestCredentialOverride:
+    """Only the credential fields that are set reach the connect kwargs, where they win over the DSN's own."""
+
+    def test_no_override_adds_no_credential(self) -> None:
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+        from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        kwargs = build_asyncpg_connect_kwargs(AppSettings(), credentials=NO_CREDENTIAL_OVERRIDE)
+
+        assert 'user' not in kwargs
+        assert 'password' not in kwargs
+
+    @pytest.mark.parametrize(
+        ('user', 'password', 'expected'),
+        [
+            ('mcp_owner', None, {'user': 'mcp_owner'}),
+            (None, 'owner-secret', {'password': 'owner-secret'}),
+            ('mcp_owner', 'owner-secret', {'user': 'mcp_owner', 'password': 'owner-secret'}),
+            ('', '', {}),
+        ],
+        ids=['user-only', 'password-only', 'both', 'empty-fields'],
+    )
+    def test_set_fields_become_connect_kwargs(
+        self, user: str | None, password: str | None, expected: dict[str, str],
+    ) -> None:
+        from pydantic import SecretStr
+
+        from app.backends.postgresql_backend.session import CredentialOverride
+        from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        override = CredentialOverride(user=user, password=SecretStr(password) if password is not None else None)
+        kwargs = build_asyncpg_connect_kwargs(AppSettings(), credentials=override)
+
+        assert {key: kwargs[key] for key in ('user', 'password') if key in kwargs} == expected
+
+    def test_password_stays_masked_in_the_override_repr(self) -> None:
+        from pydantic import SecretStr
+
+        from app.backends.postgresql_backend.session import CredentialOverride
+
+        assert 'owner-secret' not in repr(CredentialOverride(user='mcp_owner', password=SecretStr('owner-secret')))
+
+
+class TestLoginRemediation:
+    """The remediation of a refused login names where the backend's user and password come from."""
+
+    @pytest.mark.parametrize(
+        ('user', 'password', 'explicit', 'refused_login', 'refused_connect'),
+        [
+            (
+                'mcp_owner', 'owner-secret', False,
+                'Check POSTGRESQL_MIGRATION_USER, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_MIGRATION_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                'mcp_owner', None, False,
+                'Check POSTGRESQL_MIGRATION_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_MIGRATION_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                None, 'owner-secret', False,
+                'Check POSTGRESQL_USER, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                '', '', False,
+                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                None, None, False,
+                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                None, None, True,
+                'Check the user and password of the connection string and the server pg_hba.conf rules.',
+                'Grant the user of the connection string access to its database.',
+            ),
+            (
+                'mcp_owner', 'owner-secret', True,
+                'Check POSTGRESQL_MIGRATION_USER, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_MIGRATION_USER access to the database of the connection string.',
+            ),
+            (
+                None, 'owner-secret', True,
+                'Check the user of the connection string, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the user of the connection string access to its database.',
+            ),
+        ],
+        ids=[
+            'migration-both', 'migration-user-only', 'migration-password-only', 'empty-fields', 'request', 'explicit',
+            'migration-over-explicit', 'migration-password-over-explicit',
+        ],
+    )
+    def test_remediation_names_the_login_source(
+        self, user: str | None, password: str | None, explicit: bool, refused_login: str, refused_connect: str,
+    ) -> None:
+        from pydantic import SecretStr
+
+        from app.backends.postgresql_backend.session import CredentialOverride
+        from app.backends.postgresql_backend.session import connect_privilege_remediation
+        from app.backends.postgresql_backend.session import login_remediation
+
+        override = CredentialOverride(user=user, password=SecretStr(password) if password is not None else None)
+
+        assert login_remediation(override, explicit_connection_string=explicit) == refused_login
+        assert connect_privilege_remediation(override, explicit_connection_string=explicit) == refused_connect
+
+
+class TestRequestConnectionString:
+    """The request connection settings: the configured DSN, otherwise one built from the component fields."""
+
+    def test_a_configured_connection_string_is_dialed_as_written(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.backends.postgresql_backend.session import request_connection_string
+        from app.settings import AppSettings
+
+        dsn = 'postgresql://mcp_app.projectref:secret@aws-0.pooler.supabase.com:6543/postgres?sslmode=require'
+        monkeypatch.setenv('POSTGRESQL_CONNECTION_STRING', dsn)
+
+        assert request_connection_string(AppSettings()) == dsn
+
+    def test_the_component_fields_are_url_encoded_with_the_ssl_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.backends.postgresql_backend.session import request_connection_string
+        from app.settings import AppSettings
+
+        monkeypatch.delenv('POSTGRESQL_CONNECTION_STRING', raising=False)
+        monkeypatch.setenv('POSTGRESQL_HOST', 'db.example.com')
+        monkeypatch.setenv('POSTGRESQL_PORT', '5433')
+        monkeypatch.setenv('POSTGRESQL_USER', 'app:user')
+        monkeypatch.setenv('POSTGRESQL_PASSWORD', 'p@ss#word')
+        monkeypatch.setenv('POSTGRESQL_DATABASE', 'mcp/context')
+        monkeypatch.setenv('POSTGRESQL_SSL_MODE', 'require')
+
+        assert request_connection_string(AppSettings()) == (
+            'postgresql://app%3Auser:p%40ss%23word@db.example.com:5433/mcp%2Fcontext?sslmode=require'
+        )
+
+    def test_the_backend_without_a_connection_string_dials_the_request_settings(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import app.backends.postgresql_backend as pg_module
+        from app.backends.postgresql_backend import PostgreSQLBackend
+        from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+        from app.backends.postgresql_backend.session import request_connection_string
+        from app.backends.postgresql_backend.session_profiles import UnboundProfile
+        from app.settings import AppSettings
+        from tests.helpers import rebind_package_settings
+
+        monkeypatch.delenv('POSTGRESQL_CONNECTION_STRING', raising=False)
+        monkeypatch.setenv('POSTGRESQL_HOST', 'db.example.com')
+        settings = AppSettings()
+        rebind_package_settings(monkeypatch, pg_module, settings)
+
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
+
+        assert backend.connection_string == request_connection_string(settings)
 
 
 class TestQuotePgIdentifier:

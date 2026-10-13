@@ -145,7 +145,7 @@ async def _add_prefixed_rows(db: ScopedDb) -> None:
         )
         db.ids[label] = context_id
         for grant in grants:
-            await insert_grant(db.backend, context_id, grant.principal_type, grant.principal_id, grant.permission, owner)
+            await insert_grant(db.seed_backend, context_id, grant.principal_type, grant.principal_id, grant.permission, owner)
 
 
 async def _find_by_prefix(db: ScopedDb, scope: Scope) -> PrefixMatches:
@@ -210,7 +210,7 @@ async def _access_rows(
 ) -> tuple[AccessRow, ...]:
     """Return ``(label, can_write, is_owner)`` for every id ``probe_ids`` reports, in seed order."""
     if in_transaction:
-        async with db.backend.begin_transaction() as txn:
+        async with db.backend.begin_transaction(access_scope=scope) as txn:
             access = await db.repos.context.probe_ids(list(context_ids), scope=scope, txn=txn)
     else:
         access = await db.repos.context.probe_ids(list(context_ids), scope=scope)
@@ -245,8 +245,10 @@ READ_CASES: tuple[AccessCase, ...] = (
     AccessCase('S3', _get_chunked, per_scope(READABLE.__getitem__), variant='chunked'),
     AccessCase('S4', _find_by_prefix, per_scope(_PREFIX_MATCHES.__getitem__), setup=_add_prefixed_rows),
     AccessCase('S4', _resolve_prefixes, per_scope(_expected_resolution), variant='resolve', setup=_add_prefixed_rows),
-    AccessCase('S5', _probe_each, per_scope(_expected_probes)),
-    AccessCase('S7', _probe_ids, per_scope(_expected_access)),
-    AccessCase('S7', _probe_ids_in_transaction, per_scope(_expected_access), variant='in-transaction'),
-    AccessCase('S7', _probe_ids_chunked, per_scope(_expected_access), variant='chunked'),
+    AccessCase('S5', _probe_each, per_scope(_expected_probes), reports_write_access=True),
+    AccessCase('S7', _probe_ids, per_scope(_expected_access), reports_write_access=True),
+    AccessCase(
+        'S7', _probe_ids_in_transaction, per_scope(_expected_access), variant='in-transaction', reports_write_access=True,
+    ),
+    AccessCase('S7', _probe_ids_chunked, per_scope(_expected_access), variant='chunked', reports_write_access=True),
 )

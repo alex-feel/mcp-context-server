@@ -3,6 +3,8 @@
 import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from tests.helpers import rebind_package_settings
 
 
@@ -17,12 +19,16 @@ class TestBackendType:
         # Supabase Direct Connection
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:password@db.project.supabase.co:5432/postgres',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         assert backend.backend_type == 'postgresql', 'Supabase should report postgresql backend_type'
 
         # Self-hosted PostgreSQL
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:password@localhost:5432/postgres',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         assert backend.backend_type == 'postgresql', 'Self-hosted should report postgresql backend_type'
 
@@ -38,12 +44,20 @@ class TestConnectionStringBuilding:
         """
         # Direct Connection via explicit string
         direct_conn = 'postgresql://postgres:password@db.project.supabase.co:5432/postgres'
-        backend = PostgreSQLBackend(connection_string=direct_conn)
+        backend = PostgreSQLBackend(
+            connection_string=direct_conn,
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
+        )
         assert backend.connection_string == direct_conn
 
         # Session Pooler via explicit string
         pooler_conn = 'postgresql://postgres.project:password@aws-0-us-west-1.pooler.supabase.com:5432/postgres'
-        backend = PostgreSQLBackend(connection_string=pooler_conn)
+        backend = PostgreSQLBackend(
+            connection_string=pooler_conn,
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
+        )
         assert backend.connection_string == pooler_conn
 
     @staticmethod
@@ -55,7 +69,7 @@ class TestConnectionStringBuilding:
         monkeypatch.delenv('POSTGRESQL_CONNECTION_STRING', raising=False)
         monkeypatch.setenv('POSTGRESQL_HOST', host)
         rebind_package_settings(monkeypatch, pg_module, AppSettings())
-        return PostgreSQLBackend().connection_string
+        return PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE).connection_string
 
     def test_ipv6_loopback_host_is_bracketed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An IPv6 loopback host literal is bracketed in the built DSN.

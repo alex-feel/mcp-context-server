@@ -116,6 +116,54 @@ spec:
                   name: {{ .Values.storage.postgresql.existingSecret }}
                   key: {{ .Values.storage.postgresql.existingSecretKey }}
             {{- end }}
+            {{- /* PostgreSQL migration password */}}
+            {{- if and .Values.storage.postgresql.enabled (not .Values.storage.postgresql.migration.existingSecret) .Values.storage.postgresql.migration.password }}
+            - name: POSTGRESQL_MIGRATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: postgresql-migration-password
+            {{- else if and .Values.storage.postgresql.enabled .Values.storage.postgresql.migration.existingSecret }}
+            - name: POSTGRESQL_MIGRATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.postgresql.migration.existingSecret }}
+                  key: {{ .Values.storage.postgresql.migration.existingSecretKey }}
+            {{- end }}
+            {{- /* Bearer token and JWT public key. An existing secret is referenced only for
+                   the key the provider reads (the token for simple_token, the public key for
+                   jwt without a JWKS URI), because a reference to a key the secret lacks
+                   fails the pod start. */}}
+            {{- if .Values.auth.existingSecret }}
+            {{- if eq .Values.auth.provider "simple_token" }}
+            - name: MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+                  key: {{ .Values.auth.tokenSecretKey }}
+            {{- else if and (eq .Values.auth.provider "jwt") (not .Values.auth.jwt.jwksUri) }}
+            - name: MCP_AUTH_JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+                  key: {{ .Values.auth.jwt.publicKeySecretKey }}
+            {{- end }}
+            {{- else }}
+            {{- if .Values.auth.token }}
+            - name: MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: mcp-auth-token
+            {{- end }}
+            {{- if .Values.auth.jwt.publicKey }}
+            - name: MCP_AUTH_JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: mcp-auth-jwt-public-key
+            {{- end }}
+            {{- end }}
             {{- /* OpenAI API key -- shared by the openai embedding and openai summary providers
                    (both read the single OPENAI_API_KEY). Emit exactly ONE env var from one source,
                    so a dual-openai config (semantic.provider=openai AND summary.provider=openai)

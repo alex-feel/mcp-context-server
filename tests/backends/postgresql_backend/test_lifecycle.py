@@ -14,6 +14,11 @@ import asyncpg
 import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
+from tests.backends.postgresql_backend._builders import LOGIN_FORMS
+from tests.backends.postgresql_backend._builders import LoginForm
+from tests.backends.postgresql_backend._builders import build_login_backend
 
 
 class TestInitializeErrorClassification:
@@ -47,6 +52,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -67,6 +74,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -86,6 +95,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -105,6 +116,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:wrong@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -124,6 +137,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/nonexistent',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -154,6 +169,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -183,6 +200,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb?sslmode=bogus',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -209,6 +228,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb?sslmode=bogus',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -240,6 +261,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@[[::1]]:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -291,6 +314,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -321,6 +346,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -341,6 +368,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -360,6 +389,8 @@ class TestInitializeErrorClassification:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         with (
@@ -391,6 +422,8 @@ class TestProvisionVectorOverride:
         backend = PostgreSQLBackend(
             connection_string='postgresql://u:p@localhost:5432/db',
             provision_vector=provision_vector,
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         resolve = AsyncMock(return_value=True)
         ensure = AsyncMock()
@@ -444,3 +477,63 @@ class TestProvisionVectorOverride:
         assert backend._provision_vector is True
         resolve.assert_awaited_once()
         ensure.assert_awaited_once()
+
+
+class TestRefusedLoginRemediation:
+    """A refused login names the settings of the login the backend actually used.
+
+    The maintenance backend dials the request settings with the migration credentials
+    over them, and the command-line tools dial an explicit connection string, so the
+    request variables are the wrong advice for both: on an RLS deployment the request
+    login has already succeeded by the time the maintenance backend dials.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _skip_provisioning(self) -> Iterator[None]:
+        """Stub the vector provisioning that runs before pool creation."""
+        with (
+            unittest.mock.patch.object(PostgreSQLBackend, '_resolve_provision_vector', AsyncMock(return_value=False)),
+            unittest.mock.patch.object(PostgreSQLBackend, '_ensure_pgvector_extension', AsyncMock()),
+        ):
+            yield
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('form', LOGIN_FORMS)
+    @pytest.mark.parametrize(
+        'error',
+        [
+            asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "mcp_owner"'),
+            asyncpg.exceptions.InvalidAuthorizationSpecificationError('no pg_hba.conf entry for host "10.0.0.7"'),
+        ],
+        ids=['wrong-password', 'no-pg-hba-entry'],
+    )
+    async def test_refused_login_names_the_login_settings(
+        self, monkeypatch: pytest.MonkeyPatch, form: LoginForm, error: Exception,
+    ) -> None:
+        from app.errors import ConfigurationError
+
+        backend = build_login_backend(monkeypatch, form)
+
+        with (
+            unittest.mock.patch('asyncpg.create_pool', side_effect=error),
+            pytest.raises(ConfigurationError) as raised,
+        ):
+            await backend.initialize()
+
+        assert str(raised.value) == f'PostgreSQL authentication failed: {error}. {form.refused_login}'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('form', LOGIN_FORMS)
+    async def test_refused_connect_names_the_login_role(self, monkeypatch: pytest.MonkeyPatch, form: LoginForm) -> None:
+        from app.errors import ConfigurationError
+
+        error = asyncpg.exceptions.InsufficientPrivilegeError('permission denied for database "testdb"')
+        backend = build_login_backend(monkeypatch, form)
+
+        with (
+            unittest.mock.patch('asyncpg.create_pool', side_effect=error),
+            pytest.raises(ConfigurationError) as raised,
+        ):
+            await backend.initialize()
+
+        assert str(raised.value) == f'PostgreSQL permission denied: {error}. {form.refused_connect}'

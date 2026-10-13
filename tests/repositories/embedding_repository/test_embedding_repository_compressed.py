@@ -26,6 +26,8 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.ids import generate_id
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
@@ -133,7 +135,7 @@ async def test_store_chunked_routes_to_compressed_when_enabled(
     )
 
     chunks = [_make_chunk(0, b'PAYLOAD-0'), _make_chunk(1, b'PAYLOAD-1')]
-    await repo.store_chunked(cid, chunks, model='test-model')
+    await repo.store_chunked(cid, chunks, model='test-model', scope=LOCAL_SCOPE)
 
     def _read(conn: sqlite3.Connection) -> list[tuple[int, int, int, bytes]]:
         cur = conn.execute(
@@ -147,7 +149,7 @@ async def test_store_chunked_routes_to_compressed_when_enabled(
             for r in cur.fetchall()
         ]
 
-    rows = await compressed_backend.execute_read(_read)
+    rows = await compressed_backend.execute_read(_read, access_scope=MAINTENANCE)
     assert rows == [
         (0, 0, 100, b'PAYLOAD-0'),
         (1, 100, 200, b'PAYLOAD-1'),
@@ -171,7 +173,7 @@ async def test_store_chunked_requires_payload_when_compressed(
 
     chunks = [ChunkEmbedding(embedding=[0.1] * 16, start_index=0, end_index=10)]
     with pytest.raises(ValueError, match='payload bytes'):
-        await repo.store_chunked(cid, chunks, model='test-model')
+        await repo.store_chunked(cid, chunks, model='test-model', scope=LOCAL_SCOPE)
 
 
 @pytest.mark.asyncio
@@ -191,9 +193,9 @@ async def test_delete_all_chunks_cleans_compressed_table_when_enabled(
     )
 
     chunks = [_make_chunk(0, b'AAA'), _make_chunk(1, b'BBB'), _make_chunk(2, b'CCC')]
-    await repo.store_chunked(cid, chunks, model='test-model')
+    await repo.store_chunked(cid, chunks, model='test-model', scope=LOCAL_SCOPE)
 
-    deleted = await repo.delete_all_chunks(cid)
+    deleted = await repo.delete_all_chunks(cid, scope=LOCAL_SCOPE)
     assert deleted == 3
 
     def _counts(conn: sqlite3.Connection) -> tuple[int, int]:
@@ -208,7 +210,7 @@ async def test_delete_all_chunks_cleans_compressed_table_when_enabled(
         ).fetchone()[0]
         return (int(c1), int(c2))
 
-    rows, meta = await compressed_backend.execute_read(_counts)
+    rows, meta = await compressed_backend.execute_read(_counts, access_scope=MAINTENANCE)
     assert rows == 0
     assert meta == 0
 
@@ -230,7 +232,7 @@ async def test_compressed_round_trip_payload_bytes(
 
     payload = bytes(range(256))
     await repo.store_chunked(
-        cid, [_make_chunk(0, payload)], model='test-model',
+        cid, [_make_chunk(0, payload)], model='test-model', scope=LOCAL_SCOPE,
     )
 
     def _read(conn: sqlite3.Connection) -> bytes:
@@ -240,7 +242,7 @@ async def test_compressed_round_trip_payload_bytes(
             (cid,),
         ).fetchone()[0])
 
-    stored_payload = await compressed_backend.execute_read(_read)
+    stored_payload = await compressed_backend.execute_read(_read, access_scope=MAINTENANCE)
     assert stored_payload == payload
 
 
@@ -273,7 +275,7 @@ async def test_compressed_store_preserves_chunk_boundaries(
             payload=b'second',
         ),
     ]
-    await repo.store_chunked(cid, chunks, model='test-model')
+    await repo.store_chunked(cid, chunks, model='test-model', scope=LOCAL_SCOPE)
 
     def _read(conn: sqlite3.Connection) -> list[tuple[int, int, int]]:
         cur = conn.execute(
@@ -284,7 +286,7 @@ async def test_compressed_store_preserves_chunk_boundaries(
         )
         return [(int(r[0]), int(r[1]), int(r[2])) for r in cur.fetchall()]
 
-    assert await compressed_backend.execute_read(_read) == [
+    assert await compressed_backend.execute_read(_read, access_scope=MAINTENANCE) == [
         (0, 10, 42),
         (1, 100, 215),
     ]
@@ -307,7 +309,7 @@ async def test_compressed_chunk_count_per_context(
 
     n = 5
     chunks = [_make_chunk(i, f'P{i}'.encode()) for i in range(n)]
-    await repo.store_chunked(cid, chunks, model='test-model')
+    await repo.store_chunked(cid, chunks, model='test-model', scope=LOCAL_SCOPE)
 
     def _read(conn: sqlite3.Connection) -> list[int]:
         cur = conn.execute(
@@ -317,7 +319,7 @@ async def test_compressed_chunk_count_per_context(
         )
         return [int(r[0]) for r in cur.fetchall()]
 
-    assert await compressed_backend.execute_read(_read) == list(range(n))
+    assert await compressed_backend.execute_read(_read, access_scope=MAINTENANCE) == list(range(n))
 
 
 @pytest.mark.asyncio
@@ -338,10 +340,11 @@ async def test_upsert_replaces_existing_compressed_chunks(
     await repo.store_chunked(
         cid, [_make_chunk(0, b'OLD0'), _make_chunk(1, b'OLD1')],
         model='test-model',
+        scope=LOCAL_SCOPE,
     )
     await repo.store_chunked(
         cid, [_make_chunk(0, b'NEW0')],
-        model='test-model', upsert=True,
+        model='test-model', upsert=True, scope=LOCAL_SCOPE,
     )
 
     def _read(conn: sqlite3.Connection) -> list[bytes]:
@@ -353,7 +356,7 @@ async def test_upsert_replaces_existing_compressed_chunks(
             ).fetchall()
         ]
 
-    assert await compressed_backend.execute_read(_read) == [b'NEW0']
+    assert await compressed_backend.execute_read(_read, access_scope=MAINTENANCE) == [b'NEW0']
 
 
 @pytest.mark.asyncio
@@ -384,25 +387,27 @@ async def test_bulk_delete_compressed_uses_multi_row_statements(
             cid,
             [_make_chunk(0, b'AAA'), _make_chunk(1, b'BBB')],
             model='test-model',
+            scope=LOCAL_SCOPE,
         )
         stored_ids.append(cid)
 
     removed = stored_ids[:3]
     survivor = stored_ids[3]
 
-    per_id_calls: list[tuple[str, object]] = []
+    per_id_calls: list[tuple[str, object, BackendAccess]] = []
 
-    async def _recording_delete_all_chunks(context_id: str, txn: object = None) -> int:
+    async def _recording_delete_all_chunks(context_id: str, txn: object = None, *, scope: BackendAccess) -> int:
         """Stand-in for the per-id method, recording that it was reached.
 
         Args:
             context_id: Id the caller wanted cleaned.
             txn: Optional transaction context (unused).
+            scope: The identity the caller runs as.
 
         Returns:
             Zero; the call must never happen on this path.
         """
-        per_id_calls.append((context_id, txn))
+        per_id_calls.append((context_id, txn, scope))
         return 0
 
     monkeypatch.setattr(repo, 'delete_all_chunks', _recording_delete_all_chunks)
@@ -410,21 +415,22 @@ async def test_bulk_delete_compressed_uses_multi_row_statements(
     original_execute_write = compressed_backend.execute_write
     write_calls: list[object] = []
 
-    async def _counting_execute_write(operation: Callable[[sqlite3.Connection], int]) -> int:
+    async def _counting_execute_write(operation: Callable[[sqlite3.Connection], int], *, access_scope: BackendAccess) -> int:
         """Count each write round trip the bulk delete issues.
 
         Args:
             operation: The synchronous closure the repository submits.
+            access_scope: The identity the write runs as.
 
         Returns:
             Whatever the closure returns.
         """
         write_calls.append(operation)
-        return await original_execute_write(operation)
+        return await original_execute_write(operation, access_scope=access_scope)
 
     monkeypatch.setattr(compressed_backend, 'execute_write', _counting_execute_write)
 
-    deleted = await repo.delete_all_chunks_bulk(removed)
+    deleted = await repo.delete_all_chunks_bulk(removed, scope=LOCAL_SCOPE)
 
     assert deleted == 6  # two chunks per removed entry
     assert per_id_calls == [], 'the bulk path must not fall back to the per-id method'
@@ -451,7 +457,9 @@ async def test_bulk_delete_compressed_uses_multi_row_statements(
         ).fetchone()[0]
         return int(gone_payloads), int(gone_meta), int(survivor_payloads), int(survivor_meta)
 
-    gone_payloads, gone_meta, survivor_payloads, survivor_meta = await compressed_backend.execute_read(_counts)
+    gone_payloads, gone_meta, survivor_payloads, survivor_meta = await compressed_backend.execute_read(
+        _counts, access_scope=MAINTENANCE,
+    )
     assert gone_payloads == 0
     assert gone_meta == 0
     assert survivor_payloads == 2
@@ -474,15 +482,15 @@ async def test_bulk_delete_compressed_chunks_beyond_the_bind_parameter_limit(
             thread_id='bulk-compressed-chunking-thread', source='user', content_type='text',
             text_content=f'compressed chunking entry {index}', metadata=None,
         )
-        await repo.store_chunked(cid, [_make_chunk(0, b'PAYLOAD')], model='test-model')
+        await repo.store_chunked(cid, [_make_chunk(0, b'PAYLOAD')], model='test-model', scope=LOCAL_SCOPE)
         stored_ids.append(cid)
 
     # Pad past the 900-id slice boundary with ids that match nothing.
     padded = stored_ids + [generate_id() for _ in range(1200)]
 
-    assert await repo.delete_all_chunks_bulk(padded) == 3
+    assert await repo.delete_all_chunks_bulk(padded, scope=LOCAL_SCOPE) == 3
     for cid in stored_ids:
-        assert await repo.exists(cid) is False
+        assert await repo.exists(cid, scope=LOCAL_SCOPE) is False
 
 
 @pytest.mark.asyncio
@@ -491,4 +499,4 @@ async def test_bulk_delete_compressed_empty_list_is_a_no_op(
 ) -> None:
     """No ids means no statements and no error."""
     repo = EmbeddingRepository(compressed_backend)
-    assert await repo.delete_all_chunks_bulk([]) == 0
+    assert await repo.delete_all_chunks_bulk([], scope=LOCAL_SCOPE) == 0

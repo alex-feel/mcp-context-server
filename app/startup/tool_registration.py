@@ -11,6 +11,7 @@ from typing import cast
 
 from fastmcp import FastMCP
 
+from app.backends.base import MAINTENANCE
 from app.middleware import JsonStringDeserializerMiddleware
 from app.middleware import build_schema_map
 from app.repositories import RepositoryContainer
@@ -148,7 +149,7 @@ async def register_search_tools(
         # absorbs them and treats availability as unknown, mirroring the FTS migration
         # step's own handling.
         try:
-            fts_available = await repos.fts.is_available()
+            fts_available = await repos.fts.is_available(scope=MAINTENANCE)
         except Exception as fts_probe_error:
             logger.warning(f'Could not determine full-text search availability: {fts_probe_error}')
         else:

@@ -184,7 +184,7 @@ async def search_context(
             entry_id_raw = entry.get('id')
             if entry_id_raw is not None:
                 entry_id = str(entry_id_raw)
-                tags_result = await repos.tags.get_tags_for_context(entry_id)
+                tags_result = await repos.tags.get_tags_for_context(entry_id, scope=scope)
                 entry['tags'] = tags_result
             else:
                 entry['tags'] = []
@@ -195,7 +195,7 @@ async def search_context(
             # Fetch images if requested and applicable
             if include_images and entry.get('content_type') == 'multimodal':
                 entry_id = str(entry.get('id', ''))
-                images_result = await repos.images.get_images_for_context(entry_id, include_data=True)
+                images_result = await repos.images.get_images_for_context(entry_id, include_data=True, scope=scope)
                 entry['images'] = images_result
 
             entries.append(entry)

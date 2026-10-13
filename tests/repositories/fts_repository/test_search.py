@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 
 from app.backends import create_backend
+from app.backends.base import BackendAccess
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -129,7 +130,8 @@ class TestPostgresqlSubqueryStructure:
 
         captured_sql: list[str] = []
 
-        async def mock_execute_read(func: Callable[[AsyncMock], Awaitable[object]]) -> object:
+        async def mock_execute_read(func: Callable[[AsyncMock], Awaitable[object]], *, access_scope: BackendAccess) -> object:
+            _ = access_scope
             mock_conn = AsyncMock()
 
             async def capture_fetch(sql: str, *_args: object) -> list[object]:

@@ -9,6 +9,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
 from app.auth import visibility_denied_reason
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
@@ -153,13 +154,14 @@ async def update_context(
         # idx_tags_tag inside the transaction, after a wasted generation pass.
         reject_oversized_tags(tags)
 
-        # Reject an over-long or cast-incompatible value under an INDEXED metadata key,
-        # in both the replacement and the merge-patch form: each lands in that field's
-        # expression btree index (idx_metadata_<field>), whose index-tuple ceiling --
-        # and, for a typed field, whose SQL cast -- aborts the UPDATE inside the
-        # transaction where SQLite stores it. thread_id is immutable on this path, so
-        # only metadata is checked. Runs in the input-validation phase, alongside the
-        # tag caps and before any database work.
+        # Reject an over-long value, or one that does not parse as its field's declared
+        # type, under an INDEXED metadata key, in both the replacement and the
+        # merge-patch form: each lands in that field's expression btree index
+        # (idx_metadata_<field>), whose index-tuple ceiling -- and, for an integer or
+        # boolean field, whose SQL cast -- aborts the UPDATE inside the transaction
+        # where SQLite stores it. thread_id is immutable on this path, so only
+        # metadata is checked. Runs in the input-validation phase, alongside the tag
+        # caps and before any database work.
         for meta_value in (metadata, metadata_patch):
             reject_invalid_indexed_values(metadata=meta_value)
 
@@ -169,7 +171,7 @@ async def update_context(
         # entry exists: prefix resolution and the probe below see only the entries
         # the caller may read, and the publish gate needs the caller's roles.
         principal = resolve_effective_principal()
-        scope = principal.access_scope()
+        scope = resolve_write_scope(principal)
 
         # Boundary normalization: accept full hex (32 or 36 chars) or 8-31 char hex prefix
         try:
@@ -295,7 +297,7 @@ async def update_context(
 
         while True:
             try:
-                async with backend.begin_transaction() as txn:
+                async with backend.begin_transaction(access_scope=scope) as txn:
                     updated_fields, _ = await execute_update_in_transaction(
                         repos, txn,
                         context_id=context_id,

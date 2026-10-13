@@ -18,6 +18,7 @@ import pytest
 
 from app.access_scope import AccessMode
 from app.access_scope import build_access_predicate
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -288,7 +289,10 @@ class TestCriteriaSnapshotDelete:
         pg_backend = Mock()
         pg_backend.backend_type = 'postgresql'
 
-        async def _execute_read(closure: Callable[[object], Awaitable[list[str]]]) -> list[str]:
+        async def _execute_read(
+            closure: Callable[[object], Awaitable[list[str]]], *, access_scope: BackendAccess,
+        ) -> list[str]:
+            _ = access_scope
             return await closure(_RecordingConn())
 
         pg_backend.execute_read = _execute_read

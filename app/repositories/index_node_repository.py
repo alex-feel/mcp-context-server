@@ -19,6 +19,7 @@ from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.access_scope import build_readable_parent_predicate
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 
@@ -91,6 +92,8 @@ class IndexNodeRepository(BaseRepository):
         context_id: str,
         nodes: list[IndexNodeRow],
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Replace all index-tree nodes for a context entry (delete then insert).
 
@@ -103,6 +106,8 @@ class IndexNodeRepository(BaseRepository):
             context_id: Canonical id of the owning context entry.
             nodes: Node rows to store (each carries a non-empty summary).
             txn: Optional transaction context for atomic multi-repository writes.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
@@ -137,7 +142,7 @@ class IndexNodeRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_replace_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_replace_sqlite)
+                await self.backend.execute_write(_replace_sqlite, access_scope=scope)
             return
 
         async def _replace_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -162,9 +167,9 @@ class IndexNodeRepository(BaseRepository):
         if txn:
             await _replace_postgresql(cast('asyncpg.Connection', txn.connection))
         else:
-            await self.backend.execute_write(cast(Any, _replace_postgresql))
+            await self.backend.execute_write(cast(Any, _replace_postgresql), access_scope=scope)
 
-    async def get_nodes_for_context(self, context_id: str) -> StoredNodeSummaries:
+    async def get_nodes_for_context(self, context_id: str, *, scope: BackendAccess) -> StoredNodeSummaries:
         """Return stored node summaries indexed by node id AND by char span.
 
         The primary attachment key is ``node_id``. The span index exists so a
@@ -179,6 +184,7 @@ class IndexNodeRepository(BaseRepository):
 
         Args:
             context_id: Canonical id of the owning context entry.
+            scope: The identity the read runs as.
 
         Returns:
             :class:`StoredNodeSummaries` with the node-id and span indexes.
@@ -186,10 +192,11 @@ class IndexNodeRepository(BaseRepository):
         if self.backend.backend_type == 'sqlite':
 
             def _get_sqlite(conn: sqlite3.Connection) -> StoredNodeSummaries:
+                nodes = self._readable('context_index_nodes', alias='context_index_nodes')
                 try:
                     cursor = conn.execute(
                         f'SELECT node_id, node_summary, char_start, char_end '
-                        f'FROM context_index_nodes '
+                        f'FROM {nodes} '
                         f'WHERE context_id = {self._placeholder(1)}',
                         (context_id,),
                     )
@@ -218,13 +225,14 @@ class IndexNodeRepository(BaseRepository):
                     },
                 )
 
-            return await self.backend.execute_read(_get_sqlite)
+            return await self.backend.execute_read(_get_sqlite, access_scope=scope)
 
         async def _get_postgresql(conn: 'asyncpg.Connection') -> StoredNodeSummaries:
+            nodes = self._readable('context_index_nodes', alias='context_index_nodes')
             try:
                 rows = await conn.fetch(
                     f'SELECT node_id, node_summary, char_start, char_end '
-                    f'FROM context_index_nodes '
+                    f'FROM {nodes} '
                     f'WHERE context_id = {self._placeholder(1)}',
                     context_id,
                 )
@@ -244,7 +252,7 @@ class IndexNodeRepository(BaseRepository):
                 },
             )
 
-        return await self.backend.execute_read(cast(Any, _get_postgresql))
+        return await self.backend.execute_read(cast(Any, _get_postgresql), access_scope=scope)
 
     async def count_all_nodes(self, *, scope: Scope) -> int:
         """Return the number of stored index_tree nodes of the entries the scope may read.
@@ -264,7 +272,8 @@ class IndexNodeRepository(BaseRepository):
             readable = build_readable_parent_predicate(
                 scope, child_key='n.context_id', parent_key='id', backend_type=backend_type,
             )
-            sqlite_count_sql = f'SELECT COUNT(*) AS n FROM context_index_nodes n{readable.where_clause()}'
+            nodes = self._readable('context_index_nodes', alias='n')
+            sqlite_count_sql = f'SELECT COUNT(*) AS n FROM {nodes}{readable.where_clause()}'
 
             def _count_sqlite(conn: sqlite3.Connection) -> int:
                 try:
@@ -281,12 +290,14 @@ class IndexNodeRepository(BaseRepository):
                 row = cursor.fetchone()
                 return int(row['n']) if row is not None else 0
 
-            return await self.backend.execute_read(_count_sqlite)
+            return await self.backend.execute_read(_count_sqlite, access_scope=scope)
 
         predicate = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
+        nodes = self._readable('context_index_nodes', alias='n')
+        entries = self._readable('context_entries', alias='ce')
         count_sql = (
-            'SELECT COUNT(*) AS n FROM context_index_nodes n '
-            f'JOIN context_entries ce ON ce.id = n.context_id{predicate.where_clause()}'
+            f'SELECT COUNT(*) AS n FROM {nodes} '
+            f'JOIN {entries} ON ce.id = n.context_id{predicate.where_clause()}'
         )
 
         async def _count_postgresql(conn: 'asyncpg.Connection') -> int:
@@ -296,4 +307,4 @@ class IndexNodeRepository(BaseRepository):
                 return 0
             return int(value or 0)
 
-        return await self.backend.execute_read(cast(Any, _count_postgresql))
+        return await self.backend.execute_read(cast(Any, _count_postgresql), access_scope=scope)

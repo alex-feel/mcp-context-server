@@ -11,6 +11,7 @@ migration budget (so it is NOT capped at the pool ``command_timeout``).
 
 from typing import Any
 
+from app.backends.base import BackendAccess
 from app.compression.types import CompressionMetadata
 from app.settings import get_settings
 
@@ -81,7 +82,8 @@ class FakeBackend:
     def __init__(self, conn: RecordingConn) -> None:
         self._conn = conn
 
-    def begin_transaction(self) -> TxnContext:
+    def begin_transaction(self, *, access_scope: BackendAccess) -> TxnContext:
+        _ = access_scope
         return TxnContext(self._conn)
 
 

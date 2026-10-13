@@ -18,6 +18,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 
 # Re-exported from the shared migration-probe module so the CLI flows and the
 # migration provisioning gates consult the SAME probe (sqlite_master on
@@ -147,13 +148,13 @@ async def distinct_embedding_models(backend: StorageBackend) -> set[str]:
             cursor = conn.execute('SELECT DISTINCT model_name FROM embedding_metadata')
             return {str(r[0]) for r in cursor.fetchall()}
 
-        return await backend.execute_read(_read_sqlite)
+        return await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
 
     async def _read_pg(conn: asyncpg.Connection) -> set[str]:
         rows = await conn.fetch('SELECT DISTINCT model_name FROM embedding_metadata')
         return {str(r['model_name']) for r in rows}
 
-    return await backend.execute_read(cast(Any, _read_pg))
+    return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)
 
 
 async def distinct_embedding_dimensions(backend: StorageBackend) -> set[int]:
@@ -171,13 +172,13 @@ async def distinct_embedding_dimensions(backend: StorageBackend) -> set[int]:
             cursor = conn.execute('SELECT DISTINCT dimensions FROM embedding_metadata')
             return {int(r[0]) for r in cursor.fetchall()}
 
-        return await backend.execute_read(_read_sqlite)
+        return await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
 
     async def _read_pg(conn: asyncpg.Connection) -> set[int]:
         rows = await conn.fetch('SELECT DISTINCT dimensions FROM embedding_metadata')
         return {int(r['dimensions']) for r in rows}
 
-    return await backend.execute_read(cast(Any, _read_pg))
+    return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)
 
 
 __all__ = [

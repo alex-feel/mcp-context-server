@@ -47,7 +47,9 @@ logger = logging.getLogger(__name__)
 
 # Import auth factory for explicit auth configuration
 from app.auth import create_auth_provider
+from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends import create_maintenance_backend
 from app.errors import DependencyError
 from app.repositories import RepositoryContainer
 
@@ -67,6 +69,12 @@ from app.startup import set_summary_provider
 # Import the lifespan startup phases
 from app.startup.database_setup import prepare_database
 from app.startup.providers import initialize_providers
+from app.startup.rls_posture import discover_request_role
+from app.startup.rls_posture import read_login_role
+from app.startup.rls_posture import refuse_unsafe_request_role
+from app.startup.rls_posture import split_request_role
+from app.startup.rls_posture import verify_rls_posture
+from app.startup.rls_posture import warn_jwt_without_rls
 from app.startup.tool_registration import install_json_string_middleware
 from app.startup.tool_registration import register_core_tools
 from app.startup.tool_registration import register_search_tools
@@ -103,6 +111,40 @@ def _get_server_version() -> str:
 SERVER_VERSION = _get_server_version()
 
 
+async def _start_postgresql() -> StorageBackend:
+    """Prepare the PostgreSQL database as the table owner, then open and check the request backend.
+
+    The role requests act as is read first, and with row-level security on a role the
+    policies could not hold is refused before any DDL. The schema is prepared on a
+    short-lived maintenance backend logged in with the migration credentials; when the two
+    backends act as different roles, the preparation grants the request role what it needs
+    and the request backend is checked afterwards. With row-level security on, request
+    and migration credentials that act as one role are refused.
+
+    Returns:
+        The initialized request backend, installed as the backend every tool shares.
+    """
+    request_role = await discover_request_role(settings)
+    refuse_unsafe_request_role(request_role, settings)
+    maintenance = create_maintenance_backend()
+    try:
+        await maintenance.initialize()
+        maintenance_role = await read_login_role(maintenance)
+        split_role = split_request_role(request_role, maintenance_role, settings)
+        await prepare_database(maintenance, settings, request_role=None if split_role is None else split_role.name)
+    finally:
+        try:
+            await maintenance.shutdown()
+        except Exception as shutdown_error:
+            logger.error(f'Error shutting down the maintenance backend: {shutdown_error}')
+    backend = create_backend()
+    await backend.initialize()
+    set_backend(backend)
+    if split_role is not None:
+        await verify_rls_posture(backend, settings, request_role=split_role, maintenance_role=maintenance_role)
+    return backend
+
+
 # Lifespan context manager for FastMCP
 @asynccontextmanager
 async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
@@ -119,11 +161,15 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
     """
     # Startup
     try:
-        # Create backend ONCE at the start - used throughout initialization and runtime
-        backend = create_backend(backend_type=None, db_path=DB_PATH)
-        await backend.initialize()
-        set_backend(backend)
-        await prepare_database(backend, settings)
+        if settings.storage.backend_type == 'postgresql':
+            backend = await _start_postgresql()
+        else:
+            # Create backend ONCE at the start - used throughout initialization and runtime
+            backend = create_backend(backend_type=None, db_path=DB_PATH)
+            await backend.initialize()
+            set_backend(backend)
+            await prepare_database(backend, settings, request_role=None)
+        warn_jwt_without_rls(settings)
         # Initialize repositories with the backend
         repos = RepositoryContainer(backend)
         set_repositories(repos)

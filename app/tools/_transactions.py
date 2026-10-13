@@ -437,6 +437,7 @@ async def execute_store_in_transaction(
             author_group_grants,
             granted_by=scope.principal_id,
             txn=txn,
+            scope=scope,
         )
 
     # Store or replace tags depending on deduplication outcome. The documented
@@ -446,9 +447,9 @@ async def execute_store_in_transaction(
     # On a fresh INSERT an empty list stores nothing, so the write is skipped.
     if tags is not None:
         if was_updated:
-            await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
+            await repos.tags.replace_tags_for_context(context_id, tags, txn=txn, scope=scope)
         elif tags:
-            await repos.tags.store_tags(context_id, tags, txn=txn)
+            await repos.tags.store_tags(context_id, tags, txn=txn, scope=scope)
 
     # Store or replace images depending on deduplication outcome, with the same
     # provided-vs-None distinction. validated_images is always a list (the
@@ -458,10 +459,10 @@ async def execute_store_in_transaction(
     if images_provided:
         if was_updated:
             await repos.images.replace_images_for_context(
-                context_id, validated_images, txn=txn,
+                context_id, validated_images, txn=txn, scope=scope,
             )
         elif validated_images:
-            await repos.images.store_images(context_id, validated_images, txn=txn)
+            await repos.images.store_images(context_id, validated_images, txn=txn, scope=scope)
 
     # Store embeddings only if:
     # 1. New entry (not was_updated) - always store, OR
@@ -474,7 +475,7 @@ async def execute_store_in_transaction(
 
         should_store = True
         if was_updated:
-            embedding_exists = await repos.embeddings.exists(context_id, txn=txn)
+            embedding_exists = await repos.embeddings.exists(context_id, txn=txn, scope=scope)
             should_store = not embedding_exists
             if not should_store:
                 logger.debug(
@@ -490,6 +491,7 @@ async def execute_store_in_transaction(
                 model=embedding_model,
                 txn=txn,
                 upsert=was_updated,
+                scope=scope,
             )
             embedding_stored = True
 
@@ -500,7 +502,7 @@ async def execute_store_in_transaction(
     # wipe an existing entry's node rows, so an empty list is suppressed when
     # was_updated is True.
     if index_nodes is not None and (not was_updated or index_nodes):
-        await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn)
+        await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn, scope=scope)
 
     return context_id, was_updated, embedding_stored
 
@@ -668,18 +670,18 @@ async def execute_update_in_transaction(
     try:
         # Replace tags if provided
         if tags is not None:
-            await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
+            await repos.tags.replace_tags_for_context(context_id, tags, txn=txn, scope=scope)
             updated_fields.append('tags')
 
         # Replace images if provided
         if images is not None:
             if len(images) == 0:
-                await repos.images.replace_images_for_context(context_id, [], txn=txn)
+                await repos.images.replace_images_for_context(context_id, [], txn=txn, scope=scope)
                 await repos.context.update_content_type(context_id, 'text', scope=scope, txn=txn)
                 updated_fields.extend(['images', 'content_type'])
             else:
                 await repos.images.replace_images_for_context(
-                    context_id, validated_images, txn=txn,
+                    context_id, validated_images, txn=txn, scope=scope,
                 )
                 await repos.context.update_content_type(
                     context_id, 'multimodal', scope=scope, txn=txn,
@@ -707,7 +709,7 @@ async def execute_update_in_transaction(
     # the timestamp is stamped EXPLICITLY (touch_updated_at) instead of rewriting an
     # unrelated column back to its own value just to carry the stamp along.
     if images is None and updated_fields:
-        image_count = await repos.images.count_images_for_context(context_id, txn=txn)
+        image_count = await repos.images.count_images_for_context(context_id, txn=txn, scope=scope)
         current_content_type = 'multimodal' if image_count > 0 else 'text'
         stored_content_type = await repos.context.get_content_type(context_id, scope=scope, txn=txn)
         if stored_content_type is None:
@@ -729,15 +731,16 @@ async def execute_update_in_transaction(
     if chunk_embeddings is not None:
         # New embeddings were generated -> replace the old chunks.
         await transaction_heartbeat(txn)
-        await repos.embeddings.delete_all_chunks(context_id, txn=txn)
+        await repos.embeddings.delete_all_chunks(context_id, txn=txn, scope=scope)
         await repos.embeddings.store_chunked(
             context_id=context_id,
             chunk_embeddings=chunk_embeddings,
             model=embedding_model,
             txn=txn,
+            scope=scope,
         )
         updated_fields.append('embedding')
-    elif text is not None and await repos.embeddings.embedding_tables_exist(txn=txn):
+    elif text is not None and await repos.embeddings.embedding_tables_exist(txn=txn, scope=scope):
         # Text changed but embeddings were NOT regenerated (no embedding provider at
         # update time -- generation disabled/absent). The stored chunks describe the
         # REPLACED text, so DELETE them rather than leave stale vectors that semantic
@@ -745,7 +748,7 @@ async def execute_update_in_transaction(
         # so a database that never provisioned embeddings is a safe no-op. (Mirrors the
         # stale-summary clear on this same text-change path.)
         await transaction_heartbeat(txn)
-        if await repos.embeddings.delete_all_chunks(context_id, txn=txn):
+        if await repos.embeddings.delete_all_chunks(context_id, txn=txn, scope=scope):
             updated_fields.append('embedding')
 
     # Replace index_tree node summaries atomically. None means leave the node
@@ -753,6 +756,6 @@ async def execute_update_in_transaction(
     # recompute); an empty list clears stale rows when text shrank below the
     # summary thresholds.
     if index_nodes is not None:
-        await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn)
+        await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn, scope=scope)
 
     return updated_fields, clear_summary

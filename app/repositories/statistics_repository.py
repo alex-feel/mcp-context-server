@@ -107,6 +107,7 @@ class StatisticsRepository(BaseRepository):
             pagination_clause = f'\n                    LIMIT {self._placeholder(first)} OFFSET {self._placeholder(first + 1)}'
             params.extend((limit, offset))
         entry_filter = predicate.where_clause()
+        entries = self._readable('context_entries', alias='context_entries')
 
         if self.backend.backend_type == 'sqlite':
 
@@ -121,7 +122,7 @@ class StatisticsRepository(BaseRepository):
                         strftime('%Y-%m-%dT%H:%M:%SZ', MIN(created_at)) as first_entry,
                         strftime('%Y-%m-%dT%H:%M:%SZ', MAX(created_at)) as last_entry,
                         MAX(id) as last_id
-                    FROM context_entries{entry_filter}
+                    FROM {entries}{entry_filter}
                     GROUP BY thread_id
                     ORDER BY MAX(created_at) DESC, MAX(id) DESC{pagination_clause}
                 ''', params)
@@ -133,7 +134,7 @@ class StatisticsRepository(BaseRepository):
 
                 return threads
 
-            return await self.backend.execute_read(_list_threads_sqlite)
+            return await self.backend.execute_read(_list_threads_sqlite, access_scope=scope)
 
         # postgresql
 
@@ -147,7 +148,7 @@ class StatisticsRepository(BaseRepository):
                         to_char(MIN(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as first_entry,
                         to_char(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_entry,
                         (array_agg(id ORDER BY id DESC))[1] as last_id
-                    FROM context_entries{entry_filter}
+                    FROM {entries}{entry_filter}
                     GROUP BY thread_id
                     ORDER BY MAX(created_at) DESC, (array_agg(id ORDER BY id DESC))[1] DESC{pagination_clause}
                 ''', *params)
@@ -167,7 +168,7 @@ class StatisticsRepository(BaseRepository):
 
             return threads
 
-        return await self.backend.execute_read(_list_threads_postgresql)
+        return await self.backend.execute_read(_list_threads_postgresql, access_scope=scope)
 
     async def get_database_statistics(self, db_path: Path | None = None, *, scope: Scope) -> dict[str, Any]:
         """Get database statistics over the entries the scope may read.
@@ -189,6 +190,7 @@ class StatisticsRepository(BaseRepository):
         backend_type = self.backend.backend_type
         entries = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries')
         entry_filter = entries.where_clause()
+        entry_rows = self._readable('context_entries', alias='context_entries')
 
         # The grouping key is the unique secondary sort key of each top-N list: without it
         # a tie in `count` leaves the LIMIT window computed over an undefined ordering, so
@@ -197,11 +199,13 @@ class StatisticsRepository(BaseRepository):
         # the LIMIT window the same way on both backends, instead of by the locale.
         thread_order = byte_ordered_text('thread_id', backend_type)
         tag_order = byte_ordered_text('t.tag', backend_type)
-        total_sql = f'SELECT COUNT(*) AS count FROM context_entries{entry_filter}'
-        by_source_sql = f'SELECT source, COUNT(*) AS count FROM context_entries{entry_filter} GROUP BY source'
+        total_sql = f'SELECT COUNT(*) AS count FROM {entry_rows}{entry_filter}'
+        by_source_sql = f'SELECT source, COUNT(*) AS count FROM {entry_rows}{entry_filter} GROUP BY source'
         by_content_type_sql = (
-            f'SELECT content_type, COUNT(*) AS count FROM context_entries{entry_filter} GROUP BY content_type'
+            f'SELECT content_type, COUNT(*) AS count FROM {entry_rows}{entry_filter} GROUP BY content_type'
         )
+        image_rows = self._readable('image_attachments', alias='i')
+        tag_rows = self._readable('tags', alias='t')
         if backend_type == 'sqlite':
             # Image and tag rows are matched against the readable parent ids rather than
             # joined to their parent rows (see build_readable_parent_predicate).
@@ -211,23 +215,27 @@ class StatisticsRepository(BaseRepository):
             tags = build_readable_parent_predicate(
                 scope, child_key='t.context_entry_id', parent_key='id', backend_type=backend_type,
             )
-            readable_images = f'image_attachments i{images.where_clause()}'
-            readable_tags = f'tags t{tags.where_clause()}'
+            readable_images = f'{image_rows}{images.where_clause()}'
+            readable_tags = f'{tag_rows}{tags.where_clause()}'
+            unique_tags_sql = f'SELECT COUNT(DISTINCT t.tag) AS count FROM {readable_tags}'
         else:
             images = tags = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
-            readable_images = (
-                f'image_attachments i JOIN context_entries ce ON ce.id = i.context_entry_id{images.where_clause()}'
-            )
-            readable_tags = f'tags t JOIN context_entries ce ON ce.id = t.context_entry_id{tags.where_clause()}'
+            parent_rows = self._readable('context_entries', alias='ce')
+            readable_images = f'{image_rows} JOIN {parent_rows} ON ce.id = i.context_entry_id{images.where_clause()}'
+            readable_tags = f'{tag_rows} JOIN {parent_rows} ON ce.id = t.context_entry_id{tags.where_clause()}'
+            # Counted through a DISTINCT subquery, which PostgreSQL can plan as a read of the
+            # tags in tag order from idx_tags_tag with no sort. For COUNT(DISTINCT) it costs a
+            # sort of every readable tag row about the same as that ordered read and can pick
+            # the sort, which on a large tag set takes far longer than its estimate.
+            unique_tags_sql = f'SELECT COUNT(*) AS count FROM (SELECT DISTINCT t.tag FROM {readable_tags}) AS d'
         images_sql = f'SELECT COUNT(*) AS count FROM {readable_images}'
-        unique_tags_sql = f'SELECT COUNT(DISTINCT t.tag) AS count FROM {readable_tags}'
-        threads_sql = f'SELECT COUNT(DISTINCT thread_id) AS count FROM context_entries{entry_filter}'
+        threads_sql = f'SELECT COUNT(DISTINCT thread_id) AS count FROM {entry_rows}{entry_filter}'
         average_sql = (
             'SELECT AVG(entry_count) AS avg_entries FROM '
-            f'(SELECT thread_id, COUNT(*) AS entry_count FROM context_entries{entry_filter} GROUP BY thread_id) sub'
+            f'(SELECT thread_id, COUNT(*) AS entry_count FROM {entry_rows}{entry_filter} GROUP BY thread_id) sub'
         )
         most_active_sql = (
-            f'SELECT thread_id, COUNT(*) AS count FROM context_entries{entry_filter} '
+            f'SELECT thread_id, COUNT(*) AS count FROM {entry_rows}{entry_filter} '
             f'GROUP BY thread_id ORDER BY count DESC, {thread_order} ASC LIMIT 5'
         )
         top_tags_sql = (
@@ -273,7 +281,7 @@ class StatisticsRepository(BaseRepository):
                 stats['backend'] = 'sqlite'
                 return stats
 
-            stats = await self.backend.execute_read(_get_stats_sqlite)
+            stats = await self.backend.execute_read(_get_stats_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
@@ -301,7 +309,7 @@ class StatisticsRepository(BaseRepository):
                 stats['backend'] = 'postgresql'
                 return stats
 
-            stats = await self.backend.execute_read(_get_stats_postgresql)
+            stats = await self.backend.execute_read(_get_stats_postgresql, access_scope=scope)
 
         if backend_type == 'sqlite':
             # SQLite size is the on-disk size of the database file. This excludes
@@ -323,7 +331,7 @@ class StatisticsRepository(BaseRepository):
                 row = await conn.fetchrow('SELECT pg_database_size(current_database()) AS db_size')
                 return row['db_size'] if row else None
 
-            size_bytes = await self.backend.execute_read(_get_db_size_postgresql)
+            size_bytes = await self.backend.execute_read(_get_db_size_postgresql, access_scope=scope)
             if size_bytes is not None:
                 stats['database_size_mb'] = round(float(size_bytes) / (1024 * 1024), 2)
         else:
@@ -343,9 +351,10 @@ class StatisticsRepository(BaseRepository):
         predicate = build_access_predicate(
             scope, mode=AccessMode.READ, backend_type=self.backend.backend_type, outer='context_entries',
         )
-        total_sql = f'SELECT COUNT(*) AS count FROM context_entries{predicate.where_clause()}'
+        entries = self._readable('context_entries', alias='context_entries')
+        total_sql = f'SELECT COUNT(*) AS count FROM {entries}{predicate.where_clause()}'
         summary_sql = (
-            "SELECT COUNT(*) AS count FROM context_entries WHERE summary IS NOT NULL AND summary != ''"
+            f"SELECT COUNT(*) AS count FROM {entries} WHERE summary IS NOT NULL AND summary != ''"
             f'{predicate.and_clause()}'
         )
 
@@ -365,7 +374,7 @@ class StatisticsRepository(BaseRepository):
                 summary_count = cursor.execute(summary_sql, predicate.params).fetchone()['count']
                 return _figures(summary_count, total_entries)
 
-            return await self.backend.execute_read(_get_summary_stats_sqlite)
+            return await self.backend.execute_read(_get_summary_stats_sqlite, access_scope=scope)
 
         # postgresql
 
@@ -374,4 +383,4 @@ class StatisticsRepository(BaseRepository):
             summary_count = await conn.fetchval(summary_sql, *predicate.params)
             return _figures(summary_count, total_entries)
 
-        return await self.backend.execute_read(_get_summary_stats_postgresql)
+        return await self.backend.execute_read(_get_summary_stats_postgresql, access_scope=scope)

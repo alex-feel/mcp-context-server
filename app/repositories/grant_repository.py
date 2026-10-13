@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 
@@ -68,6 +69,8 @@ class GrantRepository(BaseRepository):
         groups: Iterable[str],
         granted_by: str,
         txn: 'TransactionContext | None' = None,
+        *,
+        scope: BackendAccess,
     ) -> None:
         """Store read grants for the given groups on one context entry.
 
@@ -85,6 +88,8 @@ class GrantRepository(BaseRepository):
                 operations. When provided, uses the transaction's connection
                 directly. When None, uses execute_write() for standalone
                 operation.
+            scope: The identity a standalone write runs as; a call on ``txn`` runs as the
+                identity its transaction bound.
         """
         sorted_groups = sorted(groups)
         if not sorted_groups:
@@ -103,7 +108,7 @@ class GrantRepository(BaseRepository):
             if txn:
                 await self._run_sqlite_txn(_store_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
-                await self.backend.execute_write(_store_sqlite)
+                await self.backend.execute_write(_store_sqlite, access_scope=scope)
         else:  # postgresql
 
             async def _store_postgresql(conn: 'asyncpg.Connection') -> None:
@@ -114,4 +119,4 @@ class GrantRepository(BaseRepository):
             if txn:
                 await _store_postgresql(cast('asyncpg.Connection', txn.connection))
             else:
-                await self.backend.execute_write(cast(Any, _store_postgresql))
+                await self.backend.execute_write(cast(Any, _store_postgresql), access_scope=scope)

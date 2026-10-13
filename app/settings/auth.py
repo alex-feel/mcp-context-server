@@ -1,4 +1,4 @@
-"""Authentication and access-control settings, and the principal-id grammar the access-control migration shares."""
+"""Authentication and access-control settings, with the principal-id and PostgreSQL role-name grammars they enforce."""
 
 import re
 from typing import Literal
@@ -15,6 +15,13 @@ from app.settings.base import CommonSettings
 # backfill literal on both backends. Public because the migration re-checks the
 # value defensively right before interpolation, against this same definition.
 SAFE_PRINCIPAL_ID_PATTERN = re.compile(r'[A-Za-z0-9._@:+-]{1,128}')
+
+# A PostgreSQL role name that needs no case folding and fits the 63-byte
+# identifier limit: lowercase ASCII letters, digits and underscores, not starting
+# with a digit. The configured policy role is named in generated policy DDL, in
+# privilege checks and in the remediation statements startup prints, so it must
+# mean the same role everywhere it appears.
+SAFE_PG_ROLE_PATTERN = r'^[a-z_][a-z0-9_]{0,62}$'
 
 
 class AuthSettings(CommonSettings):
@@ -101,7 +108,7 @@ class AuthSettings(CommonSettings):
 
 
 class AccessControlSettings(CommonSettings):
-    """Access-control policy for server-stamped entry ownership and visibility.
+    """Access-control policy for server-stamped entry ownership and visibility, and its database enforcement.
 
     Every stored entry carries a server-stamped ``owner_id`` (the verified jwt
     principal, or the configured default principal for stdio, ``none`` and
@@ -111,6 +118,11 @@ class AccessControlSettings(CommonSettings):
     specify one, whether the author's group memberships become read grants
     automatically, and which role (if any) is required to publish entries as
     'public'.
+
+    The application enforces the model on both backends. On PostgreSQL,
+    ``ENABLE_POSTGRESQL_RLS`` additionally enforces it in the database through
+    row-level security policies that name ``POSTGRESQL_RLS_POLICY_ROLE``, the
+    NOLOGIN role the request login role is a member of.
     """
 
     default_principal: str = Field(
@@ -140,6 +152,22 @@ class AccessControlSettings(CommonSettings):
         description="Role required to set visibility 'public'. Unset (default) lets any "
                     'owner publish; set to a role name to restrict publishing to callers '
                     'whose verified roles claim carries that role',
+    )
+    postgresql_rls_enabled: bool = Field(
+        default=False,
+        alias='ENABLE_POSTGRESQL_RLS',
+        description='Also enforce the access model in PostgreSQL through row-level security. '
+                    'Requires STORAGE_BACKEND=postgresql and POSTGRESQL_MIGRATION_USER naming the '
+                    'role that owns the tables; requests must connect as a different role that is '
+                    'a member of POSTGRESQL_RLS_POLICY_ROLE and neither superuser nor BYPASSRLS',
+    )
+    postgresql_rls_policy_role: str = Field(
+        default='mcp_context_request',
+        alias='POSTGRESQL_RLS_POLICY_ROLE',
+        pattern=SAFE_PG_ROLE_PATTERN,
+        description='NOLOGIN PostgreSQL role the row-level security policies apply to. The operator '
+                    'creates it and grants it to the request login role; the server grants it the '
+                    'table privileges. 1-63 characters from a-z 0-9 _, not starting with a digit',
     )
 
     @field_validator('default_principal')

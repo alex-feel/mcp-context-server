@@ -19,6 +19,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.compression.provenance import read_compression_metadata
 from app.errors import ConfigurationError
 from app.errors import format_exception_message
@@ -114,7 +115,7 @@ async def _fp32_table_has_rows(backend: StorageBackend) -> bool:
                 raise
             return bool(row and row[0])
 
-        return await backend.execute_read(_probe_sqlite)
+        return await backend.execute_read(_probe_sqlite, access_scope=MAINTENANCE)
 
     async def _probe_pg(conn: asyncpg.Connection) -> bool:
         exists = await conn.fetchval(
@@ -127,7 +128,7 @@ async def _fp32_table_has_rows(backend: StorageBackend) -> bool:
         )
         return bool(populated)
 
-    return await backend.execute_read(cast(Any, _probe_pg))
+    return await backend.execute_read(cast(Any, _probe_pg), access_scope=MAINTENANCE)
 
 
 def _check_compression_migration_applied_sqlite(conn: sqlite3.Connection) -> bool:
@@ -290,10 +291,12 @@ async def apply_compression_migration(backend: StorageBackend) -> None:
         if backend.backend_type == 'postgresql':
             applied = await backend.execute_read(
                 cast(Any, _check_compression_migration_applied_postgresql),
+                access_scope=MAINTENANCE,
             )
         else:
             applied = await backend.execute_read(
                 _check_compression_migration_applied_sqlite,
+                access_scope=MAINTENANCE,
             )
         if not applied and not await embedding_metadata_table_exists(backend):
             return
@@ -342,6 +345,7 @@ async def _apply_compression_migration_with_backend(
     if manager.backend_type == 'postgresql':
         already_applied = await manager.execute_read(
             cast(Any, _check_compression_migration_applied_postgresql),
+            access_scope=MAINTENANCE,
         )
 
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
@@ -366,7 +370,7 @@ async def _apply_compression_migration_with_backend(
         if already_applied:
             # Both tables exist; only the fingerprint column may be missing.
             # Skip the destructive table swap.
-            await manager.execute_write(cast(Any, _ensure_fingerprint_column))
+            await manager.execute_write(cast(Any, _ensure_fingerprint_column), access_scope=MAINTENANCE)
             logger.info(
                 'Compression migration: already applied for PostgreSQL, '
                 'codebook_fingerprint column ensured',
@@ -420,7 +424,7 @@ async def _apply_compression_migration_with_backend(
                 migration_timeout_s,
             )
 
-        await manager.execute_write(cast(Any, _apply_postgresql))
+        await manager.execute_write(cast(Any, _apply_postgresql), access_scope=MAINTENANCE)
         logger.info(
             'Applied compression migration for PostgreSQL: '
             'vec_context_embeddings_compressed + compression_metadata created',
@@ -428,13 +432,13 @@ async def _apply_compression_migration_with_backend(
         return
 
     # SQLite branch
-    already_applied = await manager.execute_read(_check_compression_migration_applied_sqlite)
+    already_applied = await manager.execute_read(_check_compression_migration_applied_sqlite, access_scope=MAINTENANCE)
 
     def _apply_sqlite(conn: sqlite3.Connection) -> None:
         conn.executescript(migration_sql_template)
         ensure_sqlite_codebook_fingerprint_column(conn)
 
-    await manager.execute_write(_apply_sqlite)
+    await manager.execute_write(_apply_sqlite, access_scope=MAINTENANCE)
 
     if not already_applied:
         logger.info(

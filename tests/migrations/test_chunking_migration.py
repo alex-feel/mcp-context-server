@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 
 
@@ -116,7 +117,7 @@ class TestApplyChunkingMigration:
 
                     return chunks_table_exists, context_index_exists, vec_rowid_index_exists
 
-                chunks_exists, ctx_idx, vec_idx = await backend.execute_read(_check_tables)
+                chunks_exists, ctx_idx, vec_idx = await backend.execute_read(_check_tables, access_scope=MAINTENANCE)
                 assert chunks_exists, 'embedding_chunks table should exist'
                 assert ctx_idx, 'idx_embedding_chunks_context index should exist'
                 assert vec_idx, 'idx_embedding_chunks_vec_rowid index should exist'
@@ -175,7 +176,7 @@ class TestApplyChunkingMigration:
                     columns = [row[1] for row in cursor.fetchall()]
                     return 'chunk_count' in columns
 
-                has_chunk_count = await backend.execute_read(_check_chunk_count_column)
+                has_chunk_count = await backend.execute_read(_check_chunk_count_column, access_scope=MAINTENANCE)
                 assert has_chunk_count, 'chunk_count column should exist in embedding_metadata'
 
             finally:
@@ -237,7 +238,7 @@ class TestApplyChunkingMigration:
                     )
                     return cursor.fetchone() is not None
 
-                table_exists = await backend.execute_read(_check_table)
+                table_exists = await backend.execute_read(_check_table, access_scope=MAINTENANCE)
                 assert table_exists, 'embedding_chunks table should still exist after second migration'
 
             finally:
@@ -293,7 +294,7 @@ class TestApplyChunkingMigration:
                     cursor = conn.execute('PRAGMA table_info(embedding_chunks)')
                     return [row[1] for row in cursor.fetchall()]
 
-                columns = await backend.execute_read(_check_no_chunk_index)
+                columns = await backend.execute_read(_check_no_chunk_index, access_scope=MAINTENANCE)
                 assert 'chunk_index' not in columns, 'chunk_index column should NOT exist'
                 assert 'chunk_start' not in columns, 'chunk_start column should NOT exist'
                 assert 'chunk_end' not in columns, 'chunk_end column should NOT exist'
@@ -373,7 +374,7 @@ class TestApplyChunkingMigration:
                     cursor = conn.execute('PRAGMA table_info(embedding_chunks)')
                     return [row[1] for row in cursor.fetchall()]
 
-                columns = await backend.execute_read(_check_columns)
+                columns = await backend.execute_read(_check_columns, access_scope=MAINTENANCE)
                 assert 'start_index' in columns, 'start_index column should exist after migration'
                 assert 'end_index' in columns, 'end_index column should exist after migration'
 
@@ -468,7 +469,7 @@ class TestApplyChunkingMigration:
                     metadata_columns = [row[1] for row in cursor.fetchall()]
                     return chunks, metadata_columns
 
-                chunks, metadata_columns = await backend.execute_read(_check_migration)
+                chunks, metadata_columns = await backend.execute_read(_check_migration, access_scope=MAINTENANCE)
 
                 assert chunks == []
                 assert 'chunk_count' in metadata_columns
@@ -520,7 +521,7 @@ class TestApplyChunkingMigration:
                     )
                     return cursor.fetchone() is None
 
-                no_table = await backend.execute_read(_check_no_table)
+                no_table = await backend.execute_read(_check_no_table, access_scope=MAINTENANCE)
                 assert no_table, 'embedding_chunks table should NOT exist when embedding_metadata missing'
 
             finally:

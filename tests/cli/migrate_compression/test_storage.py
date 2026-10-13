@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 from typing import cast
 
+from app.backends.base import BackendAccess
 from tests.cli.migrate_compression._pg_fakes import RecordingConn
 from tests.cli.migrate_compression._pg_fakes import budget_set_local
 from tests.cli.migrate_compression._pg_fakes import expected_client_timeout
@@ -19,7 +20,10 @@ class _ReadBackend:
     def __init__(self, conn: RecordingConn) -> None:
         self._conn = conn
 
-    async def execute_read(self, operation: Callable[[RecordingConn], Awaitable[int]]) -> int:
+    async def execute_read(
+        self, operation: Callable[[RecordingConn], Awaitable[int]], *, access_scope: BackendAccess,
+    ) -> int:
+        _ = access_scope
         return await operation(self._conn)
 
 

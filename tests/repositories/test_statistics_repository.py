@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from app.backends.base import MAINTENANCE
 from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -54,7 +55,7 @@ class TestStatisticsRepository:
                 "VALUES ('0190abcdef1234567890abcd00000003', 'thread2', 'user', 'multimodal', 'Test 3', 'local')",
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE)
 
@@ -107,7 +108,7 @@ class TestStatisticsRepository:
                 "'local')",
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_thread_list(scope=LOCAL_SCOPE)
 
@@ -189,11 +190,11 @@ class TestStatisticsRepository:
         )
 
         # Insert tags via repository
-        await repos.tags.store_tags(ctx_id1, ['important', 'test'])
-        await repos.tags.store_tags(ctx_id2, ['important'])
+        await repos.tags.store_tags(ctx_id1, ['important', 'test'], scope=LOCAL_SCOPE)
+        await repos.tags.store_tags(ctx_id2, ['important'], scope=LOCAL_SCOPE)
 
         # Insert image via repository
-        await repos.images.store_images(ctx_id3, [{'data': 'iVBORw0KGgo=', 'mime_type': 'image/png'}])
+        await repos.images.store_images(ctx_id3, [{'data': 'iVBORw0KGgo=', 'mime_type': 'image/png'}], scope=LOCAL_SCOPE)
 
         result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
@@ -221,7 +222,7 @@ class TestStatisticsRepository:
                 "VALUES ('0190abcdef1234567890abcd00000008', 'thread1', 'user', 'text', 'Test', 'local')",
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE, db_path=db_path)
 
@@ -269,7 +270,7 @@ class TestStatisticsRepository:
                 (generate_id(),),
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_summary_statistics(scope=LOCAL_SCOPE)
 
@@ -310,7 +311,7 @@ class TestStatisticsRepository:
                 (generate_id(),),
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_summary_statistics(scope=LOCAL_SCOPE)
 
@@ -344,7 +345,7 @@ class TestStatisticsRepository:
                 (generate_id(),),
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         result = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         assert result['total_entries'] == 3
@@ -366,7 +367,7 @@ class TestStatisticsRepository:
             content_type='text',
             text_content='Entry to be deleted',
         )
-        await repos.tags.store_tags(ctx_id, ['deleteme'])
+        await repos.tags.store_tags(ctx_id, ['deleteme'], scope=LOCAL_SCOPE)
 
         stats_before = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         assert stats_before['total_entries'] >= 1
@@ -410,8 +411,8 @@ class TestRepositoryContainerStatistics:
         assert context_id2 is not None
 
         # Add tags
-        await repo_container.tags.store_tags(context_id1, ['workflow', 'test'])
-        await repo_container.tags.store_tags(context_id2, ['workflow', 'response'])
+        await repo_container.tags.store_tags(context_id1, ['workflow', 'test'], scope=LOCAL_SCOPE)
+        await repo_container.tags.store_tags(context_id2, ['workflow', 'response'], scope=LOCAL_SCOPE)
 
         # Get database statistics
         stats = await repo_container.statistics.get_database_statistics(scope=LOCAL_SCOPE)

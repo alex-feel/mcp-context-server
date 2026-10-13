@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from tests.conftest import requires_sqlite_vec
 
 
@@ -129,7 +130,9 @@ class TestEmbeddingStorageDecoupledFromSearchTool:
 
                             return vec_table, chunks_table, chunk_columns, metadata_columns
 
-                        vec_table, chunks_table, chunk_columns, metadata_columns = await backend.execute_read(_inspect)
+                        vec_table, chunks_table, chunk_columns, metadata_columns = await backend.execute_read(
+                            _inspect, access_scope=MAINTENANCE,
+                        )
 
                         # The fp32 vector table exists despite the search tool being off.
                         assert vec_table, 'vec_context_embeddings must exist when embedding generation is on'
@@ -151,7 +154,7 @@ class TestEmbeddingStorageDecoupledFromSearchTool:
                             cursor = conn.execute('SELECT COUNT(*) FROM vec_context_embeddings')
                             return int(cursor.fetchone()[0])
 
-                        stored_count = await backend.execute_write(_store_embedding)
+                        stored_count = await backend.execute_write(_store_embedding, access_scope=MAINTENANCE)
                         assert stored_count == 1, 'store into vec_context_embeddings should succeed'
                     finally:
                         await backend.shutdown()

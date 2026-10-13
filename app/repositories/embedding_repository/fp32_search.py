@@ -121,10 +121,11 @@ class Fp32SearchMixin(BaseRepository):
                             'Metadata filter validation failed', [str(e)],
                         ) from e
                     tag_placeholders = ','.join(['?' for _ in normalized_tags])
+                    tag_rows = self._readable('tags', alias='tags')
                     filter_conditions.append(f'''
                         id IN (
                             SELECT DISTINCT context_entry_id
-                            FROM tags
+                            FROM {tag_rows}
                             WHERE tag IN ({tag_placeholders})
                         )
                     ''')
@@ -222,10 +223,14 @@ class Fp32SearchMixin(BaseRepository):
 
                 # Use CTE with deduplication by context_id - preserves best chunk boundaries
                 # Uses subquery JOIN to identify which chunk had MIN(distance)
+                filtered_entries = self._readable('context_entries', alias='context_entries')
+                chunk_rows = self._readable('embedding_chunks', alias='ec')
+                vector_rows = self._readable('vec_context_embeddings', alias='ve')
+                result_entries = self._readable('context_entries', alias='ce')
                 query = f'''
                     WITH filtered_contexts AS (
                         SELECT id
-                        FROM context_entries
+                        FROM {filtered_entries}
                         {where_clause}
                     ),
                     chunk_distances AS (
@@ -235,8 +240,8 @@ class Fp32SearchMixin(BaseRepository):
                             ec.end_index,
                             vec_distance_l2(?, ve.embedding) as distance
                         FROM filtered_contexts fc
-                        JOIN embedding_chunks ec ON ec.context_id = fc.id
-                        JOIN vec_context_embeddings ve ON ve.rowid = ec.vec_rowid
+                        JOIN {chunk_rows} ON ec.context_id = fc.id
+                        JOIN {vector_rows} ON ve.rowid = ec.vec_rowid
                     ),
                     best_chunks AS (
                         -- One row per context (the nearest chunk). ROW_NUMBER picks a
@@ -276,7 +281,7 @@ class Fp32SearchMixin(BaseRepository):
                         bc.start_index as matched_chunk_start,
                         bc.end_index as matched_chunk_end
                     FROM best_chunks bc
-                    JOIN context_entries ce ON ce.id = bc.context_id
+                    JOIN {result_entries} ON ce.id = bc.context_id
                     -- context_id is the explicit UNIQUE secondary key: equal distances are
                     -- reachable (duplicate or near-duplicate text embeds identically), and a
                     -- distance-only ORDER BY leaves tied rows in scan order, which is not
@@ -319,7 +324,7 @@ class Fp32SearchMixin(BaseRepository):
 
                 return results, stats
 
-            return await self.backend.execute_read(_search_sqlite)
+            return await self.backend.execute_read(_search_sqlite, access_scope=scope)
 
         # postgresql
         async def _search_postgresql(
@@ -362,10 +367,11 @@ class Fp32SearchMixin(BaseRepository):
                 tag_placeholders = ','.join([
                     self._placeholder(param_position + i) for i in range(len(normalized_tags))
                 ])
+                tag_rows = self._readable('tags', alias='tags')
                 filter_conditions.append(f'''
                     ce.id IN (
                         SELECT DISTINCT context_entry_id
-                        FROM tags
+                        FROM {tag_rows}
                         WHERE tag IN ({tag_placeholders})
                     )
                 ''')
@@ -478,6 +484,8 @@ class Fp32SearchMixin(BaseRepository):
             # DISTINCT ON selects first row per context_id when ordered by distance;
             # start_index breaks a tie between two equidistant chunks of the same
             # context so the reported matched_chunk_start/end is deterministic.
+            vector_rows = self._readable('vec_context_embeddings', alias='ve')
+            entries = self._readable('context_entries', alias='ce')
             query = f'''
                     WITH chunk_distances AS (
                         SELECT
@@ -485,8 +493,8 @@ class Fp32SearchMixin(BaseRepository):
                             ve.start_index,
                             ve.end_index,
                             ve.embedding <-> {self._placeholder(1)} as distance
-                        FROM vec_context_embeddings ve
-                        JOIN context_entries ce ON ce.id = ve.context_id
+                        FROM {vector_rows}
+                        JOIN {entries} ON ce.id = ve.context_id
                         WHERE {where_clause}
                     ),
                     best_chunks AS (
@@ -512,7 +520,7 @@ class Fp32SearchMixin(BaseRepository):
                         bc.start_index as matched_chunk_start,
                         bc.end_index as matched_chunk_end
                     FROM best_chunks bc
-                    JOIN context_entries ce ON ce.id = bc.context_id
+                    JOIN {entries} ON ce.id = bc.context_id
                     -- context_id is the explicit UNIQUE secondary key. Equal distances are
                     -- reachable (duplicate or near-duplicate text embeds identically) and
                     -- PostgreSQL MVCC writes a new physical tuple on every UPDATE, so heap/scan
@@ -545,4 +553,4 @@ class Fp32SearchMixin(BaseRepository):
 
             return results, stats
 
-        return await self.backend.execute_read(_search_postgresql)
+        return await self.backend.execute_read(_search_postgresql, access_scope=scope)

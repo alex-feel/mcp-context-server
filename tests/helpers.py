@@ -15,6 +15,7 @@ from collections.abc import Generator
 from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from contextlib import contextmanager
+from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING
 from typing import Any
@@ -24,6 +25,7 @@ from unittest.mock import patch
 from pydantic import ValidationError as PydanticValidationError
 
 from app.access_scope import AccessScope
+from app.backends.base import MAINTENANCE
 
 if TYPE_CHECKING:
     import asyncpg
@@ -38,6 +40,72 @@ if TYPE_CHECKING:
 # The scope of a request without a jwt identity under the default
 # ACCESS_CONTROL_DEFAULT_PRINCIPAL ('local'), which carries no groups.
 LOCAL_SCOPE = AccessScope('local', frozenset())
+
+# The scope the write tools build for that request: with ACCESS_CONTROL_PUBLISH_ROLE
+# unset any caller may publish, so resolve_write_scope sets may_publish.
+LOCAL_WRITE_SCOPE = AccessScope('local', frozenset(), may_publish=True)
+
+
+@dataclass(frozen=True, slots=True)
+class RlsCredentials:
+    """What a PostgreSQL subprocess needs to start with row-level security.
+
+    Attributes:
+        migration_user: The role that owns the tables, ``POSTGRESQL_MIGRATION_USER``.
+        migration_password: Its password, ``POSTGRESQL_MIGRATION_PASSWORD``.
+        policy_role: The NOLOGIN role the policies name, ``POSTGRESQL_RLS_POLICY_ROLE``.
+    """
+
+    migration_user: str
+    migration_password: str
+    policy_role: str
+
+    def environment(self) -> dict[str, str]:
+        """Return the environment variables that start a server with row-level security on these credentials.
+
+        Returns:
+            ``ENABLE_POSTGRESQL_RLS`` set to true, with the policy role and the migration credentials.
+        """
+        return {
+            'ENABLE_POSTGRESQL_RLS': 'true',
+            'POSTGRESQL_RLS_POLICY_ROLE': self.policy_role,
+            'POSTGRESQL_MIGRATION_USER': self.migration_user,
+            'POSTGRESQL_MIGRATION_PASSWORD': self.migration_password,
+        }
+
+
+def postgresql_subprocess_env(pg_url: str, *, rls: RlsCredentials | None = None, **overrides: str) -> dict[str, str]:
+    """Return the environment of a server or command-line subprocess on the PostgreSQL database ``pg_url``.
+
+    The subprocess inherits the parent environment for its provider configuration (a CI
+    ``EMBEDDING_MODEL``, a developer's ``.env``), but never its PostgreSQL routing: every
+    ``POSTGRESQL_*`` variable and ``ENABLE_POSTGRESQL_RLS`` is removed before the routing is
+    pinned, so a shell routed to another database, its migration credentials included,
+    cannot reach the subprocess.
+
+    Args:
+        pg_url: The request connection settings, as a connection string.
+        rls: The row-level security credentials; None starts the subprocess with the flag off.
+        overrides: Further environment values, applied last.
+
+    Returns:
+        The complete environment.
+    """
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith('POSTGRESQL_') and key.upper() != 'ENABLE_POSTGRESQL_RLS'
+    }
+    env.update({
+        'STORAGE_BACKEND': 'postgresql',
+        'POSTGRESQL_CONNECTION_STRING': pg_url,
+        'MCP_TEST_MODE': '1',
+        'DISABLED_TOOLS': '',
+    })
+    if rls is not None:
+        env.update(rls.environment())
+    env.update(overrides)
+    return env
 
 
 def is_ollama_model_available(
@@ -123,7 +191,7 @@ async def store_single_chunk_embedding(
     from app.repositories.embedding_repository.records import ChunkEmbedding
 
     chunk = ChunkEmbedding(embedding=embedding, start_index=0, end_index=0)
-    await repo.store_chunked(context_id, [chunk], model)
+    await repo.store_chunked(context_id, [chunk], model, scope=LOCAL_SCOPE)
 
 
 @contextmanager
@@ -327,7 +395,10 @@ async def insert_grant(
 
     The application writes only the group read grants of
     ``ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups``, so tests seed user
-    grants and write grants with this helper.
+    grants and write grants with this helper. The row is written as the role the
+    backend logs in as, so on PostgreSQL pass a backend of the table owner or of
+    a superuser (the oracle channel), never the request backend of a deployment
+    whose database policies filter the request role's writes.
 
     Args:
         backend: The backend whose database receives the row.
@@ -344,17 +415,21 @@ async def insert_grant(
         def _insert_sqlite(conn: sqlite3.Connection) -> None:
             conn.execute(f'INSERT INTO context_entry_grants {_INSERT_GRANT_COLUMNS} VALUES (?, ?, ?, ?, ?)', values)
 
-        await backend.execute_write(_insert_sqlite)
+        await backend.execute_write(_insert_sqlite, access_scope=MAINTENANCE)
         return
 
     async def _insert_postgresql(conn: 'asyncpg.Connection') -> None:
         await conn.execute(f'INSERT INTO context_entry_grants {_INSERT_GRANT_COLUMNS} VALUES ($1, $2, $3, $4, $5)', *values)
 
-    await backend.execute_write(_insert_postgresql)
+    await backend.execute_write(_insert_postgresql, access_scope=MAINTENANCE)
 
 
 async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[str, str, str, str]]:
     """Read the grant rows of one context entry through raw SQL on either backend.
+
+    The rows are read as the role the backend logs in as, so on PostgreSQL pass a
+    backend of the table owner or of a superuser (the oracle channel) to see every
+    grant row whatever the database policies admit.
 
     Args:
         backend: The backend whose database holds the rows.
@@ -370,10 +445,10 @@ async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[
             rows = conn.execute(_READ_GRANTS_SQL.format(placeholder='?'), (context_id,)).fetchall()
             return [(row[0], row[1], row[2], row[3]) for row in rows]
 
-        return await backend.execute_read(_read_sqlite)
+        return await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
 
     async def _read_postgresql(conn: 'asyncpg.Connection') -> list[tuple[str, str, str, str]]:
         rows = await conn.fetch(_READ_GRANTS_SQL.format(placeholder='$1'), context_id)
         return [(row[0], row[1], row[2], row[3]) for row in rows]
 
-    return await backend.execute_read(_read_postgresql)
+    return await backend.execute_read(_read_postgresql, access_scope=MAINTENANCE)

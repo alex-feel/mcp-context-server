@@ -14,7 +14,10 @@ from typing import cast
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
+from app.backends.base import base_relation
 from app.repositories.statistics_repository import StatisticsRepository
 from app.repositories.statistics_repository import _to_float
 from tests.helpers import LOCAL_SCOPE
@@ -42,7 +45,7 @@ class _PgStubConnection:
             return self._avg_value
         if 'COUNT(DISTINCT thread_id)' in normalized:
             return 2
-        if 'COUNT(DISTINCT t.tag)' in normalized:
+        if 'SELECT DISTINCT t.tag' in normalized:
             return 3
         if 'COUNT(*)' in normalized:
             return 20
@@ -83,7 +86,12 @@ class _PgStubBackend:
     def __init__(self, avg_value: Decimal | None) -> None:
         self._conn = _PgStubConnection(avg_value)
 
-    async def execute_read(self, operation: Callable[[Any], Awaitable[T]]) -> T:
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Name every table by its own name, as a backend without access views does."""
+        return base_relation(table, alias=alias)
+
+    async def execute_read(self, operation: Callable[[Any], Awaitable[T]], *, access_scope: BackendAccess) -> T:
+        _ = access_scope
         return await operation(self._conn)
 
 
@@ -216,7 +224,7 @@ class TestSqliteTruthinessAlignment:
                 "VALUES ('0190abcdef1234567890abcd0000aa03', 't2', 'user', 'text', 'C', 'local')",
             )
 
-        await stats_test_db.execute_write(_insert_data)
+        await stats_test_db.execute_write(_insert_data, access_scope=MAINTENANCE)
 
         stats = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
         avg = stats['avg_entries_per_thread']

@@ -42,6 +42,7 @@ import app.tools._delete_cleanup as delete_cleanup_module
 import app.tools.batch.delete as batch_delete_module
 import app.tools.context.delete as context_delete_module
 from app.access_scope import AccessMode
+from app.backends.base import BackendAccess
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository.records import IdAccess
 from app.settings import get_settings
@@ -106,12 +107,13 @@ class _FakeBackend:
         self.transactions: list[_FakeTransaction] = []
 
     @asynccontextmanager
-    async def begin_transaction(self) -> AsyncIterator[_FakeTransaction]:
+    async def begin_transaction(self, *, access_scope: BackendAccess) -> AsyncIterator[_FakeTransaction]:
         """Yield a fake transaction and record it for assertions.
 
         Yields:
             The fake transaction context handed to the tool body.
         """
+        _ = access_scope
         txn = _FakeTransaction(self.backend_type)
         self.transactions.append(txn)
         yield txn
@@ -506,7 +508,7 @@ async def test_cleanup_and_delete_receive_only_owned_ids(
     assert deleted == 1
     txn = fake.context.backend.transactions[0]
     fake.context.probe_ids.assert_awaited_once_with([OWNED_ID, GRANTED_ID, HIDDEN_ID], scope=LOCAL_SCOPE, txn=txn)
-    fake.embeddings.delete_all_chunks_bulk.assert_awaited_once_with([OWNED_ID], txn=txn)
+    fake.embeddings.delete_all_chunks_bulk.assert_awaited_once_with([OWNED_ID], txn=txn, scope=LOCAL_SCOPE)
     fake.context.delete_by_ids.assert_awaited_once_with([OWNED_ID], scope=LOCAL_SCOPE, txn=txn)
 
 

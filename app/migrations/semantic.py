@@ -17,6 +17,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend.session import quote_pg_identifier
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
@@ -199,7 +200,7 @@ async def _apply_migration_with_backend(
 
             return True, existing_dim
 
-        table_exists, existing_dim = await manager.execute_read(_check_existing_dimension_sqlite)
+        table_exists, existing_dim = await manager.execute_read(_check_existing_dimension_sqlite, access_scope=MAINTENANCE)
     else:  # postgresql
 
         async def _check_existing_dimension_postgresql(conn: asyncpg.Connection) -> tuple[bool, int | None]:
@@ -223,7 +224,9 @@ async def _apply_migration_with_backend(
 
             return True, existing_dim
 
-        table_exists, existing_dim = await manager.execute_read(cast(Any, _check_existing_dimension_postgresql))
+        table_exists, existing_dim = await manager.execute_read(
+            cast(Any, _check_existing_dimension_postgresql), access_scope=MAINTENANCE,
+        )
 
     # Validate dimension compatibility
     if table_exists and existing_dim is not None and existing_dim != effective_dim:
@@ -325,7 +328,7 @@ async def _apply_migration_with_backend(
             # Execute migration (vec0 module loaded above when the script needs it)
             conn.executescript(migration_sql)
 
-        await manager.execute_write(_apply_migration_sqlite)
+        await manager.execute_write(_apply_migration_sqlite, access_scope=MAINTENANCE)
     else:  # postgresql
 
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
@@ -380,7 +383,7 @@ async def _apply_migration_with_backend(
                 if stmt and not stmt.startswith('--'):
                     await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-        await manager.execute_write(cast(Any, _apply_migration_postgresql))
+        await manager.execute_write(cast(Any, _apply_migration_postgresql), access_scope=MAINTENANCE)
 
     # Check table existence (not row existence) to determine if migration was applied
     if not table_exists:
@@ -452,7 +455,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend) -> None:
         migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
         # Check if function already exists before applying
-        function_exists = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
+        function_exists = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists), access_scope=MAINTENANCE)
 
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
@@ -492,10 +495,10 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend) -> None:
                 if stmt and not stmt.startswith('--'):
                     await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-        await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
+        await backend.execute_write(cast(Any, _apply_jsonb_merge_patch), access_scope=MAINTENANCE)
 
         # Verify function was actually created after migration
-        verification_result = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
+        verification_result = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists), access_scope=MAINTENANCE)
         if not verification_result:
             raise RuntimeError(
                 'jsonb_merge_patch migration applied but function verification failed. '
@@ -585,7 +588,7 @@ async def apply_function_search_path_migration(backend: StorageBackend) -> None:
                 if stmt and not stmt.startswith('--'):
                     await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-        await backend.execute_write(cast(Any, _apply_search_path_fix))
+        await backend.execute_write(cast(Any, _apply_search_path_fix), access_scope=MAINTENANCE)
         logger.info('Applied function search_path security fix for PostgreSQL')
     except Exception as e:
         logger.error(f'Failed to apply function search_path migration: {e}')

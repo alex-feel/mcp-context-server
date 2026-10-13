@@ -11,7 +11,9 @@ import pytest
 
 from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessScope
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
+from app.backends.base import base_relation
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
 from tests.helpers import LOCAL_SCOPE
@@ -138,8 +140,8 @@ class TestContextRepositorySearch:
             text_content='Tagged 2',
         )
 
-        await repos.tags.store_tags(ctx_id1, ['important', 'review'])
-        await repos.tags.store_tags(ctx_id2, ['other'])
+        await repos.tags.store_tags(ctx_id1, ['important', 'review'], scope=LOCAL_SCOPE)
+        await repos.tags.store_tags(ctx_id2, ['other'], scope=LOCAL_SCOPE)
 
         rows, stats = await repos.context.search_contexts(tags=['important'], scope=LOCAL_SCOPE)
 
@@ -320,7 +322,7 @@ class TestContextRepositorySearch:
             text_content='counted entry',
             metadata=json.dumps({'project': 'p'}),
         )
-        await repos.tags.store_tags(context_id, ['x'])
+        await repos.tags.store_tags(context_id, ['x'], scope=LOCAL_SCOPE)
 
         _rows, stats = await repos.context.search_contexts(
             thread_id='count_thread',
@@ -390,10 +392,14 @@ class TestContextRepositorySearch:
         """
         pg_backend = Mock()
         pg_backend.backend_type = 'postgresql'
+        pg_backend.readable_relation = base_relation
 
         async def _execute_read(
             closure: Callable[[object], Awaitable[tuple[list[object], dict[str, object]]]],
+            *,
+            access_scope: BackendAccess,
         ) -> tuple[list[object], dict[str, object]]:
+            _ = access_scope
             return await closure(object())
 
         pg_backend.execute_read = _execute_read
@@ -427,8 +433,10 @@ def _recording_postgresql_repo(rows: list[object]) -> tuple[ContextRepository, l
 
     pg_backend = Mock()
     pg_backend.backend_type = 'postgresql'
+    pg_backend.readable_relation = base_relation
 
-    async def _execute_read(closure: Callable[[object], Awaitable[object]]) -> object:
+    async def _execute_read(closure: Callable[[object], Awaitable[object]], *, access_scope: BackendAccess) -> object:
+        _ = access_scope
         return await closure(_RecordingConnection())
 
     pg_backend.execute_read = _execute_read

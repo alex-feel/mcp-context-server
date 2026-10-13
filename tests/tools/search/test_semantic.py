@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from app.backends.base import BackendAccess
 from tests.helpers import LOCAL_SCOPE
 
 
@@ -35,7 +36,8 @@ class TestSemanticEmbeddingGenerationStat:
                 return rows, dict(stats)
 
         class _FakeTagsRepo:
-            async def get_tags_for_context(self, _context_id: str) -> list[str]:
+            async def get_tags_for_context(self, _context_id: str, *, scope: BackendAccess) -> list[str]:
+                assert scope == LOCAL_SCOPE
                 return []
 
         class _FakeRepos:

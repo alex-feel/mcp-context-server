@@ -5,6 +5,12 @@
 #   1. Copy .env-postgresql.ollama.example to .env
 #   2. Configure desired settings in .env
 #   3. Run normally - the .env file will be loaded automatically
+#
+# Row-level security (ENABLE_POSTGRESQL_RLS) stays off in this file: the app connects as the
+# sidecar's bootstrap role, which owns the tables. To enable it, follow
+# "Enabling row-level security" in docs/deployment/docker.md. The sidecar bootstraps its
+# superuser from POSTGRESQL_MIGRATION_USER/POSTGRESQL_MIGRATION_PASSWORD when they are set,
+# and from POSTGRESQL_USER/POSTGRESQL_PASSWORD otherwise.
 
 name: context-server
 
@@ -155,8 +161,8 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     environment:
-      POSTGRES_USER: ${POSTGRESQL_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRESQL_MIGRATION_USER:-${POSTGRESQL_USER:-postgres}}
+      POSTGRES_PASSWORD: ${POSTGRESQL_MIGRATION_PASSWORD:-${POSTGRESQL_PASSWORD:-postgres}}
       POSTGRES_DB: ${POSTGRESQL_DATABASE:-mcp_context}
     volumes:
       - postgres-data:/var/lib/postgresql

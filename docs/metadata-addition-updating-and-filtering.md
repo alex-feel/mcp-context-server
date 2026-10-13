@@ -1622,15 +1622,15 @@ Configure which metadata fields are indexed for faster filtering.
 - `string` (default): Standard string index
 - `integer`: Cast to integer for numeric comparisons
 - `boolean`: Cast to boolean
-- `float`: Cast to numeric for decimal comparisons
+- `float`: On PostgreSQL, indexes JSON numbers only, through the same numeric accessor the numeric filters compare, so an `eq`, `gt`, `gte`, `lt`, or `lte` filter with an integer value can use the index; a filter with a fractional value compares through an expression the index does not serve
 - `array`: Array field (PostgreSQL GIN only, skipped in SQLite)
 - `object`: Nested object field (PostgreSQL GIN only, skipped in SQLite)
 
-**Type hints are enforced at the write boundary.** A field declared `integer`, `boolean`, or `float` is indexed through a SQL cast on PostgreSQL, so a value that cast cannot accept is REJECTED when it is stored -- on BOTH backends, and before any embedding or summary generation runs. Without this check, SQLite (whose index applies no cast) would store such a value, while PostgreSQL would abort the transaction with a raw driver error after a full generation pass.
+**Type hints are enforced at the write boundary.** A value stored under a field declared `integer`, `boolean`, or `float` must be a valid value of the declared type, and one that is not is REJECTED when it is stored -- on BOTH backends, and before any embedding or summary generation runs. For `integer` and `boolean` the PostgreSQL index also applies that type as a SQL cast: without this check, SQLite (whose index applies no cast) would store such a value, while PostgreSQL would abort the transaction with a raw driver error after a full generation pass. The `float` index reads JSON numbers only and never fails on a stored value, so for `float` the declared type alone is the reason a value is rejected.
 
-What counts as acceptable mirrors PostgreSQL's own input parsers applied to the text the index stores: `integer` accepts an optional sign and a decimal run, plus PostgreSQL 16's non-decimal literals (`0x10`, `0o17`, `0b101`) and `_` digit separators, and must fit the 32-bit `INTEGER` range; `boolean` accepts the usual `true`/`false`/`yes`/`no`/`on`/`off` spellings and their unambiguous prefixes; `float` accepts decimal and exponent forms plus `NaN`/`Infinity`. Only ASCII whitespace is trimmed, because that is all PostgreSQL trims. A list or object under a typed field is rejected outright -- there is no scalar for the cast to produce.
+What counts as acceptable mirrors PostgreSQL's own input parsers applied to the value's text form (what `->>` returns): `integer` accepts an optional sign and a decimal run, plus PostgreSQL 16's non-decimal literals (`0x10`, `0o17`, `0b101`) and `_` digit separators, and must fit the 32-bit `INTEGER` range; `boolean` accepts the usual `true`/`false`/`yes`/`no`/`on`/`off` spellings and their unambiguous prefixes; `float` accepts decimal and exponent forms plus `NaN`/`Infinity`. Only ASCII whitespace is trimmed, because that is all PostgreSQL trims. A list or object under a typed field is rejected outright -- it is not a scalar of the declared type.
 
-Turning an existing field into a typed one is an operator decision that the server verifies at startup: if rows already stored hold a value the new cast rejects, `CREATE INDEX` cannot succeed, and the server stops with a configuration error naming the field and quoting the offending value rather than crash-looping on a raw driver error.
+Turning an existing field into a typed one is an operator decision that the server verifies at startup: in `additive` and `auto` mode it rebuilds the field's index for the new type hint, and if rows already stored hold a value an `integer` or `boolean` cast rejects, `CREATE INDEX` cannot succeed, the existing index stays in place, and the server stops with a configuration error naming the field and quoting the offending value rather than crash-looping on a raw driver error. A `float` index leaves out values that are not JSON numbers, so turning a field into `float` never fails on stored rows.
 
 **Examples:**
 
@@ -1653,12 +1653,14 @@ Control how the server handles index mismatches at startup.
 - **Default**: `additive`
 - **Options**: `strict`, `auto`, `warn`, `additive`
 
-| Mode       | Missing Indexes | Extra Indexes   | Behavior                                         |
-|------------|-----------------|-----------------|--------------------------------------------------|
-| `strict`   | Fail startup    | Fail startup    | Requires exact match - use for production safety |
-| `auto`     | Create          | Drop            | Full synchronization - may drop indexes          |
-| `warn`     | Log warning     | Log warning     | Continue startup with warnings                   |
-| `additive` | Create          | Keep (log info) | Add missing, never drop - safest for upgrades    |
+| Mode       | Missing Indexes | Drifted Indexes | Extra Indexes   | Behavior                                                          |
+|------------|-----------------|-----------------|-----------------|-------------------------------------------------------------------|
+| `strict`   | Fail startup    | Fail startup    | Fail startup    | Requires exact match - use for production safety                  |
+| `auto`     | Create          | Rebuild         | Drop            | Full synchronization - may drop indexes                           |
+| `warn`     | Log warning     | Log warning     | Log warning     | Continue startup with warnings                                    |
+| `additive` | Create          | Rebuild         | Keep (log info) | Add missing and rebuild drifted, never drop - safest for upgrades |
+
+A drifted index exists on PostgreSQL under the field's index name, but its definition (as `pg_get_indexdef` reports it) differs from the one the server builds for the field's configured type hint, for example after the type hint changes. A rebuild builds the new index under a staging name, then drops the drifted one and renames the new one, all in one transaction, so if the new definition cannot be built the drifted index stays in place.
 
 **Examples:**
 

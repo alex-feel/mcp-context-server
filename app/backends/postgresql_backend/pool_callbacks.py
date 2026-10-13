@@ -10,6 +10,7 @@ import logging
 import socket
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Sequence
 from typing import Any
 from typing import cast
 
@@ -72,18 +73,20 @@ async def connect_pool_connection(*args: Any, **kwargs: Any) -> asyncpg.Connecti
     return conn
 
 
-async def setup_pool_connection(conn: asyncpg.Connection) -> None:
+async def setup_pool_connection(conn: asyncpg.Connection, *, profile_statements: Sequence[str]) -> None:
     """Configure session state before a pooled connection is handed to a caller.
 
     Sets statement_timeout to prevent queries from hanging indefinitely, plus every
     session parameter this server depends on (see ``session_guc_set_statements``:
-    search_path, extra_float_digits and the server-side TCP keepalive GUCs). Runs as
-    the pool's ``setup`` callback: AFTER ``init`` but BEFORE the connection is
-    returned from ``pool.acquire()``, so it also restores all of them after the
-    pool's ``RESET ALL`` on release -- which is what makes delivering them as
-    statements, rather than as startup-packet parameters an external pooler can
-    refuse, safe. All of them go out in ONE simple-query round trip, the same single
-    round trip the statement timeout alone would cost.
+    search_path, extra_float_digits and the server-side TCP keepalive GUCs), followed
+    by the session statements of the backend's session profile (the maintenance
+    profile's ``SET row_security = off``). Runs as the pool's ``setup`` callback,
+    bound to the profile's statements by ``initialize()``: AFTER ``init`` but BEFORE
+    the connection is returned from ``pool.acquire()``, so it also restores all of
+    them after the pool's ``RESET ALL`` on release -- which is what makes delivering
+    them as statements, rather than as startup-packet parameters an external pooler
+    can refuse, safe. All of them go out in ONE simple-query round trip, the same
+    single round trip the statement timeout alone would cost.
 
     A TimeoutError here means the SET statement ran on a dead connection (e.g. a
     pooled connection whose backend became unreachable) and exceeded the pool
@@ -105,6 +108,11 @@ async def setup_pool_connection(conn: asyncpg.Connection) -> None:
     interruption is recorded on the acquire's ``_AcquireTracker`` before the
     CancelledError is re-raised unchanged.
 
+    Args:
+        conn: The pooled connection about to be handed out.
+        profile_statements: The session statements of the backend's session profile
+            (``SessionProfile.session_statements``).
+
     Raises:
         asyncpg.exceptions.ConnectionDoesNotExistError: When the setup statement
             timed out (the connection is unusable; asyncpg closes it).
@@ -115,9 +123,15 @@ async def setup_pool_connection(conn: asyncpg.Connection) -> None:
         # Set statement timeout to prevent infinite hangs.
         # Use slightly less than command_timeout for graceful handling.
         timeout_ms = statement_timeout_ms(settings.storage.postgresql_command_timeout_s)
-        session_statements = [f'SET statement_timeout = {timeout_ms}', *session_guc_set_statements(settings)]
+        session_statements = [
+            f'SET statement_timeout = {timeout_ms}',
+            *session_guc_set_statements(settings),
+            *profile_statements,
+        ]
         await conn.execute('; '.join(session_statements))
-        logger.debug(f'Connection setup: statement_timeout={timeout_ms}ms, {len(session_statements) - 1} session GUCs')
+        logger.debug(
+            f'Connection setup: statement_timeout={timeout_ms}ms, {len(session_statements) - 1} session statements',
+        )
     except TimeoutError as e:
         logger.warning(f'Connection setup timed out, connection is unusable: {e}')
         raise asyncpg.exceptions.ConnectionDoesNotExistError(

@@ -7,6 +7,11 @@
 # env_file: is intentionally absent. Docker Compose still auto-loads deploy/docker/.env from
 # this directory for the few remaining ${VAR:-default} knobs (e.g. LOG_LEVEL), which do not
 # affect test behavior.
+#
+# Row-level security is ON. The one-shot postgres-roles service creates the NOLOGIN policy
+# role mcp_context_request and its member login role mcp_app on every start (idempotently, so
+# existing volumes need no reset); the app serves requests as mcp_app and runs migrations as
+# postgres, the sidecar's bootstrap superuser that owns the tables.
 
 name: context-server-postgresql-test
 
@@ -31,11 +36,17 @@ services:
       - POSTGRESQL_HOST=postgres
       - POSTGRESQL_PORT=5432
       # Credentials HARDCODED (not ${VAR:-default}) so deploy/docker/.env cannot inject
-      # production secrets into this self-contained test stack; the local sidecar below uses
-      # the same fixed values.
-      - POSTGRESQL_USER=postgres
-      - POSTGRESQL_PASSWORD=postgres
+      # production secrets into this self-contained test stack. Requests connect as mcp_app,
+      # the login role postgres-roles creates; migrations connect as postgres, the sidecar's
+      # bootstrap superuser that owns the tables, so row-level security filters every request.
+      - POSTGRESQL_USER=mcp_app
+      - POSTGRESQL_PASSWORD=mcp_app
+      - POSTGRESQL_MIGRATION_USER=postgres
+      - POSTGRESQL_MIGRATION_PASSWORD=postgres
       - POSTGRESQL_DATABASE=mcp_context
+      # Row-level security, enforced through the policy role mcp_app is a member of
+      - ENABLE_POSTGRESQL_RLS=true
+      - POSTGRESQL_RLS_POLICY_ROLE=mcp_context_request
       # Semantic search configuration
       - ENABLE_SEMANTIC_SEARCH=true
       # Embedding + summary provider/model are HARDCODED (not ${VAR:-default}) so this
@@ -67,6 +78,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-roles:
+        condition: service_completed_successfully
       ollama:
         condition: service_healthy
     restart: on-failure:5
@@ -173,6 +186,39 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
+
+  # Creates the row-level security roles the app needs, then exits. Every $ is doubled so
+  # Compose passes it through instead of interpolating it.
+  postgres-roles:
+    image: pgvector/pgvector:pg18-trixie
+    restart: "no"
+    environment:
+      # The sidecar's bootstrap superuser, hardcoded like the postgres service above.
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: mcp_context
+    entrypoint:
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -c
+      - |
+        DO $$$$
+        BEGIN
+          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'mcp_context_request') THEN
+            CREATE ROLE mcp_context_request NOLOGIN;
+          END IF;
+          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'mcp_app') THEN
+            CREATE ROLE mcp_app LOGIN;
+          END IF;
+          ALTER ROLE mcp_app LOGIN PASSWORD 'mcp_app' NOSUPERUSER NOBYPASSRLS;
+          GRANT mcp_context_request TO mcp_app;
+        END
+        $$$$;
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres-data:

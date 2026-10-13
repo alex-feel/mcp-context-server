@@ -13,6 +13,7 @@ from unittest.mock import patch
 import asyncpg
 import pytest
 
+from app.backends.base import BackendAccess
 from app.repositories.context_repository.records import EntryProbe
 from app.tools.context.store import store_context
 from app.tools.context.update import update_context
@@ -35,7 +36,8 @@ class TestStatementTimeoutRetryToolLayer:
         state = {'calls': 0}
 
         @contextlib.asynccontextmanager
-        async def _begin() -> AsyncIterator[MagicMock]:
+        async def _begin(*, access_scope: BackendAccess) -> AsyncIterator[MagicMock]:
+            _ = access_scope
             state['calls'] += 1
             txn = MagicMock()
             txn.backend_type = 'postgresql'
@@ -82,7 +84,8 @@ class TestStatementTimeoutRetryToolLayer:
         gen_calls = {'n': 0}
 
         @contextlib.asynccontextmanager
-        async def _begin() -> AsyncIterator[MagicMock]:
+        async def _begin(*, access_scope: BackendAccess) -> AsyncIterator[MagicMock]:
+            _ = access_scope
             state['calls'] += 1
             txn = MagicMock()
             txn.backend_type = 'postgresql'
@@ -130,7 +133,8 @@ class TestStatementTimeoutRetryToolLayer:
         state = {'calls': 0}
 
         @contextlib.asynccontextmanager
-        async def _begin() -> AsyncIterator[MagicMock]:
+        async def _begin(*, access_scope: BackendAccess) -> AsyncIterator[MagicMock]:
+            _ = access_scope
             state['calls'] += 1
             txn = MagicMock()
             txn.backend_type = 'postgresql'

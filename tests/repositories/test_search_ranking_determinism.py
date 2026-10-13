@@ -26,6 +26,7 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.repositories import RepositoryContainer
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.fts_repository import FtsRepository
@@ -140,7 +141,7 @@ class TestSemanticTiedDistanceOrdering:
                     (entry_id, 'tied-thread', 'agent', 'text', _TIED_TEXT),
                 )
 
-        await backend.execute_write(_insert)
+        await backend.execute_write(_insert, access_scope=MAINTENANCE)
 
         embedding_repo = EmbeddingRepository(backend)
         for entry_id in _INSERT_ORDER:

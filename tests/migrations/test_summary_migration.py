@@ -16,6 +16,7 @@ import pytest
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
 from app.ids import generate_id
 from app.migrations.summary import apply_summary_migration
 from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
@@ -55,7 +56,7 @@ class TestApplySummaryMigration:
                 cursor = conn.execute('PRAGMA table_info(context_entries)')
                 return [row[1] for row in cursor.fetchall()]
 
-            columns = await backend.execute_read(_check)
+            columns = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert 'summary' in columns
         finally:
             await backend.shutdown()
@@ -90,7 +91,7 @@ class TestApplySummaryMigration:
                 cursor = conn.execute('PRAGMA table_info(context_entries)')
                 return [row[1] for row in cursor.fetchall()]
 
-            columns = await backend.execute_read(_check)
+            columns = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert 'summary' in columns
         finally:
             await backend.shutdown()
@@ -121,7 +122,7 @@ class TestApplySummaryMigration:
                 )
                 return new_id
 
-            entry_id = await backend.execute_write(_insert)
+            entry_id = await backend.execute_write(_insert, access_scope=MAINTENANCE)
             assert len(entry_id) == 32
 
             # Verify summary is NULL
@@ -133,7 +134,7 @@ class TestApplySummaryMigration:
                 row = cursor.fetchone()
                 return row['summary'] if row else 'NOT_FOUND'
 
-            summary_value = await backend.execute_read(_check)
+            summary_value = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert summary_value is None
         finally:
             await backend.shutdown()
@@ -164,7 +165,7 @@ class TestApplySummaryMigration:
                 )
                 return new_id
 
-            entry_id = await backend.execute_write(_insert)
+            entry_id = await backend.execute_write(_insert, access_scope=MAINTENANCE)
 
             def _check(conn: sqlite3.Connection) -> str | None:
                 conn.row_factory = sqlite3.Row
@@ -174,7 +175,7 @@ class TestApplySummaryMigration:
                 row = cursor.fetchone()
                 return row['summary'] if row else None
 
-            actual_summary = await backend.execute_read(_check)
+            actual_summary = await backend.execute_read(_check, access_scope=MAINTENANCE)
             assert actual_summary == expected_summary
         finally:
             await backend.shutdown()

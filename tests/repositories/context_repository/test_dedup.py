@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
 from tests.helpers import LOCAL_SCOPE
@@ -76,7 +77,7 @@ class TestContextRepositoryDeduplication:
                 ('Newer text', compute_content_hash('Newer text'), ctx_id1),
             )
 
-        await repos.context.backend.execute_write(_diverge)
+        await repos.context.backend.execute_write(_diverge, access_scope=MAINTENANCE)
 
         # Drive the guarded UPDATE (mirroring the repository's dedup UPDATE
         # predicate) directly with the STALE observed hash -- the value the
@@ -95,7 +96,7 @@ class TestContextRepositoryDeduplication:
             )
             return cur.rowcount
 
-        assert await repos.context.backend.execute_write(_guarded_update) == 0
+        assert await repos.context.backend.execute_write(_guarded_update, access_scope=MAINTENANCE) == 0
 
         def _hash_now(conn: _sqlite3.Connection) -> str:
             row = conn.execute(
@@ -104,7 +105,8 @@ class TestContextRepositoryDeduplication:
             return str(row[0])
 
         # The newer text's hash survives untouched.
-        assert await repos.context.backend.execute_read(_hash_now) == compute_content_hash('Newer text')
+        hash_now = await repos.context.backend.execute_read(_hash_now, access_scope=MAINTENANCE)
+        assert hash_now == compute_content_hash('Newer text')
 
     @pytest.mark.asyncio
     async def test_deduplication_different_content(

@@ -45,7 +45,10 @@ class RequestPrincipal:
     def access_scope(self) -> AccessScope:
         """Return the scope this principal reads and writes context entries as.
 
-        Roles are not part of the scope: they only gate publishing.
+        Roles are not part of the scope: they only gate publishing. The scope
+        asserts no publish permission;
+        :func:`app.auth.access.resolve_write_scope` adds the one the roles grant
+        for the write tools.
 
         Returns:
             The principal id and groups as an :class:`AccessScope`.

@@ -14,6 +14,8 @@ import asyncpg
 import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from tests.backends.postgresql_backend._builders import build_backend
 
 
@@ -45,6 +47,8 @@ class TestBootConnectivityVerification:
         """
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:wrong@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         monkeypatch.setattr(backend, '_resolve_provision_vector', AsyncMock(return_value=False))
         monkeypatch.setattr(backend, '_ensure_pgvector_extension', AsyncMock())
@@ -229,7 +233,7 @@ class TestPgpoolDetection:
         """Pgpool-II should be detected when SHOW POOL_VERSION returns a value."""
         from app.backends.postgresql_backend import PostgreSQLBackend
 
-        backend = PostgreSQLBackend()
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
         backend._pool = MagicMock()
 
         # Mock connection that returns Pgpool-II version
@@ -251,7 +255,7 @@ class TestPgpoolDetection:
         """Direct PostgreSQL connection detected when SHOW POOL_VERSION raises UndefinedObjectError."""
         from app.backends.postgresql_backend import PostgreSQLBackend
 
-        backend = PostgreSQLBackend()
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
         backend._pool = MagicMock()
 
         # Mock connection that raises UndefinedObjectError (error code 42704)
@@ -276,7 +280,7 @@ class TestPgpoolDetection:
         """Detection should handle empty version response gracefully."""
         from app.backends.postgresql_backend import PostgreSQLBackend
 
-        backend = PostgreSQLBackend()
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
         backend._pool = MagicMock()
 
         # Mock connection that returns empty/None
@@ -297,7 +301,7 @@ class TestPgpoolDetection:
         """Detection should not fail initialization on unexpected errors."""
         from app.backends.postgresql_backend import PostgreSQLBackend
 
-        backend = PostgreSQLBackend()
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
         backend._pool = MagicMock()
 
         # Mock connection that raises unexpected error
@@ -318,7 +322,7 @@ class TestPgpoolDetection:
         """get_metrics() should include Pgpool-II detection results when detected."""
         from app.backends.postgresql_backend import PostgreSQLBackend
 
-        backend = PostgreSQLBackend()
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
         backend._pool = MagicMock()
         backend._pool.get_size = MagicMock(return_value=5)
         backend._pool.get_idle_size = MagicMock(return_value=3)
@@ -335,7 +339,7 @@ class TestPgpoolDetection:
         """get_metrics() should include pgpool_detected=False when not behind Pgpool-II."""
         from app.backends.postgresql_backend import PostgreSQLBackend
 
-        backend = PostgreSQLBackend()
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
         backend._pool = MagicMock()
         backend._pool.get_size = MagicMock(return_value=5)
         backend._pool.get_idle_size = MagicMock(return_value=3)
@@ -352,7 +356,7 @@ class TestPgpoolDetection:
         """get_metrics() should not include pgpool fields if detection never ran."""
         from app.backends.postgresql_backend import PostgreSQLBackend
 
-        backend = PostgreSQLBackend()
+        backend = PostgreSQLBackend(profile=UnboundProfile(), credentials=NO_CREDENTIAL_OVERRIDE)
         backend._pool = MagicMock()
         backend._pool.get_size = MagicMock(return_value=5)
         backend._pool.get_idle_size = MagicMock(return_value=3)
@@ -382,6 +386,8 @@ class TestSessionModePoolerDetection:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://u:p@aws-0-us-east-1.pooler.supabase.com:5432/postgres',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         caplog.set_level(logging.WARNING)
@@ -412,6 +418,8 @@ class TestSessionModePoolerDetection:
                 'host=aws-0-us-east-1.pooler.supabase.com port=5432 '
                 'user=u password=p dbname=postgres'
             ),
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         caplog.set_level(logging.WARNING)
@@ -433,6 +441,8 @@ class TestSessionModePoolerDetection:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://u:p@aws-0-us-east-1.pooler.supabase.com:5432/postgres',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         caplog.set_level(logging.WARNING)
@@ -454,6 +464,8 @@ class TestSessionModePoolerDetection:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://u:p@aws-0-us-east-1.pooler.supabase.com:6543/postgres',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         caplog.set_level(logging.WARNING)
@@ -475,6 +487,8 @@ class TestSessionModePoolerDetection:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://u:p@localhost:5432/mcp_context',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
 
         backend._detect_session_mode_pooler()
@@ -489,6 +503,8 @@ class TestSessionModePoolerDetection:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://u:p@aws-0-us-east-1.pooler.supabase.com:5432/postgres',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._pool = MagicMock()
         backend._pool.get_size = MagicMock(return_value=5)
@@ -509,6 +525,8 @@ class TestSessionModePoolerDetection:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://u:p@localhost:5432/mcp_context',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._pool = MagicMock()
         backend._pool.get_size = MagicMock(return_value=5)

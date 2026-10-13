@@ -16,8 +16,11 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from app.errors import ControlFlowError
 from tests.backends.postgresql_backend._builders import build_backend
 from tests.backends.postgresql_backend._builders import fast_retries
@@ -39,6 +42,8 @@ def _backend_with_acquire_failure(error: Exception) -> PostgreSQLBackend:
     """
     backend = PostgreSQLBackend(
         connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        profile=UnboundProfile(),
+        credentials=NO_CREDENTIAL_OVERRIDE,
     )
     backend._shutdown = False
 
@@ -169,7 +174,7 @@ class TestAcquireTimeoutBreakerDiscrimination:
         )
 
         with pytest.raises(ConnectionEstablishmentTimeoutError):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 pass
 
         assert backend.circuit_breaker.failures == 1
@@ -183,7 +188,7 @@ class TestAcquireTimeoutBreakerDiscrimination:
         backend = _backend_with_acquire_failure(TimeoutError('pool acquire timed out'))
 
         with pytest.raises(TimeoutError):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 pass
 
         assert backend.circuit_breaker.failures == 0
@@ -278,7 +283,7 @@ class TestAcquirePhaseConnectionFailureCharging:
         backend = _backend_with_acquire_failure(ConnectionRefusedError('connection refused'))
 
         with pytest.raises(ConnectionRefusedError):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 pass
 
         assert backend.circuit_breaker.failures == 1
@@ -291,6 +296,8 @@ class TestAcquirePhaseConnectionFailureCharging:
         """A body fault is charged by the inner arm only, never re-charged outside."""
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._shutdown = False
         mock_conn = MagicMock()
@@ -324,6 +331,8 @@ class TestExecuteReadControlFlowMetricsExemption:
     def _backend_with_fake_pool() -> PostgreSQLBackend:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._shutdown = False
         mock_conn = MagicMock()
@@ -346,7 +355,7 @@ class TestExecuteReadControlFlowMetricsExemption:
             raise ControlFlowError('client input invalid')
 
         with pytest.raises(ControlFlowError):
-            await backend.execute_read(operation)
+            await backend.execute_read(operation, access_scope=MAINTENANCE)
 
         assert backend.metrics.failed_queries == 0
 
@@ -359,7 +368,7 @@ class TestExecuteReadControlFlowMetricsExemption:
             raise RuntimeError('db fault')
 
         with pytest.raises(RuntimeError, match='db fault'):
-            await backend.execute_read(operation)
+            await backend.execute_read(operation, access_scope=MAINTENANCE)
 
         assert backend.metrics.failed_queries == 1
 
@@ -377,6 +386,8 @@ class TestGetConnectionBreakerControlFlowExemption:
     def _backend_with_fake_pool() -> PostgreSQLBackend:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._shutdown = False
         mock_conn = MagicMock()
@@ -459,7 +470,7 @@ class TestReleaseFailureAccounting:
         async def _read(_conn: object) -> str:
             return 'rows'
 
-        assert await backend.execute_read(_read) == 'rows'
+        assert await backend.execute_read(_read, access_scope=MAINTENANCE) == 'rows'
         assert backend.circuit_breaker.failures == 1
         assert backend.metrics.failed_queries == 1
 
@@ -471,7 +482,7 @@ class TestReleaseFailureAccounting:
             _connection_with_transaction(),
         )
 
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
             assert txn.backend_type == 'postgresql'
 
         assert backend.circuit_breaker.failures == 1
@@ -493,7 +504,7 @@ class TestReleaseFailureAccounting:
             calls['n'] += 1
             return 'stored'
 
-        assert await backend.execute_write(operation) == 'stored'
+        assert await backend.execute_write(operation, access_scope=MAINTENANCE) == 'stored'
         assert calls['n'] == 1
         assert backend.metrics.failed_queries == 1
 
@@ -518,7 +529,7 @@ class TestReleaseFailureAccounting:
         async def operation(_conn: object) -> str:
             return 'stored'
 
-        assert await backend.execute_write(operation) == 'stored'
+        assert await backend.execute_write(operation, access_scope=MAINTENANCE) == 'stored'
         assert backend.circuit_breaker.failures == 1
         assert backend.metrics.failed_queries == 1
         assert backend.metrics.last_error is not None
@@ -546,7 +557,7 @@ class TestReleaseFailureAccounting:
         async def operation(_conn: object) -> str:
             return 'stored'
 
-        assert await backend.execute_write(operation) == 'stored'
+        assert await backend.execute_write(operation, access_scope=MAINTENANCE) == 'stored'
         # record_success decrements accumulated failures in the HEALTHY state.
         assert backend.circuit_breaker.failures == 1
         assert backend.metrics.failed_queries == 0

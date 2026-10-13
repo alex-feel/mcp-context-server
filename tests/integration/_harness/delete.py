@@ -325,9 +325,11 @@ class DeleteMixin(HarnessCore):
         image_attachments row count (orphaned image rows are not observable
         through any tool, so a tool-level check alone cannot distinguish a real
         cascade from leaked orphan rows). The PG count is asserted
-        >= 1 before delete (so the probe is non-vacuous) and == 0 after. The
-        SQLite server manages its own temp database that the harness does not
-        address directly, so the SQLite cascade is asserted at the tool surface.
+        >= 1 before delete (so the probe is non-vacuous) and == 0 after; it
+        reads as the superuser of ``pg_admin_url``, who sees every row whatever
+        the database policies admit. The SQLite server manages its own temp
+        database that the harness does not address directly, so the SQLite
+        cascade is asserted at the tool surface.
 
         Returns:
             bool: True if test passed.
@@ -339,7 +341,8 @@ class DeleteMixin(HarnessCore):
             """Count image_attachments rows for entry_id on the live PG database."""
             import asyncpg
 
-            conn = await asyncpg.connect(self.pg_url or '')
+            assert self.pg_admin_url is not None  # __init__ requires it on PostgreSQL
+            conn = await asyncpg.connect(self.pg_admin_url)
             try:
                 count = await conn.fetchval(
                     'SELECT COUNT(*) FROM image_attachments WHERE context_entry_id = $1::uuid',

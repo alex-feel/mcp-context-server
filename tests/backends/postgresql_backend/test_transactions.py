@@ -7,7 +7,10 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 
 
 class TestBeginTransactionDeadlockExemption:
@@ -23,6 +26,8 @@ class TestBeginTransactionDeadlockExemption:
     def _backend_with_fake_pool() -> PostgreSQLBackend:
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._shutdown = False
 
@@ -47,7 +52,7 @@ class TestBeginTransactionDeadlockExemption:
         """A deadlock escaping the transaction body leaves the breaker untouched."""
         backend = self._backend_with_fake_pool()
         with pytest.raises(asyncpg.exceptions.DeadlockDetectedError):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 raise asyncpg.exceptions.DeadlockDetectedError('deadlock detected')
         assert backend.circuit_breaker.failures == 0
 
@@ -56,6 +61,6 @@ class TestBeginTransactionDeadlockExemption:
         """A non-rollback fault in the transaction body still records a failure."""
         backend = self._backend_with_fake_pool()
         with pytest.raises(RuntimeError, match='db fault'):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 raise RuntimeError('db fault')
         assert backend.circuit_breaker.failures == 1

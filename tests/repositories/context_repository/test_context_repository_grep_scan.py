@@ -25,6 +25,9 @@ import pytest_asyncio
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
+from app.backends.base import base_relation
 from app.ids import generate_id_with_timestamp
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -74,7 +77,7 @@ async def _insert_entries(
                 (cid, thread_id, 'agent', 'text', text),
             )
 
-        await backend.execute_write(_write)
+        await backend.execute_write(_write, access_scope=MAINTENANCE)
     return ids
 
 
@@ -89,7 +92,7 @@ async def _insert_foreign_private(backend: StorageBackend, offset_seconds: int) 
             (cid,),
         )
 
-    await backend.execute_write(_write)
+    await backend.execute_write(_write, access_scope=MAINTENANCE)
     return cid
 
 
@@ -350,8 +353,12 @@ class TestGrepScanScope:
         connection = _RecordingConnection(row_id)
         pg_backend = Mock()
         pg_backend.backend_type = 'postgresql'
+        pg_backend.readable_relation = base_relation
+        bob = AccessScope('bob', frozenset({'team-x'}))
+        handed: list[BackendAccess] = []
 
-        async def _execute_read(closure: Callable[[object], Awaitable[object]]) -> object:
+        async def _execute_read(closure: Callable[[object], Awaitable[object]], *, access_scope: BackendAccess) -> object:
+            handed.append(access_scope)
             return await closure(connection)
 
         pg_backend.execute_read = _execute_read
@@ -364,9 +371,10 @@ class TestGrepScanScope:
             metadata_filters=[{'key': 'author', 'operator': 'eq', 'value': 'alice'}],
             max_entries_scanned=1,
             page_size=1,
-            scope=AccessScope('bob', frozenset({'team-x'})),
+            scope=bob,
         )
 
+        assert handed == [bob]
         assert rows == [(row_id, 'needle')]
         assert stats == {'scanned': 1, 'truncated': False, 'backend': 'postgresql'}
         (page, page_args), (lookahead, lookahead_args) = connection.statements

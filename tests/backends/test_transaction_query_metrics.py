@@ -16,7 +16,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from app.backends.sqlite_backend import SQLiteBackend
 
 
@@ -49,7 +52,7 @@ class TestSqliteTransactionCounters:
         try:
             before = backend.metrics.total_queries
             for _ in range(3):
-                async with backend.begin_transaction() as txn:
+                async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                     txn.connection.execute('SELECT 1')
             assert backend.metrics.total_queries == before + 3
         finally:
@@ -60,11 +63,11 @@ class TestSqliteTransactionCounters:
         """A failing transaction is counted in failed_queries against a real denominator."""
         backend = await _sqlite_backend(tmp_path / 'txn_counter_fail.db')
         try:
-            async with backend.begin_transaction() as txn:
+            async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
                 txn.connection.execute('SELECT 1')
 
             with pytest.raises(sqlite3.OperationalError, match='disk I/O error'):
-                async with backend.begin_transaction():
+                async with backend.begin_transaction(access_scope=MAINTENANCE):
                     raise sqlite3.OperationalError('disk I/O error')
 
             assert backend.metrics.failed_queries == 1
@@ -105,6 +108,8 @@ class TestPostgresqlTransactionCounters:
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         backend._shutdown = False
 
@@ -141,7 +146,7 @@ class TestPostgresqlTransactionCounters:
         backend = self._backend_with_connection(self._connection_with_transaction())
 
         for _ in range(2):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 pass
 
         assert backend.metrics.total_queries == 2
@@ -152,7 +157,7 @@ class TestPostgresqlTransactionCounters:
         backend = self._backend_with_connection(self._connection_with_transaction())
 
         with pytest.raises(RuntimeError, match='relation does not exist'):
-            async with backend.begin_transaction():
+            async with backend.begin_transaction(access_scope=MAINTENANCE):
                 raise RuntimeError('relation does not exist')
 
         assert backend.metrics.total_queries == 0

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.sqlite_backend import SQLiteBackend
 from app.backends.sqlite_backend.config import PoolConfig
 
@@ -68,7 +69,7 @@ async def test_the_next_write_recreates_the_recycled_writer(tmp_path: Path) -> N
             row = conn.execute('SELECT 1').fetchone()
             return int(row[0])
 
-        assert await backend.execute_write(_write) == 1
+        assert await backend.execute_write(_write, access_scope=MAINTENANCE) == 1
         assert backend._writer_conn is not None
         assert backend.circuit_breaker.failures == 0
     finally:
@@ -98,7 +99,7 @@ async def test_a_writer_in_use_is_never_closed_under_a_caller(tmp_path: Path) ->
     """
     backend = await _backend(tmp_path / 'inflight_writer.db', idle_timeout=0.0)
     try:
-        async with backend.begin_transaction() as txn:
+        async with backend.begin_transaction(access_scope=MAINTENANCE) as txn:
             await backend._perform_health_check()
             assert backend._writer_conn is not None
             # The captured connection is still usable inside the transaction.

@@ -98,6 +98,68 @@ storage:
     # Use existing secret for password
     existingSecret: ""
     existingSecretKey: "postgresql-password"
+    # Credentials of the role that owns the tables and runs migrations. Each one set
+    # overrides the request user or password above for the migration connection only
+    # (POSTGRESQL_MIGRATION_USER, POSTGRESQL_MIGRATION_PASSWORD); empty keeps the
+    # request credentials. Required by rls.enabled.
+    migration:
+      user: ""
+      password: ""
+      # Use existing secret for the migration password
+      existingSecret: ""
+      existingSecretKey: "postgresql-migration-password"
+    # PostgreSQL row-level security: the database also enforces the access model
+    # (ENABLE_POSTGRESQL_RLS). Requests then connect as `user`, a login role that is a
+    # member of the policy role and neither superuser nor BYPASSRLS, while migration.user
+    # owns the tables. Create both roles before enabling it; see docs/deployment/helm.md.
+    rls:
+      enabled: false
+      # NOLOGIN role the policies name (POSTGRESQL_RLS_POLICY_ROLE); empty keeps the
+      # server default, mcp_context_request
+      policyRole: ""
+
+# HTTP authentication. Every value left empty keeps the server default, so nothing is
+# rendered for it; see docs/authentication.md.
+auth:
+  # MCP_AUTH_PROVIDER: none (server default), simple_token or jwt
+  provider: ""
+  # MCP_AUTH_CLIENT_ID
+  clientId: ""
+  # MCP_AUTH_TOKEN, the simple_token bearer token, stored in the chart secret
+  token: ""
+  # Existing secret holding the bearer token (simple_token) or the JWT public key
+  # (jwt without jwksUri); it replaces token and jwt.publicKey
+  existingSecret: ""
+  tokenSecretKey: "mcp-auth-token"
+  jwt:
+    # MCP_AUTH_JWT_PUBLIC_KEY: PEM public key, or the shared secret of an HS*
+    # algorithm, stored in the chart secret. Set this or jwksUri, not both.
+    publicKey: ""
+    publicKeySecretKey: "mcp-auth-jwt-public-key"
+    # MCP_AUTH_JWT_JWKS_URI
+    jwksUri: ""
+    # MCP_AUTH_JWT_ISSUER
+    issuer: ""
+    # MCP_AUTH_JWT_AUDIENCE
+    audience: ""
+    # MCP_AUTH_JWT_ALGORITHM
+    algorithm: ""
+  # MCP_AUTH_GROUPS_CLAIM
+  groupsClaim: ""
+  # MCP_AUTH_ROLES_CLAIM
+  rolesClaim: ""
+
+# Entry ownership and visibility policy. Every value left empty keeps the server
+# default, so nothing is rendered for it; see docs/authentication.md.
+accessControl:
+  # ACCESS_CONTROL_DEFAULT_PRINCIPAL
+  defaultPrincipal: ""
+  # ACCESS_CONTROL_DEFAULT_VISIBILITY: private or public
+  defaultVisibility: ""
+  # ACCESS_CONTROL_DEFAULT_GROUP_GRANTS: none or author_groups
+  defaultGroupGrants: ""
+  # ACCESS_CONTROL_PUBLISH_ROLE
+  publishRole: ""
 
 # Search features. The fts/semantic/hybrid `enabled` flags map to the server's
 # tri-state search toggles: true renders ENABLE_*="auto" (register the tool when

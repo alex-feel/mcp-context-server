@@ -78,6 +78,7 @@ class ContextReadMixin(BaseRepository):
         # ORDER BY compares).
         chunks = chunk_ids(context_ids)
         backend_type = self.backend.backend_type
+        entries = self._readable('context_entries', alias='context_entries')
 
         def _chunk_statement(chunk: list[str]) -> tuple[str, list[object]]:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(chunk))])
@@ -86,7 +87,7 @@ class ContextReadMixin(BaseRepository):
             )
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'''
-                SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
+                SELECT {CONTEXT_ENTRY_COLUMNS} FROM {entries}
                 WHERE id IN ({placeholders}){read.and_clause()}
                 ORDER BY created_at DESC, id DESC
             '''
@@ -105,7 +106,7 @@ class ContextReadMixin(BaseRepository):
                     rows.sort(key=operator.itemgetter('created_at', 'id'), reverse=True)
                 return rows
 
-            return await self.backend.execute_read(_fetch_sqlite)
+            return await self.backend.execute_read(_fetch_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _fetch_postgresql(conn: 'asyncpg.Connection') -> list[Any]:
@@ -117,7 +118,7 @@ class ContextReadMixin(BaseRepository):
                 rows.sort(key=operator.itemgetter('created_at', 'id'), reverse=True)
             return rows
 
-        return await self.backend.execute_read(_fetch_postgresql)
+        return await self.backend.execute_read(_fetch_postgresql, access_scope=scope)
 
     async def check_entry_exists(self, context_id: str, *, scope: Scope) -> EntryProbe:
         """Check whether the scope may read a context entry and return its source, version, owner and write access.
@@ -149,8 +150,9 @@ class ContextReadMixin(BaseRepository):
         read = build_access_predicate(
             scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=id_position + 1,
         )
+        entries = self._readable('context_entries', alias='context_entries')
         query = (
-            f'SELECT source, version, owner_id, {_admits_sql(write)} AS can_write FROM context_entries '
+            f'SELECT source, version, owner_id, {_admits_sql(write)} AS can_write FROM {entries} '
             f'WHERE id = {self._placeholder(id_position)}{read.and_clause()} LIMIT 1'
         )
         params: list[object] = [*write.params, context_id, *read.params]
@@ -171,7 +173,7 @@ class ContextReadMixin(BaseRepository):
                     bool(row['can_write']),
                 )
 
-            return await self.backend.execute_read(_check_exists_sqlite)
+            return await self.backend.execute_read(_check_exists_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _check_exists_postgresql(conn: 'asyncpg.Connection') -> EntryProbe:
@@ -186,7 +188,7 @@ class ContextReadMixin(BaseRepository):
                 bool(row['can_write']),
             )
 
-        return await self.backend.execute_read(_check_exists_postgresql)
+        return await self.backend.execute_read(_check_exists_postgresql, access_scope=scope)
 
     async def probe_ids(
         self,
@@ -218,6 +220,7 @@ class ContextReadMixin(BaseRepository):
 
         backend_type = txn.backend_type if txn else self.backend.backend_type
         chunks = chunk_ids(context_ids)
+        entries = self._readable('context_entries', alias='context_entries')
 
         def _chunk_statement(chunk: list[str]) -> tuple[str, list[object]]:
             # Placeholder order follows the text: the WRITE and OWNER binds of the
@@ -237,7 +240,7 @@ class ContextReadMixin(BaseRepository):
             )
             query = (
                 f'SELECT id, {_admits_sql(write)} AS can_write, {_admits_sql(owner)} AS is_owner '
-                f'FROM context_entries WHERE id IN ({placeholders}){read.and_clause()}'
+                f'FROM {entries} WHERE id IN ({placeholders}){read.and_clause()}'
             )
             return query, [*write.params, *owner.params, *chunk, *read.params]
 
@@ -255,7 +258,7 @@ class ContextReadMixin(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_probe_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_probe_sqlite)
+            return await self.backend.execute_read(_probe_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _probe_postgresql(conn: 'asyncpg.Connection') -> dict[str, IdAccess]:
@@ -270,7 +273,7 @@ class ContextReadMixin(BaseRepository):
 
         if txn is not None:
             return await _probe_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_probe_postgresql)
+        return await self.backend.execute_read(_probe_postgresql, access_scope=scope)
 
     async def entry_exists(
         self,
@@ -335,7 +338,7 @@ class ContextReadMixin(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_entry_exists_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_entry_exists_sqlite)
+            return await self.backend.execute_read(_entry_exists_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _entry_exists_postgresql(conn: 'asyncpg.Connection') -> bool:
@@ -344,7 +347,7 @@ class ContextReadMixin(BaseRepository):
 
         if txn is not None:
             return await _entry_exists_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_entry_exists_postgresql)
+        return await self.backend.execute_read(_entry_exists_postgresql, access_scope=scope)
 
     async def get_content_type(
         self,
@@ -372,7 +375,8 @@ class ContextReadMixin(BaseRepository):
         write = build_access_predicate(
             scope, mode=AccessMode.WRITE, backend_type=backend_type, outer='context_entries', start=2,
         )
-        query = f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}{write.and_clause()}'
+        entries = self._readable('context_entries', alias='context_entries')
+        query = f'SELECT content_type FROM {entries} WHERE id = {self._placeholder(1)}{write.and_clause()}'
         params: list[object] = [context_id, *write.params]
 
         if backend_type == 'sqlite':
@@ -385,7 +389,7 @@ class ContextReadMixin(BaseRepository):
 
             if txn is not None:
                 return await self._run_sqlite_txn(_get_content_type_sqlite, cast(sqlite3.Connection, txn.connection))
-            return await self.backend.execute_read(_get_content_type_sqlite)
+            return await self.backend.execute_read(_get_content_type_sqlite, access_scope=scope)
 
         # PostgreSQL
         async def _get_content_type_postgresql(conn: 'asyncpg.Connection') -> str | None:
@@ -394,7 +398,7 @@ class ContextReadMixin(BaseRepository):
 
         if txn is not None:
             return await _get_content_type_postgresql(cast('asyncpg.Connection', txn.connection))
-        return await self.backend.execute_read(_get_content_type_postgresql)
+        return await self.backend.execute_read(_get_content_type_postgresql, access_scope=scope)
 
     async def find_ids_by_prefix(self, prefix: str, limit: int = 2, *, scope: Scope) -> list[str]:
         """Find the IDs of entries the scope may read that begin with the given prefix.
@@ -425,6 +429,7 @@ class ContextReadMixin(BaseRepository):
         )
         limit_placeholder = self._placeholder(2 + read.bind_count)
         params: list[object] = [prefix + '%', *read.params, limit]
+        entries = self._readable('context_entries', alias='context_entries')
 
         if backend_type == 'sqlite':
 
@@ -432,7 +437,7 @@ class ContextReadMixin(BaseRepository):
                 cursor = conn.cursor()
                 cursor.execute(
                     f'''
-                    SELECT id FROM context_entries
+                    SELECT id FROM {entries}
                     WHERE id LIKE {self._placeholder(1)}{read.and_clause()}
                     ORDER BY id
                     LIMIT {limit_placeholder}
@@ -441,7 +446,7 @@ class ContextReadMixin(BaseRepository):
                 )
                 return [row['id'] for row in cursor.fetchall()]
 
-            return await self.backend.execute_read(_find_sqlite)
+            return await self.backend.execute_read(_find_sqlite, access_scope=scope)
 
         # PostgreSQL: id is a uuid column; canonical text form contains hyphens
         # which are absent from the user-supplied hex prefix. REPLACE() removes
@@ -449,7 +454,7 @@ class ContextReadMixin(BaseRepository):
         async def _find_postgresql(conn: 'asyncpg.Connection') -> list[str]:
             rows = await conn.fetch(
                 f'''
-                SELECT id FROM context_entries
+                SELECT id FROM {entries}
                 WHERE REPLACE(CAST(id AS TEXT), '-', '') LIKE {self._placeholder(1)}{read.and_clause()}
                 ORDER BY id
                 LIMIT {limit_placeholder}
@@ -463,4 +468,4 @@ class ContextReadMixin(BaseRepository):
             # context_id on both backends (mirrors grep_scan_text_contents).
             return [normalize_id(str(row['id'])) for row in rows]
 
-        return await self.backend.execute_read(_find_postgresql)
+        return await self.backend.execute_read(_find_postgresql, access_scope=scope)

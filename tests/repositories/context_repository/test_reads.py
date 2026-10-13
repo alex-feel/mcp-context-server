@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.backends.base import TransactionContext
 from app.ids import generate_id
@@ -286,7 +287,8 @@ class TestContextRepositoryUpdate:
         pool_conn = AsyncMock()
         pool_conn.fetchrow = AsyncMock(return_value={'?column?': 1})
 
-        async def _execute_read(closure: Callable[[object], Awaitable[bool]]) -> bool:
+        async def _execute_read(closure: Callable[[object], Awaitable[bool]], *, access_scope: BackendAccess) -> bool:
+            _ = access_scope
             return await closure(pool_conn)
 
         pool_backend = Mock()

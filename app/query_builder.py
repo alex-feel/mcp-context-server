@@ -17,6 +17,7 @@ from app.metadata_sql import pg_numeric_body
 from app.metadata_sql import pg_numeric_compare
 from app.metadata_sql import pg_text_accessor
 from app.metadata_sql import pg_text_guard
+from app.metadata_sql import pg_total_numeric
 from app.metadata_sql import sqlite_bool_guard
 from app.metadata_sql import sqlite_number_guard
 from app.metadata_sql import sqlite_text_guard
@@ -724,8 +725,10 @@ class MetadataQueryBuilder(MembershipConditionsMixin):
                 # exact int-vs-double element comparison above 2**53. Iterate the number
                 # elements and reuse the shared discriminator so array_contains stays
                 # consistent with the scalar path (only the documented int-origin /
-                # canonical-double-form residual remains).
-                elem_num = "(elem #>> '{}')::NUMERIC"
+                # canonical-double-form residual remains). Each element is read through the
+                # total accessor, so a non-number element is NULL whatever order the planner
+                # evaluates the subquery's conditions in.
+                elem_num = pg_total_numeric('elem', "elem #>> '{}'")
                 compare = pg_numeric_compare(elem_num, '=', placeholder, value)
                 self.conditions.append(
                     f"(CASE WHEN jsonb_typeof({json_acc}) = 'array' "

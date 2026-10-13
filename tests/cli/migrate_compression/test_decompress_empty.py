@@ -260,6 +260,7 @@ async def test_zero_data_drop_is_transactional_on_sqlite(
     from typing import cast
 
     from app.backends import create_backend
+    from app.backends.base import BackendAccess
     from app.backends.base import TransactionContext
     from app.cli.migrate_compression.decompress_empty import execute_decompress_empty
 
@@ -309,13 +310,16 @@ async def test_zero_data_drop_is_transactional_on_sqlite(
                 return self._real.backend_type
 
         @asynccontextmanager
-        async def _proxied_begin() -> AsyncGenerator[TransactionContext, None]:
+        async def _proxied_begin(*, access_scope: BackendAccess) -> AsyncGenerator[TransactionContext, None]:
             """Wrap the real transaction so the body sees the failing proxy.
+
+            Args:
+                access_scope: The identity the transaction runs as.
 
             Yields:
                 The proxy transaction context delegating to the real one.
             """
-            async with real_begin() as txn:
+            async with real_begin(access_scope=access_scope) as txn:
                 yield cast(TransactionContext, _ProxyTxn(txn))
 
         monkeypatch.setattr(backend, 'begin_transaction', _proxied_begin)

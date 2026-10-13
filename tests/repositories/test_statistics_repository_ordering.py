@@ -1,19 +1,15 @@
 """Tests for deterministic top-N windows: the grouping-key tiebreak and byte-wise text collation on both backends."""
 
 import sqlite3
-from collections.abc import Awaitable
-from collections.abc import Callable
-from typing import Any
-from typing import TypeVar
 from typing import cast
 
 import pytest
 
+from app.backends.base import MAINTENANCE
 from app.backends.base import StorageBackend
 from app.repositories.statistics_repository import StatisticsRepository
 from tests.helpers import LOCAL_SCOPE
-
-T = TypeVar('T')
+from tests.repositories._statistics_recording import RecordingPgBackend
 
 
 class TestTopNTiebreakDeterminism:
@@ -60,7 +56,7 @@ class TestTopNTiebreakDeterminism:
         stats_repo: StatisticsRepository,
     ) -> None:
         """A complete tie yields the lexicographically first rows, not an arbitrary set."""
-        await stats_test_db.execute_write(self._insert_tied_data)
+        await stats_test_db.execute_write(self._insert_tied_data, access_scope=MAINTENANCE)
 
         stats = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
@@ -76,7 +72,7 @@ class TestTopNTiebreakDeterminism:
         stats_repo: StatisticsRepository,
     ) -> None:
         """The window is a function of the data: unrelated writes cannot reshuffle it."""
-        await stats_test_db.execute_write(self._insert_tied_data)
+        await stats_test_db.execute_write(self._insert_tied_data, access_scope=MAINTENANCE)
 
         first = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
@@ -86,77 +82,11 @@ class TestTopNTiebreakDeterminism:
                 "WHERE thread_id = 'thread-00'",
             )
 
-        await stats_test_db.execute_write(_unrelated_update)
+        await stats_test_db.execute_write(_unrelated_update, access_scope=MAINTENANCE)
         second = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
         assert second['most_active_threads'] == first['most_active_threads']
         assert second['top_tags'] == first['top_tags']
-
-
-class _SqlRecordingPgConnection:
-    """Async connection stub recording every statement the PostgreSQL paths emit."""
-
-    def __init__(self) -> None:
-        self.queries: list[str] = []
-
-    async def fetch(self, query: str, *_args: object) -> list[dict[str, object]]:
-        """Record the statement and return no rows.
-
-        Args:
-            query: SQL text emitted by the repository.
-            _args: Bound parameters (unused).
-
-        Returns:
-            An empty row list.
-        """
-        self.queries.append(' '.join(query.split()))
-        return []
-
-    async def fetchrow(self, query: str, *_args: object) -> dict[str, object] | None:
-        """Record the statement and return no row.
-
-        Args:
-            query: SQL text emitted by the repository.
-            _args: Bound parameters (unused).
-
-        Returns:
-            ``None``, which every caller tolerates as an empty result.
-        """
-        self.queries.append(' '.join(query.split()))
-        return None
-
-    async def fetchval(self, query: str, *_args: object) -> int:
-        """Record the statement and return a zero scalar.
-
-        Args:
-            query: SQL text emitted by the repository.
-            _args: Bound parameters (unused).
-
-        Returns:
-            Zero.
-        """
-        self.queries.append(' '.join(query.split()))
-        return 0
-
-
-class _SqlRecordingPgBackend:
-    """Backend stub selecting the PostgreSQL branch and capturing its SQL."""
-
-    backend_type = 'postgresql'
-
-    def __init__(self) -> None:
-        self.connection = _SqlRecordingPgConnection()
-
-    async def execute_read(self, operation: Callable[[Any], Awaitable[T]]) -> T:
-        """Run the repository's async closure against the recording connection.
-
-        Args:
-            operation: The async closure the repository passes to the backend.
-
-        Returns:
-            Whatever the closure returns.
-        """
-        return await operation(self.connection)
 
 
 @pytest.mark.asyncio
@@ -204,7 +134,7 @@ class TestTextOrderingIsByteWiseOnBothBackends:
         stats_repo: StatisticsRepository,
     ) -> None:
         """The LIMIT 5 window admits the byte-wise first five tied threads."""
-        await stats_test_db.execute_write(self._insert_collation_sensitive_data)
+        await stats_test_db.execute_write(self._insert_collation_sensitive_data, access_scope=MAINTENANCE)
 
         stats = await stats_repo.get_database_statistics(scope=LOCAL_SCOPE)
 
@@ -214,7 +144,7 @@ class TestTextOrderingIsByteWiseOnBothBackends:
 
     async def test_postgresql_top_windows_force_byte_collation(self) -> None:
         """Both LIMIT-carrying tiebreaks in get_database_statistics are byte-wise."""
-        backend = _SqlRecordingPgBackend()
+        backend = RecordingPgBackend()
         repo = StatisticsRepository(cast(StorageBackend, backend))
 
         await repo.get_database_statistics(scope=LOCAL_SCOPE)

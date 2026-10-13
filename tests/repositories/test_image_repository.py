@@ -56,10 +56,10 @@ class TestImageRepository:
             },
         ]
 
-        await repos.images.store_images(context_id, images_data)
+        await repos.images.store_images(context_id, images_data, scope=LOCAL_SCOPE)
 
         # Retrieve and verify
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 3
         assert images[0].get('mime_type') == 'image/png'
         assert images[1].get('mime_type') == 'image/jpeg'
@@ -88,7 +88,7 @@ class TestImageRepository:
         with pytest.raises(ValueError, match='has no data'):
             await repos.images.store_images(
                 context_id,
-                [{'data': '', 'mime_type': 'image/png'}],
+                [{'data': '', 'mime_type': 'image/png'}], scope=LOCAL_SCOPE,
             )
 
     async def test_store_images_invalid_base64(
@@ -114,7 +114,7 @@ class TestImageRepository:
         with pytest.raises(ValueError, match='Invalid base64'):
             await repos.images.store_images(
                 context_id,
-                [{'data': 'not-valid-base64!@#$', 'mime_type': 'image/png'}],
+                [{'data': 'not-valid-base64!@#$', 'mime_type': 'image/png'}], scope=LOCAL_SCOPE,
             )
 
     async def test_get_images_include_data_false(
@@ -144,11 +144,13 @@ class TestImageRepository:
                     'mime_type': 'image/png',
                 },
             ],
+            scope=LOCAL_SCOPE,
         )
 
         # Get without data
         images = await repos.images.get_images_for_context(
             context_id, include_data=False,
+            scope=LOCAL_SCOPE,
         )
         assert len(images) == 1
         assert images[0].get('mime_type') == 'image/png'
@@ -181,10 +183,10 @@ class TestImageRepository:
             }
             for i in range(5)
         ]
-        await repos.images.store_images(context_id, images_data)
+        await repos.images.store_images(context_id, images_data, scope=LOCAL_SCOPE)
 
         # Count images
-        count = await repos.images.count_images_for_context(context_id)
+        count = await repos.images.count_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert count == 5
 
     async def test_count_images_for_nonexistent_context(
@@ -196,7 +198,7 @@ class TestImageRepository:
         backend = async_db_initialized
         repos = RepositoryContainer(backend)
 
-        count = await repos.images.count_images_for_context(generate_id())
+        count = await repos.images.count_images_for_context(generate_id(), scope=LOCAL_SCOPE)
         assert count == 0
 
     async def test_replace_images_for_context(
@@ -231,6 +233,7 @@ class TestImageRepository:
                     'mime_type': 'image/png',
                 },
             ],
+            scope=LOCAL_SCOPE,
         )
 
         # Replace with new images
@@ -242,10 +245,11 @@ class TestImageRepository:
                     'mime_type': 'image/jpeg',
                 },
             ],
+            scope=LOCAL_SCOPE,
         )
 
         # Verify replacement
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 1
         assert images[0].get('mime_type') == 'image/jpeg'
         img_data = images[0].get('data')
@@ -280,13 +284,14 @@ class TestImageRepository:
                     'mime_type': 'image/png',
                 },
             ],
+            scope=LOCAL_SCOPE,
         )
 
         # Replace with empty list (delete query runs, no inserts)
-        await repos.images.replace_images_for_context(context_id, [])
+        await repos.images.replace_images_for_context(context_id, [], scope=LOCAL_SCOPE)
 
         # Verify all deleted
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 0
 
     async def test_image_metadata_preserved(
@@ -324,10 +329,11 @@ class TestImageRepository:
                     'metadata': metadata,
                 },
             ],
+            scope=LOCAL_SCOPE,
         )
 
         # Retrieve and verify metadata
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 1
         assert images[0].get('metadata') == metadata
 
@@ -359,10 +365,10 @@ class TestImageRepository:
             }
             for i in range(5)
         ]
-        await repos.images.store_images(context_id, images_data)
+        await repos.images.store_images(context_id, images_data, scope=LOCAL_SCOPE)
 
         # Retrieve and verify order
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 5
         for i, img in enumerate(images):
             img_metadata = img.get('metadata')
@@ -390,15 +396,15 @@ class TestImageRepository:
         image_data = base64.b64encode(b'cascade test image').decode('utf-8')
         await repos.images.store_images(context_id, [
             {'data': image_data, 'mime_type': 'image/png'},
-        ])
+        ], scope=LOCAL_SCOPE)
 
-        count_before = await repos.images.count_images_for_context(context_id)
+        count_before = await repos.images.count_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert count_before == 1
 
         deleted = await repos.context.delete_by_ids([context_id], scope=LOCAL_SCOPE)
         assert deleted == 1
 
-        count_after = await repos.images.count_images_for_context(context_id)
+        count_after = await repos.images.count_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert count_after == 0
 
     async def test_store_images_large_binary_data(
@@ -424,9 +430,9 @@ class TestImageRepository:
 
         await repos.images.store_images(context_id, [
             {'data': large_b64, 'mime_type': 'image/jpeg'},
-        ])
+        ], scope=LOCAL_SCOPE)
 
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 1
         img_data = images[0].get('data')
         assert img_data is not None
@@ -454,8 +460,8 @@ class TestImageRepository:
         image_data = base64.b64encode(b'no mime type image').decode('utf-8')
         await repos.images.store_images(context_id, [
             {'data': image_data},
-        ])
+        ], scope=LOCAL_SCOPE)
 
-        images = await repos.images.get_images_for_context(context_id)
+        images = await repos.images.get_images_for_context(context_id, scope=LOCAL_SCOPE)
         assert len(images) == 1
         assert images[0].get('mime_type') == 'image/png'

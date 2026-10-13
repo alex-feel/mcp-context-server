@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+
 
 class TestChunkingMigrationSQLFiles:
     """Tests for chunking migration SQL file content."""
@@ -153,7 +155,7 @@ class TestChunkingMigrationIntegration:
                         VALUES (1, 100), (1, 101), (1, 102)
                     ''')
 
-                await backend.execute_write(_insert_multiple_chunks)
+                await backend.execute_write(_insert_multiple_chunks, access_scope=MAINTENANCE)
 
                 # Verify multiple chunks exist for same context_id
                 def _count_chunks(conn: sqlite3.Connection) -> int:
@@ -162,7 +164,7 @@ class TestChunkingMigrationIntegration:
                     ''')
                     return cursor.fetchone()[0]
 
-                chunk_count = await backend.execute_read(_count_chunks)
+                chunk_count = await backend.execute_read(_count_chunks, access_scope=MAINTENANCE)
                 assert chunk_count == 3, 'Should have 3 chunks for context_id=1'
 
             finally:
@@ -229,21 +231,21 @@ class TestChunkingMigrationIntegration:
                         VALUES (1, 100), (1, 101)
                     ''')
 
-                await backend.execute_write(_insert_chunks)
+                await backend.execute_write(_insert_chunks, access_scope=MAINTENANCE)
 
                 # Delete the context entry
                 def _delete_context(conn: sqlite3.Connection) -> None:
                     conn.execute('PRAGMA foreign_keys = ON')
                     conn.execute('DELETE FROM context_entries WHERE id = 1')
 
-                await backend.execute_write(_delete_context)
+                await backend.execute_write(_delete_context, access_scope=MAINTENANCE)
 
                 # Verify chunks are also deleted
                 def _count_chunks(conn: sqlite3.Connection) -> int:
                     cursor = conn.execute('SELECT COUNT(*) FROM embedding_chunks')
                     return cursor.fetchone()[0]
 
-                chunk_count = await backend.execute_read(_count_chunks)
+                chunk_count = await backend.execute_read(_count_chunks, access_scope=MAINTENANCE)
                 assert chunk_count == 0, 'Chunks should be deleted when context is deleted (CASCADE)'
 
             finally:

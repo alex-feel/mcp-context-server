@@ -84,7 +84,7 @@ async def _delete_all(db: ScopedDb, scope: Scope) -> DeleteObservable:
 
 async def _delete_all_in_transaction(db: ScopedDb, scope: Scope) -> DeleteObservable:
     """Delete the seed ids and the absent id on a transaction connection as the scope."""
-    async with db.backend.begin_transaction() as txn:
+    async with db.backend.begin_transaction(access_scope=scope) as txn:
         deleted = await db.repos.context.delete_by_ids(_seed_ids_with_absent(db), scope=scope, txn=txn)
     return deleted, await _surviving_labels(db)
 

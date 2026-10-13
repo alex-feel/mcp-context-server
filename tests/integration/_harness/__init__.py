@@ -8,9 +8,11 @@ owns the client, the server environment and the result list;
 ``run_all_tests`` here fixes the order the checks run in. The harness is
 backend-agnostic: the same assertion methods run against SQLite or
 PostgreSQL depending on the ``backend`` / ``pg_url`` passed to the
-constructor. The per-backend pytest entry points live in
-``tests/integration/sqlite/test_real_server.py`` and
-``tests/integration/postgresql/test_real_server.py``.
+constructor; on PostgreSQL ``pg_admin_url`` names the superuser connection
+the row counts no tool shows are read through, and ``rls`` the row-level
+security credentials every server of the run starts with. The per-backend
+pytest entry points live in ``tests/integration/sqlite/test_real_server.py``
+and ``tests/integration/postgresql/test_real_server.py``.
 
 No module in this package is named ``test_*``, so pytest does not collect it
 directly; the per-backend entry-point modules import it.

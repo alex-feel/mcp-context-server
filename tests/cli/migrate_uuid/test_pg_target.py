@@ -4,7 +4,10 @@ from unittest import mock
 
 import pytest
 
+from app.backends.postgresql_backend import PostgreSQLBackend
 from app.cli.migrate_uuid.records import MigrationStats
+from tests.cli._owner_connection import OWNER_ANSWER
+from tests.cli._owner_connection import AnswersAsOwner
 
 
 class TestEnsureTargetPgFts:
@@ -97,15 +100,26 @@ class TestEnsureTargetPgFts:
         from typing import cast
         from unittest.mock import AsyncMock
 
-        import app.backends as backends_module
+        import app.cli._backend as cli_backend_module
         import app.migrations.fts as fts_module
+        from app.backends.base import MAINTENANCE
         from app.cli.migrate_uuid.pg_target import ensure_target_pg_fts
 
-        fake_backend = AsyncMock()
-        monkeypatch.setattr(
-            backends_module, 'create_backend', lambda **_kw: fake_backend,
-        )
-        apply_spy = AsyncMock()
+        events: list[str] = []
+        fake_backend = mock.MagicMock(spec=PostgreSQLBackend)
+        fake_backend.backend_type = 'postgresql'
+        fake_backend.initialize = AsyncMock()
+        fake_backend.shutdown = AsyncMock()
+
+        async def _owner_read(_operation: object, *, access_scope: object) -> tuple[str, list[str]]:
+            assert access_scope is MAINTENANCE
+            events.append('precondition')
+            return OWNER_ANSWER
+
+        fake_backend.execute_read = _owner_read
+        make_backend = mock.MagicMock(return_value=fake_backend)
+        monkeypatch.setattr(cli_backend_module, 'make_backend', make_backend)
+        apply_spy = AsyncMock(side_effect=lambda *_args, **_kwargs: events.append('fts'))
         monkeypatch.setattr(fts_module, 'apply_fts_migration', apply_spy)
 
         stats = MigrationStats()
@@ -115,7 +129,9 @@ class TestEnsureTargetPgFts:
             dry_run=False, stats=stats,
         )
 
+        make_backend.assert_called_once_with('postgresql://ignored', provision_vector=False)
         apply_spy.assert_awaited_once_with(fake_backend, force=True)
+        assert events == ['precondition', 'fts']
         fake_backend.initialize.assert_awaited_once()
         fake_backend.shutdown.assert_awaited_once()
         assert any('provisioned full-text search' in w for w in stats.warnings)
@@ -152,14 +168,14 @@ class TestInitializeTargetPostgresqlVectorGating:
         """
         import asyncpg as asyncpg_mod
 
-        import app.backends as backends_mod
+        import app.cli._backend as cli_backend_mod
         import app.migrations.chunking as chunking_mod
         import app.migrations.fts as fts_mod
         import app.migrations.index_tree as index_tree_mod
         import app.migrations.semantic as semantic_mod
         import app.startup as startup_mod
 
-        class _FakeExtConn:
+        class _FakeExtConn(AnswersAsOwner):
             async def execute(self, sql: str) -> None:
                 if schema_error is not None and 'CREATE SCHEMA' in sql:
                     raise schema_error
@@ -175,11 +191,14 @@ class TestInitializeTargetPostgresqlVectorGating:
 
         monkeypatch.setattr(asyncpg_mod, 'connect', _fake_connect)
 
-        backend = mock.MagicMock()
+        backend = mock.MagicMock(spec=PostgreSQLBackend)
+        backend.backend_type = 'postgresql'
         backend.initialize = mock.AsyncMock()
         backend.shutdown = mock.AsyncMock()
+        # The owner precondition reads through the backend: the table owner, filtered on no table.
+        backend.execute_read = mock.AsyncMock(return_value=OWNER_ANSWER)
         mocks: dict[str, mock.AsyncMock | mock.MagicMock] = {
-            'create_backend': mock.MagicMock(return_value=backend),
+            'make_backend': mock.MagicMock(return_value=backend),
             'init_database': mock.AsyncMock(),
             'semantic': mock.AsyncMock(),
             'jsonb': mock.AsyncMock(),
@@ -188,7 +207,7 @@ class TestInitializeTargetPostgresqlVectorGating:
             'chunking': mock.AsyncMock(),
             'index_tree': mock.AsyncMock(),
         }
-        monkeypatch.setattr(backends_mod, 'create_backend', mocks['create_backend'])
+        monkeypatch.setattr(cli_backend_mod, 'make_backend', mocks['make_backend'])
         monkeypatch.setattr(startup_mod, 'init_database', mocks['init_database'])
         monkeypatch.setattr(semantic_mod, 'apply_semantic_search_migration', mocks['semantic'])
         monkeypatch.setattr(semantic_mod, 'apply_jsonb_merge_patch_migration', mocks['jsonb'])
@@ -219,7 +238,7 @@ class TestInitializeTargetPostgresqlVectorGating:
 
         assert any('CREATE SCHEMA' in sql for sql in executed)
         assert not any('CREATE EXTENSION' in sql for sql in executed)
-        assert mocks['create_backend'].call_args.kwargs['provision_vector'] is False
+        assert mocks['make_backend'].call_args.kwargs['provision_vector'] is False
         mocks['semantic'].assert_not_called()
         mocks['chunking'].assert_not_called()
 
@@ -245,7 +264,7 @@ class TestInitializeTargetPostgresqlVectorGating:
         schema_idx = next(i for i, sql in enumerate(executed) if 'CREATE SCHEMA' in sql)
         ext_idx = next(i for i, sql in enumerate(executed) if 'CREATE EXTENSION' in sql)
         assert schema_idx < ext_idx
-        assert mocks['create_backend'].call_args.kwargs['provision_vector'] is True
+        assert mocks['make_backend'].call_args.kwargs['provision_vector'] is True
         mocks['semantic'].assert_called_once()
         mocks['chunking'].assert_called_once()
 
@@ -333,7 +352,7 @@ class TestInitializeTargetPostgresqlVectorGating:
         # No DDL of any kind ran: no schema/extension statements, no backend,
         # no base-schema init, no migrations.
         assert executed == []
-        mocks['create_backend'].assert_not_called()
+        mocks['make_backend'].assert_not_called()
         mocks['init_database'].assert_not_awaited()
         mocks['semantic'].assert_not_awaited()
         mocks['chunking'].assert_not_awaited()
@@ -407,7 +426,7 @@ class TestInitializeTargetPostgresqlVectorGating:
 
         # No DDL of any kind ran: the refusal precedes every connection and migration.
         assert executed == []
-        mocks['create_backend'].assert_not_called()
+        mocks['make_backend'].assert_not_called()
         mocks['init_database'].assert_not_awaited()
         mocks['semantic'].assert_not_awaited()
         mocks['chunking'].assert_not_awaited()

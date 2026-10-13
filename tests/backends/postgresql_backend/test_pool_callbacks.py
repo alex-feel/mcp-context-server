@@ -18,6 +18,8 @@ import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.backends.postgresql_backend.acquire_faults import ConnectionEstablishmentTimeoutError
+from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session_profiles import UnboundProfile
 
 
 class TestSetupPoolConnectionTimeout:
@@ -40,7 +42,7 @@ class TestSetupPoolConnectionTimeout:
         conn.execute = AsyncMock(side_effect=TimeoutError('dead pooled connection'))
 
         with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError, match='setup timed out'):
-            await setup_pool_connection(cast(asyncpg.Connection, conn))
+            await setup_pool_connection(cast(asyncpg.Connection, conn), profile_statements=[])
 
     @pytest.mark.asyncio
     async def test_setup_success_sets_statement_timeout(self) -> None:
@@ -50,7 +52,7 @@ class TestSetupPoolConnectionTimeout:
         conn = MagicMock()
         conn.execute = AsyncMock()
 
-        await setup_pool_connection(cast(asyncpg.Connection, conn))
+        await setup_pool_connection(cast(asyncpg.Connection, conn), profile_statements=[])
 
         conn.execute.assert_awaited_once()
         assert conn.execute.await_args is not None
@@ -66,7 +68,7 @@ class TestSetupPoolConnectionTimeout:
         conn.execute = AsyncMock(side_effect=RuntimeError('protocol desync'))
 
         with pytest.raises(RuntimeError, match='protocol desync'):
-            await setup_pool_connection(cast(asyncpg.Connection, conn))
+            await setup_pool_connection(cast(asyncpg.Connection, conn), profile_statements=[])
 
 
 class TestPoolConnectTypedTimeout:
@@ -163,6 +165,8 @@ class TestPgvectorInitCallbackClassification:
         """
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+            profile=UnboundProfile(),
+            credentials=NO_CREDENTIAL_OVERRIDE,
         )
         monkeypatch.setattr(backend, '_resolve_provision_vector', AsyncMock(return_value=True))
         monkeypatch.setattr(backend, '_ensure_pgvector_extension', AsyncMock())

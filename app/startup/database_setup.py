@@ -1,9 +1,12 @@
 """Database preparation phase of the server lifespan.
 
-Runs on the backend the lifespan created, before any repository or tool uses it:
-ensures the base schema, applies every idempotent migration, validates the
-connection-pool acquire timeout and the compression provenance, then announces the
-active compression configuration.
+Runs before any repository or tool uses the database: on PostgreSQL on the maintenance
+backend, logged in as the table owner, and on SQLite on the backend the server shares.
+It ensures the base schema, refuses a start whose configuration contradicts the data
+already stored, applies every idempotent migration, validates the connection-pool
+acquire timeout and the compression provenance, announces the active compression
+configuration, grants the request role what it needs when requests log in as another
+role, and finally brings the PostgreSQL row-level security objects up to date.
 """
 
 import logging
@@ -18,10 +21,13 @@ from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
 from app.migrations import apply_index_tree_migration
 from app.migrations import apply_jsonb_merge_patch_migration
+from app.migrations import apply_request_role_grants
+from app.migrations import apply_rls
 from app.migrations import apply_semantic_search_migration
 from app.migrations import apply_summary_migration
 from app.migrations import apply_tag_uniqueness_migration
 from app.migrations import apply_version_migration
+from app.migrations import guard_rls_disable_over_enabled
 from app.migrations import handle_metadata_indexes
 from app.settings import AppSettings
 from app.startup import init_database
@@ -32,14 +38,19 @@ from app.startup.validation import validate_pool_acquire_timeout
 logger = logging.getLogger(__name__)
 
 
-async def prepare_database(backend: StorageBackend, settings: AppSettings) -> None:
+async def prepare_database(backend: StorageBackend, settings: AppSettings, *, request_role: str | None) -> None:
     """Bring the database schema up to date and validate it before the server serves.
 
     Args:
-        backend: The initialized backend the server lifespan shares with every tool.
+        backend: The initialized backend to prepare through: on PostgreSQL the maintenance
+            backend, logged in as the table owner; on SQLite the backend the server lifespan
+            shares with every tool.
         settings: The application settings the server lifespan runs with.
+        request_role: The PostgreSQL role requests log in as, as the database reports it,
+            when it differs from the role this backend logs in as; None when requests use
+            the same role, and always on SQLite.
     """
-    # Ensure schema exists using the shared backend
+    # Ensure the base schema exists
     await init_database(backend=backend)
     # Handle metadata field indexing (configurable via METADATA_INDEXED_FIELDS)
     await handle_metadata_indexes(backend=backend)
@@ -52,7 +63,10 @@ async def prepare_database(backend: StorageBackend, settings: AppSettings) -> No
     # Refusing up front means no stray schema is ever created on either
     # backend.
     await guard_compression_disable_over_populated(backend=backend)
-    # Apply semantic search migration if enabled using the shared backend
+    # Refuse a PostgreSQL start with ENABLE_POSTGRESQL_RLS off over the row-level
+    # security objects a start with it on installed, before anything is provisioned.
+    await guard_rls_disable_over_enabled(backend, settings)
+    # Apply the semantic search migration (embedding storage)
     await apply_semantic_search_migration(backend=backend)
     # Apply jsonb_merge_patch migration for PostgreSQL (required for metadata_patch)
     await apply_jsonb_merge_patch_migration(backend=backend)
@@ -97,6 +111,12 @@ async def prepare_database(backend: StorageBackend, settings: AppSettings) -> No
     # mismatch; the supervisor does not auto-restart.
     await validate_compression_provenance(backend=backend)
     await _announce_compression(backend, settings)
+    # The request role's grants and row-level security come last: every table and column
+    # this start provisions exists by now, so the grants and the policies cover every
+    # managed table and the read view lists every column. A database whose grants and
+    # objects are current takes no lock and no DDL here.
+    await apply_request_role_grants(backend, settings, request_role=request_role)
+    await apply_rls(backend, settings)
 
 
 async def _announce_compression(backend: StorageBackend, settings: AppSettings) -> None:
