@@ -35,7 +35,7 @@ def _postgresql_readable_tags() -> str:
 
 @pytest.mark.asyncio
 async def test_postgresql_counts_distinct_tags_through_a_distinct_subquery() -> None:
-    """The unique-tags count wraps a DISTINCT of the readable tags and no longer aggregates COUNT(DISTINCT)."""
+    """The unique-tags count counts the rows of a DISTINCT subquery over the readable tags, not COUNT(DISTINCT t.tag)."""
     backend = RecordingPgBackend()
 
     await StatisticsRepository(cast(StorageBackend, backend)).get_database_statistics(scope=LOCAL_SCOPE)
