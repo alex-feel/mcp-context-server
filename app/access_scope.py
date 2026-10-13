@@ -227,6 +227,9 @@ MAY_PUBLISH_FUNCTION: Final = 'mcp_context_may_publish'
 # context_entries: owned by the table owner, its condition is the READ predicate
 # gated on membership of the policy role (build_gated_read_predicate).
 READ_VIEW: Final = 'context_entries_readable'
+# The view through which such a backend reads tags: owned by the table owner, it lists
+# the tags of the entries READ_VIEW returns.
+TAGS_READ_VIEW: Final = 'tags_readable'
 
 
 def policy_operands(schema: str) -> PolicyOperands:

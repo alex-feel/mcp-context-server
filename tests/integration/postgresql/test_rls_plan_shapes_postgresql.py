@@ -15,9 +15,12 @@ string equality and with a string IN, the full-text page, the hybrid full-text l
 vector search with a metadata filter in both embedding layouts, each planned with sequential
 scans disabled, scan the index their own filter can use and evaluate the gate in InitPlans alone,
 while the same statement naming the base table scans no such index under the policies. The
-unique-tags count and the top tags of the statistics, which join the tags to the view, carry no
-One-Time Filter and no condition naming the gate. Each runs with the application predicate, as the
-request profile sends it, and without it, as the repositories send it for the system scope.
+unique-tags count and the top tags of the statistics read the tags through ``tags_readable``, which
+joins them to the read view of the entries: their plans carry no One-Time Filter and no condition
+naming the gate, and the tags table is read as the view's owner, with no per-row check of the tags
+read policy, which the same statement naming the tags table pays. Each runs with the application
+predicate, as the request profile sends it, and without it, as the repositories send it for the
+system scope.
 """
 
 import json
@@ -66,6 +69,8 @@ FTS_INDEX = 'idx_text_search_gin'
 METADATA_INDEX = f'idx_metadata_{FIELD}'
 GATE_FUNCTION = 'pg_has_role'
 TAG_COLUMN = 't.tag'
+TAGS_VIEW_RELATION = 'tags_readable AS t '
+TAGS_BASE_RELATION = 'tags t '
 # The plan-node keys that hold a condition the node applies.
 CONDITION_KEYS = ('Index Cond', 'Recheck Cond', 'Filter', 'Join Filter', 'Hash Cond', 'Merge Cond', 'One-Time Filter')
 # Target rows: the filters below select exactly these among the filler rows.
@@ -263,6 +268,7 @@ class PlanFacts:
         gate_initplans: How many InitPlans compute a value from the gate.
         gated_conditions: Every node condition, One-Time Filters included, that names the gate.
         one_time_filters: Every One-Time Filter of the plan.
+        tags_conditions: Every condition of a node that scans the tags table.
         text: The statement and one line per plan node, for failure messages.
     """
 
@@ -270,6 +276,7 @@ class PlanFacts:
     gate_initplans: int
     gated_conditions: tuple[str, ...]
     one_time_filters: tuple[str, ...]
+    tags_conditions: tuple[str, ...]
     text: str
 
 
@@ -292,6 +299,9 @@ async def _plan(backend: PostgreSQLBackend, statement: Captured, *, disable_seqs
         ),
         gated_conditions=tuple(condition for condition in conditions if GATE_FUNCTION in condition),
         one_time_filters=tuple(str(node['One-Time Filter']) for node in nodes if 'One-Time Filter' in node),
+        tags_conditions=tuple(
+            str(node[key]) for node in nodes if node.get('Relation Name') == 'tags' for key in CONDITION_KEYS if key in node
+        ),
         text='\n'.join([statement.sql, *(_describe(node) for node in nodes)]),
     )
 
@@ -369,10 +379,10 @@ async def test_vector_search_with_a_metadata_filter_keeps_the_metadata_index_thr
 
 @pytest.mark.parametrize('variant', list(VARIANTS))
 @pytest.mark.asyncio
-async def test_tag_aggregates_join_the_view_without_a_one_time_filter(
+async def test_tag_aggregates_read_the_tags_view_without_a_one_time_filter_or_the_tags_policy(
     variant: str, plan_db: ScopedDb, pg_rls_db: RlsUrls,
 ) -> None:
-    """The unique-tags count and the top tags evaluate the gate in InitPlans, never as a condition over the join."""
+    """The tag aggregates read tags_readable, evaluate the gate in InitPlans alone and leave the tags policy unused."""
     _ = plan_db
     profile_factory, scope = VARIANTS[variant]
     async with capturing_repositories(pg_rls_db.app, profile_factory()) as (repos, capturing):
@@ -380,11 +390,22 @@ async def test_tag_aggregates_join_the_view_without_a_one_time_filter(
         aggregates = [statement for statement in capturing.statements if TAG_COLUMN in statement.sql]
         assert len(aggregates) == 2, [statement.sql for statement in aggregates]
         plans = [await _plan(capturing.backend, statement, disable_seqscan=False) for statement in aggregates]
+        base_plans = [
+            await _plan(
+                capturing.backend,
+                Captured(statement.sql.replace(TAGS_VIEW_RELATION, TAGS_BASE_RELATION), statement.args),
+                disable_seqscan=False,
+            )
+            for statement in aggregates
+        ]
 
     assert stats['unique_tags'] > 0
-    for statement, facts in zip(aggregates, plans, strict=True):
+    for statement, facts, base in zip(aggregates, plans, base_plans, strict=True):
+        assert TAGS_VIEW_RELATION in statement.sql, statement.sql
         assert VIEW_RELATION in statement.sql, statement.sql
         _assert_gate_in_initplans_alone(facts)
+        assert not any('SubPlan' in condition for condition in facts.tags_conditions), facts.text
+        assert any('SubPlan' in condition for condition in base.tags_conditions), base.text
 
 
 @pytest.mark.asyncio

@@ -7,11 +7,12 @@ issues no DDL and takes no lock, while a difference makes the migration wait for
 schema-init lock and repair only that; that the fp32 and compressed layouts, a database
 without embedding storage and a node-summary table switched on later each end with
 policies on exactly the tables that exist; that a new policy role re-creates every
-policy and the read view while a new member login role changes nothing; that an object
-altered outside the server, a column added to ``context_entries`` and an extra grantee
-on the view are repaired and named; that the FTS language rebuild re-creates the view
-in its own transaction; and that a boot with the flag off over installed objects is
-refused.
+policy and both read views while a new member login role changes nothing; that an object
+altered outside the server, a column added to ``context_entries`` (which re-creates
+``tags_readable`` with the read view it reads through), a ``tags_readable`` replaced
+outside the server and an extra grantee on either view are repaired and named; that the
+FTS language rebuild re-creates both views in its own transaction; and that a boot with
+the flag off over installed objects is refused.
 """
 
 import asyncio
@@ -35,7 +36,7 @@ from app.migrations.rls_ddl import MANAGED_TABLES
 from app.migrations.rls_ddl import digest
 from app.migrations.rls_ddl import parse_fingerprint
 from app.migrations.rls_ddl import policy_names
-from app.migrations.rls_ddl import read_view
+from app.migrations.rls_view_ddl import read_view
 from app.repositories import RepositoryContainer
 from app.settings import get_settings
 from app.startup.database_setup import prepare_database
@@ -62,6 +63,8 @@ pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 SCHEMA_NAME: Final = 'public'
 SCHEMA: Final = '"public"'
 VIEW: Final = f'{SCHEMA}.context_entries_readable'
+TAGS_VIEW: Final = f'{SCHEMA}.tags_readable'
+VIEW_OID: Final = 'SELECT to_regclass($1)::oid'
 ALT_POLICY_ROLE: Final = 'mcp_rls_alt_policy'
 ALT_LOGIN_ROLE: Final = 'mcp_rls_alt_login'
 INSERT_PUBLIC_ENTRY: Final = (
@@ -125,9 +128,10 @@ async def _assert_installed(conn: asyncpg.Connection, *, policy_role: str = POLI
     assert all(parse_fingerprint(policy.comment) is not None for policy in installed.values())
     enabled = await row_security(conn, SCHEMA_NAME)
     assert {table: enabled[table] for table in tables} == dict.fromkeys(tables, (True, False))
-    view_owner = await conn.fetchval('SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = to_regclass($1)', VIEW)
-    assert view_owner == 'mcp_owner'
-    assert await view_acl(conn, VIEW) == [(policy_role, 'SELECT')]
+    for view in (VIEW, TAGS_VIEW):
+        view_owner = await conn.fetchval('SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = to_regclass($1)', view)
+        assert view_owner == 'mcp_owner', view
+        assert await view_acl(conn, view) == [(policy_role, 'SELECT')], view
 
 
 async def _apply_holding_the_lock(
@@ -174,6 +178,8 @@ class TestNoDdlBoot:
             vector_table = 'vec_context_embeddings' if layout == 'fp32' else 'vec_context_embeddings_compressed'
             assert vector_table in await _managed_tables(admin)
             before = await object_oids(admin, SCHEMA_NAME)
+            assert {'view context_entries_readable', 'view tags_readable'} <= set(before)
+            assert {'trigger context_entries_readable.reject_writes', 'trigger tags_readable.reject_writes'} <= set(before)
             await install_ddl_log(admin)
 
             waiters = await _apply_holding_the_lock(backend, admin, pg_rls_db)
@@ -291,7 +297,7 @@ class TestRoles:
         self, booted: StorageBackend, admin: asyncpg.Connection, alt_policy_role: str,
     ) -> None:
         before = await policies(admin, SCHEMA_NAME)
-        view_oid = await admin.fetchval('SELECT to_regclass($1)::oid', VIEW)
+        view_oids = [await admin.fetchval(VIEW_OID, view) for view in (VIEW, TAGS_VIEW)]
 
         await apply_rls(booted, rls_settings(policy_role=alt_policy_role))
 
@@ -299,7 +305,8 @@ class TestRoles:
         assert set(after) == set(before)
         assert all(after[key].oid != before[key].oid for key in before)
         await _assert_installed(admin, policy_role=alt_policy_role)
-        assert await admin.fetchval('SELECT to_regclass($1)::oid', VIEW) != view_oid
+        after_oids = [await admin.fetchval(VIEW_OID, view) for view in (VIEW, TAGS_VIEW)]
+        assert all(current != earlier for current, earlier in zip(after_oids, view_oids, strict=True))
         assert f"'{alt_policy_role}'" in await admin.fetchval('SELECT pg_get_viewdef(to_regclass($1), true)', VIEW)
 
         await install_ddl_log(admin)
@@ -327,6 +334,7 @@ class TestRoles:
         try:
             assert await login.fetchval('SELECT current_user') == alt_login_role
             assert await login.fetchval(f'SELECT count(*) FROM {VIEW}') == 1
+            assert await login.fetchval(f'SELECT count(*) FROM {TAGS_VIEW}') == 0
         finally:
             await login.close()
 
@@ -358,12 +366,13 @@ class TestRepairs:
         assert any(f'POLICY tags_read ON {SCHEMA}.tags' in record.getMessage() for record in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_a_column_added_re_creates_the_view_with_its_acl_and_trigger_naming_the_grants_it_drops(
+    async def test_a_column_added_re_creates_both_views_with_their_acl_and_trigger_naming_the_grants_it_drops(
         self, booted: StorageBackend, admin: asyncpg.Connection, owner: asyncpg.Connection, caplog: pytest.LogCaptureFixture,
     ) -> None:
         await owner.execute('ALTER TABLE context_entries ADD COLUMN extra_probe text')
         await owner.execute(f'GRANT SELECT ON {VIEW} TO mcp_outsider')
         policies_before = await policies(admin, SCHEMA_NAME)
+        tags_view_oid = await admin.fetchval(VIEW_OID, TAGS_VIEW)
 
         with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
             await apply_rls(booted, rls_settings())
@@ -371,12 +380,14 @@ class TestRepairs:
         columns = await view_columns(admin, VIEW)
         assert columns == await view_columns(admin, f'{SCHEMA}.context_entries')
         assert columns[-1] == 'extra_probe'
-        assert await view_acl(admin, VIEW) == [(POLICY_ROLE, 'SELECT')]
-        assert await admin.fetchval(
-            "SELECT count(*) FROM pg_trigger WHERE tgrelid = to_regclass($1) AND tgname = 'reject_writes' "
-            "AND tgenabled <> 'D'",
-            VIEW,
-        ) == 1
+        assert await admin.fetchval(VIEW_OID, TAGS_VIEW) != tags_view_oid
+        for relation in (VIEW, TAGS_VIEW):
+            assert await view_acl(admin, relation) == [(POLICY_ROLE, 'SELECT')], relation
+            assert await admin.fetchval(
+                "SELECT count(*) FROM pg_trigger WHERE tgrelid = to_regclass($1) AND tgname = 'reject_writes' "
+                "AND tgenabled <> 'D'",
+                relation,
+            ) == 1, relation
         view = read_view([f'"{column}"' for column in columns], schema=SCHEMA, role_name=POLICY_ROLE)
         fingerprint = parse_fingerprint(await admin.fetchval("SELECT obj_description(to_regclass($1), 'pg_class')", VIEW))
         assert fingerprint is not None
@@ -404,11 +415,52 @@ class TestRepairs:
         assert 'mcp_outsider (SELECT)' in warning
         assert f'{POLICY_ROLE} (INSERT)' in warning
 
+    @pytest.mark.asyncio
+    async def test_a_stray_grantee_on_the_unchanged_tags_view_is_revoked_with_a_warning_naming_it(
+        self, booted: StorageBackend, admin: asyncpg.Connection, owner: asyncpg.Connection, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        await owner.execute(f'GRANT SELECT ON {TAGS_VIEW} TO mcp_outsider')
+        before = await object_oids(admin, SCHEMA_NAME)
+
+        with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
+            await apply_rls(booted, rls_settings())
+
+        assert await object_oids(admin, SCHEMA_NAME) == before
+        assert await view_acl(admin, TAGS_VIEW) == [(POLICY_ROLE, 'SELECT')]
+        [warning] = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+        assert TAGS_VIEW in warning
+        assert 'mcp_outsider (SELECT)' in warning
+
+    @pytest.mark.asyncio
+    async def test_a_tags_view_replaced_outside_the_server_is_re_created_alone_and_named(
+        self, booted: StorageBackend, admin: asyncpg.Connection, owner: asyncpg.Connection, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        await owner.execute(
+            f'CREATE OR REPLACE VIEW {TAGS_VIEW} AS SELECT t.id, t.context_entry_id, t.tag FROM {SCHEMA}.tags AS t',
+        )
+        before = await object_oids(admin, SCHEMA_NAME)
+
+        with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
+            await apply_rls(booted, rls_settings())
+
+        after = await object_oids(admin, SCHEMA_NAME)
+        changed = {key for key in before if after.get(key) != before[key]}
+        assert changed == {'view tags_readable', 'trigger tags_readable.reject_writes'}
+        assert 'context_entries_readable' in await admin.fetchval('SELECT pg_get_viewdef(to_regclass($1), true)', TAGS_VIEW)
+        assert await view_acl(admin, TAGS_VIEW) == [(POLICY_ROLE, 'SELECT')]
+        assert any(
+            f'VIEW {TAGS_VIEW}' in record.getMessage() and 'outside the server' in record.getMessage()
+            for record in caplog.records
+        )
+        await install_ddl_log(admin)
+        await apply_rls(booted, rls_settings())
+        assert await ddl_log(admin) == []
+
 
 class TestFtsLanguageRebuild:
-    """The FTS language rebuild re-creates the read view in its own transaction, as the migration would render it.
+    """The FTS language rebuild re-creates both read views in its own transaction, as the migration would render them.
 
-    Like the migration, it names every grant on the view its drop takes away beyond the
+    Like the migration, it names every grant on a view its drop takes away beyond the
     policy role's SELECT.
     """
 
@@ -418,23 +470,28 @@ class TestFtsLanguageRebuild:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         fts = RepositoryContainer(booted).fts
-        view_oid = await admin.fetchval('SELECT to_regclass($1)::oid', VIEW)
+        view_oids = [await admin.fetchval(VIEW_OID, view) for view in (VIEW, TAGS_VIEW)]
 
         with pytest.raises(Exception, match='no_such_language'):
             await fts.migrate_language('no_such_language', scope=MAINTENANCE)
-        assert await admin.fetchval('SELECT to_regclass($1)::oid', VIEW) == view_oid
+        assert [await admin.fetchval(VIEW_OID, view) for view in (VIEW, TAGS_VIEW)] == view_oids
 
         await owner.execute(f'GRANT SELECT ON {VIEW} TO mcp_outsider')
+        await owner.execute(f'GRANT INSERT ON {TAGS_VIEW} TO mcp_outsider')
         with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
             await fts.migrate_language('german', scope=MAINTENANCE)
 
-        assert any('mcp_outsider (SELECT)' in record.getMessage() for record in caplog.records)
-        assert await admin.fetchval('SELECT to_regclass($1)::oid', VIEW) != view_oid
+        warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+        assert any(TAGS_VIEW in message and 'mcp_outsider (INSERT)' in message for message in warnings)
+        assert any(VIEW in message and 'mcp_outsider (SELECT)' in message for message in warnings)
+        after_oids = [await admin.fetchval(VIEW_OID, view) for view in (VIEW, TAGS_VIEW)]
+        assert all(current != earlier for current, earlier in zip(after_oids, view_oids, strict=True))
         columns = await view_columns(admin, VIEW)
         assert columns == await view_columns(admin, f'{SCHEMA}.context_entries')
         assert columns[-1] == 'text_search_vector'
         assert await fts.get_current_language(scope=MAINTENANCE) == 'german'
-        assert await view_acl(admin, VIEW) == [(POLICY_ROLE, 'SELECT')]
+        for view in (VIEW, TAGS_VIEW):
+            assert await view_acl(admin, view) == [(POLICY_ROLE, 'SELECT')], view
         await install_ddl_log(admin)
         await apply_rls(booted, rls_settings())
         assert await ddl_log(admin) == []
@@ -452,7 +509,7 @@ class TestFlagOffGuard:
             await guard_rls_disable_over_enabled(booted, flag_off)
 
         tables = [table for table in MANAGED_TABLES if table != 'vec_context_embeddings_compressed']
-        assert f'(tables: {", ".join(tables)}, context_entries_readable)' in str(raised.value)
+        assert f'(tables: {", ".join(tables)}, context_entries_readable, tags_readable)' in str(raised.value)
         assert 'mcp-context-server-migrate --disable-rls' in str(raised.value)
         with pytest.raises(ConfigurationError, match='ENABLE_POSTGRESQL_RLS=false'):
             await prepare_database(booted, flag_off, request_role=None)

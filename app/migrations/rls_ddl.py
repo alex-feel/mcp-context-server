@@ -14,20 +14,17 @@ the objects that do it:
   WRITE on the parent; no update policy, because no child row is ever updated);
 - the guard trigger that keeps ``owner_id`` immutable, visibility changes owner-only and
   publishing gated, which a policy cannot express because WITH CHECK does not see the old
-  row;
-- the read view of ``context_entries`` that request roles read through, the statements
-  that leave SELECT for the policy role as the only privilege on it, and the function and
-  INSTEAD OF trigger that keep it read-only.
+  row.
+
+The read views request roles read through, and their write rejection, are rendered by
+:mod:`app.migrations.rls_view_ddl` on the object model of this module.
 
 Every policy expression of ``context_entries`` and of a child's parent comes from
-:func:`app.access_scope.build_policy_predicate`, and the read view's condition from
-:func:`app.access_scope.build_gated_read_predicate`; both use the composer the application
+:func:`app.access_scope.build_policy_predicate`, which uses the composer the application
 predicate uses, so they cannot drift apart. Policies apply to the policy role only, never
 to PUBLIC, so every other role without the table owner's bypass reads nothing.
 Row-level security is enabled without FORCE: the table owner, which runs migrations and
-the command-line tools, keeps reading every row, and so does the read view it owns, which
-carries the read predicate, gated on membership of the policy role, as an ordinary
-condition.
+the command-line tools, keeps reading every row, and so do the read views it owns.
 
 Every object carries a fingerprint comment: the ``sha`` of its rendered statement, which
 changes whenever this module renders something different, and the digest of the server's
@@ -41,7 +38,6 @@ Schema and role names are taken already quoted as SQL identifiers.
 import hashlib
 import re
 from collections.abc import Mapping
-from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -51,9 +47,7 @@ from typing import NamedTuple
 from app.access_scope import GROUPS_FUNCTION
 from app.access_scope import MAY_PUBLISH_FUNCTION
 from app.access_scope import PRINCIPAL_FUNCTION
-from app.access_scope import READ_VIEW
 from app.access_scope import AccessMode
-from app.access_scope import build_gated_read_predicate
 from app.access_scope import build_policy_predicate
 from app.access_scope import policy_operands
 
@@ -78,20 +72,13 @@ _READ_POLICIES: Final = frozenset(f'{table}_read' for table in MANAGED_TABLES)
 
 GUARD_FUNCTION: Final = 'mcp_context_guard_access_columns'
 GUARD_TRIGGER: Final = 'guard_context_entry_access_columns'
-REJECT_FUNCTION: Final = 'mcp_context_reject_view_write'
-REJECT_TRIGGER: Final = 'reject_writes'
 
-# Alias of the parent entry in the subqueries of the grants and child policies, and of
-# context_entries in the read view.
+# Alias of the parent entry in the subqueries of the grants and child policies.
 _PARENT: Final = 'ce'
 _HEX_DIGEST = re.compile(r'[0-9a-f]{64}')
 _FINGERPRINT = re.compile(
     rf'{re.escape(FINGERPRINT_PREFIX)} sha=([0-9a-f]{{64}}) def=([0-9a-f]{{64}})(?: preenabled=(true|false))?',
 )
-# The privileges a table's or a view's ACL holds, as GRANT and REVOKE name them, and ALL.
-_ACL_PRIVILEGES: Final = frozenset({
-    'ALL', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN',
-})
 
 # Each helper returns one transaction-local setting the request profile binds. An unset
 # setting reads NULL and a setting cleared by COMMIT or RESET ALL reads '', and NULLIF turns
@@ -336,7 +323,7 @@ def restore_search_path(search_path: str) -> str:
     Returns:
         The ``set_config`` call, the value as a string literal.
     """
-    return f"SELECT pg_catalog.set_config('search_path', {_string_literal(search_path)}, true)"
+    return f"SELECT pg_catalog.set_config('search_path', {string_literal(search_path)}, true)"
 
 
 def helper_grant(schema: str, role: str) -> str:
@@ -573,142 +560,13 @@ def _child_clauses(table: str, key: str, schema: str) -> tuple[tuple[str, str], 
     )
 
 
-def read_view(columns: Sequence[str], *, schema: str, role_name: str) -> RlsObject:
-    """Return the view through which request roles read ``context_entries``.
-
-    The view lists ``columns`` in order and keeps a row when the reading role is a member
-    of the policy role and the bound identity may read the row. It carries no option: it
-    runs as its owner, the table owner, whom the policies do not filter, and the planner
-    pulls it up into the query, so its conditions and the query's own compete by cost
-    alone and the query's conditions keep their indexes. The membership test sits inside
-    the identity operands and the public arm of the read predicate
-    (:func:`app.access_scope.build_gated_read_predicate`), each a scalar subquery the
-    planner evaluates once per statement, so it never stands above a join of the view as
-    a condition of its own. For a role outside the policy role the identity is NULL, the
-    groups are empty and the public arm is false, so such a role that obtains SELECT on
-    the view reads nothing, as the policies give it nothing.
+def string_literal(value: str) -> str:
+    """Return ``value`` as a SQL string literal, doubling embedded quotes.
 
     Args:
-        columns: Every column of ``context_entries``, quoted, in attribute order.
-        schema: The schema of the tables, quoted.
-        role_name: The policy role's own name, which the membership test takes as a
-            string literal.
+        value: The text to quote.
 
     Returns:
-        The view.
-
-    Raises:
-        ValueError: If ``columns`` is empty.
+        The literal.
     """
-    if not columns:
-        raise ValueError('the read view needs at least one column of context_entries')
-    select_list = ', '.join(f'{_PARENT}.{column}' for column in columns)
-    gate = f"pg_catalog.pg_has_role(CURRENT_USER, {_string_literal(role_name)}, 'USAGE')"
-    readable = build_gated_read_predicate(outer=_PARENT, schema=schema, gate=gate)
-    return RlsObject(
-        kind=RlsObjectKind.VIEW,
-        name=READ_VIEW,
-        anchor=f'{schema}.{READ_VIEW}',
-        statement=(
-            f'CREATE VIEW {schema}.{READ_VIEW} AS SELECT {select_list} '
-            f'FROM {schema}.{CONTEXT_TABLE} AS {_PARENT} WHERE {readable}'
-        ),
-    )
-
-
-def read_view_drop(schema: str) -> str:
-    """Return the statement that drops the read view, and its trigger with it, when it exists.
-
-    Args:
-        schema: The schema of the tables, quoted.
-
-    Returns:
-        The DROP VIEW statement.
-    """
-    return f'DROP VIEW IF EXISTS {schema}.{READ_VIEW}'
-
-
-def read_view_grant(schema: str, role: str) -> str:
-    """Return the grant that lets the policy role read through the view, and nothing more.
-
-    Args:
-        schema: The schema of the tables, quoted.
-        role: The policy role, quoted.
-
-    Returns:
-        The GRANT SELECT statement.
-    """
-    return f'GRANT SELECT ON {schema}.{READ_VIEW} TO {role}'
-
-
-def read_view_revoke(schema: str, grantee: str, privileges: Sequence[str]) -> str:
-    """Return the statement that revokes ``privileges`` on the read view from ``grantee``.
-
-    Args:
-        schema: The schema of the tables, quoted.
-        grantee: The role, quoted, or ``PUBLIC``.
-        privileges: The privileges as the view's ACL names them, or ``ALL``.
-
-    Returns:
-        The REVOKE statement.
-
-    Raises:
-        ValueError: If ``privileges`` is empty or names anything but a table privilege;
-            each is interpolated into the statement.
-    """
-    if not privileges or any(privilege not in _ACL_PRIVILEGES for privilege in privileges):
-        raise ValueError(f'{list(privileges)!r} is not a list of table privileges')
-    return f'REVOKE {", ".join(privileges)} ON {schema}.{READ_VIEW} FROM {grantee}'
-
-
-def reject_function(schema: str) -> RlsObject:
-    """Return the trigger function that refuses every write through the read view.
-
-    The view is automatically updatable, and a write through it would run as its owner,
-    past every write policy, so the function raises insufficient privilege instead, should
-    a later grant ever give anyone a write privilege on the view.
-
-    Args:
-        schema: The schema of the tables, quoted.
-
-    Returns:
-        The trigger function.
-    """
-    return RlsObject(
-        kind=RlsObjectKind.FUNCTION,
-        name=REJECT_FUNCTION,
-        anchor=f'{schema}.{REJECT_FUNCTION}()',
-        statement=(
-            f'CREATE OR REPLACE FUNCTION {schema}.{REJECT_FUNCTION}() RETURNS trigger\n'
-            '    LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$\n'
-            'BEGIN\n'
-            f"    RAISE EXCEPTION '{READ_VIEW} is read-only' USING ERRCODE = '42501';\n"
-            'END\n'
-            '$$'
-        ),
-    )
-
-
-def reject_trigger(schema: str) -> RlsObject:
-    """Return the trigger that runs :func:`reject_function` instead of every write on the read view.
-
-    Args:
-        schema: The schema of the tables, quoted.
-
-    Returns:
-        The trigger.
-    """
-    return RlsObject(
-        kind=RlsObjectKind.TRIGGER,
-        name=REJECT_TRIGGER,
-        anchor=f'{schema}.{READ_VIEW}',
-        statement=(
-            f'CREATE TRIGGER {REJECT_TRIGGER} INSTEAD OF INSERT OR UPDATE OR DELETE ON {schema}.{READ_VIEW} '
-            f'FOR EACH ROW EXECUTE FUNCTION {schema}.{REJECT_FUNCTION}()'
-        ),
-    )
-
-
-def _string_literal(value: str) -> str:
-    """Return ``value`` as a SQL string literal, doubling embedded quotes."""
     return "'" + value.replace("'", "''") + "'"

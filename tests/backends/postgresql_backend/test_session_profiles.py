@@ -30,7 +30,7 @@ ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True)
 CAROL = AccessScope('carol', frozenset({'team-x', 'a,b', 'q"x', '{brace}', 'back\\slash'}))
 ACCESSES = [ALICE, SYSTEM_SCOPE, MAINTENANCE]
 ACCESS_IDS = ['request', 'system', 'maintenance']
-UNMAPPED_TABLES = sorted(ROUTABLE_TABLES - {'context_entries'})
+UNMAPPED_TABLES = sorted(ROUTABLE_TABLES - {'context_entries', 'tags'})
 
 
 class RecordingProfile:
@@ -347,8 +347,8 @@ class TestRlsRequestProfile:
     def test_satisfies_the_session_profile_protocol(self) -> None:
         assert isinstance(self._profile(), SessionProfile)
 
-    def test_maps_the_context_table_to_its_read_view(self) -> None:
-        assert RLS_READ_VIEWS == {'context_entries': 'context_entries_readable'}
+    def test_maps_the_context_table_and_tags_to_their_read_views(self) -> None:
+        assert RLS_READ_VIEWS == {'context_entries': 'context_entries_readable', 'tags': 'tags_readable'}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('scope', [ALICE, CAROL], ids=['may-publish', 'odd-groups'])
@@ -376,6 +376,10 @@ class TestRlsRequestProfile:
     @pytest.mark.parametrize('alias', ['ce', 'context_entries'])
     def test_mapped_table_reads_through_its_view_under_the_statement_alias(self, alias: str) -> None:
         assert self._profile().readable_relation('context_entries', alias=alias) == f'context_entries_readable AS {alias}'
+
+    @pytest.mark.parametrize('alias', ['t', 'tags'])
+    def test_tags_read_through_tags_readable_under_the_statement_alias(self, alias: str) -> None:
+        assert self._profile().readable_relation('tags', alias=alias) == f'tags_readable AS {alias}'
 
     @pytest.mark.parametrize('table', UNMAPPED_TABLES)
     def test_unmapped_table_keeps_the_base_form(self, table: str) -> None:

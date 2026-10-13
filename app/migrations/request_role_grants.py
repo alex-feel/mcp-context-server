@@ -5,7 +5,7 @@ policy role (``POSTGRESQL_RLS_POLICY_ROLE``), and through membership the request
 exactly what the server's request path uses: USAGE on the schema; SELECT, INSERT, UPDATE
 and DELETE on every managed table that exists; SELECT on the compression provenance; USAGE
 and SELECT on the sequences the managed tables own; and EXECUTE on the merge-patch
-function. Nothing is granted on the read view, on any other table or sequence of a schema
+function. Nothing is granted on the read views, on any other table or sequence of a schema
 that may be shared, or for TRUNCATE.
 
 Grants are computed missing-only from the catalog, one privilege check per privilege, so

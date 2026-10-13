@@ -1,19 +1,20 @@
 """PostgreSQL row-level security: taking the installed objects out again, and refusing to start over them switched off.
 
 :func:`remove_rls` drops, as the table owner, under the schema-init lock and in one
-transaction, everything :mod:`app.migrations.rls` installs: the read view and its write
-rejection, every policy of ours on every managed table, the guard trigger and the
-helpers. It disables row-level security only on the tables whose read policy recorded
-that it was off before the migration first enabled it, and reports every table it leaves
-enabled. The objects are found by their fixed names, so removal does not depend on the
-configured policy role. Before it drops anything it refuses while a session of a member
-of a role our policies apply to is connected to the database, since a running server
-instance would go on without the policies it started with; forcing it logs the sessions
-instead.
+transaction, everything :mod:`app.migrations.rls` installs: the read views, ``tags_readable``
+first because it reads through the other, and their write rejection, every policy of ours
+on every managed table, the guard trigger and the helpers. It disables row-level security
+only on the tables whose read policy recorded that it was off before the migration first
+enabled it, and reports every table it leaves enabled. The objects are found by their
+fixed names, so removal does not depend on the configured policy role. Before it drops
+anything it refuses while a session of a member of a role our policies apply to is
+connected to the database, since a running server instance would go on without the
+policies it started with; forcing it logs the sessions instead.
 
 :func:`guard_rls_disable_over_enabled` refuses a PostgreSQL start with
-``ENABLE_POSTGRESQL_RLS`` off while any policy of ours or the read view exists: a request
-role that does not own the tables would then read only public rows and fail every write.
+``ENABLE_POSTGRESQL_RLS`` off while any policy of ours or either read view exists: a
+request role that does not own the tables would then read only public rows and fail every
+write.
 """
 
 import logging
@@ -25,7 +26,6 @@ from typing import cast
 
 import asyncpg
 
-from app.access_scope import READ_VIEW
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.backends.postgresql_backend.session import quote_pg_identifier
@@ -41,10 +41,11 @@ from app.migrations.rls_ddl import guard_function
 from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
 from app.migrations.rls_ddl import policy_names
-from app.migrations.rls_ddl import read_view_drop
-from app.migrations.rls_ddl import reject_function
 from app.migrations.rls_state import RlsState
 from app.migrations.rls_state import read_rls_state
+from app.migrations.rls_view_ddl import READ_VIEW_TABLES
+from app.migrations.rls_view_ddl import read_view_drop
+from app.migrations.rls_view_ddl import reject_function
 from app.settings import AppSettings
 
 logger = logging.getLogger(__name__)
@@ -176,9 +177,11 @@ def plan_removal(state: RlsState, *, schema: str) -> RlsRemovalReport:
     Returns:
         The statements, the tables to disable and the tables left enabled.
     """
-    statements: list[str] = []
-    if ObjectKey(RlsObjectKind.VIEW, READ_VIEW, f'{schema}.{READ_VIEW}') in state.objects:
-        statements.append(read_view_drop(schema))
+    statements = [
+        read_view_drop(schema, view=view)
+        for view in reversed(tuple(READ_VIEW_TABLES))
+        if ObjectKey(RlsObjectKind.VIEW, view, f'{schema}.{view}') in state.objects
+    ]
     statements.extend(_drops(state, (reject_function(schema).key,)))
 
     disabled: list[str] = []
@@ -270,7 +273,7 @@ async def guard_rls_disable_over_enabled(backend: StorageBackend, settings: AppS
         settings: The application settings: the flag and the schema.
 
     Raises:
-        ConfigurationError: If a policy of ours or the read view exists; the message names
+        ConfigurationError: If a policy of ours or a read view exists; the message names
             where and how to remove them.
     """
     if backend.backend_type != 'postgresql' or settings.access_control.postgresql_rls_enabled:
@@ -283,14 +286,13 @@ async def guard_rls_disable_over_enabled(backend: StorageBackend, settings: AppS
         rows = await conn.fetch(_OUR_POLICY_TABLES_SQL, schema_name, names)
         tables = {str(row[0]) for row in rows if str(row[1]) in ours.get(str(row[0]), set())}
         relations = [table for table in MANAGED_TABLES if table in tables]
-        if await conn.fetchval(_VIEW_EXISTS_SQL, schema_name, READ_VIEW):
-            relations.append(READ_VIEW)
+        relations.extend([view for view in READ_VIEW_TABLES if await conn.fetchval(_VIEW_EXISTS_SQL, schema_name, view)])
         return relations
 
     relations: list[str] = await backend.execute_read(cast(Any, _installed), access_scope=MAINTENANCE)
     if relations:
         raise ConfigurationError(
-            'ENABLE_POSTGRESQL_RLS=false, but this database carries the row-level security policies and read view '
+            'ENABLE_POSTGRESQL_RLS=false, but this database carries the row-level security policies and read views '
             f'this server installed (tables: {", ".join(relations)}). Starting with the flag off would leave a '
             'non-owner request role reading only public rows. Either set ENABLE_POSTGRESQL_RLS=true again, or remove '
             'them first: stop every server instance, run `mcp-context-server-migrate --disable-rls --source-url '

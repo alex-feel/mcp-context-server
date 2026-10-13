@@ -1,18 +1,19 @@
 """The row-level security objects a database holds, and what bringing them to what the code renders takes.
 
 :func:`read_rls_state` reads, in one connection and without any lock or write, every
-object :mod:`app.migrations.rls_ddl` renders that the schema holds: each with its parsed
-fingerprint comment and the digest of the server's own deparse, plus whether row-level
-security is on for each managed table, the live columns of ``context_entries``, the read
-view's owner, options and ACL, and whether the policy role may execute the helpers.
-:func:`plan_rls` compares that state with what the code renders and returns exactly what
-differs. An object differs when it is missing, when the ``sha`` of its comment names
-another rendered statement (this code renders it differently now, for example after the
-policy role, the schema or the columns of ``context_entries`` changed), or when it was
-changed outside the server: its comment is missing or unreadable, its deparse differs
-from the digest recorded right after it was created, it is a disabled trigger, or it is
-the read view owned by someone else or carrying options. A database whose state yields
-an empty plan needs no lock and no DDL.
+object :mod:`app.migrations.rls_ddl` and :mod:`app.migrations.rls_view_ddl` render that
+the schema holds: each with its parsed fingerprint comment and the digest of the server's
+own deparse, plus whether row-level security is on for each managed table, the live
+columns of ``context_entries`` and ``tags``, each read view's owner, options and ACL, and
+whether the policy role may execute the helpers. :func:`plan_rls` compares that state
+with what the code renders and returns exactly what differs. An object differs when it is
+missing, when the ``sha`` of its comment names another rendered statement (this code
+renders it differently now, for example after the policy role, the schema or the columns
+of a table a view lists changed), or when it was changed outside the server: its comment
+is missing or unreadable, its deparse differs from the digest recorded right after it was
+created, it is a disabled trigger, or it is a read view owned by someone else or carrying
+options. A read view that differs is re-created with every view after it, which reads
+through it. A database whose state yields an empty plan needs no lock and no DDL.
 """
 
 from collections.abc import Mapping
@@ -23,7 +24,6 @@ from typing import Final
 
 import asyncpg
 
-from app.access_scope import READ_VIEW
 from app.backends.postgresql_backend.session import quote_pg_identifier
 from app.migrations.rls_ddl import CONTEXT_TABLE
 from app.migrations.rls_ddl import MANAGED_TABLES
@@ -37,13 +37,15 @@ from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
 from app.migrations.rls_ddl import parse_fingerprint
 from app.migrations.rls_ddl import policy_names
-from app.migrations.rls_ddl import read_view
-from app.migrations.rls_ddl import read_view_grant
-from app.migrations.rls_ddl import read_view_revoke
 from app.migrations.rls_ddl import records_preenabled
-from app.migrations.rls_ddl import reject_function
-from app.migrations.rls_ddl import reject_trigger
 from app.migrations.rls_ddl import table_policies
+from app.migrations.rls_view_ddl import READ_VIEW_TABLES
+from app.migrations.rls_view_ddl import read_view_grant
+from app.migrations.rls_view_ddl import read_view_revoke
+from app.migrations.rls_view_ddl import read_views
+from app.migrations.rls_view_ddl import reject_function
+from app.migrations.rls_view_ddl import reject_trigger
+from app.migrations.rls_view_ddl import write_rejection
 
 # $1 schema name, $2 candidate tables: each managed table that exists, with whether row-level security is on.
 MANAGED_TABLES_SQL: Final = (
@@ -89,7 +91,7 @@ _TRIGGER_SQL: Final = (
     "SELECT pg_catalog.obj_description(t.oid, 'pg_trigger'), pg_catalog.pg_get_triggerdef(t.oid), t.tgenabled <> 'D' "
     'FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2'
 )
-# $1 the quoted, schema-qualified view, $2 the quoted, schema-qualified context table.
+# $1 the quoted, schema-qualified view, $2 the quoted, schema-qualified table it lists.
 _VIEW_SQL: Final = (
     "SELECT pg_catalog.obj_description(v.oid, 'pg_class'), pg_catalog.pg_get_viewdef(v.oid, true), "
     'v.relowner = t.relowner, v.reloptions IS NULL '
@@ -115,10 +117,10 @@ class InstalledObject:
 
 @dataclass(frozen=True, slots=True)
 class InstalledView:
-    """What the catalog holds about the read view beyond its definition.
+    """What the catalog holds about a read view beyond its definition.
 
     Attributes:
-        owned_by_table_owner: Whether the owner of ``context_entries`` owns it.
+        owned_by_table_owner: Whether the owner of the table it lists owns it.
         plain: Whether it carries no option, such as ``security_barrier``.
         acl: Each role but its owner that holds a privilege on it, None standing for
             PUBLIC, with those privileges.
@@ -136,16 +138,16 @@ class RlsState:
     Attributes:
         tables: Each managed table that exists, with whether row-level security is on.
         objects: Each object of ours that exists, by key.
-        columns: The live columns of ``context_entries``, quoted, in attribute order;
-            empty when the table does not exist.
-        view: The read view's ownership, options and ACL; None when it does not exist.
+        columns: The live columns of each table a read view lists that exists, quoted, in
+            attribute order.
+        views: Each read view that exists, by name, with its ownership, options and ACL.
         helpers_executable: Whether the policy role may execute all three helpers.
     """
 
     tables: Mapping[str, bool]
     objects: Mapping[ObjectKey, InstalledObject]
-    columns: tuple[str, ...]
-    view: InstalledView | None
+    columns: Mapping[str, tuple[str, ...]]
+    views: Mapping[str, InstalledView]
     helpers_executable: bool
 
 
@@ -176,8 +178,11 @@ class RlsPlan:
         guard_trigger: The guard trigger to re-create, if it differs.
         tables: Each managed table that needs a policy re-created or row-level security
             enabled.
-        view: The read view to re-create with its write rejection, if any of them differs.
-        view_acl: Whether the ACL of the otherwise unchanged view must be repaired.
+        views: The read views to re-create with their write rejection, in the order they
+            are created: each view that differs, and every view after it, which reads
+            through it.
+        view_acls: The read views, by name, whose ACL must be repaired although nothing
+            else about them differs.
         drifted: The targets of the objects changed outside the server, which the
             migration names in a WARNING when it re-creates them.
     """
@@ -187,8 +192,8 @@ class RlsPlan:
     guard_function: RlsObject | None
     guard_trigger: RlsObject | None
     tables: tuple[TableRepair, ...]
-    view: RlsObject | None
-    view_acl: bool
+    views: tuple[RlsObject, ...]
+    view_acls: tuple[str, ...]
     drifted: tuple[str, ...]
 
     @property
@@ -196,13 +201,13 @@ class RlsPlan:
         """Whether nothing differs, so the migration needs no lock and no DDL."""
         return not (
             self.helpers or self.grant_helpers or self.guard_function or self.guard_trigger
-            or self.tables or self.view or self.view_acl
+            or self.tables or self.views or self.view_acls
         )
 
 
 @dataclass(frozen=True, slots=True)
 class ViewAclRepair:
-    """The statements that leave the policy role's SELECT as the only privilege on the read view.
+    """The statements that leave the policy role's SELECT as the only privilege on a read view.
 
     Attributes:
         statements: The REVOKE and GRANT statements, in order; empty when the ACL is right.
@@ -238,8 +243,10 @@ def policy_definition(command: str, permissive: bool, roles: list[str], using: s
     return '\n'.join((command, 'permissive' if permissive else 'restrictive', ','.join(roles), using or '', check or ''))
 
 
-def view_acl_repair(acl: Mapping[str | None, tuple[str, ...]], *, schema: str, role_name: str) -> ViewAclRepair:
-    """Return what leaves SELECT for the policy role as the only privilege anyone but the owner holds on the view.
+def view_acl_repair(
+    acl: Mapping[str | None, tuple[str, ...]], *, schema: str, view: str, role_name: str,
+) -> ViewAclRepair:
+    """Return what leaves SELECT for the policy role as the only privilege anyone but the owner holds on ``view``.
 
     Every other grantee, PUBLIC included, loses everything; the policy role loses every
     privilege but SELECT and gets SELECT when it lacks it.
@@ -247,6 +254,7 @@ def view_acl_repair(acl: Mapping[str | None, tuple[str, ...]], *, schema: str, r
     Args:
         acl: Each grantee but the owner, None standing for PUBLIC, with its privileges.
         schema: The schema of the tables, quoted.
+        view: The read view's own name.
         role_name: The policy role's own name.
 
     Returns:
@@ -258,15 +266,16 @@ def view_acl_repair(acl: Mapping[str | None, tuple[str, ...]], *, schema: str, r
     for grantee, privileges in acl.items():
         if grantee == role_name:
             continue
-        statements.append(read_view_revoke(schema, 'PUBLIC' if grantee is None else quote_pg_identifier(grantee), ('ALL',)))
+        grantee_sql = 'PUBLIC' if grantee is None else quote_pg_identifier(grantee)
+        statements.append(read_view_revoke(schema, grantee_sql, ('ALL',), view=view))
         revoked.append(f'{"PUBLIC" if grantee is None else grantee} ({", ".join(privileges)})')
     held = acl.get(role_name, ())
     beyond_select = [privilege for privilege in held if privilege != 'SELECT']
     if beyond_select:
-        statements.append(read_view_revoke(schema, role, beyond_select))
+        statements.append(read_view_revoke(schema, role, beyond_select, view=view))
         revoked.append(f'{role_name} ({", ".join(beyond_select)})')
     if 'SELECT' not in held:
-        statements.append(read_view_grant(schema, role))
+        statements.append(read_view_grant(schema, role, view=view))
     return ViewAclRepair(statements=statements, revoked=revoked)
 
 
@@ -308,7 +317,7 @@ async def read_rls_state(conn: asyncpg.Connection, *, schema_name: str, role: st
         conn, (*helpers, guard_function(schema), reject_function(schema)), role=role,
     )
     objects.update(functions)
-    for trigger in (guard_trigger(schema), reject_trigger(schema)):
+    for trigger in (guard_trigger(schema), *(reject_trigger(schema, view=view) for view in READ_VIEW_TABLES)):
         trigger_row = await conn.fetchrow(_TRIGGER_SQL, trigger.anchor, trigger.name)
         if trigger_row is not None:
             objects[trigger.key] = InstalledObject(
@@ -317,26 +326,26 @@ async def read_rls_state(conn: asyncpg.Connection, *, schema_name: str, role: st
                 enabled=bool(trigger_row[2]),
             )
 
-    view_anchor = f'{schema}.{READ_VIEW}'
-    view: InstalledView | None = None
-    view_row = await conn.fetchrow(_VIEW_SQL, view_anchor, f'{schema}.{CONTEXT_TABLE}')
-    if view_row is not None:
-        objects[ObjectKey(RlsObjectKind.VIEW, READ_VIEW, view_anchor)] = InstalledObject(
-            fingerprint=parse_fingerprint(view_row[0]), definition=digest(str(view_row[1])), enabled=True,
-        )
-        view = InstalledView(
-            owned_by_table_owner=bool(view_row[2]), plain=bool(view_row[3]), acl=await read_view_acl(conn, view_anchor),
-        )
-
-    columns: tuple[str, ...] = ()
-    if CONTEXT_TABLE in tables:
-        column_rows = await conn.fetch(COLUMNS_SQL, f'{schema}.{CONTEXT_TABLE}')
-        columns = tuple(quote_pg_identifier(str(row[0])) for row in column_rows)
+    views: dict[str, InstalledView] = {}
+    columns: dict[str, tuple[str, ...]] = {}
+    for view, table in READ_VIEW_TABLES.items():
+        anchor = f'{schema}.{view}'
+        view_row = await conn.fetchrow(_VIEW_SQL, anchor, f'{schema}.{table}')
+        if view_row is not None:
+            objects[ObjectKey(RlsObjectKind.VIEW, view, anchor)] = InstalledObject(
+                fingerprint=parse_fingerprint(view_row[0]), definition=digest(str(view_row[1])), enabled=True,
+            )
+            views[view] = InstalledView(
+                owned_by_table_owner=bool(view_row[2]), plain=bool(view_row[3]), acl=await read_view_acl(conn, anchor),
+            )
+        if table in tables:
+            column_rows = await conn.fetch(COLUMNS_SQL, f'{schema}.{table}')
+            columns[table] = tuple(quote_pg_identifier(str(row[0])) for row in column_rows)
     return RlsState(
         tables=tables,
         objects=objects,
         columns=columns,
-        view=view,
+        views=views,
         helpers_executable=all(helper.key in executable for helper in helpers),
     )
 
@@ -377,18 +386,19 @@ def plan_rls(state: RlsState, *, schema: str, role_name: str) -> RlsPlan:
         if policies or not state.tables[table]:
             repairs.append(TableRepair(table=table, policies=policies, enable=not state.tables[table]))
 
-    view: RlsObject | None = None
-    view_acl = False
-    if has_context_table:
-        expected = read_view(state.columns, schema=schema, role_name=role_name)
-        rejection = (reject_function(schema), reject_trigger(schema))
+    views: list[RlsObject] = []
+    view_acls: list[str] = []
+    for view in read_views(state.columns, schema=schema, role_name=role_name):
         # Every member of the group is compared, so each one changed outside the server is named.
-        differences = [_differs(expected, _view_status(state, expected))]
-        differences.extend(_differs(obj, _status(state, obj)) for obj in rejection)
-        if any(differences):
-            view = expected
-        elif state.view is not None:
-            view_acl = bool(view_acl_repair(state.view.acl, schema=schema, role_name=role_name).statements)
+        differences = [_differs(view, _view_status(state, view))]
+        differences.extend(_differs(obj, _status(state, obj)) for obj in write_rejection(schema, view=view.name))
+        installed = state.views.get(view.name)
+        if any(differences) or views:
+            views.append(view)
+        elif installed is not None and view_acl_repair(
+            installed.acl, schema=schema, view=view.name, role_name=role_name,
+        ).statements:
+            view_acls.append(view.name)
 
     return RlsPlan(
         helpers=helpers,
@@ -396,8 +406,8 @@ def plan_rls(state: RlsState, *, schema: str, role_name: str) -> RlsPlan:
         guard_function=guard,
         guard_trigger=guard_on_entries,
         tables=tuple(repairs),
-        view=view,
-        view_acl=view_acl,
+        views=tuple(views),
+        view_acls=tuple(view_acls),
         drifted=tuple(drifted),
     )
 
@@ -451,9 +461,10 @@ def _status(state: RlsState, obj: RlsObject) -> _Status:
 
 
 def _view_status(state: RlsState, view: RlsObject) -> _Status:
-    """Compare the read view with its rendering, its ownership and its options included."""
+    """Compare a read view with its rendering, its ownership and its options included."""
     status = _status(state, view)
-    if status is _Status.CURRENT and state.view is not None and not (state.view.owned_by_table_owner and state.view.plain):
+    installed = state.views.get(view.name)
+    if status is _Status.CURRENT and installed is not None and not (installed.owned_by_table_owner and installed.plain):
         return _Status.DRIFTED
     return status
 

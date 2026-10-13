@@ -113,8 +113,8 @@ async def prepare_database(backend: StorageBackend, settings: AppSettings, *, re
     await _announce_compression(backend, settings)
     # The request role's grants and row-level security come last: every table and column
     # this start provisions exists by now, so the grants and the policies cover every
-    # managed table and the read view lists every column. A database whose grants and
-    # objects are current takes no lock and no DDL here.
+    # managed table and each read view lists every column of its table. A database whose
+    # grants and objects are current takes no lock and no DDL here.
     await apply_request_role_grants(backend, settings, request_role=request_role)
     await apply_rls(backend, settings)
 

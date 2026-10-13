@@ -11,9 +11,10 @@ This package contains migration orchestration and all migration implementations:
 - content_hash.py: Content hash column migration for deduplication optimization
 - version.py: Optimistic-concurrency version column migration
 - compression.py: Embedding compression migration (vec_context_embeddings_compressed + compression_metadata)
-- rls_ddl.py: Rendering of the PostgreSQL row-level security helpers, policies, guard trigger and read view
+- rls_ddl.py: Rendering of the PostgreSQL row-level security helpers, policies and guard trigger
+- rls_view_ddl.py: Rendering of the PostgreSQL row-level security read views and their write rejection
 - rls_state.py: Reading the installed PostgreSQL row-level security objects and planning what differs
-- rls.py: Keeping the PostgreSQL row-level security objects and the read view installed and current
+- rls.py: Keeping the PostgreSQL row-level security objects and the read views installed and current
 - rls_removal.py: Removing the PostgreSQL row-level security objects, and refusing a start with them switched off
 - request_role_grants.py: The privileges the request role needs, granted to the policy role
 

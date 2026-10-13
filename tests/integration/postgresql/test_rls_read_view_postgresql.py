@@ -1,16 +1,19 @@
-"""The row-level security read view of ``context_entries`` against a real PostgreSQL server.
+"""The row-level security read views against a real PostgreSQL server.
 
 The request login role ``mcp_app`` reads ``context_entries`` through
 ``context_entries_readable``, a view owned by the table owner ``mcp_owner`` whose rows are
-those the bound identity may read, and only for members of the policy role. These tests
-prove that the view returns exactly the readable rows of every identity of the policy
-matrix through the repositories with no application predicate, that it refuses every
-write and locking read, that a role outside the policy role reads nothing through it
-whatever it is granted, public rows included, that a dropped policy role fails every
-read, that privileges default privileges hand out on the view are revoked when it is
-created, that the fingerprint of the view detects a definition replaced without the
-gate, and that a view an earlier release created with the gate as a condition of its
-own is replaced at the next boot, after which a boot issues no DDL.
+those the bound identity may read, and only for members of the policy role, and ``tags``
+through ``tags_readable``, an owner-owned view of the tags of the entries that view
+returns. These tests prove that the views return exactly the readable rows and tags of
+every identity of the policy matrix with no application predicate, the tags matching what
+the tags read policy admits, that both refuse every write and locking read, naming the
+view written to, that a role outside the policy role reads nothing through either whatever
+it is granted, public rows included, that a dropped policy role fails every read, that
+privileges default privileges hand out on a view are revoked when it is created, that the
+fingerprint of the view detects a definition replaced without the gate, that a view an
+earlier release created with the gate as a condition of its own is replaced at the next
+boot, and that a database from before ``tags_readable`` existed gains it at the next
+boot; after each upgrade a boot issues no DDL.
 """
 
 import logging
@@ -21,7 +24,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from app.access_scope import READ_VIEW
 from app.access_scope import SYSTEM_SCOPE
+from app.access_scope import TAGS_READ_VIEW
 from app.access_scope import AccessMode
 from app.access_scope import AccessScope
 from app.access_scope import build_gated_read_predicate
@@ -35,9 +40,10 @@ from app.migrations.rls_ddl import RlsObjectKind
 from app.migrations.rls_ddl import comment_statement
 from app.migrations.rls_ddl import digest
 from app.migrations.rls_ddl import fingerprint
-from app.migrations.rls_ddl import read_view
-from app.migrations.rls_ddl import reject_function
-from app.migrations.rls_ddl import reject_trigger
+from app.migrations.rls_view_ddl import read_view
+from app.migrations.rls_view_ddl import reject_function
+from app.migrations.rls_view_ddl import reject_trigger
+from app.migrations.rls_view_ddl import tags_read_view
 from tests.integration.postgresql._rls_catalog import ddl_log
 from tests.integration.postgresql._rls_catalog import install_ddl_log
 from tests.integration.postgresql._rls_matrix import MATRIX_SCOPES
@@ -56,6 +62,8 @@ pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
 SCHEMA = '"public"'
 VIEW = f'{SCHEMA}.context_entries_readable'
+TAGS_VIEW = f'{SCHEMA}.tags_readable'
+VIEWS = pytest.mark.parametrize('view', [VIEW, TAGS_VIEW], ids=['context-entries', 'tags'])
 GATE = f"pg_catalog.pg_has_role(CURRENT_USER, '{POLICY_ROLE}', 'USAGE')"
 ALICE = AccessScope('alice', frozenset())
 REFUSED = asyncpg.exceptions.InsufficientPrivilegeError
@@ -74,6 +82,7 @@ VIEW_ACL = (
 CONTEXT_COLUMNS = (
     'SELECT attname FROM pg_attribute WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped ORDER BY attnum'
 )
+TAG_ROWS = 'SELECT id, context_entry_id, tag FROM {relation} ORDER BY id'
 
 
 @pytest_asyncio.fixture
@@ -102,14 +111,23 @@ async def admin_conn(matrix_db: ScopedDb, pg_rls_db: RlsUrls) -> AsyncGenerator[
         await conn.close()
 
 
+async def _columns(conn: asyncpg.Connection, table: str) -> list[str]:
+    """Return the current columns of ``table``, quoted, in attribute order."""
+    return [quote_pg_identifier(str(row[0])) for row in await conn.fetch(CONTEXT_COLUMNS, f'{SCHEMA}.{table}')]
+
+
 async def _rendered_view(conn: asyncpg.Connection) -> RlsObject:
     """Render the view the migration creates for the current columns of context_entries."""
-    columns = [quote_pg_identifier(str(row[0])) for row in await conn.fetch(CONTEXT_COLUMNS, f'{SCHEMA}.context_entries')]
-    return read_view(columns, schema=SCHEMA, role_name=POLICY_ROLE)
+    return read_view(await _columns(conn, 'context_entries'), schema=SCHEMA, role_name=POLICY_ROLE)
 
 
-async def _view_acl(conn: asyncpg.Connection) -> list[tuple[str, str]]:
-    return [(str(row[0]), str(row[1])) for row in await conn.fetch(VIEW_ACL, VIEW, 'PUBLIC')]
+async def _rendered_tags_view(conn: asyncpg.Connection) -> RlsObject:
+    """Render the tags view the migration creates for the current columns of tags."""
+    return tags_read_view(await _columns(conn, 'tags'), schema=SCHEMA)
+
+
+async def _view_acl(conn: asyncpg.Connection, view: str) -> list[tuple[str, str]]:
+    return [(str(row[0]), str(row[1])) for row in await conn.fetch(VIEW_ACL, view, 'PUBLIC')]
 
 
 async def _comment(conn: asyncpg.Connection, obj: RlsObject) -> object:
@@ -154,6 +172,23 @@ class TestRows:
         finally:
             await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_tags_through_the_view_are_the_tags_the_read_policy_admits(
+        self, matrix_db: ScopedDb, pg_rls_db: RlsUrls,
+    ) -> None:
+        """tags_readable and the tags table under its read policy return the same tags: those of the readable entries."""
+        conn = await asyncpg.connect(pg_rls_db.app)
+        try:
+            for name, scope in MATRIX_SCOPES.items():
+                async with scoped_transaction(conn, scope):
+                    through_view = [tuple(row) for row in await conn.fetch(TAG_ROWS.format(relation='tags_readable'))]
+                    through_policy = [tuple(row) for row in await conn.fetch(TAG_ROWS.format(relation='tags'))]
+                    entries = labels(matrix_db, await conn.fetch('SELECT DISTINCT context_entry_id FROM tags_readable'))
+                assert through_view == through_policy, name
+                assert entries == MATRIX_VISIBILITY[AccessMode.READ][name], name
+        finally:
+            await conn.close()
+
 
 class TestWrites:
     """The policy role holds SELECT alone on the view, and the view rejects writes even when granted."""
@@ -183,6 +218,58 @@ class TestWrites:
 
         rows = await matrix_db.fetch_all('SELECT count(*) FROM context_entries WHERE id = ?', (target.hex,))
         assert rows == [(0 if new_row else 1,)]
+
+    @pytest.mark.parametrize(
+        'statement',
+        [
+            pytest.param("INSERT INTO tags_readable (context_entry_id, tag) VALUES ($1, 'probe')", id='insert'),
+            pytest.param("UPDATE tags_readable SET tag = 'changed' WHERE context_entry_id = $1", id='update'),
+            pytest.param('DELETE FROM tags_readable WHERE context_entry_id = $1', id='delete'),
+            pytest.param('SELECT id FROM tags_readable WHERE context_entry_id = $1 FOR KEY SHARE', id='key-share'),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_writes_and_locking_reads_through_the_tags_view_are_refused_naming_it(
+        self, statement: str, matrix_db: ScopedDb, pg_rls_db: RlsUrls,
+    ) -> None:
+        """Every write and every locking read of tags_readable raises 42501 naming the view, even on its own entry's tags."""
+        target = uuid.UUID(hex=matrix_db.ids['alice_private'])
+        before = await matrix_db.fetch_all('SELECT tag FROM tags WHERE context_entry_id = ? ORDER BY tag', (target.hex,))
+        conn = await asyncpg.connect(pg_rls_db.app)
+        try:
+            async with scoped_transaction(conn, ALICE):
+                with pytest.raises(REFUSED, match='tags_readable'):
+                    await conn.execute(statement, target)
+        finally:
+            await conn.close()
+
+        assert before
+        after = await matrix_db.fetch_all('SELECT tag FROM tags WHERE context_entry_id = ? ORDER BY tag', (target.hex,))
+        assert after == before
+
+    @pytest.mark.parametrize(
+        ('view', 'statement'),
+        [
+            pytest.param(READ_VIEW, 'DELETE FROM context_entries_readable WHERE id = $1', id='context-entries'),
+            pytest.param(TAGS_READ_VIEW, 'DELETE FROM tags_readable WHERE context_entry_id = $1', id='tags'),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_write_privilege_granted_out_of_band_meets_the_trigger_naming_the_view(
+        self, view: str, statement: str, matrix_db: ScopedDb, admin_conn: asyncpg.Connection, pg_rls_db: RlsUrls,
+    ) -> None:
+        """With a write privilege on a view, the write reaches the shared rejecting function, which names that view."""
+        await admin_conn.execute(f'GRANT INSERT, UPDATE, DELETE ON {SCHEMA}.{view} TO {POLICY_ROLE}')
+        target = uuid.UUID(hex=matrix_db.ids['alice_private'])
+        conn = await asyncpg.connect(pg_rls_db.app)
+        try:
+            async with scoped_transaction(conn, ALICE):
+                with pytest.raises(REFUSED, match=f'^{view} is read-only$'):
+                    await conn.execute(statement, target)
+        finally:
+            await conn.close()
+
+        assert await matrix_db.fetch_all('SELECT count(*) FROM context_entries WHERE id = ?', (target.hex,)) == [(1,)]
 
 
 class TestOutsiders:
@@ -215,6 +302,29 @@ class TestOutsiders:
             await conn.close()
 
     @pytest.mark.asyncio
+    async def test_a_tags_view_grant_gives_an_outsider_no_tag(
+        self, matrix_db: ScopedDb, admin_conn: asyncpg.Connection, pg_rls_db: RlsUrls,
+    ) -> None:
+        """SELECT on tags_readable, granted out of band, reads no tag under any identity, those of public entries included."""
+        member = await asyncpg.connect(pg_rls_db.app)
+        try:
+            async with scoped_transaction(member, None):
+                public_tags = await member.fetchval('SELECT count(*) FROM tags_readable')
+        finally:
+            await member.close()
+        assert public_tags > 0
+        _ = matrix_db
+
+        await admin_conn.execute(f'GRANT SELECT ON {TAGS_VIEW} TO mcp_outsider')
+        conn = await asyncpg.connect(pg_rls_db.outsider)
+        try:
+            for name, scope in MATRIX_SCOPES.items():
+                async with scoped_transaction(conn, scope):
+                    assert await conn.fetchval('SELECT count(*) FROM tags_readable') == 0, name
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
     async def test_schema_wide_grants_give_an_outsider_no_row_and_no_write(
         self, admin_conn: asyncpg.Connection, pg_rls_db: RlsUrls,
     ) -> None:
@@ -223,12 +333,15 @@ class TestOutsiders:
         conn = await asyncpg.connect(pg_rls_db.outsider)
         try:
             async with scoped_transaction(conn, ALICE):
-                assert await conn.fetchval('SELECT count(*) FROM context_entries') == 0
-                assert await conn.fetchval('SELECT count(*) FROM context_entries_readable') == 0
+                for relation in ('context_entries', 'context_entries_readable', 'tags', 'tags_readable'):
+                    assert await conn.fetchval(f'SELECT count(*) FROM {relation}') == 0, relation
             for relation in ('context_entries', 'context_entries_readable'):
                 async with scoped_transaction(conn, ALICE):
                     with pytest.raises(REFUSED):
                         await conn.execute(INSERT_ENTRY.format(relation=relation), uuid.uuid4())
+            async with scoped_transaction(conn, ALICE):
+                with pytest.raises(REFUSED, match='tags_readable'):
+                    await conn.execute("INSERT INTO tags_readable (context_entry_id, tag) VALUES ($1, 'probe')", uuid.uuid4())
         finally:
             await conn.close()
 
@@ -248,6 +361,7 @@ class TestPolicyRole:
             owner = await asyncpg.connect(pg_rls_db.maintenance)
             try:
                 async with owner.transaction():
+                    await owner.execute(f'DROP VIEW {TAGS_VIEW}')
                     await owner.execute(f'DROP VIEW {VIEW}')
                     await create_read_view(owner, schema='public', policy_role=probe_role, timeout_s=MIGRATION_TIMEOUT_S)
                 # A privilege that does not depend on the policy role, so only the gate stands between mcp_app and the rows.
@@ -263,6 +377,10 @@ class TestPolicyRole:
                     async with scoped_transaction(app_conn, ALICE):
                         with pytest.raises(asyncpg.exceptions.UndefinedObjectError, match=probe_role):
                             await app_conn.fetchval('SELECT count(*) FROM context_entries_readable')
+                    await admin_conn.execute(f'GRANT SELECT ON {TAGS_VIEW} TO mcp_app')
+                    async with scoped_transaction(app_conn, ALICE):
+                        with pytest.raises(asyncpg.exceptions.UndefinedObjectError, match=probe_role):
+                            await app_conn.fetchval('SELECT count(*) FROM tags_readable')
                 finally:
                     await app_conn.close()
                 with pytest.raises(asyncpg.exceptions.UndefinedObjectError, match=probe_role):
@@ -278,29 +396,48 @@ class TestPolicyRole:
 class TestInstalledView:
     """What the migration leaves in the catalog for the view."""
 
+    @VIEWS
     @pytest.mark.asyncio
-    async def test_the_view_is_owned_by_the_table_owner_without_options_and_rejects_writes(
-        self, admin_conn: asyncpg.Connection,
+    async def test_each_view_is_owned_by_the_table_owner_without_options_and_rejects_writes(
+        self, view: str, admin_conn: asyncpg.Connection,
     ) -> None:
         """The owner reads past the policies, no option demotes the query's conditions and the trigger is in place."""
         row = await admin_conn.fetchrow(
             'SELECT pg_get_userbyid(c.relowner), c.relkind::text, c.reloptions FROM pg_class c WHERE c.oid = to_regclass($1)',
-            VIEW,
+            view,
         )
         triggers = await admin_conn.fetch(
-            'SELECT tgname, pg_get_triggerdef(oid) FROM pg_trigger WHERE tgrelid = to_regclass($1)', VIEW,
+            'SELECT tgname, pg_get_triggerdef(oid) FROM pg_trigger WHERE tgrelid = to_regclass($1)', view,
         )
 
         assert row is not None
         assert (row[0], row[1], row[2]) == ('mcp_owner', 'v', None)
         assert [str(trigger[0]) for trigger in triggers] == ['reject_writes']
         assert 'INSTEAD OF INSERT OR DELETE OR UPDATE' in str(triggers[0][1])
-        assert await _view_acl(admin_conn) == [(POLICY_ROLE, 'SELECT')]
+        assert 'mcp_context_reject_view_write()' in str(triggers[0][1])
+        assert await _view_acl(admin_conn, view) == [(POLICY_ROLE, 'SELECT')]
 
     @pytest.mark.asyncio
-    async def test_the_view_and_its_write_rejection_carry_their_fingerprints(self, admin_conn: asyncpg.Connection) -> None:
+    async def test_the_tags_view_reads_through_the_read_view(self, admin_conn: asyncpg.Connection) -> None:
+        """tags_readable depends on context_entries_readable, so a plain drop of the read view is refused while it exists."""
+        assert (await _rendered_tags_view(admin_conn)).statement == (
+            f'CREATE VIEW {TAGS_VIEW} AS SELECT t."id", t."context_entry_id", t."tag" FROM {SCHEMA}.tags AS t '
+            f'JOIN {VIEW} AS ce ON ce.id = t.context_entry_id'
+        )
+        with pytest.raises(asyncpg.exceptions.DependentObjectsStillExistError, match='tags_readable'):
+            await admin_conn.execute(f'DROP VIEW {VIEW}')
+
+    @pytest.mark.asyncio
+    async def test_the_views_and_their_write_rejection_carry_their_fingerprints(self, admin_conn: asyncpg.Connection) -> None:
         """Each comment holds the sha of the rendered statement and the digest of the server's own definition."""
-        for obj in (await _rendered_view(admin_conn), reject_function(SCHEMA), reject_trigger(SCHEMA)):
+        objects = (
+            await _rendered_view(admin_conn),
+            await _rendered_tags_view(admin_conn),
+            reject_function(SCHEMA),
+            reject_trigger(SCHEMA, view=READ_VIEW),
+            reject_trigger(SCHEMA, view=TAGS_READ_VIEW),
+        )
+        for obj in objects:
             comment = await _comment(admin_conn, obj)
             definition = digest(await read_definition(admin_conn, obj))
             assert comment == fingerprint(sha=obj.sha, definition=definition, preenabled=None), obj.target
@@ -337,19 +474,23 @@ class TestInstalledView:
         await admin_conn.execute(
             f'ALTER DEFAULT PRIVILEGES FOR ROLE mcp_owner IN SCHEMA {SCHEMA} GRANT ALL ON TABLES TO {POLICY_ROLE}',
         )
-        # A current view is left alone, so the migration creates a new one only once this one is gone.
+        # Current views are left alone, so the migration creates new ones only once these are gone.
+        await admin_conn.execute(f'DROP VIEW {TAGS_VIEW}')
         await admin_conn.execute(f'DROP VIEW {VIEW}')
 
         with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
             await apply_rls(matrix_db.seed_backend, rls_settings())
 
-        assert await _view_acl(admin_conn) == [(POLICY_ROLE, 'SELECT')]
-        [warning] = [record for record in caplog.records if record.name == 'app.migrations.rls']
-        message = warning.getMessage()
-        assert 'PUBLIC (' in message
-        assert 'mcp_outsider (' in message
-        assert f'{POLICY_ROLE} (' in message
-        assert 'INSERT' in message
+        assert await _view_acl(admin_conn, VIEW) == [(POLICY_ROLE, 'SELECT')]
+        assert await _view_acl(admin_conn, TAGS_VIEW) == [(POLICY_ROLE, 'SELECT')]
+        warnings = [record.getMessage() for record in caplog.records if record.name == 'app.migrations.rls']
+        assert [VIEW in message for message in warnings] == [True, False]
+        assert [TAGS_VIEW in message for message in warnings] == [False, True]
+        for message in warnings:
+            assert 'PUBLIC (' in message
+            assert 'mcp_outsider (' in message
+            assert f'{POLICY_ROLE} (' in message
+            assert 'INSERT' in message
 
     @pytest.mark.asyncio
     async def test_the_request_role_reads_the_view_after_the_migration_reruns(
@@ -362,13 +503,14 @@ class TestInstalledView:
         try:
             async with scoped_transaction(conn, ALICE):
                 rows = labels(matrix_db, await conn.fetch('SELECT id FROM context_entries_readable'))
+                tagged = labels(matrix_db, await conn.fetch('SELECT DISTINCT context_entry_id FROM tags_readable'))
         finally:
             await conn.close()
-        assert rows == MATRIX_VISIBILITY[AccessMode.READ]['alice']
+        assert rows == tagged == MATRIX_VISIBILITY[AccessMode.READ]['alice']
 
 
 class TestUpgrade:
-    """A view an earlier release created with the gate as a condition of its own is replaced once."""
+    """What an earlier release created is brought to what the code renders once, after which a boot issues no DDL."""
 
     @pytest.mark.asyncio
     async def test_a_view_gated_by_a_condition_of_its_own_is_re_created_once(
@@ -393,10 +535,11 @@ class TestUpgrade:
         with caplog.at_level(logging.INFO, logger='app.migrations.rls'):
             await apply_rls(matrix_db.seed_backend, rls_settings())
 
-        assert (await ddl_log(admin_conn))[:2] == ['DROP VIEW', 'CREATE VIEW']
+        assert (await ddl_log(admin_conn))[:3] == ['DROP VIEW', 'DROP VIEW', 'CREATE VIEW']
         definition = digest(await read_definition(admin_conn, view))
         assert await _comment(admin_conn, view) == fingerprint(sha=view.sha, definition=definition, preenabled=None)
-        assert await _view_acl(admin_conn) == [(POLICY_ROLE, 'SELECT')]
+        assert await _view_acl(admin_conn, VIEW) == [(POLICY_ROLE, 'SELECT')]
+        assert await _view_acl(admin_conn, TAGS_VIEW) == [(POLICY_ROLE, 'SELECT')]
         assert [record.levelno for record in caplog.records if record.name == 'app.migrations.rls'] == [logging.INFO]
         conn = await asyncpg.connect(pg_rls_db.app)
         try:
@@ -405,6 +548,47 @@ class TestUpgrade:
         finally:
             await conn.close()
         assert rows == MATRIX_VISIBILITY[AccessMode.READ]['alice']
+
+        await admin_conn.execute('TRUNCATE public.ddl_log')
+        await apply_rls(matrix_db.seed_backend, rls_settings())
+        assert await ddl_log(admin_conn) == []
+
+    @pytest.mark.asyncio
+    async def test_a_database_from_before_the_tags_view_gains_it_once(
+        self, matrix_db: ScopedDb, admin_conn: asyncpg.Connection, pg_rls_db: RlsUrls, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Without tags_readable and with the rejecting function naming the read view, the next boot re-creates both views."""
+        function = reject_function(SCHEMA)
+        statement = function.statement.replace("'% is read-only', TG_TABLE_NAME", "'context_entries_readable is read-only'")
+        assert statement != function.statement
+        earlier = RlsObject(kind=RlsObjectKind.FUNCTION, name=function.name, anchor=function.anchor, statement=statement)
+        owner = await asyncpg.connect(pg_rls_db.maintenance)
+        try:
+            await owner.execute(f'DROP VIEW {TAGS_VIEW}')
+            await owner.execute(statement)
+            definition = digest(await read_definition(owner, earlier))
+            await owner.execute(comment_statement(earlier, definition=definition, preenabled=None))
+        finally:
+            await owner.close()
+        await install_ddl_log(admin_conn)
+
+        with caplog.at_level(logging.INFO, logger='app.migrations.rls'):
+            await apply_rls(matrix_db.seed_backend, rls_settings())
+
+        assert (await ddl_log(admin_conn)).count('CREATE VIEW') == 2
+        tags_view = await _rendered_tags_view(admin_conn)
+        for obj in (tags_view, reject_function(SCHEMA), reject_trigger(SCHEMA, view=TAGS_READ_VIEW)):
+            definition = digest(await read_definition(admin_conn, obj))
+            assert await _comment(admin_conn, obj) == fingerprint(sha=obj.sha, definition=definition, preenabled=None)
+        assert await _view_acl(admin_conn, TAGS_VIEW) == [(POLICY_ROLE, 'SELECT')]
+        assert [record.levelno for record in caplog.records if record.name == 'app.migrations.rls'] == [logging.INFO]
+        conn = await asyncpg.connect(pg_rls_db.app)
+        try:
+            async with scoped_transaction(conn, ALICE):
+                tagged = labels(matrix_db, await conn.fetch('SELECT DISTINCT context_entry_id FROM tags_readable'))
+        finally:
+            await conn.close()
+        assert tagged == MATRIX_VISIBILITY[AccessMode.READ]['alice']
 
         await admin_conn.execute('TRUNCATE public.ddl_log')
         await apply_rls(matrix_db.seed_backend, rls_settings())

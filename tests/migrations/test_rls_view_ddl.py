@@ -1,12 +1,13 @@
-"""Tests for the rendering of the row-level security read view of ``context_entries``.
+"""Tests for the rendering of the row-level security read views.
 
-Covers app.migrations.rls_ddl: the owner-owned view request roles read the context
-table through, its READ condition with the policy-role gate folded into the identity
-operands and the public arm, its column list, the function and INSTEAD OF trigger
-that keep it read-only, and the statements that grant the policy role SELECT on it
-and revoke what anyone else holds. The condition comes from the one predicate
-composer in app.access_scope, so it is asserted against the context_entries read
-policy's own text.
+Covers app.migrations.rls_view_ddl: the owner-owned views request roles read through,
+``context_entries_readable`` with its READ condition and the policy-role gate folded into
+the identity operands and the public arm, and ``tags_readable``, which lists the tags of
+the entries that view returns; their column lists; the order the views are created in and
+which of them the existing tables call for; the function and INSTEAD OF triggers that keep
+them read-only; and the statements that grant the policy role SELECT on each and revoke
+what anyone else holds. The condition comes from the one predicate composer in
+app.access_scope, so it is asserted against the context_entries read policy's own text.
 """
 
 import hashlib
@@ -15,24 +16,31 @@ import re
 import pytest
 
 from app.access_scope import READ_VIEW
+from app.access_scope import TAGS_READ_VIEW
 from app.access_scope import build_gated_read_predicate
 from app.backends.postgresql_backend.session_profiles import RLS_READ_VIEWS
 from app.migrations.rls_ddl import RlsObjectKind
 from app.migrations.rls_ddl import comment_statement
-from app.migrations.rls_ddl import read_view
-from app.migrations.rls_ddl import read_view_drop
-from app.migrations.rls_ddl import read_view_grant
-from app.migrations.rls_ddl import read_view_revoke
-from app.migrations.rls_ddl import reject_function
-from app.migrations.rls_ddl import reject_trigger
 from app.migrations.rls_ddl import table_policies
+from app.migrations.rls_view_ddl import READ_VIEW_TABLES
+from app.migrations.rls_view_ddl import read_view
+from app.migrations.rls_view_ddl import read_view_drop
+from app.migrations.rls_view_ddl import read_view_grant
+from app.migrations.rls_view_ddl import read_view_revoke
+from app.migrations.rls_view_ddl import read_views
+from app.migrations.rls_view_ddl import reject_function
+from app.migrations.rls_view_ddl import reject_trigger
+from app.migrations.rls_view_ddl import tags_read_view
+from app.migrations.rls_view_ddl import write_rejection
 
 SCHEMA = '"public"'
 ROLE = '"mcp_context_request"'
 ROLE_NAME = 'mcp_context_request'
 COLUMNS = ('"id"', '"thread_id"', '"text_content"', '"owner_id"', '"visibility"')
+TAG_COLUMNS = ('"id"', '"context_entry_id"', '"tag"')
 GATE = "pg_catalog.pg_has_role(CURRENT_USER, 'mcp_context_request', 'USAGE')"
 VIEW = f'{SCHEMA}.context_entries_readable'
+TAGS_VIEW = f'{SCHEMA}.tags_readable'
 POLICY_PRINCIPAL = f'(SELECT {SCHEMA}.mcp_context_principal_id())'
 POLICY_GROUPS = f'(SELECT {SCHEMA}.mcp_context_groups())::text[]'
 GATED_PRINCIPAL = f'(SELECT CASE WHEN {GATE} THEN {SCHEMA}.mcp_context_principal_id() END)'
@@ -48,7 +56,7 @@ def _read_policy_using() -> str:
 
 
 # ============================================================================
-# The view
+# The read view of context_entries
 # ============================================================================
 
 
@@ -123,12 +131,6 @@ def test_read_view_needs_a_column() -> None:
         read_view((), schema=SCHEMA, role_name=ROLE_NAME)
 
 
-def test_read_view_is_the_relation_the_request_profile_reads_context_entries_through() -> None:
-    """The migration creates the view the request backend's plain reads name."""
-    assert READ_VIEW == 'context_entries_readable'
-    assert RLS_READ_VIEWS == {'context_entries': READ_VIEW}
-
-
 def test_read_view_comment_and_drop_name_the_view() -> None:
     """COMMENT ON VIEW attaches the fingerprint, and DROP VIEW IF EXISTS removes the view with its trigger."""
     view = read_view(COLUMNS, schema=SCHEMA, role_name=ROLE_NAME)
@@ -139,7 +141,83 @@ def test_read_view_comment_and_drop_name_the_view() -> None:
         f"COMMENT ON VIEW {VIEW} IS 'mcp-context-server rls v1 sha={view.sha} def={definition}'"
     )
     assert view.drop_statement == f'DROP VIEW IF EXISTS {VIEW}'
-    assert read_view_drop(SCHEMA) == view.drop_statement
+    assert read_view_drop(SCHEMA, view=READ_VIEW) == view.drop_statement
+
+
+# ============================================================================
+# The read view of tags
+# ============================================================================
+
+
+def test_tags_read_view_lists_the_tags_of_the_readable_entries() -> None:
+    """The tags view joins every tag to the read view of context_entries, so it lists the tags of readable entries alone."""
+    view = tags_read_view(TAG_COLUMNS, schema=SCHEMA)
+
+    assert view.statement == (
+        f'CREATE VIEW {TAGS_VIEW} AS SELECT t."id", t."context_entry_id", t."tag" FROM {SCHEMA}.tags AS t '
+        f'JOIN {VIEW} AS ce ON ce.id = t.context_entry_id'
+    )
+    assert view.kind is RlsObjectKind.VIEW
+    assert view.name == 'tags_readable'
+    assert view.anchor == TAGS_VIEW
+    assert view.target == f'VIEW {TAGS_VIEW}'
+    assert view.drop_statement == f'DROP VIEW IF EXISTS {TAGS_VIEW}'
+    assert read_view_drop(SCHEMA, view=TAGS_READ_VIEW) == view.drop_statement
+
+
+def test_tags_read_view_carries_no_option_and_no_gate_of_its_own() -> None:
+    """The tags view reads as its owner and leaves the identity and the gate to the read view it joins."""
+    statement = tags_read_view(TAG_COLUMNS, schema=SCHEMA).statement
+
+    assert 'security_barrier' not in statement
+    assert 'security_invoker' not in statement
+    assert not statement.startswith(f'CREATE VIEW {TAGS_VIEW} WITH')
+    assert 'pg_has_role' not in statement
+    assert 'WHERE' not in statement
+
+
+def test_tags_read_view_sha_follows_the_columns_and_the_schema() -> None:
+    """A column added to tags or another schema changes the tags view's sha."""
+    base = tags_read_view(TAG_COLUMNS, schema=SCHEMA)
+
+    assert base.sha == tags_read_view(TAG_COLUMNS, schema=SCHEMA).sha
+    assert base.sha != tags_read_view((*TAG_COLUMNS, '"extra"'), schema=SCHEMA).sha
+    assert base.sha != tags_read_view(TAG_COLUMNS, schema='"tenant one"').sha
+
+
+def test_tags_read_view_needs_a_column() -> None:
+    """A view over no column means tags was not found."""
+    with pytest.raises(ValueError, match='column'):
+        tags_read_view((), schema=SCHEMA)
+
+
+# ============================================================================
+# The views the tables call for
+# ============================================================================
+
+
+def test_the_views_are_created_in_dependency_order_and_read_by_the_request_profile() -> None:
+    """The read view of context_entries comes first, tags_readable reads through it, and the request profile maps both."""
+    assert READ_VIEW == 'context_entries_readable'
+    assert TAGS_READ_VIEW == 'tags_readable'
+    assert list(READ_VIEW_TABLES.items()) == [(READ_VIEW, 'context_entries'), (TAGS_READ_VIEW, 'tags')]
+    assert {table: view for view, table in READ_VIEW_TABLES.items()} == RLS_READ_VIEWS
+
+
+def test_read_views_renders_both_views_when_both_tables_exist() -> None:
+    """Both tables exist: the read view of context_entries, then tags_readable."""
+    views = read_views({'context_entries': COLUMNS, 'tags': TAG_COLUMNS}, schema=SCHEMA, role_name=ROLE_NAME)
+
+    assert views == (read_view(COLUMNS, schema=SCHEMA, role_name=ROLE_NAME), tags_read_view(TAG_COLUMNS, schema=SCHEMA))
+
+
+def test_read_views_needs_context_entries_for_every_view() -> None:
+    """Without tags only the read view of context_entries exists; without context_entries no view does."""
+    assert read_views({'context_entries': COLUMNS}, schema=SCHEMA, role_name=ROLE_NAME) == (
+        read_view(COLUMNS, schema=SCHEMA, role_name=ROLE_NAME),
+    )
+    assert read_views({'tags': TAG_COLUMNS}, schema=SCHEMA, role_name=ROLE_NAME) == ()
+    assert read_views({}, schema=SCHEMA, role_name=ROLE_NAME) == ()
 
 
 # ============================================================================
@@ -147,8 +225,8 @@ def test_read_view_comment_and_drop_name_the_view() -> None:
 # ============================================================================
 
 
-def test_reject_function_refuses_every_write_as_insufficient_privilege() -> None:
-    """A write through the view raises 42501 instead of running as the view's owner."""
+def test_reject_function_refuses_every_write_naming_the_view_written_to() -> None:
+    """A write through either view raises 42501 naming that view, instead of running as the view's owner."""
     function = reject_function(SCHEMA)
 
     assert function.kind is RlsObjectKind.FUNCTION
@@ -157,26 +235,35 @@ def test_reject_function_refuses_every_write_as_insufficient_privilege() -> None
         f'CREATE OR REPLACE FUNCTION {SCHEMA}.mcp_context_reject_view_write() RETURNS trigger\n'
         '    LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$\n',
     )
-    assert "RAISE EXCEPTION 'context_entries_readable is read-only' USING ERRCODE = '42501';" in function.statement
+    assert "RAISE EXCEPTION '% is read-only', TG_TABLE_NAME USING ERRCODE = '42501';" in function.statement
+    assert 'context_entries_readable' not in function.statement
     assert 'RETURN ' not in function.statement
 
 
-def test_reject_trigger_fires_instead_of_every_write_on_the_view() -> None:
-    """INSERT, UPDATE and DELETE on the view all run the rejecting function instead."""
-    trigger = reject_trigger(SCHEMA)
+@pytest.mark.parametrize(('view', 'anchor'), [(READ_VIEW, VIEW), (TAGS_READ_VIEW, TAGS_VIEW)])
+def test_reject_trigger_fires_instead_of_every_write_on_its_view(view: str, anchor: str) -> None:
+    """INSERT, UPDATE and DELETE on either view all run the one rejecting function instead."""
+    trigger = reject_trigger(SCHEMA, view=view)
 
     assert trigger.kind is RlsObjectKind.TRIGGER
-    assert trigger.target == f'TRIGGER reject_writes ON {VIEW}'
+    assert trigger.target == f'TRIGGER reject_writes ON {anchor}'
     assert trigger.statement == (
-        f'CREATE TRIGGER reject_writes INSTEAD OF INSERT OR UPDATE OR DELETE ON {VIEW} '
+        f'CREATE TRIGGER reject_writes INSTEAD OF INSERT OR UPDATE OR DELETE ON {anchor} '
         f'FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.mcp_context_reject_view_write()'
     )
 
 
-def test_reject_objects_follow_the_schema() -> None:
-    """The function and the trigger are re-created in another schema with another sha."""
+def test_the_shared_function_is_created_with_the_first_view_and_a_trigger_with_each() -> None:
+    """The read view of context_entries brings the function and its trigger; tags_readable brings its trigger alone."""
+    assert write_rejection(SCHEMA, view=READ_VIEW) == (reject_function(SCHEMA), reject_trigger(SCHEMA, view=READ_VIEW))
+    assert write_rejection(SCHEMA, view=TAGS_READ_VIEW) == (reject_trigger(SCHEMA, view=TAGS_READ_VIEW),)
+
+
+def test_reject_objects_follow_the_schema_and_the_view() -> None:
+    """The function and the triggers are re-created in another schema with another sha, and each view has its own trigger."""
     assert reject_function(SCHEMA).sha != reject_function('"tenant one"').sha
-    assert reject_trigger(SCHEMA).sha != reject_trigger('"tenant one"').sha
+    assert reject_trigger(SCHEMA, view=READ_VIEW).sha != reject_trigger('"tenant one"', view=READ_VIEW).sha
+    assert reject_trigger(SCHEMA, view=READ_VIEW).key != reject_trigger(SCHEMA, view=TAGS_READ_VIEW).key
 
 
 # ============================================================================
@@ -184,28 +271,30 @@ def test_reject_objects_follow_the_schema() -> None:
 # ============================================================================
 
 
-def test_read_view_grant_gives_the_policy_role_select_only() -> None:
-    """The policy role reads through the view and holds no write privilege on it."""
-    assert read_view_grant(SCHEMA, ROLE) == f'GRANT SELECT ON {VIEW} TO {ROLE}'
+@pytest.mark.parametrize(('view', 'anchor'), [(READ_VIEW, VIEW), (TAGS_READ_VIEW, TAGS_VIEW)])
+def test_read_view_grant_gives_the_policy_role_select_only(view: str, anchor: str) -> None:
+    """The policy role reads through each view and holds no write privilege on it."""
+    assert read_view_grant(SCHEMA, ROLE, view=view) == f'GRANT SELECT ON {anchor} TO {ROLE}'
 
 
+@pytest.mark.parametrize(('view', 'anchor'), [(READ_VIEW, VIEW), (TAGS_READ_VIEW, TAGS_VIEW)])
 @pytest.mark.parametrize(
     ('grantee', 'privileges', 'statement'),
     [
-        pytest.param('PUBLIC', ('ALL',), f'REVOKE ALL ON {VIEW} FROM PUBLIC', id='public'),
-        pytest.param('"mcp_outsider"', ('ALL',), f'REVOKE ALL ON {VIEW} FROM "mcp_outsider"', id='other-role'),
-        pytest.param(ROLE, ('INSERT', 'UPDATE'), f'REVOKE INSERT, UPDATE ON {VIEW} FROM {ROLE}', id='policy-role-extra'),
+        pytest.param('PUBLIC', ('ALL',), 'REVOKE ALL ON {anchor} FROM PUBLIC', id='public'),
+        pytest.param('"mcp_outsider"', ('ALL',), 'REVOKE ALL ON {anchor} FROM "mcp_outsider"', id='other-role'),
+        pytest.param(ROLE, ('INSERT', 'UPDATE'), 'REVOKE INSERT, UPDATE ON {anchor} FROM ' + ROLE, id='policy-role-extra'),
     ],
 )
-def test_read_view_revoke_names_the_grantee_and_the_privileges(
-    grantee: str, privileges: tuple[str, ...], statement: str,
+def test_read_view_revoke_names_the_view_the_grantee_and_the_privileges(
+    view: str, anchor: str, grantee: str, privileges: tuple[str, ...], statement: str,
 ) -> None:
     """A revocation removes everything from another grantee, or the policy role's privileges beyond SELECT."""
-    assert read_view_revoke(SCHEMA, grantee, privileges) == statement
+    assert read_view_revoke(SCHEMA, grantee, privileges, view=view) == statement.format(anchor=anchor)
 
 
 @pytest.mark.parametrize('privileges', [(), ('SELECT; DROP TABLE context_entries',), ('select',)])
 def test_read_view_revoke_accepts_only_table_privilege_keywords(privileges: tuple[str, ...]) -> None:
     """Privileges are interpolated, so only the keywords of a table's ACL are accepted."""
     with pytest.raises(ValueError, match='privilege'):
-        read_view_revoke(SCHEMA, ROLE, privileges)
+        read_view_revoke(SCHEMA, ROLE, privileges, view=READ_VIEW)

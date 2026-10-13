@@ -203,7 +203,7 @@ With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access mode
          enabled: true
    ```
 
-3. Apply the values with `helm upgrade`. The first pod installs the policies and the read view; pods still running the old configuration keep working during the rollout, because they connect as the table owner.
+3. Apply the values with `helm upgrade`. The first pod installs the policies and the read views; pods still running the old configuration keep working during the rollout, because they connect as the table owner.
 
 **Rotating the login role:** create the new login role and grant it the policy role (`CREATE ROLE mcp_app_2 LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS; GRANT mcp_context_request TO mcp_app_2;`), change `storage.postgresql.user` and its password, and `helm upgrade`. The policies name the policy role, so no DDL runs.
 
@@ -211,7 +211,7 @@ With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access mode
 
 1. Set `storage.postgresql.rls.enabled: false` in your values file, without applying it yet.
 2. Stop every pod. The Deployment uses the default rolling update, which starts new pods before old ones stop, so scale it to zero: `kubectl scale deployment -l app.kubernetes.io/instance=mcp --replicas=0`.
-3. Remove the policies and the read view from a one-off pod, with the table owner's credentials (add `--env POSTGRESQL_SCHEMA=<schema>` when the tables live outside `public`):
+3. Remove the policies and the read views from a one-off pod, with the table owner's credentials (add `--env POSTGRESQL_SCHEMA=<schema>` when the tables live outside `public`):
 
    ```bash
    kubectl run mcp-disable-rls --rm -it --restart=Never \

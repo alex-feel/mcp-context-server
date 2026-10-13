@@ -1,14 +1,14 @@
 """Tests for removing the PostgreSQL row-level security objects and for refusing to start over them with the flag off.
 
 Covers app.migrations.rls_removal: ``remove_rls`` drops, under the schema-init lock and
-in one transaction, the read view and its write rejection, every policy of ours, the
-guard trigger and the helpers, and disables row-level security only on the tables whose
+in one transaction, the read views (``tags_readable`` first) and their write rejection,
+every policy of ours, the guard trigger and the helpers, and disables row-level security only on the tables whose
 read policy recorded that it was off before the migration enabled it; every table left
 enabled is reported with the reason, and a dry run reports the same without changing
 anything. Before dropping anything it refuses while a member of a role our policies apply
 to is connected, unless forced, which logs the sessions instead.
 ``guard_rls_disable_over_enabled`` refuses a PostgreSQL start with
-``ENABLE_POSTGRESQL_RLS`` off while any policy of ours or the read view exists.
+``ENABLE_POSTGRESQL_RLS`` off while any policy of ours or either read view exists.
 """
 
 import dataclasses
@@ -18,6 +18,8 @@ from typing import cast
 import asyncpg
 import pytest
 
+from app.access_scope import READ_VIEW
+from app.access_scope import TAGS_READ_VIEW
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.errors import ConfigurationError
@@ -32,8 +34,6 @@ from app.migrations.rls_ddl import guard_function
 from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
 from app.migrations.rls_ddl import policy_names
-from app.migrations.rls_ddl import read_view_drop
-from app.migrations.rls_ddl import reject_function
 from app.migrations.rls_removal import MemberSession
 from app.migrations.rls_removal import MemberSessionsConnectedError
 from app.migrations.rls_removal import RlsRemovalReport
@@ -42,6 +42,8 @@ from app.migrations.rls_removal import plan_removal
 from app.migrations.rls_removal import read_member_sessions
 from app.migrations.rls_removal import remove_rls
 from app.migrations.rls_state import RlsState
+from app.migrations.rls_view_ddl import read_view_drop
+from app.migrations.rls_view_ddl import reject_function
 from tests.migrations._rls_fakes import LOCK
 from tests.migrations._rls_fakes import SCHEMA
 from tests.migrations._rls_fakes import SCHEMA_NAME
@@ -63,7 +65,11 @@ def _installed() -> RlsState:
 
 
 def _full_removal() -> RlsRemovalReport:
-    statements = [read_view_drop(SCHEMA), reject_function(SCHEMA).drop_statement]
+    statements = [
+        read_view_drop(SCHEMA, view=TAGS_READ_VIEW),
+        read_view_drop(SCHEMA, view=READ_VIEW),
+        reject_function(SCHEMA).drop_statement,
+    ]
     statements.extend([*_policy_drops('context_entries'), disable_statement('context_entries', schema=SCHEMA)])
     statements.extend([*_policy_drops('context_entry_grants'), disable_statement('context_entry_grants', schema=SCHEMA)])
     statements.extend(_policy_drops('tags'))
@@ -84,7 +90,7 @@ class TestPlanRemoval:
 
     def test_a_database_without_the_objects_needs_nothing(self) -> None:
         tables = {'context_entries': False, 'tags': False}
-        state = RlsState(tables=tables, objects={}, columns=(), view=None, helpers_executable=False)
+        state = RlsState(tables=tables, objects={}, columns={}, views={}, helpers_executable=False)
 
         assert plan_removal(state, schema=SCHEMA) == RlsRemovalReport(statements=[], disabled=[], left_enabled={})
 
@@ -312,11 +318,11 @@ class _SessionConnection:
 
 
 class _GuardConnection:
-    """Answers the guard's catalog reads: the policies of ours that exist and whether the view exists."""
+    """Answers the guard's catalog reads: the policies of ours that exist and which read views exist."""
 
-    def __init__(self, policies: list[tuple[str, str]], *, view: bool) -> None:
+    def __init__(self, policies: list[tuple[str, str]], *, view: bool, tags_view: bool | None = None) -> None:
         self.policies = policies
-        self.view = view
+        self.views = {READ_VIEW: view, TAGS_READ_VIEW: view if tags_view is None else tags_view}
         self.reads: list[tuple[str, tuple[object, ...]]] = []
 
     async def fetch(self, sql: str, *args: object) -> list[tuple[str, str]]:
@@ -327,8 +333,8 @@ class _GuardConnection:
 
     async def fetchval(self, sql: str, *args: object) -> bool:
         self.reads.append((sql, args))
-        assert args == (SCHEMA_NAME, 'context_entries_readable')
-        return self.view
+        assert args[0] == SCHEMA_NAME
+        return self.views[str(args[1])]
 
 
 class TestGuard:
@@ -372,17 +378,27 @@ class TestGuard:
             await guard_rls_disable_over_enabled(cast(StorageBackend, FakeBackend(conn)), rls_settings(enabled=False))
 
         assert str(raised.value) == (
-            'ENABLE_POSTGRESQL_RLS=false, but this database carries the row-level security policies and read view '
-            'this server installed (tables: context_entries, tags, context_entries_readable). Starting with the flag '
-            'off would leave a non-owner request role reading only public rows. Either set ENABLE_POSTGRESQL_RLS=true '
-            'again, or remove them first: stop every server instance, run `mcp-context-server-migrate --disable-rls '
+            'ENABLE_POSTGRESQL_RLS=false, but this database carries the row-level security policies and read views '
+            'this server installed (tables: context_entries, tags, context_entries_readable, tags_readable). Starting with '
+            'the flag off would leave a non-owner request role reading only public rows. Either set '
+            'ENABLE_POSTGRESQL_RLS=true again, or remove them first: stop every server instance, run '
+            '`mcp-context-server-migrate --disable-rls '
             '--source-url <table-owner connection>`, then start with the flag off (procedure per deployment: '
             "docs/database-backends.md, 'Disabling row-level security')."
         )
 
     @pytest.mark.asyncio
     async def test_the_view_alone_refuses_the_start(self) -> None:
-        conn = _GuardConnection([], view=True)
+        conn = _GuardConnection([], view=True, tags_view=False)
 
         with pytest.raises(ConfigurationError, match=r'\(tables: context_entries_readable\)'):
             await guard_rls_disable_over_enabled(cast(StorageBackend, FakeBackend(conn)), rls_settings(enabled=False))
+
+    @pytest.mark.asyncio
+    async def test_both_views_are_named_and_read_by_name(self) -> None:
+        conn = _GuardConnection([], view=True)
+
+        with pytest.raises(ConfigurationError, match=r'\(tables: context_entries_readable, tags_readable\)'):
+            await guard_rls_disable_over_enabled(cast(StorageBackend, FakeBackend(conn)), rls_settings(enabled=False))
+
+        assert [args for _sql, args in conn.reads[1:]] == [(SCHEMA_NAME, READ_VIEW), (SCHEMA_NAME, TAGS_READ_VIEW)]

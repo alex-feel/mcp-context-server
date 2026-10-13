@@ -12,10 +12,13 @@ whenever the policy is re-created.
 
 import dataclasses
 import logging
+from typing import Any
 from typing import cast
 
 import pytest
 
+from app.access_scope import READ_VIEW
+from app.access_scope import TAGS_READ_VIEW
 from app.backends import StorageBackend
 from app.migrations import rls as rls_module
 from app.migrations.rls_ddl import PIN_SEARCH_PATH
@@ -26,30 +29,35 @@ from app.migrations.rls_ddl import guard_function
 from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
 from app.migrations.rls_ddl import helper_grant
-from app.migrations.rls_ddl import read_view_drop
-from app.migrations.rls_ddl import read_view_revoke
-from app.migrations.rls_ddl import reject_function
-from app.migrations.rls_ddl import reject_trigger
 from app.migrations.rls_ddl import restore_search_path
 from app.migrations.rls_ddl import table_policies
 from app.migrations.rls_state import InstalledObject
+from app.migrations.rls_state import InstalledView
 from app.migrations.rls_state import RlsState
 from app.migrations.rls_state import TableRepair
 from app.migrations.rls_state import plan_rls
+from app.migrations.rls_view_ddl import read_view_drop
+from app.migrations.rls_view_ddl import read_view_grant
+from app.migrations.rls_view_ddl import read_view_revoke
+from app.migrations.rls_view_ddl import reject_function
+from app.migrations.rls_view_ddl import reject_trigger
 from tests.migrations._rls_fakes import LOCK
-from tests.migrations._rls_fakes import QUOTED_COLUMNS
+from tests.migrations._rls_fakes import QUOTED_TAG_COLUMNS
 from tests.migrations._rls_fakes import ROLE
 from tests.migrations._rls_fakes import ROLE_NAME
 from tests.migrations._rls_fakes import SCHEMA
 from tests.migrations._rls_fakes import SEARCH_PATH
+from tests.migrations._rls_fakes import TAGS_VIEW
 from tests.migrations._rls_fakes import CatalogConnection
 from tests.migrations._rls_fakes import FakeBackend
 from tests.migrations._rls_fakes import fingerprinted
 from tests.migrations._rls_fakes import installed
 from tests.migrations._rls_fakes import installed_state
 from tests.migrations._rls_fakes import record_ddl
+from tests.migrations._rls_fakes import rendered_tags_view
 from tests.migrations._rls_fakes import rendered_view
 from tests.migrations._rls_fakes import rls_settings
+from tests.migrations._rls_fakes import table_columns
 
 TABLES = {'context_entries': True, 'context_entry_grants': True, 'tags': True}
 CHANGED_OUT_OF_BAND = 'f' * 64
@@ -71,6 +79,11 @@ def _with_object(state: RlsState, obj: RlsObject, installed_object: InstalledObj
     return dataclasses.replace(state, objects=objects)
 
 
+def _with_view(state: RlsState, view: str, **changes: Any) -> RlsState:
+    """Return ``state`` with what the catalog holds about the read view ``view`` changed."""
+    return dataclasses.replace(state, views={**state.views, view: dataclasses.replace(state.views[view], **changes)})
+
+
 def _drifted(obj: RlsObject, *, preenabled: bool | None = None) -> InstalledObject:
     """Return ``obj`` as the catalog reads it after an out-of-band edit kept its comment."""
     return dataclasses.replace(installed(obj, preenabled=preenabled), definition=CHANGED_OUT_OF_BAND)
@@ -80,13 +93,8 @@ class TestPlanOfAnEmptyDatabase:
     """A database without the objects needs every one of them, each read policy recording the table's prior state."""
 
     def test_every_object_is_created_and_each_table_enabled_where_it_is_off(self) -> None:
-        state = RlsState(
-            tables={'context_entries': False, 'context_entry_grants': False, 'tags': True},
-            objects={},
-            columns=QUOTED_COLUMNS,
-            view=None,
-            helpers_executable=False,
-        )
+        tables = {'context_entries': False, 'context_entry_grants': False, 'tags': True}
+        state = RlsState(tables=tables, objects={}, columns=table_columns(tables), views={}, helpers_executable=False)
 
         plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
 
@@ -105,19 +113,28 @@ class TestPlanOfAnEmptyDatabase:
             )
             for table, enabled in state.tables.items()
         )
-        assert plan.view == rendered_view()
-        assert not plan.view_acl
+        assert plan.views == (rendered_view(), rendered_tags_view())
+        assert plan.view_acls == ()
         assert plan.drifted == ()
         assert not plan.clean
 
     def test_without_the_context_table_there_is_no_guard_trigger_and_no_view(self) -> None:
-        state = RlsState(tables={'tags': False}, objects={}, columns=(), view=None, helpers_executable=False)
+        tables = {'tags': False}
+        state = RlsState(tables=tables, objects={}, columns=table_columns(tables), views={}, helpers_executable=False)
 
         plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
 
         assert plan.guard_trigger is None
-        assert plan.view is None
+        assert plan.views == ()
         assert [repair.table for repair in plan.tables] == ['tags']
+
+    def test_without_the_tags_table_only_the_read_view_of_context_entries_is_created(self) -> None:
+        tables = {'context_entries': False}
+        state = RlsState(tables=tables, objects={}, columns=table_columns(tables), views={}, helpers_executable=False)
+
+        plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
+
+        assert plan.views == (rendered_view(),)
 
 
 class TestPlanOfACurrentDatabase:
@@ -132,8 +149,8 @@ class TestPlanOfACurrentDatabase:
         assert plan.guard_function is None
         assert plan.guard_trigger is None
         assert plan.tables == ()
-        assert plan.view is None
-        assert not plan.view_acl
+        assert plan.views == ()
+        assert plan.view_acls == ()
         assert plan.drifted == ()
 
     def test_a_table_created_since_the_last_boot_gets_its_policies_and_nothing_else_changes(self) -> None:
@@ -152,7 +169,24 @@ class TestPlanOfACurrentDatabase:
         )
         assert plan.helpers == ()
         assert plan.guard_trigger is None
-        assert plan.view is None
+        assert plan.views == ()
+        assert plan.drifted == ()
+
+    def test_a_missing_tags_view_is_created_alone(self) -> None:
+        tags_view = rendered_tags_view()
+        state = installed_state(TABLES)
+        objects = {
+            key: value for key, value in state.objects.items()
+            if key not in (tags_view.key, reject_trigger(SCHEMA, view=TAGS_READ_VIEW).key)
+        }
+        views = {name: view for name, view in state.views.items() if name != TAGS_READ_VIEW}
+        state = dataclasses.replace(state, objects=objects, views=views)
+
+        plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
+
+        assert plan.views == (tags_view,)
+        assert plan.view_acls == ()
+        assert plan.tables == ()
         assert plan.drifted == ()
 
     def test_row_level_security_switched_off_on_a_table_is_enabled_again_without_touching_its_policies(self) -> None:
@@ -192,20 +226,47 @@ class TestPlanOfARenderingThatChanged:
             policy for table in TABLES for policy in table_policies(table, schema=SCHEMA, role=other)
         ]
         assert all(not repair.enable for repair in plan.tables)
-        assert plan.view == rendered_view(role_name='mcp_other_request')
+        assert plan.views == (rendered_view(role_name='mcp_other_request'), rendered_tags_view())
         assert plan.drifted == ()
 
-    def test_a_column_added_to_the_context_table_re_creates_the_view_alone(self) -> None:
+    def test_a_column_added_to_the_context_table_re_creates_both_views_and_nothing_else(self) -> None:
         state = installed_state(TABLES)
-        state = dataclasses.replace(state, columns=(*state.columns, '"extra"'))
+        state = dataclasses.replace(
+            state, columns={**state.columns, 'context_entries': (*state.columns['context_entries'], '"extra"')},
+        )
 
         plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
 
-        assert plan.view is not None
-        assert plan.view.statement.startswith(f'CREATE VIEW {SCHEMA}.context_entries_readable AS SELECT ce."id"')
-        assert 'ce."extra" FROM' in plan.view.statement
+        view, tags_view = plan.views
+        assert view.statement.startswith(f'CREATE VIEW {SCHEMA}.context_entries_readable AS SELECT ce."id"')
+        assert 'ce."extra" FROM' in view.statement
+        assert tags_view == rendered_tags_view()
         assert plan.tables == ()
         assert plan.drifted == ()
+
+    def test_a_column_added_to_tags_re_creates_the_tags_view_alone(self) -> None:
+        state = installed_state(TABLES)
+        state = dataclasses.replace(state, columns={**state.columns, 'tags': (*QUOTED_TAG_COLUMNS, '"extra"')})
+
+        plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
+
+        [tags_view] = plan.views
+        assert tags_view.name == TAGS_READ_VIEW
+        assert 't."extra" FROM' in tags_view.statement
+        assert plan.tables == ()
+        assert plan.drifted == ()
+
+    def test_a_write_rejection_function_rendered_in_an_earlier_form_re_creates_both_views_silently(self) -> None:
+        function = reject_function(SCHEMA)
+        earlier = installed(function)
+        assert earlier.fingerprint is not None
+        stale = dataclasses.replace(earlier, fingerprint=dataclasses.replace(earlier.fingerprint, sha=EARLIER_STATEMENT))
+
+        plan = plan_rls(_with_object(installed_state(TABLES), function, stale), schema=SCHEMA, role_name=ROLE_NAME)
+
+        assert plan.views == (rendered_view(), rendered_tags_view())
+        assert plan.drifted == ()
+        assert plan.tables == ()
 
     def test_a_re_created_read_policy_keeps_the_recorded_preenabled_value(self) -> None:
         read = _policy('tags', 'read')
@@ -284,19 +345,18 @@ class TestPlanOfAnOutOfBandChange:
             'reject function', 'reject trigger disabled', 'reject trigger missing',
         ],
     )
-    def test_any_change_to_the_view_or_its_write_rejection_re_creates_the_view(self, change: str) -> None:
+    def test_any_change_to_the_view_or_its_write_rejection_re_creates_it_with_the_tags_view(self, change: str) -> None:
         state = installed_state(TABLES)
-        installed_view = state.view
-        assert installed_view is not None
-        view, function, trigger = rendered_view(), reject_function(SCHEMA), reject_trigger(SCHEMA)
+        installed_view = state.views[READ_VIEW]
+        view, function, trigger = rendered_view(), reject_function(SCHEMA), reject_trigger(SCHEMA, view=READ_VIEW)
         expected_drift: tuple[str, ...]
         if change == 'view definition':
             state, expected_drift = _with_object(state, view, _drifted(view)), (view.target,)
         elif change == 'view owner':
-            state = dataclasses.replace(state, view=dataclasses.replace(installed_view, owned_by_table_owner=False))
+            state = _with_view(state, READ_VIEW, owned_by_table_owner=False)
             expected_drift = (view.target,)
         elif change == 'view options':
-            state = dataclasses.replace(state, view=dataclasses.replace(installed_view, plain=False))
+            state = _with_view(state, READ_VIEW, plain=False)
             expected_drift = (view.target,)
         elif change == 'reject function':
             state, expected_drift = _with_object(state, function, _drifted(function)), (function.target,)
@@ -308,8 +368,35 @@ class TestPlanOfAnOutOfBandChange:
 
         plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
 
-        assert plan.view == view
-        assert not plan.view_acl
+        assert installed_view == InstalledView(owned_by_table_owner=True, plain=True, acl={ROLE_NAME: ('SELECT',)})
+        assert plan.views == (view, rendered_tags_view())
+        assert plan.view_acls == ()
+        assert plan.drifted == expected_drift
+        assert plan.tables == ()
+
+    @pytest.mark.parametrize(
+        'change', ['view definition', 'view owner', 'view options', 'reject trigger disabled', 'reject trigger missing'],
+    )
+    def test_any_change_to_the_tags_view_or_its_trigger_re_creates_the_tags_view_alone(self, change: str) -> None:
+        state = installed_state(TABLES)
+        view, trigger = rendered_tags_view(), reject_trigger(SCHEMA, view=TAGS_READ_VIEW)
+        expected_drift: tuple[str, ...]
+        if change == 'view definition':
+            state, expected_drift = _with_object(state, view, _drifted(view)), (view.target,)
+        elif change == 'view owner':
+            state, expected_drift = _with_view(state, TAGS_READ_VIEW, owned_by_table_owner=False), (view.target,)
+        elif change == 'view options':
+            state, expected_drift = _with_view(state, TAGS_READ_VIEW, plain=False), (view.target,)
+        elif change == 'reject trigger disabled':
+            state = _with_object(state, trigger, dataclasses.replace(installed(trigger), enabled=False))
+            expected_drift = (trigger.target,)
+        else:
+            state, expected_drift = _with_object(state, trigger, None), ()
+
+        plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
+
+        assert plan.views == (view,)
+        assert plan.view_acls == ()
         assert plan.drifted == expected_drift
         assert plan.tables == ()
 
@@ -323,17 +410,16 @@ class TestPlanOfAnOutOfBandChange:
         ],
         ids=['extra grantee', 'public', 'extra privilege', 'no select'],
     )
-    def test_any_acl_but_the_policy_roles_select_repairs_the_acl_of_the_unchanged_view(
-        self, acl: dict[str | None, tuple[str, ...]],
+    @pytest.mark.parametrize('view', [READ_VIEW, TAGS_READ_VIEW])
+    def test_any_acl_but_the_policy_roles_select_repairs_the_acl_of_that_unchanged_view(
+        self, view: str, acl: dict[str | None, tuple[str, ...]],
     ) -> None:
-        state = installed_state(TABLES)
-        assert state.view is not None
-        state = dataclasses.replace(state, view=dataclasses.replace(state.view, acl=acl))
+        state = _with_view(installed_state(TABLES), view, acl=acl)
 
         plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
 
-        assert plan.view is None
-        assert plan.view_acl
+        assert plan.views == ()
+        assert plan.view_acls == (view,)
         assert not plan.clean
 
 
@@ -468,11 +554,9 @@ class TestViewRepair:
     ) -> None:
         recorded = record_ddl(monkeypatch, [rls_module])
         state = installed_state(TABLES)
-        assert state.view is not None
+        state = _with_view(state, READ_VIEW, acl={ROLE_NAME: ('SELECT',), 'mcp_outsider': ('INSERT', 'SELECT')})
         state = dataclasses.replace(
-            state,
-            columns=(*state.columns, '"extra"'),
-            view=dataclasses.replace(state.view, acl={ROLE_NAME: ('SELECT',), 'mcp_outsider': ('INSERT', 'SELECT')}),
+            state, columns={**state.columns, 'context_entries': (*state.columns['context_entries'], '"extra"')},
         )
         _serve(monkeypatch, state, state)
         acl: list[tuple[str | None, str]] = [(ROLE_NAME, 'SELECT'), ('mcp_outsider', 'INSERT'), ('mcp_outsider', 'SELECT')]
@@ -481,8 +565,11 @@ class TestViewRepair:
         with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
             await rls_module.apply_rls(cast(StorageBackend, FakeBackend(conn)), rls_settings())
 
-        assert recorded[:2] == [LOCK, read_view_drop(SCHEMA)]
-        assert recorded[2].startswith(f'CREATE VIEW {SCHEMA}.context_entries_readable')
+        assert recorded[:3] == [
+            LOCK, read_view_drop(SCHEMA, view=TAGS_READ_VIEW), read_view_drop(SCHEMA, view=READ_VIEW),
+        ]
+        assert recorded[3].startswith(f'CREATE VIEW {SCHEMA}.context_entries_readable')
+        assert rendered_tags_view().statement in recorded
         [warning] = caplog.records
         assert 'mcp_outsider (INSERT, SELECT)' in warning.getMessage()
         assert ROLE_NAME not in warning.getMessage().split(':', 1)[1]
@@ -492,16 +579,59 @@ class TestViewRepair:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
     ) -> None:
         recorded = record_ddl(monkeypatch, [rls_module])
-        state = installed_state(TABLES)
-        assert state.view is not None
         acl: dict[str | None, tuple[str, ...]] = {ROLE_NAME: ('SELECT',), 'mcp_outsider': ('SELECT',)}
-        state = dataclasses.replace(state, view=dataclasses.replace(state.view, acl=acl))
+        state = _with_view(installed_state(TABLES), READ_VIEW, acl=acl)
         _serve(monkeypatch, state, state)
         conn = CatalogConnection(acl=[(ROLE_NAME, 'SELECT'), ('mcp_outsider', 'SELECT')])
 
         with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
             await rls_module.apply_rls(cast(StorageBackend, FakeBackend(conn)), rls_settings())
 
-        assert recorded == [LOCK, read_view_revoke(SCHEMA, '"mcp_outsider"', ('ALL',))]
+        assert recorded == [LOCK, read_view_revoke(SCHEMA, '"mcp_outsider"', ('ALL',), view=READ_VIEW)]
         [warning] = caplog.records
         assert 'mcp_outsider (SELECT)' in warning.getMessage()
+        assert TAGS_VIEW not in warning.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_a_stray_grantee_on_the_unchanged_tags_view_is_revoked_with_a_warning_naming_it(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        recorded = record_ddl(monkeypatch, [rls_module])
+        acl: dict[str | None, tuple[str, ...]] = {ROLE_NAME: ('SELECT',), 'mcp_outsider': ('SELECT',)}
+        state = _with_view(installed_state(TABLES), TAGS_READ_VIEW, acl=acl)
+        _serve(monkeypatch, state, state)
+        conn = CatalogConnection(tags_acl=[(ROLE_NAME, 'SELECT'), ('mcp_outsider', 'SELECT')])
+
+        with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
+            await rls_module.apply_rls(cast(StorageBackend, FakeBackend(conn)), rls_settings())
+
+        assert recorded == [LOCK, read_view_revoke(SCHEMA, '"mcp_outsider"', ('ALL',), view=TAGS_READ_VIEW)]
+        [warning] = caplog.records
+        assert TAGS_VIEW in warning.getMessage()
+        assert 'mcp_outsider (SELECT)' in warning.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_a_tags_view_changed_outside_the_server_is_re_created_alone_and_named(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        recorded = record_ddl(monkeypatch, [rls_module])
+        view, trigger = rendered_tags_view(), reject_trigger(SCHEMA, view=TAGS_READ_VIEW)
+        state = _with_object(installed_state(TABLES), view, _drifted(view))
+        _serve(monkeypatch, state, state)
+        conn = CatalogConnection()
+
+        with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
+            await rls_module.apply_rls(cast(StorageBackend, FakeBackend(conn)), rls_settings())
+
+        assert recorded == [
+            LOCK,
+            read_view_drop(SCHEMA, view=TAGS_READ_VIEW),
+            view.statement,
+            read_view_grant(SCHEMA, ROLE, view=TAGS_READ_VIEW),
+            trigger.statement,
+            await fingerprinted(conn, trigger),
+            await fingerprinted(conn, view),
+        ]
+        [warning] = caplog.records
+        assert view.target in warning.getMessage()
+        assert 'outside the server' in warning.getMessage()

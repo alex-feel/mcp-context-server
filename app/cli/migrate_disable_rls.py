@@ -2,7 +2,7 @@
 
 Implements the ``--disable-rls`` flag of ``mcp-context-server-migrate``. It connects with
 the ``--source-url`` credentials, which must be the table owner's, and drops, under the
-schema-init lock and in one transaction, the read view and its write rejection, every
+schema-init lock and in one transaction, the read views and their write rejection, every
 policy of ours, the guard trigger and the helper functions. It disables row-level
 security only on the tables the server enabled, and reports every table it leaves
 enabled. ``--dry-run`` prints the same report and changes nothing.

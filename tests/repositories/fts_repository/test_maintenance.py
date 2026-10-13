@@ -262,13 +262,14 @@ class TestFtsLanguageDetection:
 
 
 class TestFtsLanguageMigrationKeepsTheReadView:
-    """The PostgreSQL language rebuild drops the row-level security read view before the column and re-creates it after.
+    """The PostgreSQL language rebuild drops the row-level security read views before the column and re-creates them after.
 
-    The read view lists every column of context_entries, so dropping text_search_vector would
-    fail while it exists. When the view exists the rebuild drops it under the lock, before the
-    column, the way the row-level security migration drops it, naming the grants the drop
-    takes away, and re-creates it in the same transaction once the column and its index
-    exist again; when it does not exist, the rebuild creates none.
+    The read view lists every column of context_entries and tags_readable reads through it,
+    so dropping text_search_vector would fail while they exist. When the read view exists the
+    rebuild drops both under the lock, before the column, the way the row-level security
+    migration drops them, naming the grants each drop takes away, and re-creates both in the
+    same transaction once the column and its index exist again; when it does not exist, the
+    rebuild creates none.
     """
 
     @staticmethod
