@@ -5,8 +5,12 @@ parent environment for its provider configuration, while every PostgreSQL routin
 of the parent (each ``POSTGRESQL_*`` variable and ``ENABLE_POSTGRESQL_RLS``) is removed
 before the helper pins the routing, the row-level security credentials when they are
 given, and the caller's overrides. ``RlsCredentials.environment`` names the variables
-that start a server with row-level security.
+that start a server with row-level security. A structural test reads the integration
+tests and requires every environment that inherits the parent's to come from the helper.
 """
+
+import ast
+from pathlib import Path
 
 import pytest
 
@@ -83,3 +87,32 @@ class TestPostgresqlSubprocessEnv:
         assert env['ENABLE_POSTGRESQL_RLS'] == 'false'
         assert env['LOG_LEVEL'] == 'INFO'
         assert env['POSTGRESQL_MIGRATION_USER'] == 'mcp_owner'
+
+
+def _spreads_parent_and_routes_postgresql(node: ast.Dict) -> bool:
+    """Whether a dict literal spreads ``os.environ`` and sets ``POSTGRESQL_CONNECTION_STRING``."""
+    spreads_parent = any(
+        key is None and isinstance(value, ast.Attribute) and value.attr == 'environ'
+        and isinstance(value.value, ast.Name) and value.value.id == 'os'
+        for key, value in zip(node.keys, node.values, strict=True)
+    )
+    routes = any(isinstance(key, ast.Constant) and key.value == 'POSTGRESQL_CONNECTION_STRING' for key in node.keys)
+    return spreads_parent and routes
+
+
+def test_every_postgresql_subprocess_environment_comes_from_the_helper() -> None:
+    """No integration test builds an inheriting PostgreSQL environment by hand.
+
+    A dict that spreads ``os.environ`` and sets the connection string keeps the parent's
+    other ``POSTGRESQL_*`` variables and ``ENABLE_POSTGRESQL_RLS``, which
+    ``postgresql_subprocess_env`` removes.
+    """
+    tests_root = Path(__file__).resolve().parent
+    hand_built = [
+        f'{path.relative_to(tests_root).as_posix()}:{node.lineno}'
+        for path in sorted((tests_root / 'integration').rglob('*.py'))
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8')))
+        if isinstance(node, ast.Dict) and _spreads_parent_and_routes_postgresql(node)
+    ]
+
+    assert hand_built == []

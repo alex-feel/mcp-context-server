@@ -35,7 +35,6 @@ seed-locked ``compression_metadata`` singleton other PG tests rely on.
 from __future__ import annotations
 
 import contextlib
-import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -47,6 +46,8 @@ import pytest
 import pytest_asyncio
 from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
+
+from tests.helpers import postgresql_subprocess_env
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
@@ -191,20 +192,16 @@ async def test_metadata_indexing_real_server_postgresql(
     # from probing Ollama; the other toggles keep startup fast and avoid model
     # dependencies. METADATA_INDEX_SYNC_MODE is left at its default 'additive',
     # which creates the missing scalar indexes.
-    server_env = {
-        **os.environ,
-        'STORAGE_BACKEND': 'postgresql',
-        'POSTGRESQL_CONNECTION_STRING': isolated_metadata_index_db,
-        'MCP_TEST_MODE': '1',
-        'DISABLED_TOOLS': '',
-        'METADATA_INDEXED_FIELDS': INDEXED_FIELDS,
-        'ENABLE_EMBEDDING_GENERATION': 'false',
-        'ENABLE_SEMANTIC_SEARCH': 'false',
-        'ENABLE_FTS': 'false',
-        'ENABLE_HYBRID_SEARCH': 'false',
-        'ENABLE_SUMMARY_GENERATION': 'false',
-        'ENABLE_EMBEDDING_COMPRESSION': 'false',
-    }
+    server_env = postgresql_subprocess_env(
+        isolated_metadata_index_db,
+        METADATA_INDEXED_FIELDS=INDEXED_FIELDS,
+        ENABLE_EMBEDDING_GENERATION='false',
+        ENABLE_SEMANTIC_SEARCH='false',
+        ENABLE_FTS='false',
+        ENABLE_HYBRID_SEARCH='false',
+        ENABLE_SUMMARY_GENERATION='false',
+        ENABLE_EMBEDDING_COMPRESSION='false',
+    )
 
     transport = PythonStdioTransport(
         script_path=str(wrapper_script),
