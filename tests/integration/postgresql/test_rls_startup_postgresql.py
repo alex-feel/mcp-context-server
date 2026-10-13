@@ -183,6 +183,22 @@ class TestRefusedRequestRoles:
         ) in start.stderr
 
 
+class TestRefusedTableOwnerLogin:
+    """A refused table-owner login names the migration credentials, not the request login that already succeeded."""
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_migration_password_names_the_migration_credentials(self, pg_rls_db: RlsUrls) -> None:
+        start = await asyncio.to_thread(
+            _start, pg_rls_db.app, rls=RLS_CREDENTIALS, POSTGRESQL_MIGRATION_PASSWORD='not-the-owner-password',
+        )
+
+        assert start.returncode == ConfigurationError.EXIT_CODE, start.stderr
+        assert 'password authentication failed for user "mcp_owner"' in start.stderr
+        remediation = 'Check POSTGRESQL_MIGRATION_USER, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.'
+        assert remediation in start.stderr
+        assert 'Check POSTGRESQL_USER' not in start.stderr
+
+
 class TestStarts:
     """The request role mcp_app starts; a split start with the flag off refuses row-level security it did not install."""
 

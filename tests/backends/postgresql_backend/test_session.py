@@ -1,8 +1,8 @@
 """Tests for app/backends/postgresql_backend/session.py: connection parameters.
 
-Covers the asyncpg connect kwargs (an empty startup packet), the session GUCs
-delivered as SET statements, identifier quoting, and the statement-timeout
-derivation.
+Covers the asyncpg connect kwargs (an empty startup packet), the remediation a
+refused login names, the session GUCs delivered as SET statements, identifier
+quoting, and the statement-timeout derivation.
 """
 
 import pytest
@@ -202,6 +202,73 @@ class TestCredentialOverride:
         from app.backends.postgresql_backend.session import CredentialOverride
 
         assert 'owner-secret' not in repr(CredentialOverride(user='mcp_owner', password=SecretStr('owner-secret')))
+
+
+class TestLoginRemediation:
+    """The remediation of a refused login names where the backend's user and password come from."""
+
+    @pytest.mark.parametrize(
+        ('user', 'password', 'explicit', 'refused_login', 'refused_connect'),
+        [
+            (
+                'mcp_owner', 'owner-secret', False,
+                'Check POSTGRESQL_MIGRATION_USER, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_MIGRATION_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                'mcp_owner', None, False,
+                'Check POSTGRESQL_MIGRATION_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_MIGRATION_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                None, 'owner-secret', False,
+                'Check POSTGRESQL_USER, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                '', '', False,
+                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                None, None, False,
+                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_USER access to POSTGRESQL_DATABASE.',
+            ),
+            (
+                None, None, True,
+                'Check the user and password of the connection string and the server pg_hba.conf rules.',
+                'Grant the user of the connection string access to its database.',
+            ),
+            (
+                'mcp_owner', 'owner-secret', True,
+                'Check POSTGRESQL_MIGRATION_USER, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the configured POSTGRESQL_MIGRATION_USER access to the database of the connection string.',
+            ),
+            (
+                None, 'owner-secret', True,
+                'Check the user of the connection string, POSTGRESQL_MIGRATION_PASSWORD and the server pg_hba.conf rules.',
+                'Grant the user of the connection string access to its database.',
+            ),
+        ],
+        ids=[
+            'migration-both', 'migration-user-only', 'migration-password-only', 'empty-fields', 'request', 'explicit',
+            'migration-over-explicit', 'migration-password-over-explicit',
+        ],
+    )
+    def test_remediation_names_the_login_source(
+        self, user: str | None, password: str | None, explicit: bool, refused_login: str, refused_connect: str,
+    ) -> None:
+        from pydantic import SecretStr
+
+        from app.backends.postgresql_backend.session import CredentialOverride
+        from app.backends.postgresql_backend.session import connect_privilege_remediation
+        from app.backends.postgresql_backend.session import login_remediation
+
+        override = CredentialOverride(user=user, password=SecretStr(password) if password is not None else None)
+
+        assert login_remediation(override, explicit_connection_string=explicit) == refused_login
+        assert connect_privilege_remediation(override, explicit_connection_string=explicit) == refused_connect
 
 
 class TestRequestConnectionString:

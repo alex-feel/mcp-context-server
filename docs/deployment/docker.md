@@ -795,19 +795,19 @@ These files are specifically designed for mixed providers: the Ollama sidecar on
 
 ### Common Error Messages
 
-| Error                                  | Cause                          | Solution                                                    |
-|----------------------------------------|--------------------------------|-------------------------------------------------------------|
-| `connection refused`                   | Service not running            | Check container status with `docker compose ps`             |
-| `model not found`                      | Embedding model not pulled     | Wait for automatic download or pull manually                |
-| `permission denied`                    | Volume permission issue        | Check volume ownership matches UID 10001                    |
-| `database is locked`                   | SQLite concurrent access       | Expected for SQLite; use PostgreSQL for concurrency         |
-| `Invalid API Key`                      | OpenAI key incorrect           | Verify OPENAI_API_KEY in .env file                          |
-| `password authentication failed`       | Wrong PostgreSQL password      | Fix POSTGRESQL_PASSWORD and restart (exit 78)               |
-| `database "..." does not exist`        | PostgreSQL database not found  | Create database or fix POSTGRESQL_DATABASE (exit 78)        |
-| `pgvector extension is not installed`  | pgvector not enabled           | Enable via dashboard or CREATE EXTENSION (exit 78)          |
-| `insufficient privileges`              | Cannot create pgvector         | Grant permissions via dashboard (exit 78)                   |
-| `[Errno 111] Connection refused`       | PostgreSQL not running         | Wait for PostgreSQL to start (exit 69, will retry)          |
-| `summary field is empty`               | Summary model not pulled       | Run `ollama pull qwen3:0.6b` in the ollama container        |
+| Error                                  | Cause                          | Solution                                                                                                 |
+|----------------------------------------|--------------------------------|----------------------------------------------------------------------------------------------------------|
+| `connection refused`                   | Service not running            | Check container status with `docker compose ps`                                                          |
+| `model not found`                      | Embedding model not pulled     | Wait for automatic download or pull manually                                                             |
+| `permission denied`                    | Volume permission issue        | Check volume ownership matches UID 10001                                                                 |
+| `database is locked`                   | SQLite concurrent access       | Expected for SQLite; use PostgreSQL for concurrency                                                      |
+| `Invalid API Key`                      | OpenAI key incorrect           | Verify OPENAI_API_KEY in .env file                                                                       |
+| `password authentication failed`       | Wrong PostgreSQL password      | Fix POSTGRESQL_PASSWORD, or POSTGRESQL_MIGRATION_PASSWORD when the error names it, and restart (exit 78) |
+| `database "..." does not exist`        | PostgreSQL database not found  | Create database or fix POSTGRESQL_DATABASE (exit 78)                                                     |
+| `pgvector extension is not installed`  | pgvector not enabled           | Enable via dashboard or CREATE EXTENSION (exit 78)                                                       |
+| `insufficient privileges`              | Cannot create pgvector         | Grant permissions via dashboard (exit 78)                                                                |
+| `[Errno 111] Connection refused`       | PostgreSQL not running         | Wait for PostgreSQL to start (exit 69, will retry)                                                       |
+| `summary field is empty`               | Summary model not pulled       | Run `ollama pull qwen3:0.6b` in the ollama container                                                     |
 
 ## Advanced Configuration
 
@@ -1093,7 +1093,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 | PostgreSQL not running    | Connection refused (Errno 111)   | 69 (DependencyError)    | Retry with backoff    | Wait for PostgreSQL to start                 |
 | Network timeout           | `TimeoutError`, `InterfaceError` | 69 (DependencyError)    | Retry with backoff    | Check network connectivity                   |
 | Too many connections      | `TooManyConnectionsError`        | 69 (DependencyError)    | Retry with backoff    | Increase `max_connections` or wait           |
-| Wrong password            | `InvalidPasswordError`           | 78 (ConfigurationError) | Halt (sleep infinity) | Fix `POSTGRESQL_PASSWORD`                    |
+| Wrong password            | `InvalidPasswordError`           | 78 (ConfigurationError) | Halt (sleep infinity) | Fix the password variable the error names    |
 | Database does not exist   | `InvalidCatalogNameError`        | 78 (ConfigurationError) | Halt (sleep infinity) | Create database or fix `POSTGRESQL_DATABASE` |
 | pgvector not installed    | Extension check failure          | 78 (ConfigurationError) | Halt (sleep infinity) | Enable pgvector extension                    |
 | Insufficient privileges   | `InsufficientPrivilegeError`     | 78 (ConfigurationError) | Halt (sleep infinity) | Grant permissions via dashboard              |
@@ -1118,7 +1118,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 ```
 - **Container behavior:** Halts (remains running but idle with `sleep infinity`)
 - **Why halt:** Password won't fix itself - requires human intervention
-- **Fix:** Update `POSTGRESQL_PASSWORD` in `.env` file and restart container
+- **Fix:** Update the password variable the error names in the `.env` file (`POSTGRESQL_PASSWORD`, or `POSTGRESQL_MIGRATION_PASSWORD` for the role that owns the tables) and restart the container
 
 **Scenario 3: pgvector Extension Not Installed (Exit 78)**
 ```text
@@ -1148,7 +1148,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
    ```
 
 2. **Fix the configuration** based on error message:
-   - Wrong password: Update `.env` file with correct `POSTGRESQL_PASSWORD`
+   - Wrong password: Update the password variable the error names in the `.env` file (`POSTGRESQL_PASSWORD`, or `POSTGRESQL_MIGRATION_PASSWORD` for the role that owns the tables)
    - Missing database: Create database or fix `POSTGRESQL_DATABASE`
    - Missing extension: Enable pgvector via dashboard or SQL
    - Permission denied: Grant required permissions (Supabase: use dashboard)

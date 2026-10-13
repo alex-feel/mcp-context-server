@@ -18,6 +18,8 @@ from app.backends.postgresql_backend.pool_callbacks import reset_pool_connection
 from app.backends.postgresql_backend.pool_callbacks import setup_pool_connection
 from app.backends.postgresql_backend.provisioning import PostgreSQLProvisioningMixin
 from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
+from app.backends.postgresql_backend.session import connect_privilege_remediation
+from app.backends.postgresql_backend.session import login_remediation
 from app.errors import ConfigurationError
 from app.errors import DependencyError
 from app.settings import get_settings
@@ -180,7 +182,7 @@ class PostgreSQLLifecycleMixin(PostgreSQLProvisioningMixin):
             await self._record_charged_failure(e)
             raise ConfigurationError(
                 f'PostgreSQL authentication failed: {e}. '
-                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                + login_remediation(self._credentials, explicit_connection_string=self._explicit_connection_string),
             ) from e
 
         except asyncpg.exceptions.InsufficientPrivilegeError as e:
@@ -191,7 +193,9 @@ class PostgreSQLLifecycleMixin(PostgreSQLProvisioningMixin):
             await self._record_charged_failure(e)
             raise ConfigurationError(
                 f'PostgreSQL permission denied: {e}. '
-                'Grant the configured POSTGRESQL_USER access to POSTGRESQL_DATABASE.',
+                + connect_privilege_remediation(
+                    self._credentials, explicit_connection_string=self._explicit_connection_string,
+                ),
             ) from e
 
         except asyncpg.exceptions.InvalidCatalogNameError as e:

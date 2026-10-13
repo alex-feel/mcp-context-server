@@ -71,6 +71,11 @@ class PostgreSQLBackendCore:
         profile: SessionProfile,
         credentials: CredentialOverride,
     ) -> None:
+        # Whether the backend dials a connection string it was handed (the command-line tools)
+        # rather than the request connection settings, so a refused login names the right
+        # settings.
+        self._explicit_connection_string = connection_string is not None
+
         # Without an explicit connection string the backend dials the request connection settings
         if connection_string is None:
             connection_string = request_connection_string(settings)

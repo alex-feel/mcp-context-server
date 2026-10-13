@@ -13,6 +13,9 @@ from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session import CredentialOverride
 from app.backends.postgresql_backend.session_profiles import MaintenanceProfile
 from app.backends.postgresql_backend.session_profiles import UnboundProfile
+from tests.backends.postgresql_backend._builders import LOGIN_FORMS
+from tests.backends.postgresql_backend._builders import LoginForm
+from tests.backends.postgresql_backend._builders import build_login_backend
 from tests.helpers import rebind_package_settings
 
 
@@ -273,3 +276,23 @@ class TestOneOffConnectionIdentity:
         assert 'user' not in call.kwargs
         assert 'password' not in call.kwargs
         assert 'row_security' not in conn.execute.await_args_list[0].args[0]
+
+
+class TestRefusedExtensionLogin:
+    """The pgvector connection's refused login names the settings of the login it used."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('form', LOGIN_FORMS)
+    async def test_refused_login_names_the_login_settings(self, monkeypatch: pytest.MonkeyPatch, form: LoginForm) -> None:
+        from app.errors import ConfigurationError
+
+        error = asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "mcp_owner"')
+        backend = build_login_backend(monkeypatch, form)
+
+        with (
+            unittest.mock.patch('asyncpg.connect', new=AsyncMock(side_effect=error)),
+            pytest.raises(ConfigurationError) as raised,
+        ):
+            await backend._ensure_pgvector_extension()
+
+        assert str(raised.value) == f'PostgreSQL authentication failed: {error}. {form.refused_login}'

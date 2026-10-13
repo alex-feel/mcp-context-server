@@ -1,8 +1,8 @@
 """PostgreSQL connection parameters shared by the pool and every one-off connection.
 
 The request connection string, identifier quoting, the asyncpg connect kwargs with an optional
-credential override, the session ``SET`` statements every connection runs, and the server-side
-statement timeout derived from the client command timeout.
+credential override, the remediation a refused login names, the session ``SET`` statements every
+connection runs, and the server-side statement timeout derived from the client command timeout.
 """
 
 from collections.abc import Sequence
@@ -49,6 +49,73 @@ class CredentialOverride:
 
 
 NO_CREDENTIAL_OVERRIDE = CredentialOverride(user=None, password=None)
+
+
+def login_remediation(credentials: CredentialOverride, *, explicit_connection_string: bool) -> str:
+    """Return the advice for a login the server refused (SQLSTATE class 28).
+
+    The advice names where the refused user and password come from, as
+    :func:`_login_variables` resolves them.
+
+    Args:
+        credentials: The backend's credential override.
+        explicit_connection_string: Whether the backend dials a connection string it was
+            handed rather than the request connection settings.
+
+    Returns:
+        The remediation sentence.
+    """
+    user, password = _login_variables(credentials, explicit_connection_string=explicit_connection_string)
+    if user is None and password is None:
+        return 'Check the user and password of the connection string and the server pg_hba.conf rules.'
+    return (
+        f'Check {user or "the user of the connection string"}, '
+        f'{password or "the password of the connection string"} and the server pg_hba.conf rules.'
+    )
+
+
+def connect_privilege_remediation(credentials: CredentialOverride, *, explicit_connection_string: bool) -> str:
+    """Return the advice for a login the server refused to connect to the database (SQLSTATE 42501).
+
+    Args:
+        credentials: The backend's credential override.
+        explicit_connection_string: Whether the backend dials a connection string it was
+            handed rather than the request connection settings.
+
+    Returns:
+        The remediation sentence naming the role that needs the grant and the database.
+    """
+    user, _ = _login_variables(credentials, explicit_connection_string=explicit_connection_string)
+    if user is None:
+        return 'Grant the user of the connection string access to its database.'
+    database = 'the database of the connection string' if explicit_connection_string else 'POSTGRESQL_DATABASE'
+    return f'Grant the configured {user} access to {database}.'
+
+
+def _login_variables(credentials: CredentialOverride, *, explicit_connection_string: bool) -> tuple[str | None, str | None]:
+    """Return the variables that supply the user and the password of a backend's login.
+
+    A field the override sets wins over the connection string's own, as asyncpg applies
+    it, and comes from the migration variables: the server's one override is the
+    table-owner login of the maintenance backend. A field the override leaves unset
+    comes from the connection string the backend was handed, or else from the request
+    variables.
+
+    Args:
+        credentials: The backend's credential override.
+        explicit_connection_string: Whether the backend dials a connection string it was
+            handed rather than the request connection settings.
+
+    Returns:
+        The user variable and the password variable, None for a field the connection
+        string the backend was handed supplies.
+    """
+    overridden = credentials.connect_kwargs()
+    unset_user, unset_password = (None, None) if explicit_connection_string else ('POSTGRESQL_USER', 'POSTGRESQL_PASSWORD')
+    return (
+        'POSTGRESQL_MIGRATION_USER' if 'user' in overridden else unset_user,
+        'POSTGRESQL_MIGRATION_PASSWORD' if 'password' in overridden else unset_password,
+    )
 
 
 def request_connection_string(app_settings: AppSettings) -> str:

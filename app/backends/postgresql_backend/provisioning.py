@@ -11,6 +11,7 @@ import asyncpg
 from app.backends.postgresql_backend.core import PostgreSQLBackendCore
 from app.backends.postgresql_backend.session import apply_session_gucs
 from app.backends.postgresql_backend.session import build_asyncpg_connect_kwargs
+from app.backends.postgresql_backend.session import login_remediation
 from app.errors import ConfigurationError
 from app.errors import DependencyError
 from app.settings import get_settings
@@ -97,7 +98,7 @@ class PostgreSQLProvisioningMixin(PostgreSQLBackendCore):
             logger.error(f'PostgreSQL authentication failed: {e}')
             raise ConfigurationError(
                 f'PostgreSQL authentication failed: {e}. '
-                'Check POSTGRESQL_USER, POSTGRESQL_PASSWORD and the server pg_hba.conf rules.',
+                + login_remediation(self._credentials, explicit_connection_string=self._explicit_connection_string),
             ) from e
 
         except asyncpg.exceptions.InvalidCatalogNameError as e:
