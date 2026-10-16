@@ -164,7 +164,8 @@ hooks:
       command: timezone_date_context.py
 
     # Context preservation during workflow. The hook's own budget (90 seconds in its
-    # config) must end before this timeout, or Claude Code kills it with its output discarded.
+    # config, counted from the hook's launch) must end before this timeout, or Claude
+    # Code kills it with its output discarded.
     - event: UserPromptSubmit
       type: command
       command: user_prompt_context_saver.py

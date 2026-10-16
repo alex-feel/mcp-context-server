@@ -165,17 +165,22 @@ mcp_client:
   timeout_first_run: 240.0
   # Timeout in seconds for subsequent runs
   timeout_normal: 240.0
-  # The hook's whole budget in seconds, measured from its start: every timeout above
-  # and the request timeout below are capped by what remains of it, and no attempt
-  # starts once less than a second remains. Keep it below the Claude Code hook
-  # timeout the environment registers for this hook (the environment sets that
-  # timeout on the hook's event entry; Claude Code's own default for a
-  # UserPromptSubmit hook is 30 seconds), so the hook always answers before it is
-  # killed with its output discarded: with the stored context_id, or with a notice
-  # that the message was not confirmed stored. The gap covers what runs before the
-  # hook's clock starts, such as the interpreter start and the import of the hook's
-  # dependencies. A store request is sent at most once per run; only a failure
-  # before it is sent is retried.
+  # The hook's whole budget in seconds, measured from its launch: from the creation
+  # of the uv process that started the hook, so the time uv spends preparing the
+  # script's environment and the interpreter spends importing the hook's
+  # dependencies counts against it. When the hook cannot identify that process, it
+  # counts from the end of its imports instead. Every timeout above and the request
+  # timeout below are capped by what remains of it, and no attempt starts once less
+  # than a second remains. Keep it below the Claude Code hook timeout the
+  # environment registers for this hook (the environment sets that timeout on the
+  # hook's event entry; Claude Code's own default for a UserPromptSubmit hook is 30
+  # seconds), so the hook always answers before it is killed with its output
+  # discarded: with the stored context_id, or with a notice that the message was not
+  # confirmed stored, which a startup that already used the whole budget gives at
+  # once. The gap covers any shell start before uv, the hook's exit, and, when
+  # the launch cannot be identified, the startup before the hook's clock. A store
+  # request is sent at most once per run; only a failure before it is sent is
+  # retried.
   deadline_seconds: 90.0
 
 # MCP server command configuration

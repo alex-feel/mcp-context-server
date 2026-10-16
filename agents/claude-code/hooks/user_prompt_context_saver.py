@@ -22,19 +22,30 @@ text prompts are captured and stored.
 
 Claude Code kills a hook at the timeout its environment registers and discards
 its output, so the hook keeps one shorter time budget of its own,
-mcp_client.deadline_seconds, measured from its start: every connection or
-request timeout is capped by what remains of the budget, no attempt starts once
-less than a second remains, and the run ends with an answer for the model before
-the budget does. A store request that fails or times out after it was sent is
-never sent again within the run, because the server may have received it and
-would store the message twice; only a failure before the request is sent is
-retried. When the message is not confirmed stored, the hook exits 0 and tells
-the model so through additionalContext, naming the thread and the stage the run
-reached: when no store request was sent, the model stores the prompt itself
-with the context-server store tool; when one was sent, the server may still
-complete it, so the model searches the thread at the end of the turn and
-stores a copy only if none landed, and a chunked store names the chunks the
-server confirmed.
+mcp_client.deadline_seconds: every connection or request timeout is capped by
+what remains of the budget, no attempt starts once less than a second remains,
+and the run ends with an answer for the model before the budget does. Claude
+Code counts its timeout from the moment it starts the hook's command, and uv
+prepares the script's environment and the interpreter imports the hook's
+dependencies before any hook code runs, so the budget counts from the launch:
+the creation of the uv process that started the hook, recognized by its image
+name as the hook's parent or, where the interpreter runs through a venv
+redirector, as the redirector's parent. When the hook cannot identify that
+process (no uv launcher in that short walk, a process that cannot be read, a
+parent newer than its child, or a launch older than the 600 seconds Claude
+Code gives a command hook by default), the budget counts from the end of the hook's imports. A startup that has already
+used the whole budget answers at once that no store request was sent, instead
+of being killed while it stores.
+
+A store request that fails or times out after it was sent is never sent again
+within the run, because the server may have received it and would store the
+message twice; only a failure before the request is sent is retried. When the
+message is not confirmed stored, the hook exits 0 and tells the model so
+through additionalContext, naming the thread and the stage the run reached:
+when no store request was sent, the model stores the prompt itself with the
+context-server store tool; when one was sent, the server may still complete
+it, so the model searches the thread at the end of the turn and stores a copy
+only if none landed, and a chunked store names the chunks the server confirmed.
 
 main() relies on its helpers being correct under the platform contract; only
 narrower handlers exist (json.JSONDecodeError for malformed stdin from Claude
@@ -62,28 +73,33 @@ import ctypes
 import importlib.util
 import io
 import json
+import ntpath
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import traceback
+from collections.abc import Callable
 from collections.abc import Coroutine
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 from functools import cache
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from typing import Protocol
 from typing import cast
 
 from fastmcp import Client
 
-# The run's clock starts once the interpreter has imported the hook's
-# dependencies; the gap between mcp_client.deadline_seconds and the Claude Code
-# hook timeout covers what runs before this line.
+# The hook's own clock, read once the interpreter has imported the hook's
+# dependencies. The run's budget counts from the earlier launch of the hook
+# whenever launcher_clock_start can identify it, and from here otherwise.
 _HOOK_STARTED_AT = time.monotonic()
 
 
@@ -160,11 +176,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'connection_timeout': 30.0,  # Timeout per connection attempt (seconds)
         'timeout_first_run': 240.0,
         'timeout_normal': 240.0,
-        # The run's whole time budget (seconds), measured from the hook's start.
-        # Every timeout above is capped by what remains of it, so the hook answers
-        # before the Claude Code hook timeout kills it. A UserPromptSubmit hook gets
-        # 30 seconds unless its event entry registers a timeout, so this default
-        # leaves 10 of them for startup; a config pairs a longer budget with a
+        # The run's whole time budget (seconds), measured from the hook's launch:
+        # the creation of the uv process that started it, or the end of the
+        # hook's imports when that process cannot be identified. Every timeout
+        # above is capped by what remains of it, so the hook answers before the
+        # Claude Code hook timeout kills it. A UserPromptSubmit hook gets 30
+        # seconds unless its event entry registers a timeout, so this default
+        # leaves 10 of them for any shell start before uv, the exit, and a startup
+        # the launch read cannot see; a config pairs a longer budget with a
         # longer registered timeout.
         'deadline_seconds': 20.0,
     },
@@ -463,6 +482,342 @@ class Deadline:
     def describe(self) -> str:
         """Return the budget and its used part as a short phrase for log and error text."""
         return f'{self.elapsed():.1f}s of the {self.seconds:g}s hook deadline used'
+
+
+# The image name of the process that launches the hook: Claude Code runs it as
+# `uv run`, and uv prepares the script's environment before it starts the
+# interpreter.
+LAUNCHER_IMAGE = 'uv'
+
+# The oldest launch still accepted as this run's, in seconds. Claude Code applies
+# at most 600 seconds to a command hook by default, so a hook it is still waiting
+# on was launched more recently than that; startups from a few seconds on a warm
+# environment to more than a minute on a slow or memory-starved machine stay well
+# inside it.
+MAX_LAUNCH_AGE_SECONDS = 600.0
+
+_PROC_ROOT = Path('/proc')
+
+# struct proc_bsdinfo, which macOS proc_pidinfo(PROC_PIDTBSDINFO) fills: twelve
+# 32-bit fields (pbi_ppid is the fifth), pbi_comm[16], pbi_name[32], six 32-bit
+# fields, and the start time as 64-bit seconds and microseconds.
+_BSDINFO = struct.Struct('<12I16s32s5Ii2Q')
+
+
+@dataclass(frozen=True)
+class ProcessRecord:
+    """What the launch read needs to know about one process."""
+
+    image: str  # image file name, without its directory
+    path: str | None  # full image path, where the platform's reader reports one
+    parent: int  # parent process id
+    created: float  # creation time, in seconds on the platform's process clock
+
+
+class ProcessTable(Protocol):
+    """Reads process records and the clock their creation times are given on."""
+
+    def read(self, pid: int) -> ProcessRecord | None:
+        """Return the record of a process, or None when it cannot be read."""
+        ...
+
+    def now(self) -> float:
+        """Return the current time on the clock creation times are given on."""
+        ...
+
+
+class _ProcessBasicInformation(ctypes.Structure):
+    """PROCESS_BASIC_INFORMATION, as NtQueryInformationProcess fills it on Windows."""
+
+    _fields_ = (
+        ('ExitStatus', ctypes.c_long),
+        ('PebBaseAddress', ctypes.c_void_p),
+        ('AffinityMask', ctypes.c_size_t),
+        ('BasePriority', ctypes.c_long),
+        ('UniqueProcessId', ctypes.c_size_t),
+        ('InheritedFromUniqueProcessId', ctypes.c_size_t),
+    )
+
+
+class WindowsProcessTable:
+    """Process records read through the Win32 API; creation times are wall-clock seconds."""
+
+    _QUERY_LIMITED_INFORMATION = 0x1000
+    _PROCESS_BASIC_INFORMATION = 0
+    _MAX_PATH_CHARACTERS = 32768
+    _FILETIME_TICKS_PER_SECOND = 10_000_000
+    _FILETIME_TO_UNIX_SECONDS = 11_644_473_600  # from 1601-01-01 to 1970-01-01
+
+    def read(self, pid: int) -> ProcessRecord | None:
+        """Return a process's image, parent, and creation time, or None when it cannot be opened or read."""
+        record: ProcessRecord | None = None
+        if sys.platform == 'win32':
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            handle = kernel32.OpenProcess(self._QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return None
+            try:
+                created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+                times = (ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user))
+                if not kernel32.GetProcessTimes(wintypes.HANDLE(handle), *times):
+                    return None
+                size = wintypes.DWORD(self._MAX_PATH_CHARACTERS)
+                path = ctypes.create_unicode_buffer(self._MAX_PATH_CHARACTERS)
+                if not kernel32.QueryFullProcessImageNameW(wintypes.HANDLE(handle), 0, path, ctypes.byref(size)):
+                    return None
+                info = _ProcessBasicInformation()
+                status = ctypes.WinDLL('ntdll').NtQueryInformationProcess(
+                    wintypes.HANDLE(handle), self._PROCESS_BASIC_INFORMATION, ctypes.byref(info), ctypes.sizeof(info), None,
+                )
+                if status != 0:
+                    return None
+            finally:
+                kernel32.CloseHandle(handle)
+            ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+            record = ProcessRecord(
+                image=ntpath.basename(path.value),
+                path=path.value,
+                parent=int(info.InheritedFromUniqueProcessId),
+                created=ticks / self._FILETIME_TICKS_PER_SECOND - self._FILETIME_TO_UNIX_SECONDS,
+            )
+        return record
+
+    def now(self) -> float:
+        """Return the wall clock, the clock creation times are given on."""
+        return time.time()
+
+
+def parse_proc_stat(text: str) -> tuple[str, int, int] | None:
+    """
+    Parse a Linux /proc/<pid>/stat line into its comm, parent id, and start time.
+
+    As proc(5) documents the line, the comm is field 2 in parentheses and may
+    itself hold spaces and parentheses, so it ends at the last closing
+    parenthesis; the parent id is field 4 and the start time after boot, in
+    clock ticks, field 22.
+
+    Returns:
+        The comm, the parent process id, and the start time in clock ticks, or
+        None for a line without those fields
+    """
+    opening = text.find('(')
+    closing = text.rfind(')')
+    if opening < 0 or closing < opening:
+        return None
+    fields = text[closing + 1:].split()
+    try:
+        return text[opening + 1:closing], int(fields[1]), int(fields[19])
+    except (IndexError, ValueError):
+        return None
+
+
+def _linux_clock_ticks() -> int:
+    """Return the clock ticks per second /proc start times are counted in."""
+    if sys.platform != 'win32':
+        return os.sysconf('SC_CLK_TCK')
+    raise OSError('/proc clock ticks are not available on Windows')
+
+
+def _linux_boottime() -> float:
+    """Return the seconds since boot, counting suspended time as /proc start times do."""
+    if sys.platform == 'linux':
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    raise OSError('CLOCK_BOOTTIME is available only on Linux')
+
+
+class LinuxProcessTable:
+    """Process records read from /proc; creation times are seconds since boot."""
+
+    def __init__(self, proc_root: Path = _PROC_ROOT, clock_ticks: int | None = None) -> None:
+        """
+        Initialize the table.
+
+        Args:
+            proc_root: The procfs mount to read
+            clock_ticks: Clock ticks per second of the start times; read from the system when omitted
+        """
+        self.proc_root = proc_root
+        self.clock_ticks = clock_ticks if clock_ticks is not None else _linux_clock_ticks()
+
+    def read(self, pid: int) -> ProcessRecord | None:
+        """Return a process's comm, parent, and creation time, or None when its stat cannot be read."""
+        try:
+            text = (self.proc_root / str(pid) / 'stat').read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return None
+        fields = parse_proc_stat(text)
+        if fields is None:
+            return None
+        comm, parent, start_ticks = fields
+        return ProcessRecord(image=comm, path=None, parent=parent, created=start_ticks / self.clock_ticks)
+
+    def now(self) -> float:
+        """Return the boot clock, the clock creation times are given on."""
+        return _linux_boottime()
+
+
+def parse_proc_bsdinfo(buffer: bytes) -> tuple[str, int, float] | None:
+    """
+    Parse a macOS struct proc_bsdinfo into its comm, parent id, and start time.
+
+    Returns:
+        The comm, the parent process id, and the start time in wall-clock
+        seconds, or None for a buffer shorter than the structure
+    """
+    if len(buffer) < _BSDINFO.size:
+        return None
+    fields = _BSDINFO.unpack_from(buffer)
+    comm = fields[12].split(b'\0', 1)[0].decode('utf-8', 'replace')
+    return comm, int(fields[4]), fields[20] + fields[21] / 1_000_000
+
+
+class MacProcessTable:
+    """Process records read through libproc; creation times are wall-clock seconds."""
+
+    _PIDTBSDINFO = 3
+
+    def read(self, pid: int) -> ProcessRecord | None:
+        """Return a process's comm, parent, and creation time, or None when it cannot be read."""
+        record: ProcessRecord | None = None
+        if sys.platform == 'darwin':
+            try:
+                libproc = ctypes.CDLL('/usr/lib/libproc.dylib')
+            except OSError:
+                return None
+            libproc.proc_pidinfo.restype = ctypes.c_int
+            libproc.proc_pidinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
+            buffer = ctypes.create_string_buffer(_BSDINFO.size)
+            if libproc.proc_pidinfo(pid, self._PIDTBSDINFO, 0, buffer, _BSDINFO.size) != _BSDINFO.size:
+                return None
+            fields = parse_proc_bsdinfo(buffer.raw)
+            if fields is None:
+                return None
+            comm, parent, created = fields
+            record = ProcessRecord(image=comm, path=None, parent=parent, created=created)
+        return record
+
+    def now(self) -> float:
+        """Return the wall clock, the clock creation times are given on."""
+        return time.time()
+
+
+def process_table() -> ProcessTable | None:
+    """Return the process table of the running platform, or None where the hook has no reader."""
+    table: ProcessTable | None = None
+    if sys.platform == 'win32':
+        table = WindowsProcessTable()
+    elif sys.platform == 'linux':
+        table = LinuxProcessTable()
+    elif sys.platform == 'darwin':
+        table = MacProcessTable()
+    return table
+
+
+def _is_launcher(record: ProcessRecord) -> bool:
+    """Return whether a process is the uv launcher, by its image name in any case and with or without .exe."""
+    return record.image.lower().removesuffix('.exe') == LAUNCHER_IMAGE
+
+
+def _is_redirector(child: ProcessRecord, parent: ProcessRecord, executable: str) -> bool:
+    """
+    Return whether a parent is the venv redirector that started its child.
+
+    A Windows venv runs its interpreter through a small python.exe in the
+    environment that starts the base interpreter, and the base interpreter
+    reports that redirector as sys.executable. So the parent is the redirector
+    when its image is sys.executable and the child's is not.
+
+    Returns:
+        Whether the parent is the child's venv redirector
+    """
+    if parent.path is None or child.path is None:
+        return False
+    target = os.path.normcase(executable)
+    return os.path.normcase(parent.path) == target and os.path.normcase(child.path) != target
+
+
+def _parent_of(processes: ProcessTable, child: ProcessRecord) -> ProcessRecord | None:
+    """
+    Return the process that started a child.
+
+    A parent created after its child holds a reused process id, so it is not the
+    process that started the child.
+
+    Returns:
+        The parent's record, or None when it cannot be read or was created after the child
+    """
+    parent = processes.read(child.parent)
+    if parent is None or parent.created > child.created:
+        return None
+    return parent
+
+
+def _launcher_created(processes: ProcessTable, executable: str, pid: int) -> float | None:
+    """
+    Return the creation time of the uv process that launched the hook.
+
+    The launcher is the hook's parent or, when that parent is the venv
+    redirector of the hook's interpreter, the redirector's parent; no other
+    process is taken for it.
+
+    Returns:
+        The launcher's creation time on the table's clock, or None when the
+        launcher cannot be identified
+    """
+    hook = processes.read(pid)
+    if hook is None:
+        return None
+    parent = _parent_of(processes, hook)
+    if parent is not None and _is_redirector(hook, parent, executable):
+        parent = _parent_of(processes, parent)
+    if parent is None or not _is_launcher(parent):
+        return None
+    return parent.created
+
+
+def launcher_clock_start(
+    hook_started_at: float,
+    processes: ProcessTable | None,
+    executable: str,
+    pid: int,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> float:
+    """
+    Return the time.monotonic() reading the run's budget counts from.
+
+    The budget counts from the creation of the uv process that launched the
+    hook, converted once to the monotonic clock by taking its age, read on the
+    process table's clock, off a monotonic reading taken beside it. The hook's
+    own clock is used instead when the launcher cannot be identified, when its
+    age is above MAX_LAUNCH_AGE_SECONDS, or when the result would fall after
+    the hook's own clock, since the launch precedes the imports; that last case
+    includes a creation time apparently later than the read.
+
+    Args:
+        hook_started_at: The hook's own clock, read after its imports
+        processes: The platform's process table, or None where there is none
+        executable: The interpreter's sys.executable
+        pid: The hook's process id
+        monotonic: The monotonic clock
+
+    Returns:
+        The monotonic reading of the launch, or hook_started_at
+    """
+    if processes is None:
+        return hook_started_at
+    created = _launcher_created(processes, executable, pid)
+    if created is None:
+        return hook_started_at
+    age = processes.now() - created
+    started_at = monotonic() - age
+    if age > MAX_LAUNCH_AGE_SECONDS or started_at > hook_started_at:
+        return hook_started_at
+    return started_at
 
 
 class UnconfirmedStoreError(Exception):
@@ -1648,17 +2003,20 @@ def create_mcp_client_with_retry(config: dict[str, Any], deadline: Deadline) -> 
     raise RuntimeError('Failed to create MCP client after all retries')
 
 
-def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClient:
+def create_mcp_client(
+    config: dict[str, Any], budget_started_at: float = _HOOK_STARTED_AT,
+) -> SyncMCPClient | FastMCPHttpClient:
     """
     Create appropriate MCP client based on transport configuration.
 
     This factory function selects between stdio transport (a server launched through uvx)
     and HTTP transport (using FastMCP Client for remote MCP servers), and gives the
-    client the run's time budget: mcp_client.deadline_seconds counted from the hook's
-    start, which caps every attempt the client makes.
+    client the run's time budget: mcp_client.deadline_seconds counted from
+    budget_started_at, which caps every attempt the client makes.
 
     Args:
         config: Configuration dictionary with mcp_client and mcp_server settings
+        budget_started_at: The time.monotonic() reading the budget counts from; the hook's own clock when omitted
 
     Returns:
         Either SyncMCPClient (stdio) or FastMCPHttpClient (http)
@@ -1671,7 +2029,7 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClie
     transport = server_config.get('transport', 'stdio')
 
     deadline_seconds = float(mcp_config.get('deadline_seconds', DEFAULT_CONFIG['mcp_client']['deadline_seconds']))
-    deadline = Deadline(deadline_seconds, started_at=_HOOK_STARTED_AT)
+    deadline = Deadline(deadline_seconds, started_at=budget_started_at)
 
     log_always(f'Creating MCP client with transport: {transport} ({deadline.describe()})')
 
@@ -1838,9 +2196,15 @@ def _unconfirmed_store_notice(error: Exception, error_msg: str, thread_id: str, 
     return f'[Hook: user message not confirmed stored to context-server (thread_id={thread_id}; {error_msg}).{stage}'
 
 
-def main() -> None:
-    """Main hook execution function."""
+def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
+    """
+    Main hook execution function.
+
+    Args:
+        budget_started_at: The time.monotonic() reading the run's budget counts from; the hook's own clock when omitted
+    """
     log_always('Entering main() function')
+    log_always(f'Run budget counts from {_HOOK_STARTED_AT - budget_started_at:.2f}s before the hook clock started')
     start_time = datetime.now(tz=UTC)
 
     # Load configuration (defaults merged with config file if provided)
@@ -1977,7 +2341,7 @@ def main() -> None:
         # (PYTHONUTF8=1) and console codepage (65001) instead.
 
         # Create client based on transport configuration (stdio or http)
-        client = create_mcp_client(config)
+        client = create_mcp_client(config, budget_started_at)
 
         log_always('Storing context in MCP server')
         result = client.store_context(
@@ -2024,4 +2388,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    main(launcher_clock_start(_HOOK_STARTED_AT, process_table(), sys.executable, os.getpid()))
