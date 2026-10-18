@@ -156,7 +156,7 @@ class StorageBackend(Protocol):
                 pass
 
             @asynccontextmanager
-            async def get_connection(self, readonly: bool = False) -> AsyncIterator[Any]:
+            async def get_connection(self, readonly: bool = False) -> AsyncGenerator[Any, None]:
                 # Yield a MySQL connection from pool
                 conn = await self.pool.acquire()
                 try:
