@@ -179,8 +179,8 @@ ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer l
 # - app/server.py: E402 required - the settings guard (the first get_settings() call, which exits with EX_CONFIG on
 #   invalid settings) and config_logger() MUST run BEFORE importing app.backends, app.repositories and app.startup,
 #   so settings are validated and logging is configured before any backend code runs.
-# - tests/conftest.py: E402 required - Windows event loop policy and LangSmith env vars MUST be set
-#   BEFORE importing app.server (which triggers httpx import). See conftest.py comments for details.
+# - tests/conftest.py: E402 required - the LangSmith env vars MUST be set BEFORE importing app.server
+#   (which triggers the httpx import). See conftest.py comments for details.
 # - app/instructions.py: E501, W293 required - DEFAULT_INSTRUCTIONS is a triple-quoted Markdown string
 #   where long lines and indented blank lines are intentional content formatting.
 # - app/summary/instructions.py: E501, W293 required - DEFAULT_SUMMARY_PROMPT uses concatenated strings
