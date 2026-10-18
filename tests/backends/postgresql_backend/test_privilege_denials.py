@@ -9,7 +9,7 @@ SQLSTATE and the operation name but without the row the server may describe.
 
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
@@ -36,7 +36,7 @@ def _pooled_backend() -> PostgreSQLBackend:
     """Build a backend whose pool hands out one fake connection, so the real entry points run."""
 
     @contextlib.asynccontextmanager
-    async def _transaction() -> AsyncIterator[None]:
+    async def _transaction() -> AsyncGenerator[None, None]:
         yield None
 
     conn = MagicMock()
@@ -44,7 +44,7 @@ def _pooled_backend() -> PostgreSQLBackend:
     conn.execute = AsyncMock()
 
     @contextlib.asynccontextmanager
-    async def _acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+    async def _acquire(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
         yield conn
 
     backend = build_backend()

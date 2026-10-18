@@ -5,7 +5,7 @@ and generation runs once.
 """
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -36,7 +36,7 @@ class TestStatementTimeoutRetryToolLayer:
         state = {'calls': 0}
 
         @contextlib.asynccontextmanager
-        async def _begin(*, access_scope: BackendAccess) -> AsyncIterator[MagicMock]:
+        async def _begin(*, access_scope: BackendAccess) -> AsyncGenerator[MagicMock, None]:
             _ = access_scope
             state['calls'] += 1
             txn = MagicMock()
@@ -84,7 +84,7 @@ class TestStatementTimeoutRetryToolLayer:
         gen_calls = {'n': 0}
 
         @contextlib.asynccontextmanager
-        async def _begin(*, access_scope: BackendAccess) -> AsyncIterator[MagicMock]:
+        async def _begin(*, access_scope: BackendAccess) -> AsyncGenerator[MagicMock, None]:
             _ = access_scope
             state['calls'] += 1
             txn = MagicMock()
@@ -133,7 +133,7 @@ class TestStatementTimeoutRetryToolLayer:
         state = {'calls': 0}
 
         @contextlib.asynccontextmanager
-        async def _begin(*, access_scope: BackendAccess) -> AsyncIterator[MagicMock]:
+        async def _begin(*, access_scope: BackendAccess) -> AsyncGenerator[MagicMock, None]:
             _ = access_scope
             state['calls'] += 1
             txn = MagicMock()

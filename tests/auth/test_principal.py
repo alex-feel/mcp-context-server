@@ -10,7 +10,7 @@ context entries as.
 
 import dataclasses
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -35,7 +35,7 @@ def _token(claims: dict[str, object], client_id: str = 'mcp-client') -> AccessTo
 
 
 @contextmanager
-def _auth_provider(provider: str, **extra_env: str) -> Iterator[None]:
+def _auth_provider(provider: str, **extra_env: str) -> Generator[None, None, None]:
     """Run the block with MCP_AUTH_PROVIDER (plus extra env vars) in fresh settings."""
     with patch.dict(os.environ, {'MCP_AUTH_PROVIDER': provider, **extra_env}, clear=False):
         get_settings.cache_clear()

@@ -2,7 +2,7 @@
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
@@ -48,7 +48,7 @@ class TestExecuteWriteStatementTimeoutRetry:
 
         # Fake transaction context manager (no real DB).
         @contextlib.asynccontextmanager
-        async def _fake_transaction() -> AsyncIterator[None]:
+        async def _fake_transaction() -> AsyncGenerator[None, None]:
             yield None
 
         mock_conn = MagicMock()
@@ -56,7 +56,7 @@ class TestExecuteWriteStatementTimeoutRetry:
 
         # get_connection is an async context manager yielding mock_conn.
         @contextlib.asynccontextmanager
-        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
@@ -88,14 +88,14 @@ class TestExecuteWriteStatementTimeoutRetry:
         backend._shutdown = False
 
         @contextlib.asynccontextmanager
-        async def _fake_transaction() -> AsyncIterator[None]:
+        async def _fake_transaction() -> AsyncGenerator[None, None]:
             yield None
 
         mock_conn = MagicMock()
         mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
 
         @contextlib.asynccontextmanager
-        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
@@ -136,14 +136,14 @@ class TestExecuteWriteDeadlockRetry:
         backend: PostgreSQLBackend, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         @contextlib.asynccontextmanager
-        async def _fake_transaction() -> AsyncIterator[None]:
+        async def _fake_transaction() -> AsyncGenerator[None, None]:
             yield None
 
         mock_conn = MagicMock()
         mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
 
         @contextlib.asynccontextmanager
-        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
@@ -318,14 +318,14 @@ class TestExecuteWritePoolAcquireTimeout:
         monkeypatch.setattr(backend.circuit_breaker, 'record_failure', record_failure)
 
         @contextlib.asynccontextmanager
-        async def _fake_transaction() -> AsyncIterator[None]:
+        async def _fake_transaction() -> AsyncGenerator[None, None]:
             yield None
 
         mock_conn = MagicMock()
         mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
 
         @contextlib.asynccontextmanager
-        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
@@ -365,14 +365,14 @@ class TestExecuteWriteFinalAttemptBackoff:
         backend._shutdown = False
 
         @contextlib.asynccontextmanager
-        async def _fake_transaction() -> AsyncIterator[None]:
+        async def _fake_transaction() -> AsyncGenerator[None, None]:
             yield None
 
         mock_conn = MagicMock()
         mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
 
         @contextlib.asynccontextmanager
-        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)

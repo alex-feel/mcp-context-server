@@ -9,7 +9,7 @@ import asyncio
 import contextvars
 from collections.abc import Awaitable
 from collections.abc import Callable
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -134,7 +134,7 @@ def charge_cancelled_preparation(
 
 
 @contextmanager
-def track_acquire() -> Iterator[_AcquireTracker]:
+def track_acquire() -> Generator[_AcquireTracker, None, None]:
     """Publish a ``_AcquireTracker`` for the acquire performed inside the block.
 
     An already-published tracker is REUSED rather than shadowed, so an outer
