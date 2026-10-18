@@ -4,8 +4,6 @@ Packs b-bit integers into uint8 arrays for memory-efficient storage and
 provides the inverse unpacking operations.
 """
 
-from typing import cast
-
 import numpy as np
 from numpy.typing import NDArray
 
@@ -67,8 +65,7 @@ def pack_indices(indices: NDArray[np.int32], bits: int) -> NDArray[np.uint8]:
         )
     reshaped = bits_stream.reshape(n_bytes, 8)
     shifts = np.arange(8, dtype=np.int32)
-    packed = (reshaped.astype(np.int32) << shifts).sum(axis=1).astype(np.uint8)
-    return cast('NDArray[np.uint8]', packed)
+    return (reshaped.astype(np.int32) << shifts).sum(axis=1).astype(np.uint8)
 
 
 def unpack_indices(
@@ -104,8 +101,7 @@ def unpack_indices(
     stream = bits_from_bytes[:total_bits].astype(np.int64)
     mat = stream.reshape(count, bits)
     powers = (1 << np.arange(bits, dtype=np.int64))
-    result = (mat * powers).sum(axis=-1).astype(np.int32)
-    return cast('NDArray[np.int32]', result)
+    return (mat * powers).sum(axis=-1).astype(np.int32)
 
 
 def pack_bits(signs: NDArray[np.uint8]) -> NDArray[np.uint8]:
@@ -126,8 +122,7 @@ def pack_bits(signs: NDArray[np.uint8]) -> NDArray[np.uint8]:
 
     reshaped = padded.reshape(n_bytes, 8)
     shifts = np.arange(8, dtype=np.int32)
-    packed = (reshaped.astype(np.int32) << shifts).sum(axis=1).astype(np.uint8)
-    return cast('NDArray[np.uint8]', packed)
+    return (reshaped.astype(np.int32) << shifts).sum(axis=1).astype(np.uint8)
 
 
 def pack_bits_batch(signs: NDArray[np.uint8]) -> NDArray[np.uint8]:
@@ -152,8 +147,7 @@ def pack_bits_batch(signs: NDArray[np.uint8]) -> NDArray[np.uint8]:
     padded[:, :m] = flat
     reshaped = padded.reshape(n, n_bytes, 8)
     shifts = np.arange(8, dtype=np.int32)
-    packed = (reshaped.astype(np.int32) << shifts).sum(axis=-1).astype(np.uint8)
-    return cast('NDArray[np.uint8]', packed)
+    return (reshaped.astype(np.int32) << shifts).sum(axis=-1).astype(np.uint8)
 
 
 def unpack_bits(packed: NDArray[np.uint8], count: int) -> NDArray[np.float32]:

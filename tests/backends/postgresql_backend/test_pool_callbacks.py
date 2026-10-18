@@ -258,6 +258,24 @@ class TestPgvectorInitCallbackClassification:
         with pytest.raises(ConfigurationError, match='pgvector extension is not installed'):
             await init_callback(conn)
 
+    @pytest.mark.asyncio
+    async def test_vector_codec_registered_in_detected_schema(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The installed pgvector registers its codecs in the schema the probe found."""
+        init_callback = await self._init_callback(monkeypatch)
+        conn = MagicMock()
+        conn.fetchrow = AsyncMock(return_value={'nspname': 'extensions'})
+        conn.set_type_codec = AsyncMock()
+
+        await init_callback(conn)
+
+        schemas_by_type = {
+            call.args[0]: call.kwargs['schema'] for call in conn.set_type_codec.await_args_list
+        }
+        assert schemas_by_type['vector'] == 'extensions'
+        assert schemas_by_type['uuid'] == 'pg_catalog'
+
 
 class TestResetPoolConnection:
     """The reset callback cleans a released connection before the pool reuses it."""

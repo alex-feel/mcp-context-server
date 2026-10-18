@@ -12,6 +12,8 @@ Tests verify:
 """
 
 import asyncio
+import re
+import warnings
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
@@ -215,3 +217,37 @@ async def test_retry_log_shows_operation_name(caplog: pytest.LogCaptureFixture) 
     assert len(retry_messages) >= 1
     assert 'test_summarize_operation' in retry_messages[0]
     assert '<unknown>' not in retry_messages[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_summary_settings')
+async def test_retry_emits_no_deprecation_warning() -> None:
+    """Building and running the retry loop uses only current tenacity parameters."""
+    mock_func = AsyncMock(side_effect=[ConnectionError('Network error'), 'summary'])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', DeprecationWarning)
+        result = await with_summary_retry_and_timeout(mock_func, 'test_operation')
+
+    assert result == 'summary'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_summary_settings')
+async def test_first_retry_wait_spans_base_delay_jitter(caplog: pytest.LogCaptureFixture) -> None:
+    """The first backoff is the base delay plus a jitter spread across one more base delay."""
+    base_delay_s = 0.01
+    waits: list[float] = []
+    for _ in range(20):
+        caplog.clear()
+        mock_func = AsyncMock(side_effect=[ConnectionError('Network error'), 'summary'])
+        with caplog.at_level('WARNING'):
+            await with_summary_retry_and_timeout(mock_func, 'test_operation')
+        messages = [r.message for r in caplog.records if r.message.startswith('Retrying test_operation in ')]
+        assert len(messages) == 1
+        match = re.search(r' in ([0-9.e-]+) seconds ', messages[0])
+        assert match is not None
+        waits.append(float(match.group(1)))
+
+    assert all(base_delay_s - 1e-4 <= wait <= 2 * base_delay_s + 1e-4 for wait in waits)
+    assert max(waits) - min(waits) > 0.3 * base_delay_s

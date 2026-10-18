@@ -311,8 +311,8 @@ class TestImageCountLimitToolSchema:
     @pytest.mark.parametrize('tool_fn', [store_context, update_context])
     def test_images_param_advertises_max_items(self, tool_fn: Callable[..., Awaitable[object]]) -> None:
         """The images parameter declares maxItems=MAX_IMAGES_PER_ENTRY in its JSON schema."""
-        hints = get_type_hints(tool_fn, include_extras=True)
-        schema = TypeAdapter(hints['images']).json_schema()
+        images_hint = get_type_hints(tool_fn, include_extras=True)['images']
+        schema = TypeAdapter(images_hint).json_schema()
         branches = schema.get('anyOf', [schema])
         array_branches = [b for b in branches if isinstance(b, dict) and b.get('type') == 'array']
         assert array_branches, f'no array branch in images schema: {schema}'

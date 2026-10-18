@@ -8,11 +8,8 @@ validates a connection before it returns to the pool.
 import asyncio
 import logging
 import socket
-from collections.abc import Awaitable
-from collections.abc import Callable
 from collections.abc import Sequence
 from typing import Any
-from typing import cast
 
 import asyncpg
 
@@ -242,12 +239,7 @@ async def init_pool_connection(conn: asyncpg.Connection, *, provision_vector: bo
 
             schema = result['nspname']
 
-            # Register vector types using detected schema
-            # Note: Type stubs for register_vector are incomplete (missing schema parameter)
-            # Actual function signature: async def register_vector(conn, schema='public')
-            # Using cast to work around incomplete type stubs
-            register_func = cast(Callable[..., Awaitable[None]], register_vector)
-            await register_func(conn, schema)
+            await register_vector(conn, schema=schema)
             logger.debug(f'Registered pgvector types from schema: {schema}')
 
         except ImportError:
