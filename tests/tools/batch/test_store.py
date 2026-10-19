@@ -203,6 +203,108 @@ class TestBatchStoreScope:
         assert store_call.kwargs['scope'] == expected
 
 
+class TestBatchStoreWithoutDeduplication:
+    """A batch entry with deduplicate=False inserts a fresh entry and skips that entry's deduplication reads."""
+
+    @pytest.mark.parametrize('atomic', [True, False])
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_flag_forwarded_and_precheck_skipped_per_entry(self, atomic: bool) -> None:
+        """Only the deduplicating entry runs the pre-check and the existence probe; each entry forwards its own flag."""
+        from app.tools.batch.store import store_context_batch
+
+        _, mock_begin_transaction = make_mock_txn()
+        with (
+            patch('app.tools.batch.store.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.store.get_summary_provider', return_value=None),
+            patch(
+                'app.tools.batch.store.generate_embeddings_with_timeout',
+                new_callable=AsyncMock,
+                return_value=[('chunk-0', [0.1, 0.2])],
+            ) as mock_embed,
+            patch(
+                'app.tools.batch.store.generate_compression_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=lambda embeddings: embeddings,
+            ),
+            patch('app.tools.batch.store.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch(
+                'app.tools.batch.store.execute_store_in_transaction',
+                new_callable=AsyncMock,
+                side_effect=[('fresh-id', False, True), ('dup-id', True, False)],
+            ) as mock_store,
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+            precheck = AsyncMock(return_value=DuplicateCandidate(context_id='dup-id', summary=None))
+            mock_repos.context.check_latest_is_duplicate = precheck
+            mock_repos.embeddings.exists = AsyncMock(return_value=True)
+
+            result = await store_context_batch(
+                entries=[
+                    {'thread_id': 'kb:handbook', 'source': 'user', 'text': 'Fresh document', 'deduplicate': 'false'},
+                    {'thread_id': 'kb:handbook', 'source': 'user', 'text': 'Retransmitted document'},
+                ],
+                atomic=atomic,
+            )
+
+        assert [item['context_id'] for item in result['results']] == ['fresh-id', 'dup-id']
+        precheck.assert_awaited_once()
+        precheck_call = precheck.await_args
+        assert precheck_call is not None
+        assert precheck_call.kwargs['text_content'] == 'Retransmitted document'
+        mock_repos.embeddings.exists.assert_awaited_once()
+        mock_embed.assert_awaited_once_with('Fresh document')
+        assert [call.kwargs['deduplicate'] for call in mock_store.await_args_list] == [False, True]
+
+    @pytest.mark.parametrize('atomic', [True, False])
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_identical_texts_in_one_batch_give_distinct_entries(self, atomic: bool) -> None:
+        """Identical texts stored without deduplication in one batch become separate entries."""
+        from app.tools.batch.store import store_context_batch
+        from app.tools.search.browse import search_context
+
+        thread_id = f'kb:twins-{atomic}'
+        entry = {'thread_id': thread_id, 'source': 'user', 'text': 'Shared body', 'deduplicate': False}
+        result = await store_context_batch(entries=[entry, dict(entry)], atomic=atomic)
+
+        ids = [item['context_id'] for item in result['results']]
+        assert result['succeeded'] == 2
+        assert len(set(ids)) == 2
+        listed = await search_context(limit=50, thread_id=thread_id)
+        assert isinstance(listed, dict)
+        assert len(listed['results']) == 2
+
+    @pytest.mark.parametrize('atomic', [True, False])
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_mixed_flags_follow_the_deduplication_candidate(self, atomic: bool) -> None:
+        """A deduplicating entry after a fresh identical one merges into it; a later fresh entry inserts again."""
+        from app.tools.batch.store import store_context_batch
+        from app.tools.search.browse import search_context
+
+        thread_id = f'kb:mixed-{atomic}'
+        base = {'thread_id': thread_id, 'source': 'user', 'text': 'Shared body'}
+        result = await store_context_batch(
+            entries=[{**base, 'deduplicate': False}, dict(base), {**base, 'deduplicate': False}],
+            atomic=atomic,
+        )
+
+        first, merged, fresh = (item['context_id'] for item in result['results'])
+        assert merged == first
+        assert fresh != first
+        listed = await search_context(limit=50, thread_id=thread_id)
+        assert isinstance(listed, dict)
+        assert len(listed['results']) == 2
+        assert {row['id'] for row in listed['results']} == {first, fresh}
+
+
 _INGEST_BLOCK: dict[str, object] = {
     'scope': 'kb:handbook',
     'source_id': 'guides/setup.md',

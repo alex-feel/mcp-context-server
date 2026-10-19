@@ -211,6 +211,7 @@ class MCPServerIntegrationTest(
             ('Server Version Is Project Version', self.test_server_version_is_project_version),
             # Deduplication Data Integrity Tests
             ('Dedup Data Integrity', self.test_store_context_deduplication_data_integrity),
+            ('Store Deduplicate False Inserts Fresh', self.test_store_deduplicate_false_inserts_fresh),
             # Edge Case Tests
             ('Store Context Empty Text', self.test_store_context_empty_text),
             ('Store Context Max Size Image', self.test_store_context_max_size_image),
@@ -242,6 +243,7 @@ class MCPServerIntegrationTest(
             ('Session Pooler Validation No-op on SQLite', self.test_session_pooler_validation_noop_on_sqlite),
             ('Update Triggers Embedding Regen', self.test_update_context_triggers_embedding_regeneration),
             ('Batch Store Dedup Within Batch', self.test_store_context_batch_dedup_within_batch),
+            ('Batch Store Deduplicate False Per Entry', self.test_store_batch_deduplicate_false_per_entry),
             ('Hybrid Search Graceful Degradation', self.test_hybrid_search_graceful_degradation_fts_only),
             ('Content Type Auto Detection', self.test_content_type_auto_detection_multimodal),
             ('Update Image Without MIME Type', self.test_update_context_image_without_mime_type_integration),
@@ -258,6 +260,10 @@ class MCPServerIntegrationTest(
             ('Health Endpoint', self.test_health_endpoint_returns_ok),
             # Batch/Non-Batch Conformance Tests
             ('Store Batch Conformance', self.test_store_batch_single_matches_store_nonbatch),
+            (
+                'Store Batch Conformance Deduplicate False',
+                self.test_store_batch_single_matches_store_nonbatch_deduplicate_false,
+            ),
             ('Update Batch Conformance', self.test_update_batch_single_matches_update_nonbatch),
             ('Delete Batch Conformance', self.test_delete_batch_single_matches_delete_nonbatch),
             # Tool-Surface Coverage (run on both backends)

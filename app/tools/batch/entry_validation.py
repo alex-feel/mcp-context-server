@@ -8,6 +8,9 @@ import json
 from typing import Any
 from typing import cast
 
+from pydantic import TypeAdapter
+from pydantic import ValidationError
+
 from app.access_scope import AccessScope
 from app.auth import RequestPrincipal
 from app.auth import visibility_denied_reason
@@ -22,6 +25,8 @@ from app.tools._validation import validate_and_normalize_images
 
 settings = get_settings()
 
+_BOOL: TypeAdapter[bool] = TypeAdapter(bool)
+
 
 def validate_store_entry(
     entry: dict[str, Any],
@@ -32,9 +37,9 @@ def validate_store_entry(
 
     The single-entry store_context is Pydantic-typed at the tool boundary; the
     batch path takes untyped dicts, so this helper re-imposes the same
-    rejections (types, image validity, tag caps, metadata storability, the
-    visibility enum, and the publish gate) so both paths accept and refuse
-    identical inputs.
+    rejections (types, the deduplicate flag, image validity, tag caps, metadata
+    storability, the visibility enum, and the publish gate) so both paths accept
+    and refuse identical inputs.
 
     Args:
         entry: The raw caller-supplied entry dict.
@@ -44,8 +49,9 @@ def validate_store_entry(
     Returns:
         ``(validated_entry, None)`` on success -- the dict carries the
         normalized fields the transaction phase consumes, including the
-        entry's EFFECTIVE visibility -- or ``(None, error_message)`` on the
-        first failed check.
+        entry's EFFECTIVE visibility and its deduplicate flag (True when the
+        key is absent) -- or ``(None, error_message)`` on the first failed
+        check.
     """
     # Validate required fields
     if 'thread_id' not in entry or not entry.get('thread_id'):
@@ -54,6 +60,16 @@ def validate_store_entry(
         return None, 'Missing or invalid source (must be "user" or "agent")'
     if 'text' not in entry or not entry.get('text'):
         return None, 'Missing required field: text'
+
+    # The per-entry deduplicate flag follows store_context's lax boolean parameter
+    # exactly (FastMCP validates it with pydantic in lax mode), never truthiness:
+    # the string 'false' is truthy and must still turn deduplication off.
+    deduplicate = True
+    if 'deduplicate' in entry:
+        try:
+            deduplicate = _BOOL.validate_python(entry['deduplicate'])
+        except ValidationError:
+            return None, 'deduplicate must be a boolean'
 
     # Clean input strings. Reject non-strings instead of str()-coercing:
     # coercion would silently persist the Python repr of a truthy dict/
@@ -176,6 +192,7 @@ def validate_store_entry(
         'images': images if images is not None else [],
         'images_provided': images_provided,
         'visibility': effective_visibility,
+        'deduplicate': deduplicate,
     }, None
 
 

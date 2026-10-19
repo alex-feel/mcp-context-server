@@ -283,6 +283,68 @@ class TestStoreScope:
         assert precheck_call.kwargs['scope'] == expected
         assert store_call is not None
         assert store_call.kwargs['scope'] == expected
+        assert store_call.kwargs['deduplicate'] is True
+
+
+class TestStoreWithoutDeduplication:
+    """store_context with deduplicate=False inserts a fresh entry and skips every deduplication read."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_skips_the_precheck_and_runs_every_generation_leg(self) -> None:
+        """The pre-check and the embedding-existence probe are never awaited; every leg runs; False is forwarded."""
+        mock_repos = AsyncMock()
+        mock_backend = MagicMock()
+        mock_backend.begin_transaction = _mock_begin_transaction
+        mock_repos.context.backend = mock_backend
+        precheck = AsyncMock(return_value=DuplicateCandidate(context_id='dup-id', summary='Stored summary'))
+        mock_repos.context.check_latest_is_duplicate = precheck
+        mock_repos.embeddings.exists = AsyncMock(return_value=True)
+        text = 'Corpus document body. ' * 30
+
+        with (
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=MagicMock()),
+            patch(
+                'app.tools.context.store.run_generation',
+                new_callable=AsyncMock,
+                return_value=([('chunk-0', [0.1, 0.2])], 'Fresh summary', []),
+            ) as mock_generation,
+            patch(
+                'app.tools.context.store.execute_store_in_transaction',
+                new_callable=AsyncMock,
+                return_value=('new-id', False, True),
+            ) as mock_store,
+        ):
+            result = await store_context(thread_id='kb:handbook', source='user', text=text, deduplicate=False)
+
+        assert result['context_id'] == 'new-id'
+        precheck.assert_not_awaited()
+        mock_repos.embeddings.exists.assert_not_awaited()
+        generation_call = mock_generation.await_args
+        assert generation_call is not None
+        assert generation_call.kwargs == {'run_embedding': True, 'run_summary': True, 'run_nodes': True}
+        store_call = mock_store.await_args
+        assert store_call is not None
+        assert store_call.kwargs['deduplicate'] is False
+        assert store_call.kwargs['summary'] == 'Fresh summary'
+        assert store_call.kwargs['nodes_pending'] is False
+        assert store_call.kwargs['summary_pending'] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_identical_text_twice_gives_two_entries(self) -> None:
+        """Two identical stores without deduplication insert two entries; a default store then merges into the latest."""
+        first = await store_context(thread_id='kb:twins', source='user', text='Shared body', deduplicate=False)
+        second = await store_context(thread_id='kb:twins', source='user', text='Shared body', deduplicate=False)
+        merged = await store_context(thread_id='kb:twins', source='user', text='Shared body')
+
+        assert first['context_id'] != second['context_id']
+        assert merged['context_id'] == second['context_id']
+        listed = await search_context(limit=50, thread_id='kb:twins')
+        assert isinstance(listed, dict)
+        assert sorted(row['id'] for row in listed['results']) == sorted([first['context_id'], second['context_id']])
 
 
 _INGEST_BLOCK: dict[str, Any] = {

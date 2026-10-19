@@ -174,6 +174,40 @@ class TestStoreConformance:
         assert await count_entries_in_thread(thread_b) == 1
 
     @pytest.mark.asyncio
+    async def test_store_conformance_dedup_disabled(self) -> None:
+        """Without deduplication both paths insert a second entry for identical text and write identical rows."""
+        thread_nb = f'{THREAD_PREFIX}_store_nodedup_nb'
+        thread_b = f'{THREAD_PREFIX}_store_nodedup_b'
+        meta: dict[str, JsonValue] = {'title': 'Setup'}
+
+        nb_results = [
+            await store_context(
+                thread_id=thread_nb, source='user', text='Dedup disabled text', metadata=meta, tags=['Guide'],
+                deduplicate=False,
+            )
+            for _ in range(2)
+        ]
+        b_results = [
+            await store_context_batch(
+                entries=[{
+                    'thread_id': thread_b, 'source': 'user', 'text': 'Dedup disabled text', 'metadata': meta,
+                    'tags': ['Guide'], 'deduplicate': False,
+                }],
+                atomic=True,
+            )
+            for _ in range(2)
+        ]
+
+        nb_ids = [result['context_id'] for result in nb_results]
+        b_ids = [require_context_id(result['results'][0]['context_id']) for result in b_results]
+        assert nb_ids[0] != nb_ids[1], 'Non-batch store merged with deduplication disabled'
+        assert b_ids[0] != b_ids[1], 'Batch store merged with deduplication disabled'
+        assert await count_entries_in_thread(thread_nb) == 2
+        assert await count_entries_in_thread(thread_b) == 2
+        for nb_id, b_id in zip(nb_ids, b_ids, strict=True):
+            assert_db_states_equal(await read_db_entry(nb_id), await read_db_entry(b_id))
+
+    @pytest.mark.asyncio
     async def test_store_conformance_dedup_interleaving(self) -> None:
         """Dedup suppressed when opposite-source entry is interleaved."""
         thread_nb = f'{THREAD_PREFIX}_store_interleave_nb'

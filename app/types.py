@@ -464,21 +464,6 @@ class UpdateContextSuccessDict(TypedDict):
 # Bulk operation TypedDicts
 
 
-class BulkStoreItemDict(TypedDict, total=False):
-    """Type definition for a single item in bulk store request.
-
-    Required fields: thread_id, source, text
-    Optional fields: metadata, tags, images
-    """
-
-    thread_id: str
-    source: str
-    text: str
-    metadata: MetadataDict | None
-    tags: list[str] | None
-    images: list[dict[str, str]] | None
-
-
 class BulkStoreResultItemDict(TypedDict):
     """Type definition for a single result in bulk store response."""
 
@@ -497,22 +482,6 @@ class BulkStoreResponseDict(TypedDict):
     failed: int
     results: list[BulkStoreResultItemDict]
     message: str
-
-
-class BulkUpdateItemDict(TypedDict, total=False):
-    """Type definition for a single item in bulk update request.
-
-    Required field: context_id
-    Optional fields: text, metadata, metadata_patch, tags, images
-    Note: metadata and metadata_patch are mutually exclusive per entry.
-    """
-
-    context_id: str
-    text: str | None
-    metadata: MetadataDict | None
-    metadata_patch: MetadataDict | None
-    tags: list[str] | None
-    images: list[dict[str, str]] | None
 
 
 class BulkUpdateResultItemDict(TypedDict):

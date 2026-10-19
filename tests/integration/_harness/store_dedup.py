@@ -2,7 +2,8 @@
 
 A retransmitted entry updates the stored one: metadata, tags, content type
 and image attachments follow the deduplication merge rules, and an
-opposite-source entry in between suppresses deduplication.
+opposite-source entry in between suppresses deduplication. With
+``deduplicate=false`` every store inserts a new entry.
 """
 
 import asyncio
@@ -64,6 +65,49 @@ class StoreDedupMixin(HarnessCore):
             self.test_results.append(
                 (test_name, True, 'Dedup preserved multimodal content_type and image'),
             )
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_store_deduplicate_false_inserts_fresh(self) -> bool:
+        """With deduplicate=false identical text stored twice gives two entries; a default store
+        then merges into the latest of them.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_deduplicate_false_inserts_fresh'
+        assert self.client is not None
+        try:
+            thread_id = f'{self.test_thread_id}_no_dedup'
+            arguments = {'thread_id': thread_id, 'source': 'user', 'text': 'Identical corpus document'}
+            ids: list[str] = []
+            for deduplicate in (False, False, True):
+                data = self._extract_content(
+                    await self.client.call_tool('store_context', {**arguments, 'deduplicate': deduplicate}),
+                )
+                if not data.get('success'):
+                    self.test_results.append((test_name, False, f'Store failed: {data}'))
+                    return False
+                ids.append(data['context_id'])
+
+            first, second, merged = ids
+            if first == second:
+                self.test_results.append((test_name, False, f'deduplicate=false merged into {first}'))
+                return False
+            if merged != second:
+                self.test_results.append((test_name, False, f'Default store did not merge into {second}: {merged}'))
+                return False
+            listed = self._extract_content(
+                await self.client.call_tool('search_context', {'thread_id': thread_id, 'limit': 10}),
+            )
+            stored = sorted(row['id'] for row in listed.get('results', []))
+            if stored != sorted([first, second]):
+                self.test_results.append((test_name, False, f'Expected entries {[first, second]}, got {stored}'))
+                return False
+
+            self.test_results.append((test_name, True, 'deduplicate=false inserted twice; the default merged'))
             return True
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))

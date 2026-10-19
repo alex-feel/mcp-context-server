@@ -2,7 +2,8 @@
 
 ``store_context_batch``, ``update_context_batch`` and ``delete_context_batch``
 called with one entry leave the same database state and return the same
-result as ``store_context``, ``update_context`` and ``delete_context``.
+result as ``store_context``, ``update_context`` and ``delete_context``,
+``deduplicate=false`` stores included.
 """
 
 from tests.integration._harness.core import HarnessCore
@@ -106,6 +107,57 @@ class BatchConformanceMixin(HarnessCore):
                 return False
 
             self.test_results.append((test_name, True, 'Store conformance verified'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_store_batch_single_matches_store_nonbatch_deduplicate_false(self) -> bool:
+        """Conformance: with deduplicate=false both store tools insert a second entry for
+        identical text, and the two paths store the same fields.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_batch_single_matches_store_nonbatch_deduplicate_false'
+        try:
+            assert self.client is not None
+            fields = {'source': 'user', 'text': 'Conformance entry without deduplication', 'tags': ['kb']}
+            nb_thread = f'{self.test_thread_id}_conform_nodedup_nb'
+            b_thread = f'{self.test_thread_id}_conform_nodedup_b'
+            nb_ids: list[str] = []
+            b_ids: list[str] = []
+            for _ in range(2):
+                nb_data = self._extract_content(await self.client.call_tool(
+                    'store_context', {'thread_id': nb_thread, **fields, 'deduplicate': False},
+                ))
+                b_data = self._extract_content(await self.client.call_tool('store_context_batch', {
+                    'entries': [{'thread_id': b_thread, **fields, 'deduplicate': False}], 'atomic': True,
+                }))
+                if not nb_data.get('success') or b_data.get('succeeded') != 1:
+                    self.test_results.append((test_name, False, f'Store failed: nb={nb_data} b={b_data}'))
+                    return False
+                nb_ids.append(nb_data['context_id'])
+                b_ids.append(b_data['results'][0]['context_id'])
+
+            if len(set(nb_ids)) != 2 or len(set(b_ids)) != 2:
+                self.test_results.append((test_name, False, f'An identical store merged: nb={nb_ids} b={b_ids}'))
+                return False
+            fetched = self._extract_content(
+                await self.client.call_tool('get_context_by_ids', {'context_ids': [*nb_ids, *b_ids]}),
+            ).get('results', [])
+            if len(fetched) != 4:
+                self.test_results.append((test_name, False, f'Expected 4 entries, got {len(fetched)}'))
+                return False
+            shapes = {
+                (row['source'], row['content_type'], row['text_content'], tuple(sorted(row.get('tags', []))))
+                for row in fetched
+            }
+            if len(shapes) != 1:
+                self.test_results.append((test_name, False, f'Stored fields differ between paths: {shapes}'))
+                return False
+
+            self.test_results.append((test_name, True, 'Both paths inserted twice with identical fields'))
             return True
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))

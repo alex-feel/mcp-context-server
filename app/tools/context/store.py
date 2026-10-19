@@ -1,4 +1,4 @@
-"""The store_context tool: store one context entry, deduplicating client retransmits."""
+"""The store_context tool: store one context entry, deduplicating client retransmits unless asked not to."""
 
 import asyncio
 import json
@@ -88,9 +88,19 @@ async def store_context(
             description='Access visibility for a newly stored entry: private (owner plus every '
             "grantee), public (everyone). Omitted uses the server's configured default. "
             'Publishing as public may require a configured role. Ignored when deduplication '
-            'updates an existing entry.',
+            'updates an existing entry. Always applied when deduplicate is false.',
         ),
     ] = None,
+    deduplicate: Annotated[
+        bool,
+        Field(
+            description='True (default): when the latest entry of this thread_id and source that the '
+            "caller may read is the caller's own and has identical text, that entry is updated instead "
+            'of inserting a duplicate (retransmit protection). False: always insert a new entry owned '
+            'by the caller; corpus sync clients pass false '
+            "(docs/knowledge-base.md, 'Storing Without Deduplication').",
+        ),
+    ] = True,
 ) -> StoreContextSuccessDict:
     """Store a context entry.
 
@@ -105,7 +115,8 @@ async def store_context(
     - visibility/ownership: NEVER changed by a deduplication update (a retransmit
       must not re-own or re-publish the existing row)
     An identical candidate owned by another principal is never merged into: the store
-    inserts a new entry owned by the caller.
+    inserts a new entry owned by the caller. With deduplicate=False the store skips the
+    candidate entirely and always inserts a new entry owned by the caller.
 
     Deduplication is suppressed when opposite-source entries (e.g., agent entries
     for a user store) that the caller may read exist after the candidate duplicate.
@@ -217,11 +228,13 @@ async def store_context(
         # The candidate id and its stored summary come from ONE statement-level
         # snapshot (see DuplicateCandidate): a separate later summary read could
         # observe a row version a concurrent update committed in between,
-        # pairing a reused summary with text it does not describe.
+        # pairing a reused summary with text it does not describe. A store that
+        # does not deduplicate always inserts, so it skips the pre-check: a skipped
+        # leg would only force the reconcile regeneration after its INSERT.
         likely_duplicate_id: str | None = None
         duplicate_summary: str | None = None
 
-        if get_embedding_provider() is not None or get_summary_provider() is not None:
+        if deduplicate and (get_embedding_provider() is not None or get_summary_provider() is not None):
             duplicate_candidate = await repos.context.check_latest_is_duplicate(
                 thread_id=thread_id,
                 source=source,
@@ -314,7 +327,7 @@ async def store_context(
                         tags=tags,
                         validated_images=validated_images,
                         images_provided=images is not None,
-                        deduplicate=True,
+                        deduplicate=deduplicate,
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
                         embedding_generation_enabled=get_embedding_provider() is not None,
