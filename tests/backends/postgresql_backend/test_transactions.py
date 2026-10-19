@@ -1,7 +1,7 @@
 """Tests for app/backends/postgresql_backend/transactions.py: begin_transaction breaker accounting."""
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock
 
 import asyncpg
@@ -32,14 +32,14 @@ class TestBeginTransactionDeadlockExemption:
         backend._shutdown = False
 
         @contextlib.asynccontextmanager
-        async def _fake_transaction() -> AsyncIterator[None]:
+        async def _fake_transaction() -> AsyncGenerator[None, None]:
             yield None
 
         mock_conn = MagicMock()
         mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
 
         @contextlib.asynccontextmanager
-        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         pool = MagicMock()

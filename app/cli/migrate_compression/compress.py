@@ -232,16 +232,15 @@ async def _read_fp32_probe(
             'FROM vec_context_embeddings LIMIT $1',
             limit,
         )
-        out: list[tuple[str, int, int, int, list[float]]] = []
-        for r in rows:
-            embedding = r['embedding']
-            out.append((
+        return [
+            (
                 str(r['context_id']),
                 int(r['id']),
                 int(r['start_index']),
                 int(r['end_index']),
-                [float(x) for x in embedding],
-            ))
-        return out
+                r['embedding'].to_list(),
+            )
+            for r in rows
+        ]
 
     return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)

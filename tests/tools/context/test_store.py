@@ -3,7 +3,7 @@ unusual input (unicode, large metadata, SQL metacharacters).
 """
 
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -286,7 +286,7 @@ class TestStoreScope:
 
 
 @asynccontextmanager
-async def _mock_begin_transaction(*, access_scope: BackendAccess) -> AsyncIterator[MagicMock]:
+async def _mock_begin_transaction(*, access_scope: BackendAccess) -> AsyncGenerator[MagicMock, None]:
     """Yield a mock transaction for a mocked backend."""
     _ = access_scope
     yield MagicMock()

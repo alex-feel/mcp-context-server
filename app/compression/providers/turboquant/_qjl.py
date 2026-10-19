@@ -147,8 +147,8 @@ class QJLTransform:
         sy = y.astype(np.float32, copy=False) @ self._S.T  # (m,)
         scale = np.float32(math.sqrt(math.pi / 2.0) / self.m)
         ip = (signs * sy[np.newaxis, :]).sum(axis=-1)
-        result = (scale * residual_norms.astype(np.float32, copy=False) * ip).astype(np.float32)
-        return cast('NDArray[np.float32]', result)
+        result: NDArray[np.float32] = (scale * residual_norms.astype(np.float32, copy=False) * ip).astype(np.float32)
+        return result
 
     def estimate_inner_product_batch_queries(
         self,

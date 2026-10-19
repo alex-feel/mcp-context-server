@@ -10,7 +10,7 @@ write -- as failed.
 
 import contextlib
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock
 
 import asyncpg
@@ -98,7 +98,7 @@ def _connection_with_transaction() -> MagicMock:
     """
 
     @contextlib.asynccontextmanager
-    async def _fake_transaction() -> AsyncIterator[None]:
+    async def _fake_transaction() -> AsyncGenerator[None, None]:
         yield None
 
     conn = MagicMock()
@@ -303,7 +303,7 @@ class TestAcquirePhaseConnectionFailureCharging:
         mock_conn = MagicMock()
 
         @contextlib.asynccontextmanager
-        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         pool = MagicMock()
@@ -338,7 +338,7 @@ class TestExecuteReadControlFlowMetricsExemption:
         mock_conn = MagicMock()
 
         @contextlib.asynccontextmanager
-        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         pool = MagicMock()
@@ -393,7 +393,7 @@ class TestGetConnectionBreakerControlFlowExemption:
         mock_conn = MagicMock()
 
         @contextlib.asynccontextmanager
-        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
             yield mock_conn
 
         pool = MagicMock()

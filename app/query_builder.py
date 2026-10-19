@@ -3,6 +3,7 @@
 import json
 import re
 from typing import Any
+from typing import assert_never
 
 from app.metadata_membership import MembershipConditionsMixin
 from app.metadata_sql import build_json_path
@@ -220,40 +221,44 @@ class MetadataQueryBuilder(MembershipConditionsMixin):
         case_sensitive = filter_spec.case_sensitive
 
         # Build condition based on operator
-        if operator == MetadataOperator.EQ:
-            if not isinstance(value, list):
-                self._add_equality_condition(json_path, value, case_sensitive)
-        elif operator == MetadataOperator.NE:
-            if not isinstance(value, list):
-                self._add_not_equal_condition(json_path, value, case_sensitive)
-        elif operator in (MetadataOperator.GT, MetadataOperator.GTE, MetadataOperator.LT, MetadataOperator.LTE):
-            if not isinstance(value, list):
-                self._add_comparison_condition(json_path, operator, value)
-        elif operator == MetadataOperator.IN:
-            if isinstance(value, list):
-                self._add_in_condition(json_path, value, case_sensitive)
-        elif operator == MetadataOperator.NOT_IN:
-            if isinstance(value, list):
-                self._add_not_in_condition(json_path, value, case_sensitive)
-        elif operator == MetadataOperator.EXISTS:
-            self._add_exists_condition(json_path)
-        elif operator == MetadataOperator.NOT_EXISTS:
-            self._add_not_exists_condition(json_path)
-        elif operator == MetadataOperator.CONTAINS:
-            if isinstance(value, str) or value is None:
-                self._add_contains_condition(json_path, value, case_sensitive)
-        elif operator == MetadataOperator.STARTS_WITH:
-            if isinstance(value, str) or value is None:
-                self._add_starts_with_condition(json_path, value, case_sensitive)
-        elif operator == MetadataOperator.ENDS_WITH:
-            if isinstance(value, str) or value is None:
-                self._add_ends_with_condition(json_path, value, case_sensitive)
-        elif operator == MetadataOperator.IS_NULL:
-            self._add_is_null_condition(json_path)
-        elif operator == MetadataOperator.IS_NOT_NULL:
-            self._add_is_not_null_condition(json_path)
-        elif operator == MetadataOperator.ARRAY_CONTAINS and not isinstance(value, list) and value is not None:
-            self._add_array_contains_condition(json_path, value, case_sensitive)
+        match operator:
+            case MetadataOperator.EQ:
+                if not isinstance(value, list):
+                    self._add_equality_condition(json_path, value, case_sensitive)
+            case MetadataOperator.NE:
+                if not isinstance(value, list):
+                    self._add_not_equal_condition(json_path, value, case_sensitive)
+            case MetadataOperator.GT | MetadataOperator.GTE | MetadataOperator.LT | MetadataOperator.LTE:
+                if not isinstance(value, list):
+                    self._add_comparison_condition(json_path, operator, value)
+            case MetadataOperator.IN:
+                if isinstance(value, list):
+                    self._add_in_condition(json_path, value, case_sensitive)
+            case MetadataOperator.NOT_IN:
+                if isinstance(value, list):
+                    self._add_not_in_condition(json_path, value, case_sensitive)
+            case MetadataOperator.EXISTS:
+                self._add_exists_condition(json_path)
+            case MetadataOperator.NOT_EXISTS:
+                self._add_not_exists_condition(json_path)
+            case MetadataOperator.CONTAINS:
+                if isinstance(value, str) or value is None:
+                    self._add_contains_condition(json_path, value, case_sensitive)
+            case MetadataOperator.STARTS_WITH:
+                if isinstance(value, str) or value is None:
+                    self._add_starts_with_condition(json_path, value, case_sensitive)
+            case MetadataOperator.ENDS_WITH:
+                if isinstance(value, str) or value is None:
+                    self._add_ends_with_condition(json_path, value, case_sensitive)
+            case MetadataOperator.IS_NULL:
+                self._add_is_null_condition(json_path)
+            case MetadataOperator.IS_NOT_NULL:
+                self._add_is_not_null_condition(json_path)
+            case MetadataOperator.ARRAY_CONTAINS:
+                if not isinstance(value, list) and value is not None:
+                    self._add_array_contains_condition(json_path, value, case_sensitive)
+            case _:
+                assert_never(operator)
 
         self._filter_count += 1
         self._enforce_clause_budgets()

@@ -1,7 +1,7 @@
 """Tests for app/backends/postgresql_backend/session_profiles.py and the entry points that bind through it."""
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 from typing import cast
 from unittest.mock import AsyncMock
@@ -56,7 +56,7 @@ def _recording_connection(events: list[tuple[str, object]]) -> MagicMock:
     """Build a connection whose transaction context records its begin and end."""
 
     @contextlib.asynccontextmanager
-    async def _transaction() -> AsyncIterator[None]:
+    async def _transaction() -> AsyncGenerator[None, None]:
         events.append(('begin', None))
         yield None
         events.append(('commit', None))
@@ -86,7 +86,7 @@ def _serve_connections(backend: PostgreSQLBackend, connections: list[MagicMock])
     queue = list(connections)
 
     @contextlib.asynccontextmanager
-    async def _acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+    async def _acquire(*_args: object, **_kwargs: object) -> AsyncGenerator[object, None]:
         yield queue.pop(0)
 
     pool = MagicMock()

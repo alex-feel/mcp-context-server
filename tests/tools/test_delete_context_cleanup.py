@@ -27,7 +27,7 @@ the caller's.
 """
 
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from collections.abc import Generator
 from contextlib import asynccontextmanager
@@ -107,7 +107,7 @@ class _FakeBackend:
         self.transactions: list[_FakeTransaction] = []
 
     @asynccontextmanager
-    async def begin_transaction(self, *, access_scope: BackendAccess) -> AsyncIterator[_FakeTransaction]:
+    async def begin_transaction(self, *, access_scope: BackendAccess) -> AsyncGenerator[_FakeTransaction, None]:
         """Yield a fake transaction and record it for assertions.
 
         Yields:

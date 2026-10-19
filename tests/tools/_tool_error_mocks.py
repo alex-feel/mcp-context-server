@@ -1,6 +1,6 @@
 """Mock repository container and ensure_repositories patches shared by the tool error-handling tests."""
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from unittest.mock import AsyncMock
@@ -39,7 +39,7 @@ def build_mock_repos() -> MagicMock:
 
 
 @contextmanager
-def patch_tool_repositories(repos: MagicMock) -> Iterator[None]:
+def patch_tool_repositories(repos: MagicMock) -> Generator[None, None, None]:
     """Patch ensure_repositories in each tool module where it is imported to return repos."""
     with (
         patch('app.tools.context.store.ensure_repositories', return_value=repos),

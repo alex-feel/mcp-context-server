@@ -395,7 +395,7 @@ async def _execute_compress_postgresql(
                     chunk_seq = 0
                 else:
                     chunk_seq += 1
-                vec_list = [float(x) for x in r['embedding']]
+                vec_list: list[float] = r['embedding'].to_list()
                 # Validate the stored fp32 dimension against the configured compression
                 # dim BEFORE encoding. SQLite fails safe (storage.fp32_blob_to_list_sqlite raises
                 # on a size mismatch); PostgreSQL would otherwise feed a wrong-width vector

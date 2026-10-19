@@ -308,7 +308,7 @@ class ContextDedupMixin(BaseRepository):
                     candidate['owner_id'], candidate['content_hash'], candidate['text_content'],
                     scope=scope, content_hash=content_hash, text_content=text_content,
                 )
-                if is_duplicate:
+                if is_duplicate and candidate is not None:
                     # A readable opposite-source entry after the candidate means this is a
                     # new conversational turn, not a retransmit: keep the chronological
                     # order by inserting instead.
@@ -317,7 +317,7 @@ class ContextDedupMixin(BaseRepository):
                     ))
                     is_duplicate = cursor.fetchone() is None
 
-                if is_duplicate:
+                if is_duplicate and candidate is not None:
                     # The UPDATE's WHERE re-asserts the decision (see _dedup_update_sql).
                     # SQLite's serialized single writer makes a concurrent change between
                     # the read above and this UPDATE unreachable, but the same statement

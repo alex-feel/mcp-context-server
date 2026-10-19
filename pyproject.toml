@@ -9,15 +9,15 @@ authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12,<3.13"
 
 dependencies = [
-    "fastmcp==4.0.10",  # CVE-2026-32871, CVE-2026-27124, CVE-2025-64340 fixes
-    "pydantic-settings==2.14.2",  # GHSA-4xgf-cpjx-pc3j fix
-    "pydantic==2.12.5",
-    "python-dotenv==1.2.2",  # CVE-2026-28684 fix
-    "typing_extensions==4.15.0",
-    "asyncpg==0.31.0",
-    "anyio==4.12.1",
+    "fastmcp==4.1.1",  # CVE-2026-32871, CVE-2026-27124, CVE-2025-64340, GHSA-gpgx-58w2-xwwf, GHSA-p8g9-xjch-9mxg fixes
+    "pydantic-settings==2.16.0",  # GHSA-4xgf-cpjx-pc3j fix
+    "pydantic==2.14.1",
+    "python-dotenv==1.2.4",  # CVE-2026-28684 fix
+    "typing_extensions==4.16.0",
+    "asyncpg==0.32.0",
+    "anyio==4.15.1",
     "httpx>=0.28.1,<1",
-    "tenacity==9.1.2",
+    "tenacity==9.2.1",
     "uuid_utils>=0.14.1,<0.15.0",
     "numpy>=2.4.1",
     "threadpoolctl>=3.5",
@@ -67,35 +67,35 @@ constraint-dependencies = [
 embeddings-ollama = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
-    "pgvector>=0.4.0",
+    "pgvector>=0.5.1,<0.6",
     "langchain-ollama>=0.3.0",
     "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 embeddings-openai = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
-    "pgvector>=0.4.0",
+    "pgvector>=0.5.1,<0.6",
     "langchain-openai>=1.1.14",  # CVE-2026-26013, CVE-2026-41488 fixes
     "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 embeddings-azure = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
-    "pgvector>=0.4.0",
+    "pgvector>=0.5.1,<0.6",
     "langchain-openai>=1.1.14",  # Azure uses same package as OpenAI; CVE-2026-26013, CVE-2026-41488 fixes
     "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 embeddings-huggingface = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
-    "pgvector>=0.4.0",
+    "pgvector>=0.5.1,<0.6",
     "langchain-huggingface>=0.2.0",
     "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 embeddings-voyage = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
-    "pgvector>=0.4.0",
+    "pgvector>=0.5.1,<0.6",
     "langchain-voyageai>=0.3.0",
     "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
@@ -104,7 +104,7 @@ embeddings-voyage = [
 embeddings-all = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
-    "pgvector>=0.4.0",
+    "pgvector>=0.5.1,<0.6",
     "langchain-ollama>=0.3.0",
     "langchain-openai>=1.1.14",  # CVE-2026-26013, CVE-2026-41488 fixes
     "langchain-huggingface>=0.2.0",
@@ -179,8 +179,8 @@ ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer l
 # - app/server.py: E402 required - the settings guard (the first get_settings() call, which exits with EX_CONFIG on
 #   invalid settings) and config_logger() MUST run BEFORE importing app.backends, app.repositories and app.startup,
 #   so settings are validated and logging is configured before any backend code runs.
-# - tests/conftest.py: E402 required - Windows event loop policy and LangSmith env vars MUST be set
-#   BEFORE importing app.server (which triggers httpx import). See conftest.py comments for details.
+# - tests/conftest.py: E402 required - the LangSmith env vars MUST be set BEFORE importing app.server
+#   (which triggers the httpx import). See conftest.py comments for details.
 # - app/instructions.py: E501, W293 required - DEFAULT_INSTRUCTIONS is a triple-quoted Markdown string
 #   where long lines and indented blank lines are intentional content formatting.
 # - app/summary/instructions.py: E501, W293 required - DEFAULT_SUMMARY_PROMPT uses concatenated strings

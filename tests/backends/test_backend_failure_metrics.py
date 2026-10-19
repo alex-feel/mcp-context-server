@@ -313,7 +313,7 @@ class TestPostgresqlChargedFailureMetrics:
             A backend wired to the fake pool.
         """
         import contextlib
-        from collections.abc import AsyncIterator
+        from collections.abc import AsyncGenerator
 
         backend = PostgreSQLBackend(
             connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
@@ -323,7 +323,7 @@ class TestPostgresqlChargedFailureMetrics:
         backend._shutdown = False
 
         @contextlib.asynccontextmanager
-        async def _acquire(*_args: object, **_kwargs: object) -> AsyncIterator[Any]:
+        async def _acquire(*_args: object, **_kwargs: object) -> AsyncGenerator[Any, None]:
             yield conn
 
         pool = MagicMock()

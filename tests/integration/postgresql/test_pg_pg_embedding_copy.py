@@ -209,10 +209,6 @@ async def isolated_pg_v3_target_db(pg_test_url: str) -> AsyncIterator[str]:
 
 async def _connect_with_pgvector(pg_url: str) -> asyncpg.Connection:
     """Open an asyncpg connection with pgvector types registered."""
-    from collections.abc import Awaitable
-    from collections.abc import Callable
-    from typing import cast
-
     from pgvector.asyncpg import register_vector
 
     conn = await asyncpg.connect(pg_url)
@@ -224,8 +220,7 @@ async def _connect_with_pgvector(pg_url: str) -> asyncpg.Connection:
         ''',
     )
     schema = schema_row['nspname'] if schema_row else 'public'
-    register_func = cast(Callable[..., Awaitable[None]], register_vector)
-    await register_func(conn, schema)
+    await register_vector(conn, schema=schema)
     return conn
 
 

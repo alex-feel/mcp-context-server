@@ -19,6 +19,7 @@ from app.repositories.entry_filters import count_applied_filters
 
 if TYPE_CHECKING:
     import asyncpg
+    from numpy.typing import NDArray
 
 
 logger = logging.getLogger(__name__)
@@ -566,7 +567,7 @@ class CompressedSearchMixin(BaseRepository):
                 # IP negated so a larger IP (more similar) maps to a smaller distance.
                 distances = [-float(x) for x in gemm_output[0].tolist()]
             else:
-                diff = gemm_output - query_matrix[0]
+                diff: NDArray[np.float32] = gemm_output - query_matrix[0]
                 distances = [float(x) for x in np.linalg.norm(diff, axis=1).tolist()]
             best_by_context: dict[str, tuple[float, int, int]] = {}
             for (context_id, _chunk_index, start_index, end_index, _payload), dist in zip(

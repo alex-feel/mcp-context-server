@@ -1,3 +1,0 @@
-import asyncpg
-
-async def register_vector(conn: asyncpg.Connection) -> None: ...
