@@ -4,7 +4,9 @@ Bare-name TABLE/INDEX DDL resolves through ``search_path``, so the compression
 and chunking tables land in ``mcp_test``, never in ``public``, and each
 migration is idempotent; the default-schema compression test is the
 ``public`` baseline, and the full migration sequence leaves no project table
-in ``public``.
+in ``public``. The ingest index lands on ``mcp_test.context_entries``, and its
+probe looks for it on that table alone, so an index of the same name that a
+deployment left in ``public`` neither hides it nor is touched.
 """
 
 from __future__ import annotations
@@ -17,10 +19,16 @@ import pytest
 
 import app.migrations.chunking as chunking_module
 import app.migrations.compression as compression_module
+import app.migrations.ingest as ingest_module
 import app.migrations.semantic as semantic_module
 from app.backends import create_backend
+from app.ingest_sql import INGEST_INDEX_NAME
+from app.ingest_sql import ingest_index_ddl
+from app.migrations._pg_ddl import begin_migration
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations.chunking import apply_chunking_migration
 from app.migrations.compression import apply_compression_migration
+from app.migrations.ingest import apply_ingest_index_migration
 from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
@@ -311,3 +319,92 @@ def test_no_project_tables_in_public_when_non_default_schema_used(
             f"'{NON_DEFAULT_SCHEMA}' when POSTGRESQL_SCHEMA="
             f"{NON_DEFAULT_SCHEMA}"
         )
+
+
+async def _ingest_index_tables(pg_url: str, schema: str) -> list[str]:
+    """Return the table of every index named like the ingest index in ``schema``."""
+    conn = await asyncpg.connect(pg_url)
+    try:
+        rows = await conn.fetch(
+            'SELECT tablename FROM pg_indexes WHERE schemaname = $1 AND indexname = $2', schema, INGEST_INDEX_NAME,
+        )
+        return [str(row['tablename']) for row in rows]
+    finally:
+        await conn.close()
+
+
+def _apply_ingest_index_migration_twice(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Prepare the base schema, apply the ingest index migration twice and return the lock and DDL steps it ran."""
+    steps: list[str] = []
+
+    async def _begin(conn: asyncpg.Connection, timeout_s: float) -> None:
+        steps.append('begin_migration')
+        await begin_migration(conn, timeout_s)
+
+    async def _ddl(conn: asyncpg.Connection, statement: str, timeout_s: float) -> None:
+        steps.append(statement)
+        await execute_migration_ddl(conn, statement, timeout_s)
+
+    monkeypatch.setattr(ingest_module, 'settings', get_settings())
+    monkeypatch.setattr(ingest_module, 'begin_migration', _begin)
+    monkeypatch.setattr(ingest_module, 'execute_migration_ddl', _ddl)
+
+    async def _scenario() -> None:
+        backend = create_backend(backend_type='postgresql', connection_string=pg_url)
+        await backend.initialize()
+        try:
+            await init_database(backend=backend)
+            await apply_ingest_index_migration(backend)
+            await apply_ingest_index_migration(backend)
+        finally:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+
+    asyncio.run(_scenario())
+    return steps
+
+
+def test_ingest_index_migration_idempotent_under_non_default_schema(
+    pg_non_default_schema_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ingest index lands in ``mcp_test`` once; the second application runs no DDL and ``public`` has none."""
+    install_search_path_patch(monkeypatch, NON_DEFAULT_SCHEMA)
+    configure_non_default_env(monkeypatch, pg_non_default_schema_db)
+
+    steps = _apply_ingest_index_migration_twice(pg_non_default_schema_db, monkeypatch)
+
+    assert steps == ['begin_migration', ingest_index_ddl('postgresql')]
+    assert asyncio.run(_ingest_index_tables(pg_non_default_schema_db, NON_DEFAULT_SCHEMA)) == ['context_entries']
+    assert asyncio.run(_ingest_index_tables(pg_non_default_schema_db, 'public')) == []
+
+
+def test_ingest_index_probe_ignores_a_same_named_index_in_public(
+    pg_non_default_schema_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ingest index a deployment left on ``public.context_entries`` does not stand in for the configured schema's.
+
+    ``search_path`` lists ``public`` after ``mcp_test``, so a bare ``to_regclass`` of the
+    index name would find the ``public`` index and skip the build; the probe instead looks
+    for the index on the table the DDL targets.
+    """
+    install_search_path_patch(monkeypatch, NON_DEFAULT_SCHEMA)
+    configure_non_default_env(monkeypatch, pg_non_default_schema_db)
+
+    async def _seed_public_index() -> None:
+        conn = await asyncpg.connect(pg_non_default_schema_db)
+        try:
+            await conn.execute('SET search_path = public')
+            await conn.execute('CREATE TABLE context_entries (id UUID PRIMARY KEY, thread_id TEXT NOT NULL, metadata JSONB)')
+            await conn.execute(ingest_index_ddl('postgresql'))
+        finally:
+            await conn.close()
+
+    asyncio.run(_seed_public_index())
+
+    steps = _apply_ingest_index_migration_twice(pg_non_default_schema_db, monkeypatch)
+
+    assert steps == ['begin_migration', ingest_index_ddl('postgresql')]
+    assert asyncio.run(_ingest_index_tables(pg_non_default_schema_db, NON_DEFAULT_SCHEMA)) == ['context_entries']
+    assert asyncio.run(_ingest_index_tables(pg_non_default_schema_db, 'public')) == ['context_entries']

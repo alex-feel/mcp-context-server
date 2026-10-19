@@ -2,9 +2,11 @@
 
 Starting with ``ENABLE_POSTGRESQL_RLS`` off over the row-level security objects is
 refused right after the compression guard, before any provisioning migration runs. The
-request role's grants and then the row-level security migration run last, once every
-table and column this boot provisions exists, so the grants cover every managed table
-and the read view lists every column.
+ingest index runs right after the access-control migration, because its SQLite key names
+the access columns that migration adds on an in-place upgrade. The request role's grants
+and then the row-level security migration run last, once every table and column this
+boot provisions exists, so the grants cover every managed table and the read view lists
+every column.
 """
 
 import inspect
@@ -32,6 +34,7 @@ _ASYNC_STEPS = (
     'apply_content_hash_migration',
     'apply_version_migration',
     'apply_access_control_migration',
+    'apply_ingest_index_migration',
     'apply_tag_uniqueness_migration',
     'apply_compression_migration',
     'apply_index_tree_migration',
@@ -49,8 +52,10 @@ def test_the_request_role_is_a_required_keyword() -> None:
     assert parameter.default is inspect.Parameter.empty
 
 
-@pytest.mark.asyncio
-async def test_the_rls_guard_runs_early_and_the_grants_and_the_rls_migration_run_last(monkeypatch: pytest.MonkeyPatch) -> None:
+async def _recorded_steps(
+    monkeypatch: pytest.MonkeyPatch, backend: StorageBackend, settings: AppSettings,
+) -> list[tuple[str, tuple[object, ...]]]:
+    """Run ``prepare_database`` with every step replaced by a recorder, and return the calls in order."""
     calls: list[tuple[str, tuple[object, ...]]] = []
 
     def _recorder(name: str) -> object:
@@ -66,10 +71,17 @@ async def test_the_rls_guard_runs_early_and_the_grants_and_the_rls_migration_run
         calls.append(('validate_pool_acquire_timeout', ()))
 
     monkeypatch.setattr(database_setup, 'validate_pool_acquire_timeout', _validate_pool_acquire_timeout)
+
+    await prepare_database(backend, settings, request_role='mcp_app')
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_the_rls_guard_runs_early_and_the_grants_and_the_rls_migration_run_last(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = cast(StorageBackend, SimpleNamespace(backend_type='postgresql'))
     settings = cast(AppSettings, SimpleNamespace())
 
-    await prepare_database(backend, settings, request_role='mcp_app')
+    calls = await _recorded_steps(monkeypatch, backend, settings)
 
     names = [name for name, _ in calls]
     assert names.index('guard_rls_disable_over_enabled') == names.index('guard_compression_disable_over_populated') + 1
@@ -79,3 +91,14 @@ async def test_the_rls_guard_runs_early_and_the_grants_and_the_rls_migration_run
     assert arguments['guard_rls_disable_over_enabled'] == (backend, settings)
     assert arguments['apply_request_role_grants'] == (backend, settings, 'mcp_app')
     assert arguments['apply_rls'] == (backend, settings)
+
+
+@pytest.mark.asyncio
+async def test_the_ingest_index_is_created_right_after_the_access_control_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = cast(StorageBackend, SimpleNamespace(backend_type='sqlite'))
+
+    calls = await _recorded_steps(monkeypatch, backend, cast(AppSettings, SimpleNamespace()))
+
+    names = [name for name, _ in calls]
+    assert names.index('apply_ingest_index_migration') == names.index('apply_access_control_migration') + 1
+    assert dict(calls)['apply_ingest_index_migration'] == (backend,)

@@ -20,7 +20,6 @@ covered by tests/integration/postgresql/test_access_control_schema_postgresql.py
 """
 
 import sqlite3
-from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
 from pathlib import Path
@@ -28,7 +27,6 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-import pytest_asyncio
 
 import app.migrations.access_control as access_control_module
 from app.backends import StorageBackend
@@ -58,26 +56,6 @@ _SQLITE_COVERING_ACCESS_INDEXES = frozenset({
     'idx_context_access_id',
 })
 
-# The current context_entries columns MINUS owner_id/visibility -- the
-# pre-migration shape of a database created before the access-control columns
-# were added to the base schema.
-_PRE_MIGRATION_CONTEXT_ENTRIES_DDL = '''
-    CREATE TABLE context_entries (
-        rowid_int INTEGER PRIMARY KEY AUTOINCREMENT,
-        id TEXT NOT NULL UNIQUE,
-        thread_id TEXT NOT NULL,
-        source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
-        content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
-        text_content TEXT,
-        metadata JSON,
-        summary TEXT,
-        content_hash TEXT,
-        version INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-'''
-
 
 async def _columns(backend: StorageBackend) -> list[str]:
     def _check(conn: sqlite3.Connection) -> list[str]:
@@ -103,26 +81,6 @@ async def _index_names(backend: StorageBackend) -> set[str]:
         return {row[0] for row in cursor.fetchall()}
 
     return await backend.execute_read(_check, access_scope=MAINTENANCE)
-
-
-@pytest_asyncio.fixture
-async def backend_pre_migration(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
-    """SQLite backend whose schema predates the access-control columns and table."""
-    db_path = tmp_path / 'test_access_control_pre_migration.db'
-
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.execute(_PRE_MIGRATION_CONTEXT_ENTRIES_DDL)
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_thread_id ON context_entries(thread_id)')
-        conn.execute(
-            'CREATE INDEX IF NOT EXISTS idx_thread_source ON context_entries(thread_id, source)',
-        )
-
-    backend = create_backend(backend_type='sqlite', db_path=str(db_path))
-    await backend.initialize()
-    try:
-        yield backend
-    finally:
-        await backend.shutdown()
 
 
 class TestAccessControlMigration:

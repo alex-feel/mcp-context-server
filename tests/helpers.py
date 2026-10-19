@@ -277,6 +277,7 @@ def patch_database_setup_steps() -> AbstractContextManager[Any]:
         apply_content_hash_migration=AsyncMock(),
         apply_version_migration=AsyncMock(),
         apply_access_control_migration=AsyncMock(),
+        apply_ingest_index_migration=AsyncMock(),
         apply_tag_uniqueness_migration=AsyncMock(),
     )
 
