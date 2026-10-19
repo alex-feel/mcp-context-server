@@ -51,8 +51,15 @@ from tests.integration._harness.server import ServerMixin
 from tests.integration._harness.store import StoreMixin
 from tests.integration._harness.store_dedup import StoreDedupMixin
 from tests.integration._harness.summary import SummaryMixin
+from tests.integration._harness.sync import SyncMixin
 from tests.integration._harness.tags_images import TagsImagesMixin
 from tests.integration._harness.update import UpdateMixin
+
+# The pytest-timeout ceiling of one full harness run. One run drives every check
+# through one server and takes five to ten minutes, depending on the load of the
+# machine, so the suite-wide default of 600 seconds cuts off runs that would pass; the
+# entry points carry this ceiling instead, which still stops a hang.
+REAL_SERVER_TIMEOUT_S = 1200
 
 
 class MCPServerIntegrationTest(
@@ -91,6 +98,7 @@ class MCPServerIntegrationTest(
     ChunkingMixin,
     RerankingMixin,
     NavigationMixin,
+    SyncMixin,
 ):
     """Integration test for real MCP Context Storage Server."""
 
@@ -326,6 +334,16 @@ class MCPServerIntegrationTest(
             ('Image Metadata Empty String Preserved', self.test_image_metadata_empty_string_preserved),
             ('Literal Markup Survives Ranked Search', self.test_literal_markup_survives_ranked_search),
             ('FTS Deeply Nested Boolean Query Degrades', self.test_fts_deeply_nested_boolean_query_degrades),
+            # Corpus sync: registration (ungated), plans that converge and stay inside
+            # their ranges, the paged ingest state, manifest validation at and past the
+            # cap, and the reserved ingest block guarded on every write tool.
+            ('Sync Tools Registered', self.test_sync_tools_registered),
+            ('Plan Context Sync Converges', self.test_plan_context_sync_converges),
+            ('Plan Context Sync Ranges', self.test_plan_context_sync_ranges),
+            ('List Ingest State Paged', self.test_list_ingest_state_paged),
+            ('Plan Context Sync Rejects Invalid Manifest', self.test_plan_context_sync_rejects_invalid_manifest),
+            ('Plan Context Sync Manifest At Cap', self.test_plan_context_sync_manifest_at_cap),
+            ('Ingest Block Rejected', self.test_ingest_block_rejected),
             # A second principal served from the same database reaches only the entries
             # the access model lets it read, and changes only those it may modify.
             ('Access Scoping Second Principal', self.test_access_scoping_second_principal),

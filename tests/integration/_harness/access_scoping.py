@@ -6,7 +6,7 @@ same database, so both processes share the rows, the embedding configuration and
 compression layout, and only the principal differs. The primary stores one private
 and one public entry; the checks then drive every tool as ``bob``:
 
-- the private entry is unreachable through all sixteen tools: it is never returned,
+- the private entry is unreachable through all eighteen tools: it is never returned,
   matched, listed or counted, an update reports it not found, a delete deletes
   nothing, and a store of identical text inserts ``bob``'s own entry instead of
   merging into it;
@@ -14,7 +14,12 @@ and one public entry; the checks then drive every tool as ``bob``:
   and a delete that names it, through either delete tool, reports ``Not authorized to
   delete context entries`` and deletes nothing; a thread delete skips it silently;
 - a hidden entry and an absent one produce identical delete counts, not-found
-  messages and prefix messages.
+  messages and prefix messages;
+- a corpus sync manages only the caller's own entries: the primary's private managed
+  entry is absent from ``bob``'s plan and listing, exactly like a source no entry
+  carries, and its public one is counted as foreign, never updated or deleted; a
+  ``deduplicate: false`` store by ``bob`` inserts his own copy and leaves the
+  primary's entry untouched.
 """
 
 from dataclasses import dataclass
@@ -24,6 +29,13 @@ from fastmcp import Client
 from mcp.types import TextContent
 
 from tests.integration._harness.core import HarnessCore
+from tests.integration._harness.sync import SYNC_TOOLS
+from tests.integration._harness.sync import listed_source_ids
+from tests.integration._harness.sync import managed_entry
+from tests.integration._harness.sync import manifest_item
+from tests.integration._harness.sync import meta_digest
+from tests.integration._harness.sync import plan_shape
+from tests.integration._harness.sync import plan_with
 
 SECOND_PRINCIPAL = 'bob'
 PRIVATE_TOKEN = 'zephyrquill'
@@ -85,6 +97,7 @@ class AccessScopingMixin(HarnessCore):
                     ('access_scoping_public_entry_read_only', await self._public_entry_problems(bob, entries)),
                     ('access_scoping_hidden_matches_absent', await self._hidden_matches_absent_problems(bob, entries)),
                     ('access_scoping_store_never_merges_foreign', await self._store_problems(bob, entries, originals)),
+                    ('access_scoping_sync_manages_own_entries', await self._sync_problems(bob)),
                 ]
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
@@ -483,4 +496,79 @@ class AccessScopingMixin(HarnessCore):
                 problems.append(f'the entry {context_id} changed: {original} became {row}')
         if await self._entries_by_id(bob, [entries.private_id]):
             problems.append(f'the private entry became readable to {SECOND_PRINCIPAL}')
+        return problems
+
+    async def _sync_problems(self, bob: Client[Any]) -> list[str]:
+        """Check that a corpus sync by the second principal manages only his own entries.
+
+        The primary stores one private and one public managed entry of the same source,
+        each alone in its own corpus thread. The second principal's plan of the private
+        corpus equals his plan of a corpus no entry exists in: the source is planned as
+        a create, and both listings are empty. His plan of the public corpus plans a
+        create too and counts the primary's entry as foreign, never as an update or a
+        delete, even with an empty manifest. His ``deduplicate: false`` store of the
+        source inserts his own copy, which his next plan finds unchanged, while the
+        primary's entry stays as it was and the primary, which cannot read the copy,
+        still plans only its own entry.
+
+        Args:
+            bob: The second principal's client.
+
+        Returns:
+            The problems found.
+        """
+        if not SYNC_TOOLS.issubset(self.registered_tools):
+            return []
+        assert self.client is not None
+        base = f'kb:{self.test_thread_id}_scoping_sync'
+        private_thread, public_thread, absent_thread = f'{base}_private', f'{base}_public', f'{base}_absent'
+        digest = meta_digest('scoping')
+        text = 'Managed entry of the primary principal.'
+        manifest = [manifest_item('p.md', text, digest)]
+        stored = await self._content(self.client, 'store_context_batch', {'entries': [
+            managed_entry(private_thread, 'p.md', text, digest, visibility='private'),
+            managed_entry(public_thread, 'p.md', text, digest, visibility='public'),
+        ], 'atomic': False})
+        public_id = next(str(item['context_id']) for item in stored['results'] if item['index'] == 1)
+        problems: list[str] = []
+
+        plans: list[tuple[str, Client[Any], str, list[dict[str, Any]], dict[str, Any], dict[str, Any]]] = [
+            ('primary', self.client, private_thread, manifest, {}, plan_shape(unchanged=1)),
+            ('primary', self.client, public_thread, manifest, {}, plan_shape(unchanged=1)),
+            (SECOND_PRINCIPAL, bob, private_thread, manifest, {}, plan_shape(creates=[0])),
+            (SECOND_PRINCIPAL, bob, absent_thread, manifest, {}, plan_shape(creates=[0])),
+            (SECOND_PRINCIPAL, bob, public_thread, manifest, {}, plan_shape(creates=[0], foreign=1)),
+            (SECOND_PRINCIPAL, bob, public_thread, [], {'allow_empty_manifest': True}, plan_shape(foreign=1)),
+        ]
+        for who, client, thread, items, arguments, expected in plans:
+            plan = await plan_with(client, thread, items, **arguments)
+            if plan != expected:
+                problems.append(f'{who} planned {thread} with {len(items)} items as {plan}, expected {expected}')
+        for who, client, thread, expected_sources in (
+            ('primary', self.client, private_thread, ['p.md']),
+            (SECOND_PRINCIPAL, bob, private_thread, []),
+            (SECOND_PRINCIPAL, bob, absent_thread, []),
+            (SECOND_PRINCIPAL, bob, public_thread, []),
+        ):
+            listed = await listed_source_ids(client, thread)
+            if listed != expected_sources:
+                problems.append(f'{who} listed {listed} in {thread}, expected {expected_sources}')
+
+        original = (await self._entries_by_id(self.client, [public_id]))[public_id]
+        copy = await self._content(bob, 'store_context_batch', {
+            'entries': [managed_entry(public_thread, 'p.md', text, digest)], 'atomic': False,
+        })
+        if copy.get('succeeded') != 1 or copy['results'][0].get('context_id') == public_id:
+            problems.append(f'{SECOND_PRINCIPAL} store without deduplication returned {copy}')
+        for who, client, expected in (
+            (SECOND_PRINCIPAL, bob, plan_shape(unchanged=1, foreign=1)),
+            ('primary', self.client, plan_shape(unchanged=1)),
+        ):
+            plan = await plan_with(client, public_thread, manifest)
+            if plan != expected:
+                problems.append(f'{who} planned the public corpus as {plan} after the copy, expected {expected}')
+        current = (await self._entries_by_id(self.client, [public_id])).get(public_id, {})
+        fields = ('text_content', 'metadata', 'updated_at')
+        if tuple(current.get(field) for field in fields) != tuple(original.get(field) for field in fields):
+            problems.append(f'the public managed entry changed: {original} became {current}')
         return problems

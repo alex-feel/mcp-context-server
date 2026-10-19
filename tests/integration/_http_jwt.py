@@ -12,9 +12,11 @@ generation is disabled, so it starts without any model provider.
 minted JWTs -- ``alice`` and ``bob`` in group ``team-x``, ``carol`` in none -- against a
 server that stamps a group read grant for every author group
 (``ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups``). The application writes no user
-grant and no write grant, so the scenario inserts carol's two grants straight into the
-server's database with ``insert_grant``. PostgreSQL runs the scenario a second time with
-row-level security on, where the database enforces the same grants.
+grant and no write grant, so the scenario inserts carol's grants straight into the
+server's database with ``insert_grant``. The scenario ends with a corpus sync, which
+manages only the caller's own entries whatever grants reach the others. PostgreSQL runs
+the scenario a second time with row-level security on, where the database enforces the
+same grants.
 """
 
 import socket
@@ -40,6 +42,13 @@ from mcp.types import TextContent
 
 from tests.helpers import insert_grant
 from tests.integration._harness.core import ClientMode
+from tests.integration._harness.sync import ingest_block
+from tests.integration._harness.sync import listed_source_ids
+from tests.integration._harness.sync import managed_entry
+from tests.integration._harness.sync import manifest_item
+from tests.integration._harness.sync import meta_digest
+from tests.integration._harness.sync import plan_shape
+from tests.integration._harness.sync import plan_with
 
 if TYPE_CHECKING:
     import pytest
@@ -66,6 +75,10 @@ SCENARIO_TAG = 'jwt-access'
 SCENARIO_WORD = 'quasarfern'
 GROUP_THREAD = 'jwt_access_group'
 GRANTED_THREAD = 'jwt_access_granted'
+SYNC_THREAD = 'kb:jwt_access'
+# alice's managed sources: carol is granted read on the first and write on the second,
+# and only the group grant reaches the third.
+SYNC_SOURCES = ('granted-read.md', 'granted-write.md', 'team-only.md')
 
 
 def free_port() -> int:
@@ -403,7 +416,8 @@ async def verify_jwt_access_scoping(
     stamped at store time; carol, in no group, reads only the entry granted to her for
     read and the one granted to her for write. carol's write grant authorizes a text
     update but neither a visibility change nor a delete; her read grant authorizes no
-    update; and a thread delete by a grantee deletes nothing.
+    update; and a thread delete by a grantee deletes nothing. A corpus sync by bob or
+    carol counts alice's readable managed entries as foreign and never plans them.
 
     Args:
         base_url: Origin of the server started with ``build_access_env``.
@@ -477,3 +491,70 @@ async def verify_jwt_access_scoping(
         deleted = await _content(alice, 'delete_context_batch', {'thread_ids': [GROUP_THREAD]})
         assert deleted['deleted_count'] == 1
         assert await _ids(bob, 'get_context_by_ids', {'context_ids': [entry['group']]}) == set()
+
+        await _verify_sync_manages_own_entries(alice, bob, carol, database)
+
+
+async def _verify_sync_manages_own_entries(
+    alice: Client[Any], bob: Client[Any], carol: Client[Any], database: 'StorageBackend',
+) -> None:
+    """Prove a corpus sync plans and lists only the caller's own managed entries.
+
+    alice stores three managed entries of one corpus, each readable to bob through the
+    ``author_groups`` grant; carol is granted read on the first and write on the
+    second. Each principal plans the full manifest: alice finds her entries unchanged,
+    while bob and carol plan every source as a create and count the managed entries
+    they can read as foreign -- a write grant included -- so no plan ever updates or
+    deletes alice's entries, not even an empty one. Only alice's listing shows them.
+    carol may still rewrite the block of the entry she may write; that changes nothing
+    anyone may read or write, and alice's next plan updates the entry's metadata.
+
+    Args:
+        alice: alice's client.
+        bob: bob's client.
+        carol: carol's client.
+        database: A backend on the server's database, for the grants no tool writes.
+    """
+    digest = meta_digest('jwt-access')
+    texts = {source: f'Alice managed entry {source} of the corpus.' for source in SYNC_SOURCES}
+    stored = await _content(alice, 'store_context_batch', {
+        'entries': [managed_entry(SYNC_THREAD, source, text, digest) for source, text in texts.items()],
+        'atomic': False,
+    })
+    assert stored['succeeded'] == len(SYNC_SOURCES), stored
+    ids = {SYNC_SOURCES[item['index']]: str(item['context_id']) for item in stored['results']}
+    await insert_grant(database, ids['granted-read.md'], 'user', CAROL, 'read', ALICE)
+    await insert_grant(database, ids['granted-write.md'], 'user', CAROL, 'write', ALICE)
+
+    manifest = [manifest_item(source, text, digest) for source, text in texts.items()]
+    creates = list(range(len(SYNC_SOURCES)))
+    for client, expected, expected_empty, listed in (
+        (alice, plan_shape(unchanged=3), None, sorted(SYNC_SOURCES)),
+        (bob, plan_shape(creates=creates, foreign=3), plan_shape(foreign=3), []),
+        (carol, plan_shape(creates=creates, foreign=2), plan_shape(foreign=2), []),
+    ):
+        assert await plan_with(client, SYNC_THREAD, manifest) == expected
+        if expected_empty is not None:
+            assert await plan_with(client, SYNC_THREAD, [], allow_empty_manifest=True) == expected_empty
+        assert await listed_source_ids(client, SYNC_THREAD) == listed
+
+    # carol's write grant lets her rewrite the block of alice's entry. The block decides
+    # no access: the rewrite only makes alice's next plan restore her metadata.
+    rewritten = 'granted-write.md'
+    patched = await _content(carol, 'update_context', {
+        'context_id': ids[rewritten],
+        'metadata_patch': {'ingest': ingest_block(SYNC_THREAD, rewritten, meta_digest('rewritten'))},
+    })
+    assert patched['success'] is True
+    assert await plan_with(alice, SYNC_THREAD, manifest) == plan_shape(
+        updates=[{'index': SYNC_SOURCES.index(rewritten), 'context_id': ids[rewritten], 'change': 'metadata'}],
+        unchanged=2,
+    )
+    assert await plan_with(carol, SYNC_THREAD, manifest) == plan_shape(creates=creates, foreign=2)
+    assert await _ids(carol, 'get_context_by_ids', {'context_ids': sorted(ids.values())}) == {
+        ids['granted-read.md'], ids[rewritten],
+    }
+    assert await _error(carol, 'delete_context', {'context_ids': [ids[rewritten]]}) == (
+        f'Not authorized to delete context entries: {ids[rewritten]}'
+    )
+    assert await _ids(bob, 'get_context_by_ids', {'context_ids': sorted(ids.values())}) == set(ids.values())

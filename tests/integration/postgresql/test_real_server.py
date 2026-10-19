@@ -41,6 +41,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from tests.integration._harness import REAL_SERVER_TIMEOUT_S
 from tests.integration._harness import MCPServerIntegrationTest
 from tests.integration._harness.core import CLIENT_MODES
 from tests.integration._harness.core import ClientMode
@@ -48,7 +49,11 @@ from tests.integration.postgresql._rls_catalog import assert_served_with_row_lev
 from tests.integration.postgresql.conftest import RLS_CREDENTIALS
 from tests.integration.postgresql.conftest import RlsUrls
 
-pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
+pytestmark = [
+    pytest.mark.requires_docker_postgres,
+    pytest.mark.integration,
+    pytest.mark.timeout(REAL_SERVER_TIMEOUT_S),
+]
 
 
 def _replace_db_name(pg_url: str, new_db: str) -> str:
