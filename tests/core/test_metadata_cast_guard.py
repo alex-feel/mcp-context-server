@@ -11,16 +11,29 @@ the total helpers, whose CASE guards fix the evaluation order.
 The guard renders the PostgreSQL SQL of every builder path, removes the spans the
 total helpers emit (computed by calling those helpers with the same arguments),
 and fails on any remaining cast whose operand reads stored data and whose target
-is not text. Casts of bound parameters and literals are not flagged.
+is not text. Casts of bound parameters and literals are not flagged. The reads of
+ingest-managed entries compare stored metadata in every statement too, so their
+rendered statements pass the same detector with no allowlist at all.
 """
+
+from collections.abc import Awaitable
+from collections.abc import Callable
+from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
+from app.access_scope import AccessScope
+from app.backends.base import BackendAccess
+from app.backends.base import StorageBackend
+from app.backends.base import base_relation
+from app.ids import generate_id
 from app.metadata_sql import pg_int_origin_probe
 from app.metadata_sql import pg_numeric_accessor
 from app.metadata_sql import pg_safe_float8
 from app.metadata_sql import pg_total_numeric
 from app.metadata_types import MetadataOperator
+from app.repositories.context_repository import ContextRepository
 from tests.core._metadata_paths import METADATA_PATHS
 from tests.core._metadata_paths import MetadataPath
 from tests.core._pg_sql_text import column_derived_casts
@@ -113,6 +126,50 @@ class TestCastGuard:
         )
         clause, _ = path.render('postgresql')
         assert ELEMENT_NUMERIC in clause
+
+
+async def _rendered_ingest_statements() -> list[str]:
+    """Render both ingest reads on PostgreSQL with every optional condition present.
+
+    Returns:
+        The range read with both bounds and the owned page read with a cursor, in that order.
+    """
+    statements: list[str] = []
+
+    class _RecordingConnection:
+        async def fetch(self, query: str, *args: object) -> list[object]:
+            _ = args
+            statements.append(query)
+            return []
+
+    pg_backend = Mock()
+    pg_backend.backend_type = 'postgresql'
+    pg_backend.readable_relation = base_relation
+
+    async def _execute_read(closure: Callable[[object], Awaitable[object]], *, access_scope: BackendAccess) -> object:
+        _ = access_scope
+        return await closure(_RecordingConnection())
+
+    pg_backend.execute_read = _execute_read
+    repo = ContextRepository(cast(StorageBackend, pg_backend))
+    scope = AccessScope('alice', frozenset({'team-x'}))
+    await repo.ingest_rows_in_range(scope=scope, thread_id='kb:t', source_id_after='a', source_id_through='z')
+    await repo.owned_ingest_page(scope=scope, thread_id='kb:t', after=('m', generate_id()), limit=101)
+    return statements
+
+
+class TestIngestStatements:
+    """The reads of ingest-managed entries read stored metadata through text accessors alone."""
+
+    @pytest.mark.asyncio
+    async def test_no_cast_of_stored_data_in_the_ingest_reads(self) -> None:
+        """Neither rendered ingest statement casts a column-derived operand to a non-text type."""
+        statements = await _rendered_ingest_statements()
+
+        assert len(statements) == 2
+        for statement in statements:
+            assert 'metadata' in statement
+            assert column_derived_casts(statement) == [], statement
 
 
 class TestCastDetector:

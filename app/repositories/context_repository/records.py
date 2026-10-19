@@ -1,10 +1,12 @@
 """Record types and the column list shared by the context repository and its callers.
 
 Holds the optimistic-concurrency ``VersionConflictError``, the explicit
-``CONTEXT_ENTRY_COLUMNS`` select list, and the ``EntryProbe``, ``IdAccess`` and
-``DuplicateCandidate`` result tuples.
+``CONTEXT_ENTRY_COLUMNS`` select list, the ``EntryProbe``, ``IdAccess`` and
+``DuplicateCandidate`` result tuples, and the ``IngestRow`` record of an
+ingest-managed entry.
 """
 
+from dataclasses import dataclass
 from typing import NamedTuple
 
 from app.errors import ControlFlowError
@@ -81,3 +83,25 @@ class DuplicateCandidate(NamedTuple):
 
     context_id: str
     summary: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IngestRow:
+    """One ingest-managed entry as the ingest reads return it.
+
+    Attributes:
+        context_id: The entry id.
+        source_id: The source id the entry's ``metadata.ingest`` block carries, as the
+            statement selected it: the value the range bounds and the keyset compare.
+        block: The parsed ``metadata.ingest`` block, unvalidated: its shape is checked
+            by whoever plans or lists from it.
+        content_hash: The stored hash of the entry's text; None for an entry stored
+            before content hashes existed.
+        is_owner: Whether the caller owns the entry.
+    """
+
+    context_id: str
+    source_id: str
+    block: object
+    content_hash: str | None
+    is_owner: bool

@@ -75,8 +75,8 @@ SYSTEM_SCOPE_NAMES = frozenset({'SYSTEM_SCOPE', 'SystemScope'})
 
 # The two-principal case ids of the repository seams.
 KNOWN_CASE_IDS = frozenset({
-    *(f'S{n}' for n in range(1, 8)), *(f'R{n}' for n in range(1, 5)), *(f'K{n}' for n in range(1, 5)),
-    *(f'W{n}' for n in range(1, 6)), 'X1', 'X2', *(f'A{n}' for n in range(1, 7)),
+    *(f'S{n}' for n in range(1, 9)), *(f'R{n}' for n in range(1, 5)), *(f'K{n}' for n in range(1, 5)),
+    *(f'W{n}' for n in range(1, 6)), 'X1', 'X2', 'X3', *(f'A{n}' for n in range(1, 7)),
 })
 
 # Tool-layer helpers that carry the caller's scope to the repositories.
