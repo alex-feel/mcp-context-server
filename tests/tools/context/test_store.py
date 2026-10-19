@@ -285,6 +285,68 @@ class TestStoreScope:
         assert store_call.kwargs['scope'] == expected
 
 
+_INGEST_BLOCK: dict[str, Any] = {
+    'scope': 'kb:handbook',
+    'source_id': 'guides/setup.md',
+    'meta_digest': 'ab' * 32,
+    'synced_at': '2026-10-18T12:00:00Z',
+}
+
+
+class TestStoreIngestBlock:
+    """store_context validates the reserved ingest block before any generation or database work."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('block', 'message'),
+        [
+            (
+                {'scope': 'kb:handbook'},
+                'metadata.ingest must be an object with exactly the keys meta_digest, scope, source_id, synced_at',
+            ),
+            ({**_INGEST_BLOCK, 'source_id': ''}, 'metadata.ingest.source_id cannot be empty'),
+            (
+                {**_INGEST_BLOCK, 'meta_digest': 'AB' * 32},
+                'metadata.ingest.meta_digest must be 64 lowercase hexadecimal characters',
+            ),
+            (
+                {**_INGEST_BLOCK, 'synced_at': '2026-10-18'},
+                'metadata.ingest.synced_at must be a UTC timestamp such as 2026-10-18T12:00:00Z',
+            ),
+        ],
+        ids=['partial', 'empty-source-id', 'uppercase-digest', 'date-only'],
+    )
+    async def test_malformed_block_refused_before_generation(self, block: dict[str, Any], message: str) -> None:
+        """A malformed block raises its fixed message; no provider and no repository is reached."""
+        embedding_provider = AsyncMock()
+        summary_provider = AsyncMock()
+        with (
+            patch('app.tools.context.store.ensure_repositories', new_callable=AsyncMock) as ensure,
+            patch('app.tools.context.store.get_embedding_provider', return_value=embedding_provider),
+            patch('app.tools.context.store.get_summary_provider', return_value=summary_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=embedding_provider),
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await store_context(
+                thread_id='kb:handbook', source='user', text='Setup guide', metadata={'title': 'Setup', 'ingest': block},
+            )
+
+        assert str(exc_info.value) == message
+        ensure.assert_not_awaited()
+        assert embedding_provider.mock_calls == []
+        assert summary_provider.mock_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_valid_block_is_stored_as_sent(self) -> None:
+        """A complete valid block passes the boundary and is stored unchanged."""
+        metadata: dict[str, Any] = {'title': 'Setup', 'ingest': _INGEST_BLOCK}
+        result = await store_context(thread_id='kb:handbook', source='user', text='Setup guide', metadata=metadata)
+
+        fetched = await get_context_by_ids(context_ids=[result['context_id']])
+        assert dict(fetched[0])['metadata'] == metadata
+
+
 @asynccontextmanager
 async def _mock_begin_transaction(*, access_scope: BackendAccess) -> AsyncGenerator[MagicMock, None]:
     """Yield a mock transaction for a mocked backend."""

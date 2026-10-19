@@ -3,6 +3,7 @@ deleting fields, nested and multi-field patches, empty patches, special values, 
 stamping. RFC 7396 limitations covered: a null value deletes its key (a value cannot be set to null), and arrays
 are replaced, never merged element-wise."""
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -494,3 +495,51 @@ class TestMetadataPatchTypeConversions:
                 images=None,
             )
             assert result['success'] is True
+
+
+_INGEST_BLOCK: dict[str, Any] = {
+    'scope': 'kb:handbook',
+    'source_id': 'guides/setup.md',
+    'meta_digest': 'ab' * 32,
+    'synced_at': '2026-10-18T12:00:00Z',
+}
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestMetadataPatchIngestBlock:
+    """A merge patch removes the ingest block with null or replaces it with a complete block."""
+
+    @staticmethod
+    async def _store_managed_entry() -> str:
+        from app.tools.context.store import store_context
+
+        stored = await store_context(
+            thread_id='kb:handbook', source='user', text='Setup guide', metadata={'title': 'Setup', 'ingest': _INGEST_BLOCK},
+        )
+        return stored['context_id']
+
+    @staticmethod
+    async def _stored_metadata(context_id: str) -> object:
+        fetched = await app.tools.get_context_by_ids(context_ids=[context_id])
+        return dict(fetched[0])['metadata']
+
+    @pytest.mark.asyncio
+    async def test_null_removes_the_block_and_keeps_other_keys(self) -> None:
+        """Patching ingest to null removes the block; the rest of the metadata stays."""
+        context_id = await self._store_managed_entry()
+
+        result = await update_context(context_id=context_id, metadata_patch={'ingest': None})
+
+        assert result['success'] is True
+        assert await self._stored_metadata(context_id) == {'title': 'Setup'}
+
+    @pytest.mark.asyncio
+    async def test_complete_block_replaces_the_stored_block(self) -> None:
+        """Patching ingest with a complete block replaces every field of the stored block."""
+        context_id = await self._store_managed_entry()
+        replacement = {**_INGEST_BLOCK, 'meta_digest': 'cd' * 32, 'synced_at': '2026-10-19T08:30:00Z'}
+
+        result = await update_context(context_id=context_id, metadata_patch={'ingest': replacement})
+
+        assert result['success'] is True
+        assert await self._stored_metadata(context_id) == {'title': 'Setup', 'ingest': replacement}

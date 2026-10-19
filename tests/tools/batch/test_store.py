@@ -1,13 +1,16 @@
 """Tests for store_context_batch response messages: preserved summaries and stored-versus-generated embedding counts."""
 
+from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from app.access_scope import AccessScope
 from app.repositories.context_repository.records import DuplicateCandidate
+from app.tools.discovery import get_statistics
 from tests.helpers import as_principal
 from tests.tools.batch._mocks import make_mock_txn
 
@@ -198,3 +201,59 @@ class TestBatchStoreScope:
         assert precheck_call.kwargs['scope'] == expected
         assert store_call is not None
         assert store_call.kwargs['scope'] == expected
+
+
+_INGEST_BLOCK: dict[str, object] = {
+    'scope': 'kb:handbook',
+    'source_id': 'guides/setup.md',
+    'meta_digest': 'ab' * 32,
+    'synced_at': '2026-10-18T12:00:00Z',
+}
+_PARTIAL_BLOCK_ERROR = 'metadata.ingest must be an object with exactly the keys meta_digest, scope, source_id, synced_at'
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestBatchStoreIngestBlock:
+    """store_context_batch refuses a malformed ingest block per entry, before any generation."""
+
+    @staticmethod
+    def _entries() -> list[dict[str, Any]]:
+        return [
+            {'thread_id': 'kb:handbook', 'source': 'user', 'text': 'Setup guide', 'metadata': {'ingest': _INGEST_BLOCK}},
+            {'thread_id': 'kb:handbook', 'source': 'user', 'text': 'FAQ', 'metadata': {'ingest': {'scope': 'kb:handbook'}}},
+            {'thread_id': 'kb:handbook', 'source': 'user', 'text': 'Release notes'},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_fails_only_the_malformed_entry(self) -> None:
+        """The malformed entry fails with the validator's message; its siblings are stored."""
+        from app.tools.batch.store import store_context_batch
+
+        result = await store_context_batch(entries=self._entries(), atomic=False)
+
+        by_index = {item['index']: item for item in result['results']}
+        assert by_index[1] == {'index': 1, 'success': False, 'context_id': None, 'error': _PARTIAL_BLOCK_ERROR}
+        assert by_index[0]['success'] is True
+        assert by_index[2]['success'] is True
+        assert (result['succeeded'], result['failed']) == (2, 1)
+
+    @pytest.mark.asyncio
+    async def test_atomic_aborts_at_the_malformed_index_before_generation(self) -> None:
+        """The atomic batch aborts naming the index; no provider is reached and nothing is stored."""
+        from app.tools.batch.store import store_context_batch
+
+        embedding_provider = AsyncMock()
+        summary_provider = AsyncMock()
+        with (
+            patch('app.tools.batch.store.get_embedding_provider', return_value=embedding_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=embedding_provider),
+            patch('app.tools.batch.store.get_summary_provider', return_value=summary_provider),
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await store_context_batch(entries=self._entries(), atomic=True)
+
+        assert str(exc_info.value) == f'Validation failed for 1 entries. First error at index 1: {_PARTIAL_BLOCK_ERROR}'
+        assert embedding_provider.mock_calls == []
+        assert summary_provider.mock_calls == []
+        stats = await get_statistics()
+        assert stats['total_entries'] == 0

@@ -56,7 +56,7 @@ class TestContextRepositoryDeduplication:
         decision read to return a stale hash that still equals the request's
         hash (so dedup is attempted) while the row has since diverged.
         """
-        from app.repositories.context_repository.helpers import compute_content_hash
+        from app.digests import content_hash
 
         ctx_id1, _ = await repos.context.store_with_deduplication(
             scope=LOCAL_SCOPE,
@@ -74,7 +74,7 @@ class TestContextRepositoryDeduplication:
         def _diverge(conn: _sqlite3.Connection) -> None:
             conn.execute(
                 'UPDATE context_entries SET text_content = ?, content_hash = ? WHERE id = ?',
-                ('Newer text', compute_content_hash('Newer text'), ctx_id1),
+                ('Newer text', content_hash('Newer text'), ctx_id1),
             )
 
         await repos.context.backend.execute_write(_diverge, access_scope=MAINTENANCE)
@@ -83,7 +83,7 @@ class TestContextRepositoryDeduplication:
         # predicate) directly with the STALE observed hash -- the value the
         # dedup decision saw before the concurrent change. It must match 0 rows
         # (the row's hash diverged), NOT overwrite the newer text's hash.
-        stale_hash = compute_content_hash('Original text')
+        stale_hash = content_hash('Original text')
 
         def _guarded_update(conn: _sqlite3.Connection) -> int:
             cur = conn.execute(
@@ -106,7 +106,7 @@ class TestContextRepositoryDeduplication:
 
         # The newer text's hash survives untouched.
         hash_now = await repos.context.backend.execute_read(_hash_now, access_scope=MAINTENANCE)
-        assert hash_now == compute_content_hash('Newer text')
+        assert hash_now == content_hash('Newer text')
 
     @pytest.mark.asyncio
     async def test_deduplication_different_content(
@@ -281,10 +281,10 @@ class TestContextRepositoryDeduplication:
         self, repos: RepositoryContainer,
     ) -> None:
         """Deduplication uses content_hash for fast comparison."""
-        from app.repositories.context_repository.helpers import compute_content_hash
+        from app.digests import content_hash
 
         text = 'Hash-based dedup test content'
-        expected_hash = compute_content_hash(text)
+        expected_hash = content_hash(text)
         assert expected_hash is not None
 
         ctx_id1, _ = await repos.context.store_with_deduplication(

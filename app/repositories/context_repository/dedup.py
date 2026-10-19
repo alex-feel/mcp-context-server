@@ -17,13 +17,13 @@ import sqlite3
 from typing import TYPE_CHECKING
 from typing import cast
 
+from app import digests
 from app.access_scope import AccessMode
 from app.access_scope import AccessScope
 from app.access_scope import build_access_predicate
 from app.ids import generate_id
 from app.ids import normalize_id
 from app.repositories.base import BaseRepository
-from app.repositories.context_repository.helpers import compute_content_hash
 from app.repositories.context_repository.records import DuplicateCandidate
 
 if TYPE_CHECKING:
@@ -275,7 +275,7 @@ class ContextDedupMixin(BaseRepository):
 
         # The candidate is matched by content hash; its text is compared only for
         # rows stored before content hashes existed (NULL hash).
-        content_hash = compute_content_hash(text_content)
+        content_hash = digests.content_hash(text_content)
         entries = self._readable('context_entries', alias='context_entries')
         candidate_sql, candidate_params = _candidate_sql(backend_type, thread_id, source, scope=scope, relation=entries)
 
@@ -444,7 +444,7 @@ class ContextDedupMixin(BaseRepository):
             summary) if a duplicate is found, None if no match, if another
             principal owns the candidate, or if a readable new turn follows it.
         """
-        content_hash = compute_content_hash(text_content)
+        content_hash = digests.content_hash(text_content)
         backend_type = self.backend.backend_type
         entries = self._readable('context_entries', alias='context_entries')
         candidate_sql, candidate_params = _candidate_sql(backend_type, thread_id, source, scope=scope, relation=entries)

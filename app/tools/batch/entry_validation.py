@@ -11,6 +11,7 @@ from typing import cast
 from app.access_scope import AccessScope
 from app.auth import RequestPrincipal
 from app.auth import visibility_denied_reason
+from app.digests import normalize_stored_text
 from app.ids import resolve_or_normalize_id
 from app.metadata_types import non_finite_metadata_error
 from app.repositories.context_repository import ContextRepository
@@ -66,7 +67,7 @@ def validate_store_entry(
     if not isinstance(text_raw, str):
         return None, 'text must be a string'
     thread_id = thread_id_raw.strip()
-    text = text_raw.strip()
+    text = normalize_stored_text(text_raw)
 
     if not thread_id:
         return None, 'thread_id cannot be empty or whitespace'
@@ -150,7 +151,8 @@ def validate_store_entry(
     # in a PostgreSQL btree index (thread_id, and every INDEXED metadata field)
     # and the DECLARED TYPE of a typed indexed field: an oversized value, or one
     # an integer or boolean index cannot cast, aborts the PostgreSQL INSERT where
-    # SQLite stores it.
+    # SQLite stores it. It also refuses a malformed reserved ingest metadata block,
+    # as store_context does.
     entry_error = entry_boundary_error(
         thread_id=thread_id,
         text=text,
@@ -232,7 +234,7 @@ async def validate_update_entry(
     if text is not None:
         if not isinstance(text, str):
             return None, context_id, 'text must be a string'
-        text = text.strip()
+        text = normalize_stored_text(text)
         if not text:
             return None, context_id, 'text cannot be empty or whitespace'
 
@@ -307,7 +309,8 @@ async def validate_update_entry(
     # the declared type of every INDEXED metadata field, in both the replacement
     # and the merge-patch form: an oversized value, or one an integer or boolean
     # index cannot cast, aborts the PostgreSQL UPDATE on idx_metadata_<field>
-    # where SQLite stores it.
+    # where SQLite stores it. It also refuses a malformed reserved ingest metadata
+    # block in either form, and a partial one in the merge patch, as update_context does.
     entry_error = entry_boundary_error(
         text=text,
         tags=cast('object', tags_field),

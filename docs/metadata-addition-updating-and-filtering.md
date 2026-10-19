@@ -51,6 +51,8 @@ The `metadata` field accepts any JSON-serializable structure with no predefined 
 - Lists: `["value1", "value2"]`
 - Nested objects: `{"user": {"id": 123}}`
 
+**Reserved key:** the top-level key `ingest` holds the block a corpus sync client maintains (see [The Ingest Metadata Block](knowledge-base.md#the-ingest-metadata-block)), and every write validates it. `store_context`, `store_context_batch` and a full `metadata` replacement accept a complete block or no `ingest` key at all; `metadata_patch` accepts `null`, which removes the block, or a complete block, which replaces it. A full `metadata` replacement that omits `ingest` removes the block, so the sync stops managing the entry.
+
 ### Indexed Fields for Performance
 
 The following metadata fields are indexed by default for faster filtering:
@@ -379,7 +381,7 @@ search_context(
 ```
 
 **Characteristics:**
-- Case-insensitive string matching by default
+- Exact, case-sensitive string matching (the advanced operators fold ASCII case unless `case_sensitive: true`)
 - All conditions must match (AND logic)
 - Simple syntax for common queries
 - Limited to equality comparisons

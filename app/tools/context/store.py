@@ -12,6 +12,7 @@ from pydantic import Field
 from app.auth import resolve_effective_principal
 from app.auth import resolve_write_scope
 from app.auth import visibility_denied_reason
+from app.digests import normalize_stored_text
 from app.errors import format_exception_message
 from app.metadata_types import non_finite_metadata_error
 from app.models import MAX_IMAGES_PER_ENTRY
@@ -32,6 +33,7 @@ from app.tools._transactions import EmbeddingsReconcileRequiredError
 from app.tools._transactions import execute_store_in_transaction
 from app.tools._transactions import is_connection_error
 from app.tools._validation import reject_invalid_indexed_values
+from app.tools._validation import reject_invalid_ingest_block
 from app.tools._validation import reject_oversized_tags
 from app.tools._validation import reject_unstorable_input
 from app.tools._validation import validate_and_normalize_images
@@ -130,7 +132,7 @@ async def store_context(
         except AttributeError:
             raise ToolError('thread_id is required') from None
         try:
-            text = text.strip()
+            text = normalize_stored_text(text)
         except AttributeError:
             raise ToolError('text is required') from None
 
@@ -193,6 +195,10 @@ async def store_context(
         # integer or boolean field that type is a cast inside its expression index,
         # which PostgreSQL evaluates on every INSERT.
         reject_invalid_indexed_values(thread_id=thread_id, metadata=metadata)
+
+        # Reject a malformed reserved ingest block before generation, so every stored
+        # block has the shape corpus sync relies on when it reads blocks back.
+        reject_invalid_ingest_block(metadata=metadata)
 
         # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===
         # All generation happens BEFORE any database operation: if an
