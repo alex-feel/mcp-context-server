@@ -10,8 +10,11 @@ without Docker.
 Every compose call names a project derived from this checkout's repository
 root (:func:`_project_name_for`), so test sessions in two checkouts of the
 repository (separate clones or linked working trees) each run their own
-container and never bring down each other's. The compose file's ``name:``
-line serves manual ``docker compose`` use only; ``-p`` overrides it.
+container and never bring down each other's. Within one checkout, only the
+session that brought the container up removes it at session end, so a
+session that runs no PostgreSQL test can end beside one that still uses it.
+The compose file's ``name:`` line serves manual ``docker compose`` use only;
+``-p`` overrides it.
 
 Credentials (``mcp_test:mcp_test``) are throwaway: the container exposes
 no listening interface beyond loopback for the test session lifetime and
@@ -83,6 +86,20 @@ def _compose_command(*args: str) -> list[str]:
     return ['docker', 'compose', '-p', PROJECT_NAME, '-f', str(COMPOSE_FILE), *args]
 
 
+@dataclass
+class _SessionContainer:
+    """Whether this pytest session brought the checkout's container up.
+
+    Attributes:
+        brought_up: Set by :func:`pg_test_url` right before ``docker compose up``.
+    """
+
+    brought_up: bool = False
+
+
+SESSION_CONTAINER = _SessionContainer()
+
+
 def _force_cleanup() -> None:
     """Best-effort idempotent removal of this checkout's postgres test container and volumes.
 
@@ -113,17 +130,28 @@ def _force_cleanup() -> None:
         )
 
 
+def _cleanup_brought_up_container() -> None:
+    """Remove the checkout's container when this session brought it up.
+
+    A session that never brought the container up leaves it alone, so a
+    session that runs no PostgreSQL test (a ``-m "not integration"`` run)
+    can end while another session of the same checkout is still using it.
+    """
+    if SESSION_CONTAINER.brought_up:
+        _force_cleanup()
+
+
 # Belt-and-suspenders cleanup at interpreter shutdown. The primary safety
 # nets are the fixture-level try/finally and pytest_sessionfinish; this
 # atexit hook adds redundancy for edge cases (interpreter abnormal exit
 # paths that bypass pytest's own shutdown). atexit is not invoked on
 # Windows for Ctrl-C delivered via the Win32 console control handler, so
 # this layer cannot substitute for pytest_sessionfinish on Windows.
-atexit.register(_force_cleanup)
+atexit.register(_cleanup_brought_up_container)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Run idempotent docker cleanup after the full pytest session.
+    """Remove the container this session brought up, after the full pytest session.
 
     Called by pytest after all tests complete and before pytest returns
     its exit code. This hook runs even when session-scoped fixture
@@ -135,7 +163,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         exitstatus: The exit status pytest will return (unused but required).
     """
     del session, exitstatus  # ARG001: required by pytest hookspec
-    _force_cleanup()
+    _cleanup_brought_up_container()
 
 
 def _docker_available() -> bool:
@@ -238,6 +266,7 @@ def pg_test_url() -> Iterator[str]:
     port = _free_port()
     env = {**os.environ, 'MCP_PG_TEST_PORT': str(port)}
 
+    SESSION_CONTAINER.brought_up = True
     up_result = subprocess.run(
         _compose_command('up', '-d', '--wait'),
         env=env, capture_output=True, text=True, check=False,
