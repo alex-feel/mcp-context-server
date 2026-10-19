@@ -12,7 +12,9 @@ share. Six rules hold:
 2. Classification: :data:`REGISTRY` assigns each method a :class:`Seam`.
 3. Predicate reference: every scoped, write-authorized and owner-keyed method builds the
    access predicate, hands its scope to a predicate fragment helper, or is a dispatcher
-   that forwards its scope to every executor it names.
+   that forwards its scope to every executor it names; every owner-stamped method binds
+   ``owner_id`` from its own scope, in its INSERT or through the INSERT builder, and names
+   neither the system nor the maintenance identity.
 4. Closure list: the closures of the two ranked searches are classified one by one.
 5. Signatures and cases: a guarded method takes a required keyword-only ``scope``; every
    guarded entry names two-principal cases that exist in the case registry and run on
@@ -31,6 +33,7 @@ backends, so an executor that drops the predicate fails its case there.
 
 import ast
 import inspect
+import re
 import textwrap
 from collections import Counter
 from collections.abc import Iterator
@@ -40,9 +43,12 @@ import pytest
 import app.tools
 from app.access_scope import AccessScope
 from app.access_scope import Scope
+from tests.repositories._access_scope_cases import KNOWN_CASE_IDS
 from tests.repositories._access_scope_completeness_model import CHILD
 from tests.repositories._access_scope_completeness_model import CONTEXT_TABLE_SQL
 from tests.repositories._access_scope_completeness_model import GUARDED
+from tests.repositories._access_scope_completeness_model import OWNER_STAMPED_BUILDERS
+from tests.repositories._access_scope_completeness_model import PREDICATE_SEAMS
 from tests.repositories._access_scope_completeness_model import REGISTRY
 from tests.repositories._access_scope_completeness_model import ROOT
 from tests.repositories._access_scope_completeness_model import ParsedModule
@@ -72,12 +78,10 @@ PREDICATE_HELPERS = frozenset({'_candidate_sql', '_interleave_sql', '_dedup_upda
 
 RESOLVERS = frozenset({'resolve_access_scope', 'resolve_effective_principal'})
 SYSTEM_SCOPE_NAMES = frozenset({'SYSTEM_SCOPE', 'SystemScope'})
+MAINTENANCE_NAMES = frozenset({'MAINTENANCE', 'MaintenanceAccess'})
 
-# The two-principal case ids of the repository seams.
-KNOWN_CASE_IDS = frozenset({
-    *(f'S{n}' for n in range(1, 9)), *(f'R{n}' for n in range(1, 5)), *(f'K{n}' for n in range(1, 5)),
-    *(f'W{n}' for n in range(1, 6)), 'X1', 'X2', 'X3', *(f'A{n}' for n in range(1, 7)),
-})
+# An INSERT into the context table and the column list it names.
+CONTEXT_INSERT = re.compile(r'INSERT INTO context_entries\s*\((?P<columns>[^)]*)\)', re.IGNORECASE)
 
 # Tool-layer helpers that carry the caller's scope to the repositories.
 SCOPE_CARRYING_HELPERS = (
@@ -112,7 +116,7 @@ def test_every_registry_key_names_a_repository_method() -> None:
 # Part 3: predicate reference.
 
 
-@pytest.mark.parametrize('key', registry_keys(*GUARDED))
+@pytest.mark.parametrize('key', registry_keys(*PREDICATE_SEAMS))
 def test_guarded_method_applies_the_access_predicate(key: str) -> None:
     """A guarded method builds the predicate, hands its scope to a fragment helper, or forwards it."""
     entry = REGISTRY[key]
@@ -132,6 +136,129 @@ def test_guarded_method_applies_the_access_predicate(key: str) -> None:
 
     assert builds or helper_calls, f'{key} neither builds the access predicate nor calls a fragment helper'
     assert all(hands_over_scope(call) for call in helper_calls)
+
+
+def _names_identity(node: ast.AST, names: frozenset[str]) -> bool:
+    """Whether ``node``'s subtree names one of ``names`` as a name, an attribute or an import."""
+    return any(
+        (isinstance(child, ast.Name) and child.id in names)
+        or (isinstance(child, ast.Attribute) and child.attr in names)
+        or (isinstance(child, ast.alias) and child.name in names)
+        for child in ast.walk(node)
+    )
+
+
+def _reads_scope_principal(node: ast.AST) -> bool:
+    """Whether ``node``'s subtree reads ``scope.principal_id``."""
+    return any(
+        isinstance(child, ast.Attribute)
+        and child.attr == 'principal_id'
+        and isinstance(child.value, ast.Name)
+        and child.value.id == 'scope'
+        for child in ast.walk(node)
+    )
+
+
+def owner_stamped_violations(node: ast.AST, module: ParsedModule) -> list[str]:
+    """List how an owner-stamped method fails to bind ``owner_id`` from its own scope.
+
+    The method either holds the INSERT itself, naming ``owner_id`` among its columns and
+    reading ``scope.principal_id``, or holds no INSERT and inserts through an owner-stamped
+    builder, handing every call its own ``scope``. Either way it never names the system or
+    the maintenance identity.
+
+    Args:
+        node: The method.
+        module: The parsed module that defines it.
+
+    Returns:
+        One message per violation, empty for a method that passes.
+    """
+    violations: list[str] = []
+    inserts = [match for _line, value in string_constants(node, module) for match in CONTEXT_INSERT.finditer(value)]
+    builder_calls = [
+        call for call in ast.walk(node) if isinstance(call, ast.Call) and callee_name(call) in OWNER_STAMPED_BUILDERS
+    ]
+    if inserts:
+        if not all('owner_id' in (column.strip() for column in match['columns'].split(',')) for match in inserts):
+            violations.append('an INSERT does not name owner_id')
+        if not _reads_scope_principal(node):
+            violations.append('the INSERT does not bind owner_id from scope.principal_id')
+    elif builder_calls:
+        if not all(hands_over_scope(call) for call in builder_calls):
+            violations.append('a builder call does not hand over the scope')
+    else:
+        violations.append('neither holds an INSERT nor calls an owner-stamped builder')
+    if _names_identity(node, SYSTEM_SCOPE_NAMES | MAINTENANCE_NAMES):
+        violations.append('names the system or the maintenance identity')
+    return violations
+
+
+@pytest.mark.parametrize('key', registry_keys(Seam.OWNER_STAMPED))
+def test_owner_stamped_method_binds_the_owner_from_its_scope(key: str) -> None:
+    """An owner-stamped insert is owned by the caller's principal and by nothing else."""
+    node, module = repository_methods()[key]
+
+    assert owner_stamped_violations(node, module) == []
+
+
+def _snippet(source: str) -> tuple[ast.AST, ParsedModule]:
+    """Parse one function of ``source`` as the owner-stamped rule reads a repository method."""
+    tree = ast.parse(textwrap.dedent(source))
+    return tree.body[0], ParsedModule('snippet.py', 'snippet', tree, frozenset())
+
+
+@pytest.mark.parametrize(
+    ('source', 'violation'),
+    [
+        pytest.param(
+            '''
+            def insert(scope):
+                return 'INSERT INTO context_entries (id, owner_id) VALUES (?, ?)', ['new-id', 'local']
+            ''',
+            'the INSERT does not bind owner_id from scope.principal_id',
+            id='literal-owner',
+        ),
+        pytest.param(
+            '''
+            def insert(scope):
+                return 'INSERT INTO context_entries (id, thread_id) VALUES (?, ?)', [scope.principal_id, 't']
+            ''',
+            'an INSERT does not name owner_id',
+            id='owner-column-missing',
+        ),
+        pytest.param(
+            '''
+            async def insert(self, scope):
+                return _insert_entry_sql('sqlite', context_id='new-id')
+            ''',
+            'a builder call does not hand over the scope',
+            id='builder-without-scope',
+        ),
+        pytest.param(
+            '''
+            async def insert(self, scope):
+                sql, values = _insert_entry_sql('sqlite', scope=scope, context_id='new-id')
+                return await self.backend.execute_write(sql, access_scope=MAINTENANCE)
+            ''',
+            'names the system or the maintenance identity',
+            id='maintenance-identity',
+        ),
+        pytest.param(
+            '''
+            def insert(scope):
+                return 'SELECT 1', []
+            ''',
+            'neither holds an INSERT nor calls an owner-stamped builder',
+            id='no-insert',
+        ),
+    ],
+)
+def test_owner_stamped_rule_rejects_an_owner_not_bound_from_the_scope(source: str, violation: str) -> None:
+    """Each way of stamping an owner other than the caller's own scope is reported."""
+    node, module = _snippet(source)
+
+    assert owner_stamped_violations(node, module) == [violation]
 
 
 # Part 4: closure list.
@@ -156,7 +283,7 @@ def test_ranked_search_closures_are_classified(key: str) -> None:
 def test_guarded_method_requires_a_scope(key: str) -> None:
     """A guarded method takes a keyword-only ``scope`` with no default, typed per its class."""
     parameter, annotation = scope_parameter(key)
-    expected = AccessScope if REGISTRY[key].seam is Seam.OWNER_KEYED else Scope
+    expected = AccessScope if REGISTRY[key].seam in {Seam.OWNER_KEYED, Seam.OWNER_STAMPED} else Scope
 
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
     assert parameter.default is inspect.Parameter.empty

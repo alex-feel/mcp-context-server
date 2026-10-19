@@ -314,6 +314,7 @@ async def store_context(
                         tags=tags,
                         validated_images=validated_images,
                         images_provided=images is not None,
+                        deduplicate=True,
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
                         embedding_generation_enabled=get_embedding_provider() is not None,

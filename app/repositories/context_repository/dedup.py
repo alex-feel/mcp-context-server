@@ -1,15 +1,18 @@
-"""Deduplicating store for context entries.
+"""Deduplicating store and fresh insert for context entries.
 
-A store whose text matches its dedup candidate updates the candidate instead of
-inserting a duplicate. The candidate is the latest entry of the thread and
-source that the caller may read; the store merges into it only when the caller
-owns it, and an opposite-source entry the caller may read after the candidate
-(a new conversational turn rather than a retransmitted request) suppresses the
-merge. Every other store inserts a new entry owned by the caller.
+A deduplicating store whose text matches its dedup candidate updates the
+candidate instead of inserting a duplicate. The candidate is the latest entry
+of the thread and source that the caller may read; the store merges into it
+only when the caller owns it, and an opposite-source entry the caller may read
+after the candidate (a new conversational turn rather than a retransmitted
+request) suppresses the merge. Every other store inserts a new entry owned by
+the caller, and a store that asks for no deduplication inserts one without
+looking for a candidate at all.
 
 The transactional store and its read-only pre-check build the candidate and
 turn statements through the same helpers, so the pre-check reads exactly the
-rows the store will read.
+rows the store will read; both insert paths build their INSERT through one
+helper, so every fresh row is written the same way.
 """
 
 import logging
@@ -163,6 +166,54 @@ def _dedup_update_sql(
     return sql, [metadata, content_type, summary, content_hash, candidate_id, observed_hash, *owner.params]
 
 
+def _insert_entry_sql(
+    backend_type: str,
+    *,
+    scope: AccessScope,
+    context_id: str,
+    thread_id: str,
+    source: str,
+    content_type: str,
+    text_content: str,
+    metadata: str | None,
+    summary: str | None,
+    content_hash: str,
+    visibility: str,
+) -> Statement:
+    """Build the INSERT of a new entry owned by the scope's principal.
+
+    Every fresh row comes from this statement, whether the deduplicating store found
+    nothing to merge into or the caller asked for a new entry outright, so both insert
+    paths write the same columns. ``owner_id`` is bound from ``scope`` and from nowhere
+    else.
+
+    Args:
+        backend_type: ``'sqlite'`` or ``'postgresql'``.
+        scope: The caller's scope; its principal owns the new entry.
+        context_id: ID of the new entry.
+        thread_id: Thread of the entry.
+        source: Source of the entry.
+        content_type: Content type of the entry.
+        text_content: Text of the entry.
+        metadata: JSON metadata, or None.
+        summary: Summary, or None.
+        content_hash: Hash of the text.
+        visibility: Visibility stamped on the entry.
+
+    Returns:
+        The statement and its parameters.
+    """
+    placeholders = ', '.join(_param(backend_type, position) for position in range(1, 11))
+    sql = (
+        'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata, summary, '
+        f'content_hash, owner_id, visibility) VALUES ({placeholders})'
+    )
+    return sql, [
+        context_id, thread_id, source, content_type, text_content, metadata, summary, content_hash,
+        scope.principal_id, visibility,
+    ]
+
+
 def _is_owned_duplicate(
     owner_id: object,
     stored_hash: object,
@@ -196,13 +247,14 @@ def _is_owned_duplicate(
 
 
 class ContextDedupMixin(BaseRepository):
-    """Deduplicating store over ``context_entries``.
+    """Deduplicating store and fresh insert over ``context_entries``.
 
     ``store_with_deduplication`` updates the dedup candidate when the caller owns
     it, its text is identical and no opposite-source entry the caller may read
     follows it, and inserts a new entry otherwise; ``check_latest_is_duplicate``
     runs the same match read-only so callers can skip generation for a
-    retransmitted store.
+    retransmitted store; ``insert_entry`` always inserts a new entry owned by the
+    caller.
     """
 
     async def store_with_deduplication(
@@ -286,16 +338,12 @@ class ContextDedupMixin(BaseRepository):
                 content_hash=content_hash, candidate_id=candidate_id, observed_hash=observed_hash,
             )
 
-        insert_values = (
-            thread_id, source, content_type, text_content, metadata, summary, content_hash,
-            scope.principal_id, visibility,
-        )
-        insert_sql = f'''
-            INSERT INTO context_entries
-            (id, thread_id, source, content_type, text_content, metadata, summary, content_hash,
-             owner_id, visibility)
-            VALUES ({self._placeholders(10)})
-            '''
+        def _insert_statement(new_id: str) -> Statement:
+            return _insert_entry_sql(
+                backend_type, scope=scope, context_id=new_id,
+                thread_id=thread_id, source=source, content_type=content_type, text_content=text_content,
+                metadata=metadata, summary=summary, content_hash=content_hash, visibility=visibility,
+            )
 
         if backend_type == 'sqlite':
 
@@ -338,7 +386,7 @@ class ContextDedupMixin(BaseRepository):
 
                 # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
                 new_id = generate_id()
-                cursor.execute(insert_sql, (new_id, *insert_values))
+                cursor.execute(*_insert_statement(new_id))
                 logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
                 return new_id, False
 
@@ -390,13 +438,79 @@ class ContextDedupMixin(BaseRepository):
 
             # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
             new_id = generate_id()
-            await conn.execute(insert_sql, new_id, *insert_values)
+            insert_sql, insert_params = _insert_statement(new_id)
+            await conn.execute(insert_sql, *insert_params)
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
             return new_id, False
 
         if txn:
             return await _store_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_store_postgresql, access_scope=scope)
+
+    async def insert_entry(
+        self,
+        thread_id: str,
+        source: str,
+        content_type: str,
+        text_content: str,
+        *,
+        scope: AccessScope,
+        visibility: str,
+        metadata: str | None = None,
+        summary: str | None = None,
+        txn: 'TransactionContext | None' = None,
+    ) -> str:
+        """Insert a new context entry owned by the caller, without looking for a dedup candidate.
+
+        The store runs one INSERT, the same statement the deduplicating store uses for a
+        fresh row, and reads nothing: an identical latest entry of the thread and source,
+        the caller's own or another principal's, stays untouched beside the new one.
+
+        Args:
+            thread_id: Thread identifier.
+            source: 'user' or 'agent'.
+            content_type: 'text' or 'multimodal'.
+            text_content: The text of the entry.
+            scope: The caller's scope, resolved by the server; its principal owns the entry.
+            visibility: 'private' or 'public', stamped on the entry.
+            metadata: JSON metadata string, or None.
+            summary: Generated summary, or None; a blank summary is stored as NULL.
+            txn: Optional transaction context; when given, the INSERT runs on its connection.
+
+        Returns:
+            The id of the new entry.
+        """
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if summary is not None and not summary.strip():
+            summary = None
+        context_id = generate_id()
+        sql, values = _insert_entry_sql(
+            backend_type, scope=scope, context_id=context_id,
+            thread_id=thread_id, source=source, content_type=content_type, text_content=text_content,
+            metadata=metadata, summary=summary, content_hash=digests.content_hash(text_content), visibility=visibility,
+        )
+
+        if backend_type == 'sqlite':
+
+            def _insert_sqlite(conn: sqlite3.Connection) -> None:
+                conn.execute(sql, values)
+
+            if txn:
+                await self._run_sqlite_txn(_insert_sqlite, cast(sqlite3.Connection, txn.connection))
+            else:
+                await self.backend.execute_write(_insert_sqlite, access_scope=scope)
+        else:
+
+            async def _insert_postgresql(conn: 'asyncpg.Connection') -> None:
+                await conn.execute(sql, *values)
+
+            if txn:
+                await _insert_postgresql(cast('asyncpg.Connection', txn.connection))
+            else:
+                await self.backend.execute_write(_insert_postgresql, access_scope=scope)
+
+        logger.debug(f'Inserted new context entry {context_id} for thread {thread_id}')
+        return context_id
 
     async def check_latest_is_duplicate(
         self,

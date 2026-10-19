@@ -9,6 +9,7 @@ from fastmcp.exceptions import ToolError
 
 from app.access_scope import AccessScope
 from app.repositories.embedding_repository.records import ChunkEmbedding
+from app.repositories.index_node_repository import IndexNodeRow
 from app.tools._transactions import EmbeddingsReconcileRequiredError
 from app.tools._transactions import execute_store_in_transaction
 from tests.helpers import LOCAL_SCOPE
@@ -54,6 +55,8 @@ class TestExecuteStoreInTransaction:
             summary=None,
             tags=None,
             validated_images=[],
+            images_provided=False,
+            deduplicate=True,
             chunk_embeddings=None,
             embedding_model='test-model',
         )
@@ -73,7 +76,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=['tag1', 'tag2'], validated_images=[],
+            tags=['tag1', 'tag2'], validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.tags.store_tags.assert_called_once_with('42', ['tag1', 'tag2'], txn=mock_txn, scope=LOCAL_SCOPE)
@@ -91,7 +94,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=['tag1'], validated_images=[],
+            tags=['tag1'], validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.tags.replace_tags_for_context.assert_called_once_with(42, ['tag1'], txn=mock_txn, scope=LOCAL_SCOPE)
@@ -114,7 +117,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=[], validated_images=[],
+            tags=[], validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.tags.replace_tags_for_context.assert_called_once_with('42', [], txn=mock_txn, scope=LOCAL_SCOPE)
@@ -132,7 +135,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[],
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.tags.replace_tags_for_context.assert_not_called()
@@ -150,7 +153,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=True,
+            tags=None, validated_images=[], images_provided=True, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.images.replace_images_for_context.assert_called_once_with('42', [], txn=mock_txn, scope=LOCAL_SCOPE)
@@ -171,7 +174,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.images.replace_images_for_context.assert_not_called()
@@ -199,7 +202,7 @@ class TestExecuteStoreInTransaction:
                 visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='text', metadata_str=None, summary='reused summary',
-                tags=None, validated_images=[],
+                tags=None, validated_images=[], images_provided=False, deduplicate=True,
                 chunk_embeddings=None, embedding_model='m',
                 summary_pending=True,
             )
@@ -216,7 +219,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[],
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=chunk_embeddings, embedding_model='m',
         )
         assert embedding_stored is True
@@ -236,7 +239,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[],
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=chunk_embeddings, embedding_model='m',
         )
         assert embedding_stored is False
@@ -255,7 +258,7 @@ class TestExecuteStoreInTransaction:
                 visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='text', metadata_str=None, summary=None,
-                tags=None, validated_images=[],
+                tags=None, validated_images=[], images_provided=False, deduplicate=True,
                 chunk_embeddings=None, embedding_model='m',
             )
 
@@ -278,7 +281,7 @@ class TestExecuteStoreInTransaction:
                 visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='reconcile me', metadata_str=None, summary=None,
-                tags=None, validated_images=[],
+                tags=None, validated_images=[], images_provided=False, deduplicate=True,
                 chunk_embeddings=None, embedding_model='m',
                 embedding_generation_enabled=True,
             )
@@ -298,7 +301,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[],
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
             embedding_generation_enabled=True,
         )
@@ -317,7 +320,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[],
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=chunk_embeddings, embedding_model='m',
             embedding_generation_enabled=True,
         )
@@ -336,7 +339,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[],
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
             embedding_generation_enabled=False,
         )
@@ -356,7 +359,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='multimodal',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=images,
+            tags=None, validated_images=images, images_provided=True, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.images.store_images.assert_called_once_with('42', images, txn=mock_txn, scope=LOCAL_SCOPE)
@@ -374,7 +377,7 @@ class TestExecuteStoreInTransaction:
             visibility='public',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[],
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         call = mock_repos.context.store_with_deduplication.await_args
@@ -397,7 +400,7 @@ class TestExecuteStoreInTransaction:
             author_group_grants=frozenset({'team-x'}),
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[],
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
             chunk_embeddings=None, embedding_model='m',
         )
         assert mock_repos.grants.store_group_read_grants.await_count == expected_grants
@@ -405,3 +408,111 @@ class TestExecuteStoreInTransaction:
             mock_repos.grants.store_group_read_grants.assert_awaited_once_with(
                 '42', frozenset({'team-x'}), granted_by='bob', txn=mock_txn, scope=bob,
             )
+
+
+class TestExecuteStoreWithoutDeduplication:
+    """With deduplicate false the store is one fresh owner-stamped insert and every child write of a new entry."""
+
+    @pytest.fixture
+    def mock_repos(self) -> MagicMock:
+        """Create a mock RepositoryContainer whose fresh insert returns its own id."""
+        repos = MagicMock()
+        repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
+        repos.context.insert_entry = AsyncMock(return_value='43')
+        repos.grants.store_group_read_grants = AsyncMock()
+        repos.tags.store_tags = AsyncMock()
+        repos.tags.replace_tags_for_context = AsyncMock()
+        repos.images.store_images = AsyncMock()
+        repos.images.replace_images_for_context = AsyncMock()
+        repos.embeddings.exists = AsyncMock(return_value=True)
+        repos.embeddings.store_chunked = AsyncMock()
+        repos.index_nodes.replace_nodes_for_context = AsyncMock()
+        return repos
+
+    @pytest.fixture
+    def mock_txn(self) -> MagicMock:
+        """Create a mock transaction context."""
+        txn = MagicMock()
+        txn.backend_type = 'sqlite'
+        return txn
+
+    @pytest.mark.asyncio
+    async def test_inserts_through_insert_entry_only(self, mock_repos: MagicMock, mock_txn: MagicMock) -> None:
+        """The entry is inserted by insert_entry with the caller's scope; the deduplicating store never runs."""
+        bob = AccessScope('bob', frozenset({'team-x'}))
+
+        result = await execute_store_in_transaction(
+            mock_repos, mock_txn, scope=bob, visibility='public',
+            thread_id='kb:handbook', source='agent', content_type='text',
+            text_content='same text twice', metadata_str='{"k": 1}', summary='a summary',
+            tags=None, validated_images=[], images_provided=False, deduplicate=False,
+            chunk_embeddings=None, embedding_model='m',
+        )
+
+        assert result == ('43', False, False)
+        mock_repos.context.insert_entry.assert_awaited_once_with(
+            'kb:handbook', 'agent', 'text', 'same text twice',
+            scope=bob, visibility='public', metadata='{"k": 1}', summary='a summary', txn=mock_txn,
+        )
+        mock_repos.context.store_with_deduplication.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_writes_every_child_of_a_new_entry(self, mock_repos: MagicMock, mock_txn: MagicMock) -> None:
+        """Grants, tags, images, embeddings and nodes are written as for any fresh insert."""
+        images = [{'data': 'abc', 'mime_type': 'image/png'}]
+        chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
+        index_nodes = cast(list[IndexNodeRow], [MagicMock()])
+
+        _, was_updated, embedding_stored = await execute_store_in_transaction(
+            mock_repos, mock_txn, scope=LOCAL_SCOPE, visibility='private',
+            author_group_grants=frozenset({'team-x'}),
+            thread_id='kb:handbook', source='agent', content_type='multimodal',
+            text_content='text', metadata_str=None, summary=None,
+            tags=['guide'], validated_images=images, images_provided=True, deduplicate=False,
+            chunk_embeddings=chunk_embeddings, embedding_model='m',
+            embedding_generation_enabled=True, index_nodes=index_nodes,
+        )
+
+        assert (was_updated, embedding_stored) == (False, True)
+        mock_repos.grants.store_group_read_grants.assert_awaited_once_with(
+            '43', frozenset({'team-x'}), granted_by=LOCAL_SCOPE.principal_id, txn=mock_txn, scope=LOCAL_SCOPE,
+        )
+        mock_repos.tags.store_tags.assert_awaited_once_with('43', ['guide'], txn=mock_txn, scope=LOCAL_SCOPE)
+        mock_repos.tags.replace_tags_for_context.assert_not_awaited()
+        mock_repos.images.store_images.assert_awaited_once_with('43', images, txn=mock_txn, scope=LOCAL_SCOPE)
+        mock_repos.images.replace_images_for_context.assert_not_awaited()
+        mock_repos.embeddings.exists.assert_not_awaited()
+        mock_repos.embeddings.store_chunked.assert_awaited_once_with(
+            context_id='43', chunk_embeddings=chunk_embeddings, model='m', txn=mock_txn, upsert=False, scope=LOCAL_SCOPE,
+        )
+        mock_repos.index_nodes.replace_nodes_for_context.assert_awaited_once_with(
+            '43', index_nodes, txn=mock_txn, scope=LOCAL_SCOPE,
+        )
+
+    @pytest.mark.asyncio
+    async def test_keeps_the_reconcile_guard(self, mock_repos: MagicMock, mock_txn: MagicMock) -> None:
+        """An insert while a generation leg was skipped still aborts, so no entry lands without its embeddings."""
+        with pytest.raises(EmbeddingsReconcileRequiredError):
+            await execute_store_in_transaction(
+                mock_repos, mock_txn, scope=LOCAL_SCOPE, visibility='private',
+                thread_id='kb:handbook', source='agent', content_type='text',
+                text_content='text', metadata_str=None, summary=None,
+                tags=None, validated_images=[], images_provided=False, deduplicate=False,
+                chunk_embeddings=None, embedding_model='m', embedding_generation_enabled=True,
+            )
+        mock_repos.embeddings.store_chunked.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deduplicate_true_runs_the_deduplicating_store(self, mock_repos: MagicMock, mock_txn: MagicMock) -> None:
+        """With deduplicate true the deduplicating store decides and insert_entry never runs."""
+        context_id, was_updated, _ = await execute_store_in_transaction(
+            mock_repos, mock_txn, scope=LOCAL_SCOPE, visibility='private',
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            chunk_embeddings=None, embedding_model='m',
+        )
+
+        assert (context_id, was_updated) == ('42', True)
+        mock_repos.context.store_with_deduplication.assert_awaited_once()
+        mock_repos.context.insert_entry.assert_not_awaited()
