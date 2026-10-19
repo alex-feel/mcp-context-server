@@ -227,6 +227,10 @@ Enable ingress for external access:
 ingress:
   enabled: true
   className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   hosts:
     - host: mcp.example.com
       paths:
@@ -237,6 +241,8 @@ ingress:
       hosts:
         - mcp.example.com
 ```
+
+The annotations raise ingress-nginx's defaults of a 1 MiB request body and 60-second read and send timeouts. The server accepts request bodies up to 4 MiB, and a batch call with generation on, such as one `mcp-context-ingest` sends to sync a corpus, can run far longer than a minute, so keep the body limit above 4 MiB and the timeouts at least the client's `--call-timeout` (see [Limits](../knowledge-base.md#limits)). Other ingress controllers take the same limits under their own annotations.
 
 ## Health Checks and Probes
 

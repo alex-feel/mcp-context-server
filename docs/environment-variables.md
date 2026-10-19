@@ -17,7 +17,7 @@ MCP clients such as Claude Code support environment variable expansion using `${
 | `MAX_TOTAL_SIZE_MB`   | integer   | `100`                         | Maximum total request size in megabytes (minimum `1`)                                                                                                                                                                                         |
 | `DISABLED_TOOLS`      | string    | _(empty)_                     | Comma-separated list of MCP tools to disable (e.g., `delete_context,update_context`)                                                                                                                                                          |
 
-On the `http`, `streamable-http`, and `sse` transports the MCP SDK rejects any request body larger than 4 MiB with HTTP 413 before a tool runs, whatever `MAX_IMAGE_SIZE_MB` and `MAX_TOTAL_SIZE_MB` allow. Images travel base64-encoded, which adds about a third to their size, so over HTTP a single image above roughly 3 MiB is refused; store larger images over the `stdio` transport.
+On the `http`, `streamable-http`, and `sse` transports the MCP SDK rejects any request body larger than 4 MiB with HTTP 413 before a tool runs, whatever `MAX_IMAGE_SIZE_MB` and `MAX_TOTAL_SIZE_MB` allow. Images travel base64-encoded, which adds about a third to their size, so over HTTP a single image above roughly 3 MiB is refused; store larger images over the `stdio` transport. The same limit bounds a single document over HTTP; [Limits](knowledge-base.md#limits) in the Knowledge Base Guide covers it together with the response limit and the reverse-proxy settings a corpus sync needs.
 
 ## Transport Settings
 

@@ -197,6 +197,8 @@ metadata={
 }
 ```
 
+A document corpus that `mcp-context-ingest` keeps in sync lives in a `kb:<corpus>` thread, and each of its entries also carries the reserved `ingest` block; see the [Knowledge Base Guide](knowledge-base.md).
+
 **Debugging Context:**
 ```python
 metadata={
@@ -845,13 +847,13 @@ search_context(
 
 ### Knowledge Base
 
-Categorize and retrieve information with relevance scoring.
+Categorize and retrieve information with relevance scoring. A knowledge base lives in a thread named `kb:<corpus>` and stores its documents with `source="user"`; the [Knowledge Base Guide](knowledge-base.md) describes the convention and how `mcp-context-ingest` keeps a corpus in sync with a directory of files.
 
 ```python
 # Store knowledge base entry
 store_context(
-    thread_id="ml-research",
-    source="agent",
+    thread_id="kb:ml-research",
+    source="user",
     text="GPT-4 architecture uses sparse attention mechanism...",
     metadata={
         "category": "machine-learning",
@@ -866,7 +868,7 @@ store_context(
 
 # Find highly relevant ML papers
 search_context(
-    thread_id="ml-research",
+    thread_id="kb:ml-research",
     metadata_filters=[
         {"key": "category", "operator": "eq", "value": "machine-learning"},
         {"key": "relevance_score", "operator": "gte", "value": 7.0},
@@ -876,7 +878,7 @@ search_context(
 
 # Find recent transformer research
 search_context(
-    thread_id="ml-research",
+    thread_id="kb:ml-research",
     metadata={
         "subcategory": "transformers",
         "year": 2025
@@ -885,10 +887,16 @@ search_context(
 
 # Find papers from specific source
 search_context(
-    thread_id="ml-research",
+    thread_id="kb:ml-research",
     metadata_filters=[
         {"key": "source_url", "operator": "contains", "value": "arxiv.org"}
     ]
+)
+
+# Find one synced document by its path in the corpus (exact, case-sensitive)
+search_context(
+    thread_id="kb:ml-research",
+    metadata={"ingest.source_id": "papers/sparse-attention.md"}
 )
 ```
 

@@ -296,6 +296,29 @@ Replace `localhost` with your server's IP or hostname for remote connections:
 }
 ```
 
+### Running the Ingest CLI from the Image
+
+The image installs `mcp-context-ingest`, the command that keeps a directory of documents in sync with a `kb:<corpus>` thread, beside the server. Run it in a one-off container of the stack's server service: on the stack's network it reaches the server by the service name `mcp-context-server` and the port the server listens on, 8000 in every file under [Docker Compose Files](#docker-compose-files) (the test stacks `docker-compose.sqlite.ollama.test.yml` and `docker-compose.postgresql.ollama.test.yml` listen on 8001 and 8002).
+
+```bash
+docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml run --rm --no-deps \
+  -v /path/to/handbook:/corpus:ro \
+  --entrypoint mcp-context-ingest mcp-context-server \
+  --server http://mcp-context-server:8000/mcp --corpus handbook --source-dir /corpus
+```
+
+`--no-deps` starts no other service, `--entrypoint` replaces the server's entrypoint in that container only, and `--rm` removes the container when the run ends; the running server is untouched. Use the `-f` file of your stack. For a server that requires a bearer token, mount a token file, which the command reads before every request so a refresher can rotate it during a long run:
+
+```bash
+docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml run --rm --no-deps \
+  -v /path/to/handbook:/corpus:ro -v /path/to/ingest-token:/run/secrets/ingest-token:ro \
+  --entrypoint mcp-context-ingest mcp-context-server \
+  --server http://mcp-context-server:8000/mcp --corpus handbook --source-dir /corpus \
+  --token-file /run/secrets/ingest-token
+```
+
+Alternatively pass a token exported in the shell with `-e INGEST_TOKEN` before `--entrypoint` and `--token-env INGEST_TOKEN` at the end. The container runs as UID 10001 (`appuser`): a mounted file that user cannot read is kept as stored, and a directory it cannot list makes the run withhold its deletes, so neither ever deletes an entry; make the tree readable to that user. From the host, point `--server` at the published port (`http://localhost:8000/mcp`) and run the command with `uvx --from mcp-context-server mcp-context-ingest` instead. Flags, exit codes and scheduling are in [The mcp-context-ingest CLI](../knowledge-base.md#the-mcp-context-ingest-cli).
+
 ## Architecture
 
 ### Services Overview
@@ -1202,7 +1225,7 @@ If your container shows "Running" but the server is not responding:
 3. **Use named volumes** for data persistence (already configured)
 4. **Configure resource limits** for container memory/CPU
 5. **Set up monitoring** using the `/health` endpoint
-6. **Use reverse proxy** (nginx, traefik) for TLS termination
+6. **Use reverse proxy** (nginx, traefik) for TLS termination, with a request body limit above the server's own 4 MiB and read and send timeouts long enough for batch calls with generation on; for nginx, `client_max_body_size 5m; proxy_read_timeout 3600s; proxy_send_timeout 3600s;` covers `mcp-context-ingest` at its defaults (see [Limits](../knowledge-base.md#limits))
 7. **Secure OpenAI API key** - never commit `.env` files to version control
 8. **Set restart policies** with limited retry count to prevent infinite loops
 
@@ -1261,6 +1284,7 @@ If your container shows "Running" but the server is not responding:
 - **Hybrid Search**: [Hybrid Search Guide](../hybrid-search.md) - combined search with RRF fusion
 - **Metadata Filtering**: [Metadata Guide](../metadata-addition-updating-and-filtering.md) - metadata filtering with operators
 - **Authentication**: [Authentication Guide](../authentication.md) - bearer token authentication
+- **Knowledge Base**: [Knowledge Base Guide](../knowledge-base.md) - document corpora and `mcp-context-ingest`
 - **Main Documentation**: [README.md](../../README.md) - overview and quick start
 
 ### GPU Acceleration
