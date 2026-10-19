@@ -8,6 +8,9 @@ This package contains all MCP tool functions, organized by domain:
   (fts.py), hybrid_search_context (hybrid.py), the raw semantic and FTS legs they share (legs.py),
   reranking and result display formatting (ranking.py), and argument bounds and filter caps (limits.py)
 - discovery.py: list_threads, get_statistics
+- navigation.py: grep_context, navigate_context, read_context_range
+- sync.py: plan_context_sync, list_ingest_state (the corpus sync tools)
+- _sync_plan.py: The pure corpus sync diff plan_context_sync computes (not re-exported)
 - batch/: store_context_batch (store.py), update_context_batch (update.py), delete_context_batch
   (delete.py), the per-entry validation they share (entry_validation.py), and the update tool's
   write-access checks (update_access.py)
@@ -50,6 +53,8 @@ from app.tools.search.browse import search_context
 from app.tools.search.fts import fts_search_context
 from app.tools.search.hybrid import hybrid_search_context
 from app.tools.search.semantic import semantic_search_context
+from app.tools.sync import list_ingest_state
+from app.tools.sync import plan_context_sync
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -110,6 +115,14 @@ TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
     },
     'read_context_range': {
         'title': 'Read Context Range',
+        'readOnlyHint': True,
+    },
+    'plan_context_sync': {
+        'title': 'Plan Context Sync',
+        'readOnlyHint': True,
+    },
+    'list_ingest_state': {
+        'title': 'List Ingest State',
         'readOnlyHint': True,
     },
     # Update tools (destructive, not idempotent)
@@ -218,6 +231,9 @@ __all__ = [
     # Discovery tools
     'get_statistics',
     'list_threads',
+    # Corpus sync tools
+    'list_ingest_state',
+    'plan_context_sync',
     # Batch tools
     'delete_context_batch',
     'store_context_batch',

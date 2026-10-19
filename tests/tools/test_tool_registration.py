@@ -287,6 +287,8 @@ class TestDisabledToolsConfiguration:
                 'update_context',
                 'list_threads',
                 'get_statistics',
+                'plan_context_sync',
+                'list_ingest_state',
             ]
 
             for tool in tools:
@@ -395,11 +397,11 @@ class TestDisabledToolsConfiguration:
 class TestToolAnnotations:
     """Tests for TOOL_ANNOTATIONS dictionary."""
 
-    def test_all_13_tools_have_annotations(self) -> None:
-        """Verify all MCP tools have annotation entries."""
+    def test_every_tool_has_annotations(self) -> None:
+        """TOOL_ANNOTATIONS describes exactly the eighteen MCP tools the server can register."""
         from app.tools import TOOL_ANNOTATIONS
 
-        expected_tools = [
+        assert set(TOOL_ANNOTATIONS) == {
             'store_context',
             'store_context_batch',
             'search_context',
@@ -409,17 +411,19 @@ class TestToolAnnotations:
             'semantic_search_context',
             'fts_search_context',
             'hybrid_search_context',
+            'grep_context',
+            'navigate_context',
+            'read_context_range',
+            'plan_context_sync',
+            'list_ingest_state',
             'update_context',
             'update_context_batch',
             'delete_context',
             'delete_context_batch',
-        ]
-
-        for tool in expected_tools:
-            assert tool in TOOL_ANNOTATIONS, f'Missing annotation for tool: {tool}'
+        }
 
     def test_read_only_tools_have_readonly_hint(self) -> None:
-        """Verify search tools have readOnlyHint=True."""
+        """Verify the search, discovery, navigation and sync tools have readOnlyHint=True."""
         from app.tools import TOOL_ANNOTATIONS
 
         read_only_tools = [
@@ -430,6 +434,11 @@ class TestToolAnnotations:
             'semantic_search_context',
             'fts_search_context',
             'hybrid_search_context',
+            'grep_context',
+            'navigate_context',
+            'read_context_range',
+            'plan_context_sync',
+            'list_ingest_state',
         ]
 
         for tool in read_only_tools:
@@ -503,3 +512,64 @@ class TestToolAnnotations:
             assert 'title' in tool_annots, f'Tool {tool} missing title'
             assert isinstance(tool_annots['title'], str), f'Tool {tool} title should be string'
             assert len(tool_annots['title']) > 0, f'Tool {tool} title should not be empty'
+
+    def test_sync_tools_are_read_only_with_titles(self) -> None:
+        """Both sync tools carry only a title and the read-only hint."""
+        from app.tools import TOOL_ANNOTATIONS
+
+        assert TOOL_ANNOTATIONS['plan_context_sync'] == {'title': 'Plan Context Sync', 'readOnlyHint': True}
+        assert TOOL_ANNOTATIONS['list_ingest_state'] == {'title': 'List Ingest State', 'readOnlyHint': True}
+
+
+class TestContextSyncRegistration:
+    """ENABLE_CONTEXT_SYNC decides whether register_core_tools registers both sync tools."""
+
+    SYNC_TOOLS = frozenset({'plan_context_sync', 'list_ingest_state'})
+
+    @staticmethod
+    def _registered(monkeypatch: pytest.MonkeyPatch, mode: str | None) -> set[str]:
+        """Run register_core_tools with settings built from the environment and capture the registered names.
+
+        Args:
+            monkeypatch: The pytest monkeypatch fixture.
+            mode: The ENABLE_CONTEXT_SYNC value, or None to leave the variable unset.
+
+        Returns:
+            The names of the functions passed to register_tool.
+        """
+        from app.settings import get_settings
+        from app.startup.tool_registration import register_core_tools
+
+        if mode is None:
+            monkeypatch.delenv('ENABLE_CONTEXT_SYNC', raising=False)
+        else:
+            monkeypatch.setenv('ENABLE_CONTEXT_SYNC', mode)
+        get_settings.cache_clear()
+        settings = get_settings()
+        get_settings.cache_clear()
+
+        registered: set[str] = set()
+
+        def _capture(_mcp: object, func: object, *_args: object, **_kwargs: object) -> bool:
+            registered.add(getattr(func, '__name__', repr(func)))
+            return True
+
+        with patch('app.startup.tool_registration.register_tool', side_effect=_capture):
+            register_core_tools(MagicMock(), settings)
+        return registered
+
+    @pytest.mark.parametrize('mode', [None, 'auto', 'true'])
+    def test_auto_and_true_register_both(self, monkeypatch: pytest.MonkeyPatch, mode: str | None) -> None:
+        """The default auto mode and true both register plan_context_sync and list_ingest_state."""
+        assert self.SYNC_TOOLS.issubset(self._registered(monkeypatch, mode))
+
+    def test_false_registers_neither_and_logs(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """ENABLE_CONTEXT_SYNC=false skips both tools and says so in the log."""
+        with caplog.at_level('INFO', logger='app.startup.tool_registration'):
+            registered = self._registered(monkeypatch, 'false')
+
+        assert not self.SYNC_TOOLS & registered
+        assert 'store_context' in registered
+        assert 'plan_context_sync and list_ingest_state not registered (ENABLE_CONTEXT_SYNC=false)' in caplog.messages

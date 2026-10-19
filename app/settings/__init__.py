@@ -1,7 +1,7 @@
 """Application settings: the ``AppSettings`` composition root and the cached ``get_settings()`` accessor.
 
 Each configuration domain lives in its own submodule (``base``, ``server``, ``auth``, ``storage``,
-``providers``, ``embedding``, ``summary``, ``search``, ``navigation``). ``AppSettings`` composes one
+``providers``, ``embedding``, ``summary``, ``search``, ``navigation``, ``sync``). ``AppSettings`` composes one
 instance of each domain class and runs the validators that span several domains. Only ``AppSettings``
 and ``get_settings`` are imported from this package; import a domain class from its defining submodule.
 """
@@ -40,6 +40,7 @@ from app.settings.server import TransportSettings
 from app.settings.storage import StorageSettings
 from app.settings.summary import IndexTreeNodeSummarySettings
 from app.settings.summary import SummarySettings
+from app.settings.sync import ContextSyncSettings
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class AppSettings(CommonSettings):
     retrieval: RetrievalSettings = Field(default_factory=lambda: RetrievalSettings())
     grep_context: GrepContextSettings = Field(default_factory=lambda: GrepContextSettings())
     context_range: ContextRangeSettings = Field(default_factory=lambda: ContextRangeSettings())
+    context_sync: ContextSyncSettings = Field(default_factory=lambda: ContextSyncSettings())
     context_navigation: ContextNavigationSettings = Field(default_factory=lambda: ContextNavigationSettings())
     index_tree: IndexTreeNodeSummarySettings = Field(default_factory=lambda: IndexTreeNodeSummarySettings())
 

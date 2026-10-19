@@ -716,6 +716,14 @@
           "default": "auto"
         },
         {
+          "description": "plan_context_sync and list_ingest_state tool registration (corpus sync planning and stored ingest state). Tri-state: auto (default; no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_SYNC",
+          "default": "auto"
+        },
+        {
           "description": "navigate_context tool registration (code-derived Markdown outline / index_tree). Tri-state: auto (default; pure-Python, no extra dependencies), true, or false.",
           "isRequired": false,
           "format": "string",
@@ -1935,6 +1943,14 @@
           "format": "string",
           "isSecret": false,
           "name": "ENABLE_CONTEXT_RANGE",
+          "default": "auto"
+        },
+        {
+          "description": "plan_context_sync and list_ingest_state tool registration (corpus sync planning and stored ingest state). Tri-state: auto (default; no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_SYNC",
           "default": "auto"
         },
         {

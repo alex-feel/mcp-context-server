@@ -53,10 +53,10 @@ class TestDefaultInstructions:
         assert 'references' in DEFAULT_INSTRUCTIONS.lower()
 
     def test_default_instructions_character_budget(self) -> None:
-        """DEFAULT_INSTRUCTIONS should be within reasonable character budget (~2000-5000 chars)."""
+        """DEFAULT_INSTRUCTIONS should be within reasonable character budget (~2000-5300 chars)."""
         from app.instructions import DEFAULT_INSTRUCTIONS
 
-        assert 2000 < len(DEFAULT_INSTRUCTIONS) < 5000
+        assert 2000 < len(DEFAULT_INSTRUCTIONS) < 5300
 
     def test_default_instructions_lists_navigation_tools(self) -> None:
         """DEFAULT_INSTRUCTIONS must list the v3 navigation tools so clients discover them."""
@@ -65,6 +65,22 @@ class TestDefaultInstructions:
         assert 'grep_context' in DEFAULT_INSTRUCTIONS
         assert 'navigate_context' in DEFAULT_INSTRUCTIONS
         assert 'read_context_range' in DEFAULT_INSTRUCTIONS
+
+    def test_default_instructions_lists_sync_tools_and_knowledge_bases(self) -> None:
+        """DEFAULT_INSTRUCTIONS lists both sync tools and names the kb: thread convention."""
+        from app.instructions import DEFAULT_INSTRUCTIONS
+
+        assert '| `plan_context_sync`       |' in DEFAULT_INSTRUCTIONS
+        assert '| `list_ingest_state`       |' in DEFAULT_INSTRUCTIONS
+        assert '`kb:<corpus>`' in DEFAULT_INSTRUCTIONS
+
+    def test_default_instructions_tool_rows_share_the_column_widths(self) -> None:
+        """Every row of the tool table is as wide as its header row."""
+        from app.instructions import DEFAULT_INSTRUCTIONS
+
+        table = [line for line in DEFAULT_INSTRUCTIONS.splitlines() if line.startswith('|')]
+        assert len(table) > 2
+        assert {len(line) for line in table} == {len(table[0])}
 
     def test_default_instructions_is_static_constant(self) -> None:
         """DEFAULT_INSTRUCTIONS must be a simple string constant, not dynamically generated."""

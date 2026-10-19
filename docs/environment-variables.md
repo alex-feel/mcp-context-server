@@ -203,13 +203,14 @@ For detailed full-text search setup, see the [Full-Text Search Guide](full-text-
 
 For detailed hybrid search setup, see the [Hybrid Search Guide](hybrid-search.md).
 
-## Grep, Navigation & Partial-Read Settings
+## Grep, Navigation, Partial-Read & Sync Settings
 
 | Variable                        | Type        | Default      | Constraints   | Description                                                                                                                                                                                                                                                       |
 |---------------------------------|-------------|--------------|---------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `ENABLE_GREP_CONTEXT`           | tri-state   | `auto`       |               | Register the `grep_context` tool. `auto` (default) and `true` register it (matching is pure-Python, no extra dependencies); `false` forces it off                                                                                                                 |
 | `ENABLE_CONTEXT_NAVIGATION`     | tri-state   | `auto`       |               | Register the `navigate_context` tool (code-derived Markdown index_tree). `auto`/`true` register; `false` forces off                                                                                                                                               |
 | `ENABLE_CONTEXT_RANGE`          | tri-state   | `auto`       |               | Register the `read_context_range` tool (partial read by char/line/node). `auto`/`true` register; `false` forces off                                                                                                                                               |
+| `ENABLE_CONTEXT_SYNC`           | tri-state   | `auto`       |               | Register the `plan_context_sync` and `list_ingest_state` tools. `auto`/`true` register; `false` forces off                                                                                                                                                        |
 | `GREP_MAX_MATCHES_CAP`          | integer     | `1000`       | >= 1          | Hard ceiling applied to `grep_context` `max_matches` per request                                                                                                                                                                                                  |
 | `GREP_MAX_CONTEXT_LINES`        | integer     | `20`         | >= 0          | Hard ceiling applied to `grep_context` `context_lines` per request                                                                                                                                                                                                |
 | `GREP_MAX_ENTRIES_SCANNED`      | integer     | `1000`       | >= 1          | Hard ceiling on the number of entries a grep scan visits                                                                                                                                                                                                          |
@@ -218,7 +219,7 @@ For detailed hybrid search setup, see the [Hybrid Search Guide](hybrid-search.md
 | `GREP_REGEX_TOTAL_TIMEOUT_S`    | float       | `30.0`       | > 0           | Aggregate wall-clock budget for a whole `is_regex=true` scan; when exceeded it stops with truncated=true (per-entry timeout bounds one entry)                                                                                                                     |
 | `GREP_MAX_PATTERN_CHARS`        | integer     | `32768`      | >= 1          | Maximum `grep_context` pattern length in characters (compilation runs before any matching timeout, so an unbounded pattern could stall a request just to compile; 32 KiB fits any realistic pattern while keeping a worst-case compile in the low milliseconds)   |
 
-For when to use grep vs full-text vs semantic search, and the navigate -> read workflow, see [Grep, Navigation & Partial Reads](grep-navigation-partial-read.md).
+For when to use grep vs full-text vs semantic search, and the navigate -> read workflow, see [Grep, Navigation & Partial Reads](grep-navigation-partial-read.md). For the corpus sync tools, see the [Knowledge Base](knowledge-base.md) guide.
 
 ## Index Tree Node Summary Settings
 
