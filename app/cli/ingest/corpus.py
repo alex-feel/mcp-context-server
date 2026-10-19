@@ -36,10 +36,10 @@ from app.cli.ingest.manifest import text_digest
 from app.digests import normalize_stored_text
 from app.ingest import INGEST_KEY
 from app.ingest import MAX_SOURCE_ID_LENGTH
+from app.ingest import SyncChange
 from app.models import normalize_tag_list
 
 type Visibility = Literal['private', 'public']
-type UpdateChange = Literal['text', 'metadata', 'both']
 
 # Knowledge-base entries are stored as user content: the corpus is what a person wrote.
 ENTRY_SOURCE = 'user'
@@ -132,7 +132,7 @@ class Document:
             'deduplicate': False,
         }
 
-    def update_entry(self, *, context_id: str, thread_id: str, synced_at: str, change: UpdateChange) -> dict[str, object]:
+    def update_entry(self, *, context_id: str, thread_id: str, synced_at: str, change: SyncChange) -> dict[str, object]:
         """Return the ``update_context_batch`` entry that brings a stored entry up to the document.
 
         The metadata is always replaced in full, never patched, so the stored block

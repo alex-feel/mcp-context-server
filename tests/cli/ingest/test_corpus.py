@@ -17,7 +17,6 @@ from app.cli.ingest import corpus
 from app.cli.ingest.corpus import Corpus
 from app.cli.ingest.corpus import DirectoryFailure
 from app.cli.ingest.corpus import Document
-from app.cli.ingest.corpus import UpdateChange
 from app.cli.ingest.corpus import Visibility
 from app.cli.ingest.corpus import build_corpus
 from app.cli.ingest.corpus import format_synced_at
@@ -28,6 +27,7 @@ from app.cli.ingest.manifest import text_digest
 from app.digests import content_hash
 from app.ingest import INGEST_KEY
 from app.ingest import MAX_SOURCE_ID_LENGTH
+from app.ingest import SyncChange
 from app.ingest import ingest_block_error
 
 THREAD_ID = 'kb:test'
@@ -501,7 +501,7 @@ class TestEntries:
         }
 
     @pytest.mark.parametrize(('change', 'has_text'), [('text', True), ('both', True), ('metadata', False)])
-    def test_update_entry_replaces_metadata(self, tmp_path: Path, change: UpdateChange, has_text: bool) -> None:
+    def test_update_entry_replaces_metadata(self, tmp_path: Path, change: SyncChange, has_text: bool) -> None:
         """An update entry always sends the full metadata, tags and visibility, and the text when it changed."""
         _write(tmp_path, 'doc.md', 'body')
         document = _only_document(_build(tmp_path))
