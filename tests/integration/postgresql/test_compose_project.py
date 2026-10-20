@@ -2,8 +2,11 @@
 
 The project name is derived from the repository root, so a test session in one
 checkout (a separate clone or a linked working tree) never brings down the
-container of a session running in another. These checks need no Docker: they
-exercise the name helper and the argv every compose call is built from.
+container of a session running in another. Within one checkout, a session that
+never brings the container up leaves it alone at its end, so a unit-test session
+can finish beside a running integration session. These checks need no Docker:
+they exercise the name helper, the argv every compose call is built from, and
+the session-end cleanup.
 """
 
 from __future__ import annotations
@@ -17,10 +20,12 @@ import pytest
 
 from tests.integration.postgresql.conftest import COMPOSE_FILE
 from tests.integration.postgresql.conftest import PROJECT_NAME
+from tests.integration.postgresql.conftest import SESSION_CONTAINER
 from tests.integration.postgresql.conftest import _compose_command
 from tests.integration.postgresql.conftest import _force_cleanup
 from tests.integration.postgresql.conftest import _project_name_for
 from tests.integration.postgresql.conftest import _wait_for_health
+from tests.integration.postgresql.conftest import pytest_sessionfinish
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE_PROJECT_NAME = re.compile(r'[a-z0-9][a-z0-9-]*')
@@ -84,3 +89,27 @@ def test_health_polling_reads_the_checkout_project(monkeypatch: pytest.MonkeyPat
     _wait_for_health(timeout_s=5.0)
 
     assert calls == [_compose_command('ps', '--format', '{{.Health}}')]
+
+
+def test_session_end_leaves_a_container_the_session_did_not_bring_up(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
+) -> None:
+    monkeypatch.setattr(shutil, 'which', lambda _name: 'docker')
+    monkeypatch.setattr(SESSION_CONTAINER, 'brought_up', False)
+    calls = _record_compose_calls(monkeypatch, stdout='')
+
+    pytest_sessionfinish(request.session, 0)
+
+    assert calls == []
+
+
+def test_session_end_brings_down_a_container_the_session_brought_up(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
+) -> None:
+    monkeypatch.setattr(shutil, 'which', lambda _name: 'docker')
+    monkeypatch.setattr(SESSION_CONTAINER, 'brought_up', True)
+    calls = _record_compose_calls(monkeypatch, stdout='')
+
+    pytest_sessionfinish(request.session, 0)
+
+    assert calls == [_compose_command('down', '-v', '--remove-orphans')]

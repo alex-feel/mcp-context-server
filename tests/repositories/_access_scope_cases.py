@@ -90,13 +90,14 @@ type Invoker = Callable[[ScopedDb, Scope], Awaitable[object]]
 type Setup = Callable[[ScopedDb], Awaitable[None]]
 
 # Case ids of the two-principal suite: context reads and probes (S), ranked search (R),
-# dedup (K), updates (W), deletes (X) and aggregates (A).
+# dedup and the fresh insert (K), updates (W), deletes and owner-scoped listings (X) and
+# aggregates (A).
 KNOWN_CASE_IDS = frozenset({
-    'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7',
+    'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8',
     'R1', 'R2', 'R3', 'R4',
-    'K1', 'K2', 'K3', 'K4',
+    'K1', 'K2', 'K3', 'K4', 'K5',
     'W1', 'W2', 'W3', 'W4', 'W5',
-    'X1', 'X2',
+    'X1', 'X2', 'X3',
     'A1', 'A2', 'A3', 'A4', 'A5', 'A6',
 })
 

@@ -51,8 +51,15 @@ from tests.integration._harness.server import ServerMixin
 from tests.integration._harness.store import StoreMixin
 from tests.integration._harness.store_dedup import StoreDedupMixin
 from tests.integration._harness.summary import SummaryMixin
+from tests.integration._harness.sync import SyncMixin
 from tests.integration._harness.tags_images import TagsImagesMixin
 from tests.integration._harness.update import UpdateMixin
+
+# The pytest-timeout ceiling of one full harness run. One run drives every check
+# through one server and takes five to ten minutes, depending on the load of the
+# machine, so the suite-wide default of 600 seconds cuts off runs that would pass; the
+# entry points carry this ceiling instead, which still stops a hang.
+REAL_SERVER_TIMEOUT_S = 1200
 
 
 class MCPServerIntegrationTest(
@@ -91,6 +98,7 @@ class MCPServerIntegrationTest(
     ChunkingMixin,
     RerankingMixin,
     NavigationMixin,
+    SyncMixin,
 ):
     """Integration test for real MCP Context Storage Server."""
 
@@ -211,6 +219,7 @@ class MCPServerIntegrationTest(
             ('Server Version Is Project Version', self.test_server_version_is_project_version),
             # Deduplication Data Integrity Tests
             ('Dedup Data Integrity', self.test_store_context_deduplication_data_integrity),
+            ('Store Deduplicate False Inserts Fresh', self.test_store_deduplicate_false_inserts_fresh),
             # Edge Case Tests
             ('Store Context Empty Text', self.test_store_context_empty_text),
             ('Store Context Max Size Image', self.test_store_context_max_size_image),
@@ -242,6 +251,7 @@ class MCPServerIntegrationTest(
             ('Session Pooler Validation No-op on SQLite', self.test_session_pooler_validation_noop_on_sqlite),
             ('Update Triggers Embedding Regen', self.test_update_context_triggers_embedding_regeneration),
             ('Batch Store Dedup Within Batch', self.test_store_context_batch_dedup_within_batch),
+            ('Batch Store Deduplicate False Per Entry', self.test_store_batch_deduplicate_false_per_entry),
             ('Hybrid Search Graceful Degradation', self.test_hybrid_search_graceful_degradation_fts_only),
             ('Content Type Auto Detection', self.test_content_type_auto_detection_multimodal),
             ('Update Image Without MIME Type', self.test_update_context_image_without_mime_type_integration),
@@ -258,6 +268,10 @@ class MCPServerIntegrationTest(
             ('Health Endpoint', self.test_health_endpoint_returns_ok),
             # Batch/Non-Batch Conformance Tests
             ('Store Batch Conformance', self.test_store_batch_single_matches_store_nonbatch),
+            (
+                'Store Batch Conformance Deduplicate False',
+                self.test_store_batch_single_matches_store_nonbatch_deduplicate_false,
+            ),
             ('Update Batch Conformance', self.test_update_batch_single_matches_update_nonbatch),
             ('Delete Batch Conformance', self.test_delete_batch_single_matches_delete_nonbatch),
             # Tool-Surface Coverage (run on both backends)
@@ -320,6 +334,16 @@ class MCPServerIntegrationTest(
             ('Image Metadata Empty String Preserved', self.test_image_metadata_empty_string_preserved),
             ('Literal Markup Survives Ranked Search', self.test_literal_markup_survives_ranked_search),
             ('FTS Deeply Nested Boolean Query Degrades', self.test_fts_deeply_nested_boolean_query_degrades),
+            # Corpus sync: registration (ungated), plans that converge and stay inside
+            # their ranges, the paged ingest state, manifest validation at and past the
+            # cap, and the reserved ingest block guarded on every write tool.
+            ('Sync Tools Registered', self.test_sync_tools_registered),
+            ('Plan Context Sync Converges', self.test_plan_context_sync_converges),
+            ('Plan Context Sync Ranges', self.test_plan_context_sync_ranges),
+            ('List Ingest State Paged', self.test_list_ingest_state_paged),
+            ('Plan Context Sync Rejects Invalid Manifest', self.test_plan_context_sync_rejects_invalid_manifest),
+            ('Plan Context Sync Manifest At Cap', self.test_plan_context_sync_manifest_at_cap),
+            ('Ingest Block Rejected', self.test_ingest_block_rejected),
             # A second principal served from the same database reaches only the entries
             # the access model lets it read, and changes only those it may modify.
             ('Access Scoping Second Principal', self.test_access_scoping_second_principal),

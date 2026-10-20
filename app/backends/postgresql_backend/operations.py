@@ -403,9 +403,9 @@ class PostgreSQLOperationsMixin(PostgreSQLBackendCore):
                     # fundamentally slower than the ceiling (e.g. fp32 in-transaction
                     # HNSW maintenance with ENABLE_EMBEDDING_COMPRESSION=false) needs
                     # a higher POSTGRESQL_COMMAND_TIMEOUT_S or compression left ON.
-                    # Safe to retry: every write operation reaching execute_write is
-                    # idempotent (deduplicating store / keyed update) and all
-                    # generation completed outside the transaction.
+                    # Safe to retry: the cancellation aborts the attempt's transaction,
+                    # so nothing it wrote was committed, and all generation completed
+                    # outside the transaction.
                     last_error = e
                     await self._backoff_before_next_attempt(attempt, f'Statement timeout on write: {e}')
 

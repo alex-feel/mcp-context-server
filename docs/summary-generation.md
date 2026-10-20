@@ -289,7 +289,7 @@ When using reasoning models for summary generation, each provider has specific l
 2. **On `store_context_batch`**: Summary generation runs for each entry within its transaction. All generation completes before the entry is committed.
 3. **On `update_context`**: When `text` changes, summary and embedding are regenerated in parallel before the update transaction.
 4. **On `update_context_batch`**: Summary regenerated for entries with text changes within each entry's transaction.
-5. **Deduplication**: If an entry already has a summary (duplicate detection), summary generation is skipped.
+5. **Deduplication**: When a deduplicating store (`deduplicate` true, the default) finds that its likely duplicate already has a summary, summary generation is skipped and that summary is reused. A store with `deduplicate=false` always inserts a new entry and generates its summary like any other new entry.
 
 ### Minimum Content Length
 
@@ -303,7 +303,7 @@ By default, summary generation is skipped for short text (fewer than 500 charact
 
 - **`store_context`** / **`store_context_batch`**: Text shorter than the threshold is stored without a summary (`summary` field is empty).
 - **`update_context`** / **`update_context_batch`**: When updated text is shorter than the threshold, any existing summary is cleared (set to NULL) since the summary no longer accurately represents the content.
-- **Deduplication**: When a short-text duplicate is stored without generating a summary, any pre-existing summary on the original entry is preserved via SQL `COALESCE`.
+- **Deduplication**: When a deduplicating store (`deduplicate` true) updates a short-text duplicate without generating a summary, any pre-existing summary on the original entry is preserved via SQL `COALESCE`. With `deduplicate=false` the short text is stored as a new entry without a summary.
 
 **Special values:**
 

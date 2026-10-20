@@ -3,7 +3,8 @@
 Covers app.access_scope: the exact predicate text per mode, backend and outer
 qualifier; the parameter shape every predicate guarantees (a constant bind
 count, one group bind whatever the group count, contiguous PostgreSQL
-placeholders from ``start``); the empty SystemScope predicate; the
+placeholders from ``start``); the empty SystemScope predicate; the select-list
+expression that reports whether a predicate admits a row; the
 readable-parent predicate that tests a child row's parent key for membership in
 the readable entries; the policy predicate, whose arms equal the PostgreSQL
 predicate's modulo operands; the read view's gated READ predicate, the SELECT
@@ -224,6 +225,30 @@ def test_predicate_parameter_shape(mode_name: str, backend_type: str, group_coun
         assert isinstance(group_bind, str)
         assert json.loads(group_bind) == sorted(groups)
     assert ' IN ()' not in predicate.sql
+
+
+# ============================================================================
+# Select-list admission expression
+# ============================================================================
+
+
+@pytest.mark.parametrize('mode', list(AccessMode))
+@pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
+def test_admits_expression_wraps_the_predicate_in_a_case(mode: AccessMode, backend_type: str) -> None:
+    """For a request scope the expression is 1 when the predicate holds and 0 otherwise, binding what it binds."""
+    predicate = build_access_predicate(BOB_TEAMS, mode=mode, backend_type=backend_type, outer='ce', start=3)
+
+    assert predicate.admits_expression() == f'CASE WHEN {predicate.sql} THEN 1 ELSE 0 END'
+
+
+@pytest.mark.parametrize('mode', list(AccessMode))
+@pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
+def test_admits_expression_is_the_constant_one_for_the_system_scope(mode: AccessMode, backend_type: str) -> None:
+    """The system scope's empty predicate admits every row, so the expression is the constant 1."""
+    predicate = build_access_predicate(SYSTEM_SCOPE, mode=mode, backend_type=backend_type, outer='ce')
+
+    assert predicate.admits_expression() == '1'
+    assert predicate.bind_count == 0
 
 
 # ============================================================================
@@ -570,6 +595,27 @@ async def test_predicate_admits_rows_on_sqlite(
     await _seed(async_db_initialized)
 
     assert await _admitted(async_db_initialized, scope, mode, outer) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('scope', 'mode', 'expected'), _ADMISSION_CASES)
+async def test_admits_expression_flags_rows_on_sqlite(
+    async_db_initialized: StorageBackend,
+    scope: Scope,
+    mode: AccessMode,
+    expected: set[str],
+) -> None:
+    """In a select list the expression is 1 for exactly the rows the predicate admits and 0 for every other row."""
+    await _seed(async_db_initialized)
+    predicate = build_access_predicate(scope, mode=mode, backend_type='sqlite', outer='ce')
+    query = f'SELECT ce.text_content, {predicate.admits_expression()} FROM context_entries ce WHERE ce.thread_id = ?'
+
+    def _select(conn: sqlite3.Connection) -> dict[str, int]:
+        return {row[0]: row[1] for row in conn.execute(query, (*predicate.params, 'scope-thread')).fetchall()}
+
+    flags = await async_db_initialized.execute_read(_select, access_scope=MAINTENANCE)
+
+    assert flags == {label: int(label in expected) for label in _ALL_LABELS}
 
 
 _READ_ADMISSION_CASES = [

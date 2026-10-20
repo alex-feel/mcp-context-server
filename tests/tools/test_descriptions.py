@@ -1,15 +1,27 @@
-"""Tests for backend-specific tool description generators.
+"""Tests for the tool descriptions and schemas the server serves to clients.
 
 Tests verify that generate_fts_description produces correct output
 for both SQLite and PostgreSQL backends across various FTS language
 configurations, and that structural invariants of the description
 template are maintained. The access-scoping tests also pin the
 SQLite score note in the description hybrid_search_context serves.
+The sync tests pin what the corpus sync tools' served schemas tell a
+client: how to compute a manifest item's text digest, and no name of
+the server's own modules or constants.
 """
+
+import json
+import re
+from collections.abc import Awaitable
+from collections.abc import Callable
 
 import pytest
 from fastmcp import FastMCP
+from fastmcp.tools import Tool
 
+from app.ingest import MAX_PLAN_DELETES
+from app.tools import list_ingest_state
+from app.tools import plan_context_sync
 from app.tools import register_tool
 from app.tools.descriptions import _FTS_DESCRIPTION_TEMPLATE
 from app.tools.descriptions import _POSTGRESQL_MODE_DESCRIPTIONS
@@ -171,3 +183,55 @@ class TestDescriptionAccessScoping:
             description
         )
         assert "PostgreSQL's ts_rank_cd scores each entry on its own" in description
+
+
+_INTERNAL_NAME = re.compile(r'\bapp\.|MAX_PLAN_DELETES|content_hash')
+
+
+class TestSyncToolSchemas:
+    """The corpus sync tools' served schemas tell a client what to send, in the client's terms."""
+
+    def test_manifest_item_description_is_client_facing(self) -> None:
+        """The item's served description names no server module and carries no field list of its own."""
+        tool = Tool.from_function(plan_context_sync)
+        description = tool.parameters['$defs']['SyncManifestItem']['description']
+        assert 'app.' not in description
+        assert 'Attributes:' not in description
+        assert '{source_id, keep: true}' in description
+
+    def test_text_digest_states_the_whitespace_rule(self) -> None:
+        """A client learns from the schema alone that the text is hashed after surrounding whitespace is removed."""
+        tool = Tool.from_function(plan_context_sync)
+        properties = tool.parameters['$defs']['SyncManifestItem']['properties']
+        description = properties['text_digest']['description']
+        assert 'whitespace' in description
+        assert 'SHA-256' in description
+        assert 'str.strip()' in description
+
+    def test_every_manifest_item_field_is_described(self) -> None:
+        tool = Tool.from_function(plan_context_sync)
+        properties = tool.parameters['$defs']['SyncManifestItem']['properties']
+        assert set(properties) == {'source_id', 'text_digest', 'meta_digest', 'keep'}
+        for name, schema in properties.items():
+            assert schema.get('description'), f'{name} carries no served description'
+
+    def test_plan_description_states_the_whitespace_rule(self) -> None:
+        tool = Tool.from_function(plan_context_sync)
+        assert tool.description is not None
+        # The description is the tool docstring, wrapped across lines; a client reads it as prose.
+        description = ' '.join(tool.description.split())
+        assert 'digest of the text it would store after surrounding whitespace is removed' in description
+
+    @pytest.mark.parametrize('tool_function', [plan_context_sync, list_ingest_state], ids=lambda f: f.__name__)
+    def test_served_schemas_name_no_server_identifier(self, tool_function: Callable[..., Awaitable[object]]) -> None:
+        """Neither the description nor the input or output schema names a server module, constant or column."""
+        tool = Tool.from_function(tool_function)
+        assert tool.output_schema is not None
+        served = json.dumps({'description': tool.description, 'input': tool.parameters, 'output': tool.output_schema})
+        assert _INTERNAL_NAME.search(served) is None, _INTERNAL_NAME.search(served)
+
+    def test_plan_output_states_the_listed_delete_bound(self) -> None:
+        tool = Tool.from_function(plan_context_sync)
+        assert tool.output_schema is not None
+        description = ' '.join(tool.output_schema['description'].split())
+        assert f'The first {MAX_PLAN_DELETES} planned deletes' in description

@@ -20,6 +20,7 @@ from app.migrations import apply_content_hash_migration
 from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
 from app.migrations import apply_index_tree_migration
+from app.migrations import apply_ingest_index_migration
 from app.migrations import apply_jsonb_merge_patch_migration
 from app.migrations import apply_request_role_grants
 from app.migrations import apply_rls
@@ -89,6 +90,8 @@ async def prepare_database(backend: StorageBackend, settings: AppSettings, *, re
     # table, and their lookup indexes. Must run before any write path stamps
     # the columns.
     await apply_access_control_migration(backend=backend)
+    # The ingest index's SQLite key names the access columns, so it follows their migration.
+    await apply_ingest_index_migration(backend=backend)
     # Repair duplicate tag rows and install the unique index that prevents new
     # ones. The delete is the only thing that reaches entries already stored with
     # a repeated label, which every reader would otherwise keep returning twice.

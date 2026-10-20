@@ -51,6 +51,8 @@ The `metadata` field accepts any JSON-serializable structure with no predefined 
 - Lists: `["value1", "value2"]`
 - Nested objects: `{"user": {"id": 123}}`
 
+**Reserved key:** the top-level key `ingest` holds the block a corpus sync client maintains (see [The Ingest Metadata Block](knowledge-base.md#the-ingest-metadata-block)), and every write validates it. `store_context`, `store_context_batch` and a full `metadata` replacement accept a complete block or no `ingest` key at all; `metadata_patch` accepts `null`, which removes the block, or a complete block, which replaces it. A full `metadata` replacement that omits `ingest` removes the block, so the sync stops managing the entry.
+
 ### Indexed Fields for Performance
 
 The following metadata fields are indexed by default for faster filtering:
@@ -194,6 +196,8 @@ metadata={
     "peer_reviewed": True
 }
 ```
+
+A document corpus that `mcp-context-ingest` keeps in sync lives in a `kb:<corpus>` thread, and each of its entries also carries the reserved `ingest` block; see the [Knowledge Base Guide](knowledge-base.md).
 
 **Debugging Context:**
 ```python
@@ -379,7 +383,7 @@ search_context(
 ```
 
 **Characteristics:**
-- Case-insensitive string matching by default
+- Exact, case-sensitive string matching (the advanced operators fold ASCII case unless `case_sensitive: true`)
 - All conditions must match (AND logic)
 - Simple syntax for common queries
 - Limited to equality comparisons
@@ -843,13 +847,13 @@ search_context(
 
 ### Knowledge Base
 
-Categorize and retrieve information with relevance scoring.
+Categorize and retrieve information with relevance scoring. A knowledge base lives in a thread named `kb:<corpus>` and stores its documents with `source="user"`; the [Knowledge Base Guide](knowledge-base.md) describes the convention and how `mcp-context-ingest` keeps a corpus in sync with a directory of files.
 
 ```python
 # Store knowledge base entry
 store_context(
-    thread_id="ml-research",
-    source="agent",
+    thread_id="kb:ml-research",
+    source="user",
     text="GPT-4 architecture uses sparse attention mechanism...",
     metadata={
         "category": "machine-learning",
@@ -864,7 +868,7 @@ store_context(
 
 # Find highly relevant ML papers
 search_context(
-    thread_id="ml-research",
+    thread_id="kb:ml-research",
     metadata_filters=[
         {"key": "category", "operator": "eq", "value": "machine-learning"},
         {"key": "relevance_score", "operator": "gte", "value": 7.0},
@@ -874,7 +878,7 @@ search_context(
 
 # Find recent transformer research
 search_context(
-    thread_id="ml-research",
+    thread_id="kb:ml-research",
     metadata={
         "subcategory": "transformers",
         "year": 2025
@@ -883,10 +887,16 @@ search_context(
 
 # Find papers from specific source
 search_context(
-    thread_id="ml-research",
+    thread_id="kb:ml-research",
     metadata_filters=[
         {"key": "source_url", "operator": "contains", "value": "arxiv.org"}
     ]
+)
+
+# Find one synced document by its path in the corpus (exact, case-sensitive)
+search_context(
+    thread_id="kb:ml-research",
+    metadata={"ingest.source_id": "papers/sparse-attention.md"}
 )
 ```
 

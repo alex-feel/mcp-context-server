@@ -24,6 +24,7 @@ from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
 from mcp.client.stdio import get_default_environment
 
+from tests.integration._harness import REAL_SERVER_TIMEOUT_S
 from tests.integration._harness import MCPServerIntegrationTest
 from tests.integration._harness.core import CLIENT_MODES
 from tests.integration._harness.core import ClientMode
@@ -39,6 +40,7 @@ requires_sqlite_vec = pytest.mark.skipif(
 @pytest.mark.integration
 @pytest.mark.asyncio
 @requires_sqlite_vec
+@pytest.mark.timeout(REAL_SERVER_TIMEOUT_S)
 @pytest.mark.parametrize('client_mode', CLIENT_MODES)
 async def test_real_server(tmp_path: Path, client_mode: ClientMode) -> None:
     """Run integration tests against real server with temporary database.

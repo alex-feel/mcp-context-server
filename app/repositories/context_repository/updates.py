@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from app import digests
 from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
-from app.repositories.context_repository.helpers import compute_content_hash
 from app.repositories.context_repository.records import VersionConflictError
 
 if TYPE_CHECKING:
@@ -101,7 +101,7 @@ class ContextUpdateMixin(BaseRepository):
                 f'text_content = {self._placeholder(len(params) + 1)}',
                 f'content_hash = {self._placeholder(len(params) + 2)}',
             ])
-            params.extend([text_content, compute_content_hash(text_content)])
+            params.extend([text_content, digests.content_hash(text_content)])
             updated_fields.append('text_content')
 
         if metadata is not None:

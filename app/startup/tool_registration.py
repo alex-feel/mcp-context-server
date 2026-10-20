@@ -25,8 +25,10 @@ from app.tools import get_context_by_ids
 from app.tools import get_statistics
 from app.tools import grep_context
 from app.tools import hybrid_search_context
+from app.tools import list_ingest_state
 from app.tools import list_threads
 from app.tools import navigate_context
+from app.tools import plan_context_sync
 from app.tools import read_context_range
 from app.tools import register_tool
 from app.tools import search_context
@@ -40,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 def register_core_tools(mcp: FastMCP[None], settings: AppSettings) -> None:
-    """Register the tools that need no provider: CRUD, browsing, discovery, and navigation.
+    """Register the tools that need no provider: CRUD, browsing, discovery, navigation, and corpus sync.
 
     Args:
         mcp: The FastMCP server instance to register the tools on.
@@ -72,6 +74,14 @@ def register_core_tools(mcp: FastMCP[None], settings: AppSettings) -> None:
         register_tool(mcp, read_context_range)
     else:
         logger.info('read_context_range not registered (ENABLE_CONTEXT_RANGE=false)')
+
+    # Read-only corpus sync tools. Both read stored rows only, so registration gates
+    # only on the tri-state toggle (auto/true register; false force-disables).
+    if settings.context_sync.enabled:
+        register_tool(mcp, plan_context_sync)
+        register_tool(mcp, list_ingest_state)
+    else:
+        logger.info('plan_context_sync and list_ingest_state not registered (ENABLE_CONTEXT_SYNC=false)')
 
     # Update tools (destructive, not idempotent)
     register_tool(mcp, update_context)

@@ -26,6 +26,12 @@ ingress:
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # kubernetes.io/tls-acme: "true"
+    # ingress-nginx allows a 1 MiB request body and 60 s timeouts by default. The server
+    # accepts bodies up to 4 MiB, and batch calls with generation on, such as those of
+    # mcp-context-ingest, run longer (see "Limits" in docs/knowledge-base.md):
+    # nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   hosts:
     - host: mcp-context-server.local
       paths:

@@ -2,12 +2,13 @@
 
 ## Introduction
 
-The MCP Context Server exposes 16 MCP tools for context management, organized into core operations, search tools, navigation tools (locate / navigate / extract), and batch operations.
+The MCP Context Server exposes 18 MCP tools for context management, organized into core operations, search tools, navigation tools (locate / navigate / extract), sync tools, and batch operations.
 
 **Tool Categories:**
 - **Core Operations**: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`
 - **Search Tools**: `semantic_search_context`, `fts_search_context`, `hybrid_search_context`
 - **Navigation Tools**: `grep_context`, `navigate_context`, `read_context_range`
+- **Sync Tools**: `plan_context_sync`, `list_ingest_state`
 - **Batch Operations**: `store_context_batch`, `update_context_batch`, `delete_context_batch`
 
 ## Context Identifier Format
@@ -59,7 +60,8 @@ Every tool call runs as one principal: the verified token subject under `MCP_AUT
 - **Discovery**: `list_threads` lists a thread only when the caller may read at least one of its entries, and computes every figure from those entries. `get_statistics` counts only readable entries in every entry, thread, image, tag, embedding, index, summary and node figure; `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` and the configuration fields describe the whole deployment and are the same for every caller.
 - **Updates**: the owner and principals holding a write grant may change text, metadata, tags and images; only the owner may change `visibility`. An entry the caller may not read is reported as not found (`Context entry with ID {id} not found`; in `update_context_batch`, `Context entry {id} not found`). An entry the caller may read but not modify (through a read grant, or a `public` entry it does not own) is refused with `Not authorized to modify context entry with ID {id}` (in `update_context_batch`, `Not authorized to modify context entry {id}`) for every change, a visibility change included. A visibility change by a write grantee who is not the owner is refused with `Only the owner may change the visibility of context {id}`. In atomic mode the not-found and not-authorized batch messages end with "at index {i}" and the whole batch fails.
 - **Deletes**: only the owner may delete an entry. A delete that names IDs (`delete_context` with `context_ids`, `delete_context_batch` with `context_ids`) is refused with `Not authorized to delete context entries: {ids}` and deletes nothing when a named entry the caller may read is not its own; a named ID the caller may not read is skipped and not counted. A thread or criteria delete (`delete_context` with `thread_id`, `delete_context_batch` without `context_ids`) deletes only the caller's own matching entries and leaves the rest in place without an error.
-- **Deduplication**: `store_context` and `store_context_batch` take as the candidate the latest entry of the same thread and source among the entries the caller may read, and merge into it only when the caller owns it and its text is identical; otherwise they insert a new entry owned by the caller. Only opposite-source entries the caller may read mark a new conversational turn.
+- **Sync**: `plan_context_sync` plans only the caller's own managed entries. A managed entry another principal owns that the caller may read is never planned for an update or a delete and only adds to `foreign_count`; one the caller may not read is not counted, so a manifest item for its source plans a create. `list_ingest_state` lists only the caller's own managed entries, and another principal's entries never take a slot on a page.
+- **Deduplication**: when `deduplicate` is true (the default), `store_context` and `store_context_batch` take as the candidate the latest entry of the same thread and source among the entries the caller may read, and merge into it only when the caller owns it and its text is identical; otherwise they insert a new entry owned by the caller. Only opposite-source entries the caller may read mark a new conversational turn. With `deduplicate` false they look for no candidate and always insert a new entry owned by the caller.
 - **Full-text scores on SQLite**: `fts_score` comes from FTS5 `bm25()`, which uses statistics of the whole index, entries the caller cannot read included, so the scores of readable entries and their relative order can shift as other principals' entries change; the matching set and page sizes depend only on readable entries. The same score feeds the full-text leg of `hybrid_search_context`. PostgreSQL's `ts_rank_cd` scores each entry on its own.
 
 ## Core Tools
@@ -76,6 +78,7 @@ Store a context entry with optional images and flexible metadata.
 - `metadata` (dict, optional): Additional structured data - completely flexible JSON object for your use case
 - `tags` (list, optional): Tags for organization (automatically normalized). At most 100 tags, each at most 128 characters.
 - `visibility` (str, optional): `private` (readable by the owner and every grantee) or `public` (readable by everyone). Omitted uses `ACCESS_CONTROL_DEFAULT_VISIBILITY` (default `private`). Publishing as `public` may require the role named by `ACCESS_CONTROL_PUBLISH_ROLE`. Applies only when the store inserts a new entry: a deduplication update never changes the existing entry's owner or visibility.
+- `deduplicate` (bool, optional, default `true`): `true` updates the caller's own latest entry of the same thread and source instead of inserting a duplicate when its text is identical, which protects against client retransmits (see [Access Scoping](#access-scoping)). `false` skips that lookup and always inserts a new entry owned by the caller, with `visibility` applied and every generation step run as for any new entry. Corpus sync clients pass `false`; see [Storing Without Deduplication](knowledge-base.md#storing-without-deduplication).
 
 **Write-path length caps:** `thread_id` (256 characters), each tag (128 characters) and the value stored under any *indexed* metadata field (512 characters) are bounded at the tool boundary. Each of those values lands in a PostgreSQL btree index whose index-tuple ceiling would otherwise reject the write inside the store transaction while SQLite accepted the identical value, so the cap is what keeps the two backends accepting and rejecting the same input. Values under non-indexed metadata keys are not length-capped. The indexed-value cap is measured on the text the index actually stores, so a list or object under an indexed field is measured as its whole serialized JSON, not skipped.
 
@@ -538,6 +541,42 @@ Provide exactly ONE addressing mode. Pair with `grep_context` (content mode) by 
 
 **Returns:** `{context_id, start_char, end_char, start_line, end_line, text}` echoing the RESOLVED span. Out-of-range offsets are clamped to `[0, len(text)]`, so a stale offset or node_id from a prior turn degrades gracefully.
 
+## Sync Tools
+
+These read-only tools serve clients that keep a document corpus in sync with a thread, such as `mcp-context-ingest`. A managed entry carries the reserved `metadata.ingest` block `{scope, source_id, meta_digest, synced_at}` and belongs to the corpus of thread `T` when its block is valid and its `scope` equals `T`. Both tools manage only the caller's own entries (see [Access Scoping](#access-scoping)). Both register by default; `ENABLE_CONTEXT_SYNC=false` leaves them out. The [Knowledge Base Guide](knowledge-base.md) describes the block, the digests and the sync flow.
+
+### plan_context_sync
+
+Compare a manifest of a corpus's source documents with the caller's managed entries of a thread and answer what to create, update and delete. Writes nothing; apply the plan with `store_context_batch` (each entry with `"deduplicate": false`), `update_context_batch` and `delete_context_batch`.
+
+**Parameters:**
+- `thread_id` (str, required): The corpus thread, such as `kb:handbook`. At most 256 characters.
+- `manifest` (list, required): At most 1,000 items, each `source_id` at most once. An ordinary item is `{source_id, text_digest, meta_digest}`, where `text_digest` is the SHA-256 hex digest of the text the client would store (after surrounding whitespace is removed) and `meta_digest` the 64-character hex digest the client writes into the block. A keep item `{source_id, keep: true}` carries no digest and marks a source the client could not read in this run: the plan creates, updates and deletes nothing for it. An item accepts no other key, and `source_id` is 1 to 256 characters.
+- `source_id_after` (str, optional): Exclusive lower bound of the planned source ids; omitted means no lower bound.
+- `source_id_through` (str, optional): Inclusive upper bound of the planned source ids; omitted means no upper bound. Source ids compare by code point, and every manifest item must lie in `(source_id_after, source_id_through]`.
+- `allow_empty_manifest` (bool, optional, default `false`): Confirm an empty manifest, which plans the deletion of every managed entry in the range.
+
+**Returns:** `{thread_id, creates, updates, deletes, deletes_total, unchanged_count, kept_count, foreign_count}`:
+- `creates`: manifest indices of the ordinary items that have no stored entry.
+- `updates`: `{index, context_id, change}` per ordinary item whose stored entry differs; `change` is `text` (the item's `text_digest` differs from the stored content hash, or the entry has none), `metadata` (the `meta_digest` differs) or `both`.
+- `deletes`: `{context_id, source_id, reason}`, at most 100, ordered by `source_id` and then `context_id`. `reason` is `absent` (the manifest does not name the source) or `duplicate` (another entry of the same source survives: the entry whose content hash matches the item, then whose `meta_digest` matches, then the newest).
+- `deletes_total`: every planned delete of the range. Delete the listed entries and plan again until it is 0.
+- `unchanged_count`, `kept_count`: ordinary items already in line, and keep items.
+- `foreign_count`: readable managed entries of the range that another principal owns, which a sync never changes.
+
+Invalid arguments are refused before any read: a `source_id_after` that does not sort before `source_id_through`, an empty manifest without `allow_empty_manifest`, repeated source ids, an item outside the range, more than 1,000 items, a malformed digest, a keep item with a digest, or an ordinary item without both. A client planning a corpus of more than 1,000 documents sorts its manifest by `source_id` and plans consecutive ranges; see [Sync Planning](knowledge-base.md#sync-planning).
+
+### list_ingest_state
+
+List one page of the caller's own managed entries of a thread, ordered by `source_id` and then `context_id` in code-point order.
+
+**Parameters:**
+- `thread_id` (str, required): The corpus thread. At most 256 characters.
+- `limit` (int, optional, default 100): Entries per page, 1 to 200.
+- `cursor` (str, optional): The `next_cursor` of the previous page; omitted reads the first page. A malformed cursor is refused with `invalid cursor`.
+
+**Returns:** `{thread_id, entries, count, next_cursor}`. Each entry is `{context_id, source_id, text_digest, meta_digest, synced_at}`, where `text_digest` is the stored content hash. `next_cursor` is null on the last page, including a page that ends exactly at the last entry. See [Listing Ingest State](knowledge-base.md#listing-ingest-state).
+
 ## Batch Operations
 
 The following tools enable efficient batch processing of context entries.
@@ -551,7 +590,10 @@ Store multiple context entries in a single batch operation.
   - `thread_id` (str, required), `source` (str, required), `text` (str, required)
   - `metadata` (dict, optional), `tags` (list, optional), `images` (list, optional)
   - `visibility` (str, optional): `private` or `public`, as for `store_context`
+  - `deduplicate` (bool, optional, default `true`): as for `store_context`, per entry. It accepts the values the `store_context` parameter accepts (`true`/`false`, `1`/`0`, and strings such as `"false"` or `"off"`); any other value fails the entry with `deduplicate must be a boolean`.
 - `atomic` (bool, optional): If true, all succeed or all fail (default: true)
+
+Entries are stored in order, so the deduplication candidate of a deduplicating entry can be an entry stored earlier in the same batch: an entry with `deduplicate` true that follows an identical `deduplicate=false` entry of the same thread and source merges into the entry just inserted.
 
 Each entry is subject to the same write-path length caps as `store_context`: `thread_id` at most 256 characters, at most 100 tags of at most 128 characters each, and at most 512 characters in the value under any indexed metadata field. A breach is reported as a per-entry validation error, so `atomic=false` still stores the remaining entries.
 
@@ -660,6 +702,7 @@ Supported ISO 8601 formats:
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata operators
+- **Knowledge Base**: [Knowledge Base Guide](knowledge-base.md) - document corpora, corpus sync and `mcp-context-ingest`
 - **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - containerized deployment
 - **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
 - **Main Documentation**: [README.md](../README.md) - overview and quick start

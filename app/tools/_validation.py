@@ -1,8 +1,9 @@
 """Input validation shared by the write, read, and search tools.
 
-Rejects PostgreSQL-unstorable text, oversized or too many tags, and indexed
-metadata values the backend cannot store or index, and validates and normalizes
-image attachments before any generation or database work starts.
+Rejects PostgreSQL-unstorable text, oversized or too many tags, indexed
+metadata values the backend cannot store or index, and a malformed reserved
+ingest metadata block, and validates and normalizes image attachments before
+any generation or database work starts.
 """
 
 import base64
@@ -13,6 +14,10 @@ from typing import cast
 from fastmcp.exceptions import ToolError
 
 from app.errors import format_exception_message
+from app.ingest import INGEST_BLOCK_SHAPE
+from app.ingest import INGEST_KEY
+from app.ingest import ingest_block_error
+from app.ingest import is_ingest_block_shaped
 from app.metadata_types import pg_indexed_cast_error
 from app.metadata_types import pg_indexed_metadata_text
 from app.metadata_types import unstorable_string_error
@@ -208,8 +213,9 @@ def entry_boundary_error(
     tools rely on their wire schema plus the individual raising guards. It bundles
     the checks that keep both backends accepting and rejecting identically so the
     batch loops carry one call instead of a long boolean chain: PostgreSQL-unstorable
-    strings (embedded NUL, unpaired UTF-16 surrogate) and the length caps plus
-    declared types of the values that land in a PostgreSQL btree index.
+    strings (embedded NUL, unpaired UTF-16 surrogate), the length caps plus
+    declared types of the values that land in a PostgreSQL btree index, and the
+    shape of the reserved ingest metadata block.
 
     Every argument is optional so a call site passes only the fields that shape
     exists (``update`` has no ``thread_id``; ``store`` has no ``metadata_patch``).
@@ -235,6 +241,7 @@ def entry_boundary_error(
         or unstorable_string_error(metadata_patch)
         or indexed_value_error(thread_id=thread_id, metadata=metadata)
         or indexed_value_error(metadata=metadata_patch)
+        or ingest_metadata_error(metadata=metadata, metadata_patch=metadata_patch)
     )
 
 
@@ -257,6 +264,61 @@ def reject_invalid_indexed_values(
             as its field's declared type.
     """
     message = indexed_value_error(thread_id=thread_id, metadata=metadata)
+    if message is not None:
+        raise ToolError(message)
+
+
+def ingest_metadata_error(*, metadata: object = None, metadata_patch: object = None) -> str | None:
+    """Return an error message when a write carries a malformed reserved ingest block.
+
+    The top-level ``ingest`` key of an entry's metadata is reserved for the block a
+    corpus sync client maintains. Full metadata may carry a complete valid block or
+    none at all. A merge patch may remove the block with ``null`` or replace it with
+    a complete valid block; because the block's key set is closed, merging a
+    complete block equals replacing it, so the merged row is valid without reading
+    it, while a partial block would leave one assembled from two writes.
+
+    Args:
+        metadata: The client-supplied full metadata mapping, or None when absent.
+        metadata_patch: The client-supplied merge-patch mapping, or None when absent.
+
+    Returns:
+        An error message naming the first problem, or None when the write's block,
+        if any, is acceptable.
+    """
+    if isinstance(metadata, dict):
+        full = cast('dict[object, object]', metadata)
+        if INGEST_KEY in full:
+            message = ingest_block_error(full[INGEST_KEY], path='metadata.ingest')
+            if message is not None:
+                return message
+    if isinstance(metadata_patch, dict):
+        patch = cast('dict[object, object]', metadata_patch)
+        if INGEST_KEY in patch:
+            block = patch[INGEST_KEY]
+            if block is None:
+                return None
+            if not is_ingest_block_shaped(block):
+                return f'metadata_patch.ingest must be null or {INGEST_BLOCK_SHAPE}'
+            return ingest_block_error(block, path='metadata_patch.ingest')
+    return None
+
+
+def reject_invalid_ingest_block(*, metadata: object = None, metadata_patch: object = None) -> None:
+    """Raise ``ToolError`` when a write carries a malformed reserved ingest block.
+
+    The raising wrapper used by the single-entry tools; the batch tools reach
+    :func:`ingest_metadata_error` through :func:`entry_boundary_error` so they can
+    record a per-entry failure instead of aborting the whole request.
+
+    Args:
+        metadata: The client-supplied full metadata mapping, or None when absent.
+        metadata_patch: The client-supplied merge-patch mapping, or None when absent.
+
+    Raises:
+        ToolError: When the block in either mapping is malformed.
+    """
+    message = ingest_metadata_error(metadata=metadata, metadata_patch=metadata_patch)
     if message is not None:
         raise ToolError(message)
 

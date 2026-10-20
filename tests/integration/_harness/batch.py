@@ -2,8 +2,9 @@
 
 ``store_context_batch``, ``update_context_batch`` and ``delete_context_batch``
 across their modes and selectors, deduplication of identical entries within
-one batch, and the ``multimodal`` content type kept by a text-only batch
-update of an entry that still has images.
+one batch and its per-entry ``deduplicate=false`` opt-out, and the
+``multimodal`` content type kept by a text-only batch update of an entry
+that still has images.
 """
 
 from tests.integration._harness.core import HarnessCore
@@ -467,6 +468,47 @@ class BatchMixin(HarnessCore):
             else:
                 self.test_results.append((test_name, True,
                     f'Dedup metadata state: {entry_metadata}'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_store_batch_deduplicate_false_per_entry(self) -> bool:
+        """Identical entries with deduplicate=false in one batch become separate entries, and a
+        default entry after them merges into the latest one.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_batch_deduplicate_false_per_entry'
+        assert self.client is not None
+        try:
+            thread_id = f'{self.test_thread_id}_batch_no_dedup'
+            entry = {'thread_id': thread_id, 'source': 'user', 'text': 'Identical batch document'}
+            data = self._extract_content(await self.client.call_tool('store_context_batch', {
+                'entries': [{**entry, 'deduplicate': False}, {**entry, 'deduplicate': False}, entry],
+                'atomic': False,
+            }))
+            if data.get('succeeded') != 3:
+                self.test_results.append((test_name, False, f'Batch store failed: {data}'))
+                return False
+
+            first, second, merged = (item['context_id'] for item in data['results'])
+            if first == second:
+                self.test_results.append((test_name, False, f'deduplicate=false entries merged into {first}'))
+                return False
+            if merged != second:
+                self.test_results.append((test_name, False, f'Default entry did not merge into {second}: {merged}'))
+                return False
+            listed = self._extract_content(
+                await self.client.call_tool('search_context', {'thread_id': thread_id, 'limit': 10}),
+            )
+            stored = sorted(row['id'] for row in listed.get('results', []))
+            if stored != sorted([first, second]):
+                self.test_results.append((test_name, False, f'Expected entries {[first, second]}, got {stored}'))
+                return False
+
+            self.test_results.append((test_name, True, 'Per-entry deduplicate=false inserted; the default merged'))
             return True
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))

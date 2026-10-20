@@ -1,11 +1,8 @@
 """Pure helpers shared by the context repository mixins and the tool layer.
 
-Bounded chunking of id lists for per-statement ``IN (...)`` binds, the
-human-readable description of batch-delete criteria, and content hashing for
-deduplication.
+Bounded chunking of id lists for per-statement ``IN (...)`` binds and the
+human-readable description of batch-delete criteria.
 """
-
-import hashlib
 
 # Maximum number of ids bound into a single IN (...) statement. An id list can be
 # arbitrarily long (e.g. every entry in a large thread, or a client-supplied bulk list), so
@@ -63,19 +60,3 @@ def describe_batch_delete_criteria(
     if older_than_days is not None:
         criteria_used.append(f'older_than_days: {older_than_days}')
     return criteria_used
-
-
-def compute_content_hash(text: str) -> str:
-    """Compute SHA-256 hash of text content for deduplication.
-
-    Used to avoid transferring full text_content over the network when
-    checking for duplicates. The hash is stored alongside text_content
-    and compared instead of the full text.
-
-    Args:
-        text: The text content to hash.
-
-    Returns:
-        SHA-256 hex digest string (64 characters).
-    """
-    return hashlib.sha256(text.encode('utf-8')).hexdigest()

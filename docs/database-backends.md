@@ -21,6 +21,8 @@ Zero-configuration local storage, perfect for single-user deployments.
 
 **Configuration:** No configuration needed - just start the server!
 
+**Knowledge-base sync reads:** the two reads behind `plan_context_sync` and `list_ingest_state` name their index (`INDEXED BY idx_context_ingest`). Once `sqlite_stat1` exists, written by `ANALYZE` or by the `PRAGMA optimize` the server runs when it closes its writer connection, SQLite picks an index from average rows per key, and a corpus thread far larger than the database's average thread makes another index look more selective: a read through it would seek every member's table row instead of answering from the ingest index, and a `list_ingest_state` page would also sort them. Naming the index keeps every sync read on it whatever the statistics say. See the [Knowledge Base Guide](knowledge-base.md#backend-parity).
+
 ## PostgreSQL
 
 High-performance backend for multi-user and high-traffic deployments.
@@ -31,6 +33,8 @@ High-performance backend for multi-user and high-traffic deployments.
 - JSONB indexing for fast metadata queries
 - Production-grade connection pooling with asyncpg
 - pgvector extension for semantic search
+
+**Requirements:** PostgreSQL 14 or newer. The startup migrations create extended statistics on an expression, which PostgreSQL 14 introduced: the server keeps them on the scope of the knowledge-base ingest block so the planner can estimate a corpus thread's members (see the [Knowledge Base Guide](knowledge-base.md#backend-parity)). PostgreSQL 13 reached its end of life in November 2025.
 
 ### Quick Start with Docker
 
@@ -639,7 +643,7 @@ emitted by `store_context` / `update_context` (and their batch variants) while P
    The per-connection `statement_timeout` follows automatically at `0.9 *` this value.
 3. **Reduce write concurrency** if a pooler or replica count is forcing many simultaneous fp32 writes through the HNSW index.
 
-**Automatic retry (transient cases only):** A statement cancellation (SQLSTATE 57014) is retried with bounded exponential backoff at both the tool layer (store/update/batch) and in `execute_write`. Retry uses the SAME timeout ceiling, so it recovers only a TRANSIENT lock-WAIT (the write was blocked behind another writer and the contention has cleared by the retry). It does NOT rescue a write that is fundamentally slower than the ceiling -- for that, apply solution 1 or 2 above. Retry is safe because the database write is idempotent (deduplicating store / keyed update) and generation already completed outside the transaction, so a retry never regenerates or skips embeddings/summaries.
+**Automatic retry (transient cases only):** A statement cancellation (SQLSTATE 57014) is retried with bounded exponential backoff at both the tool layer (store/update/batch) and in `execute_write`. Retry uses the SAME timeout ceiling, so it recovers only a TRANSIENT lock-WAIT (the write was blocked behind another writer and the contention has cleared by the retry). It does NOT rescue a write that is fundamentally slower than the ceiling -- for that, apply solution 1 or 2 above. Retry is safe because PostgreSQL aborts the transaction of a cancelled statement, so the failed attempt never committed, and generation already completed outside the transaction, so a retry never regenerates or skips embeddings/summaries.
 
 ## Troubleshooting
 
@@ -721,7 +725,7 @@ Long-running transactions (e.g., storing context with embeddings) include period
 
 ### Transaction Retry
 
-If a transaction fails due to a connection error, it is automatically retried up to 2 times with exponential backoff (0.5s, 1.0s). Only connection-level errors trigger retry; logical errors are raised immediately. Operations using deduplication are safe to retry.
+If a transaction fails on a transient fault, it is retried up to 2 times with exponential backoff (0.5s, 1.0s); logical errors are raised immediately. The transient faults are a lost connection, a statement timeout, a deadlock and a serialization failure. PostgreSQL aborts the transaction on each of them, so the failed attempt never committed and the retry is safe. The exception is a connection lost while `COMMIT` is in flight: the outcome is unknown, and the retry runs the write again. An update or a delete by id still leaves no more than one attempt's effect, and a single deduplicating store merges into the entry its first attempt stored, but a `deduplicate=false` store, or an atomic batch store of several entries, can store a second copy of an entry. For an entry of a knowledge-base corpus, the next sync plan lists such a copy as a duplicate delete (see [Concurrency and Recovery](knowledge-base.md#concurrency-and-recovery)).
 
 ## Why Direct Connection?
 

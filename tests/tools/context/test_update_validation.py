@@ -2,6 +2,9 @@
 validation, repository failures, rollback, and context_id normalization."""
 
 import base64
+from typing import Any
+from unittest.mock import AsyncMock
+from unittest.mock import Mock
 from unittest.mock import patch
 
 import pytest
@@ -276,6 +279,73 @@ class TestUpdateContext:
             assert result['success'] is True
             assert result['context_id'] == '0190abcdef1234567890abcd00000315'
             assert 'text_content' in result['updated_fields']
+
+
+_INGEST_BLOCK: dict[str, Any] = {
+    'scope': 'kb:handbook',
+    'source_id': 'guides/setup.md',
+    'meta_digest': 'ab' * 32,
+    'synced_at': '2026-10-18T12:00:00Z',
+}
+_PATCH_SHAPE_ERROR = (
+    'metadata_patch.ingest must be null or an object with exactly the keys meta_digest, scope, source_id, synced_at'
+)
+
+
+class TestUpdateIngestBlock:
+    """update_context validates the reserved ingest block before any generation or database work."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('arguments', 'message'),
+        [
+            (
+                {'metadata': {'ingest': {**_INGEST_BLOCK, 'scope': ''}}},
+                'metadata.ingest.scope cannot be empty',
+            ),
+            (
+                {'metadata': {'ingest': None}},
+                'metadata.ingest must be an object with exactly the keys meta_digest, scope, source_id, synced_at',
+            ),
+            (
+                {'metadata_patch': {'ingest': {**_INGEST_BLOCK, 'meta_digest': 'abc'}}},
+                'metadata_patch.ingest.meta_digest must be 64 lowercase hexadecimal characters',
+            ),
+            ({'metadata_patch': {'ingest': {'synced_at': '2026-10-19T08:00:00Z'}}}, _PATCH_SHAPE_ERROR),
+            ({'metadata_patch': {'ingest': {**_INGEST_BLOCK, 'extra': 1}}}, _PATCH_SHAPE_ERROR),
+            ({'text': 'New body', 'metadata_patch': {'ingest': 'kb:handbook'}}, _PATCH_SHAPE_ERROR),
+        ],
+        ids=['metadata-empty-scope', 'metadata-null', 'patch-bad-digest', 'patch-partial', 'patch-extra-key', 'patch-string'],
+    )
+    async def test_malformed_block_refused_before_generation(self, arguments: dict[str, Any], message: str) -> None:
+        """A malformed block, or a partial block in a patch, raises its fixed message before any work."""
+        embedding_provider = AsyncMock()
+        summary_provider = AsyncMock()
+        with (
+            patch('app.tools.context.update.ensure_repositories', new_callable=AsyncMock) as ensure,
+            patch('app.tools.context.update.get_embedding_provider', return_value=embedding_provider),
+            patch('app.tools.context.update.get_summary_provider', return_value=summary_provider),
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await update_context(context_id='0190abcdef1234567890abcd0000007b', **arguments)
+
+        assert str(exc_info.value) == message
+        ensure.assert_not_awaited()
+        assert embedding_provider.mock_calls == []
+        assert summary_provider.mock_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'arguments',
+        [{'metadata': {'title': 'Setup', 'ingest': _INGEST_BLOCK}}, {'metadata_patch': {'ingest': None}}],
+        ids=['complete-block', 'patch-null'],
+    )
+    async def test_valid_forms_pass_the_boundary(self, mock_repositories: Mock, arguments: dict[str, Any]) -> None:
+        """A complete block in full metadata and a null block in a patch both reach the update."""
+        with patch('app.tools.context.update.ensure_repositories', return_value=mock_repositories):
+            result = await update_context(context_id='0190abcdef1234567890abcd0000007b', **arguments)
+
+        assert result['success'] is True
 
 
 @pytest.mark.usefixtures('initialized_server')

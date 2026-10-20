@@ -363,6 +363,8 @@ ingress:
   tls: []
 ```
 
+`annotations` passes through to the Ingress unchanged and is empty by default, because annotations are specific to the ingress controller. With ingress-nginx, set the body-size and timeout annotations shown in [External PostgreSQL with Existing Secret](#external-postgresql-with-existing-secret); its defaults, a 1 MiB request body and 60-second timeouts, refuse or cut off the larger and longer requests the server accepts.
+
 ### Resource Limits
 
 ```yaml
@@ -504,6 +506,9 @@ ingress:
   className: "nginx"
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   hosts:
     - host: mcp.example.com
       paths:
@@ -514,6 +519,8 @@ ingress:
       hosts:
         - mcp.example.com
 ```
+
+The three `nginx.ingress.kubernetes.io` annotations raise ingress-nginx's defaults of a 1 MiB request body and 60-second timeouts: the server accepts request bodies up to 4 MiB, and a batch call with generation on, such as one `mcp-context-ingest` sends, can run far longer than a minute, so the timeouts should be at least the client's `--call-timeout` (see [Limits](../knowledge-base.md#limits)).
 
 Install with:
 

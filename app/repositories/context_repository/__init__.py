@@ -1,13 +1,14 @@
 """Context repository: every database operation on ``context_entries``.
 
 ``ContextRepository`` is assembled here from one mixin per group of operations:
-browse search and grep scan, by-id reads and probes, the deduplicating store,
-updates, and deletes. Record types live in ``records`` and shared pure helpers in
-``helpers``.
+browse search and grep scan, by-id reads and probes, the reads of ingest-managed
+entries, the deduplicating store, updates, and deletes. Record types live in
+``records`` and shared pure helpers in ``helpers``.
 """
 
 from app.repositories.context_repository.dedup import ContextDedupMixin
 from app.repositories.context_repository.deletes import ContextDeleteMixin
+from app.repositories.context_repository.ingest import ContextIngestMixin
 from app.repositories.context_repository.reads import ContextReadMixin
 from app.repositories.context_repository.search import ContextSearchMixin
 from app.repositories.context_repository.updates import ContextUpdateMixin
@@ -16,6 +17,7 @@ from app.repositories.context_repository.updates import ContextUpdateMixin
 class ContextRepository(
     ContextSearchMixin,
     ContextReadMixin,
+    ContextIngestMixin,
     ContextDedupMixin,
     ContextUpdateMixin,
     ContextDeleteMixin,

@@ -362,3 +362,30 @@ class TestUpdatedAtAutoManagement:
         after_updated = after_entry.get('updated_at')
         assert after_updated is not None
         assert after_updated > before
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestFullMetadataReplacementIngestBlock:
+    """Full metadata replacement keeps plain replacement semantics for the reserved ingest block."""
+
+    @pytest.mark.asyncio
+    async def test_replacement_without_the_block_removes_it(self) -> None:
+        """Replacing metadata with a mapping that omits ingest removes the block, so the entry leaves its corpus."""
+        from app.tools.context.store import store_context
+
+        block: MetadataDict = {
+            'scope': 'kb:handbook',
+            'source_id': 'guides/setup.md',
+            'meta_digest': 'ab' * 32,
+            'synced_at': '2026-10-18T12:00:00Z',
+        }
+        stored = await store_context(
+            thread_id='kb:handbook', source='user', text='Setup guide', metadata={'title': 'Setup', 'ingest': block},
+        )
+        context_id = stored['context_id']
+
+        result = await update_context(context_id=context_id, metadata={'title': 'Setup, revised'})
+
+        assert result['success'] is True
+        fetched = await get_context_by_ids(context_ids=[context_id])
+        assert dict(fetched[0])['metadata'] == {'title': 'Setup, revised'}

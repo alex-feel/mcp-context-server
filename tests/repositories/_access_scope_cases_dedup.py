@@ -1,4 +1,4 @@
-"""Two-principal cases of the deduplicating store and its read-only pre-check (K1-K4).
+"""Two-principal cases of the deduplicating store, its read-only pre-check and the fresh insert (K1-K5).
 
 The dedup candidate is the latest entry of the thread and source that the caller may read.
 A store merges into it only when the caller owns it and the text matches, and an
@@ -15,6 +15,9 @@ label, owner and version in id order, with ``new`` for the row the store inserte
   owns it, under the same candidate and turn rules as the store.
 - K4: two principals writing the same source into one thread: a re-sent text after another
   principal's readable row lands as a new row after it, keeping the chronological order.
+- K5: the fresh insert never looks for a candidate: over an identical latest row, the
+  caller's own or another principal's readable one, it adds a row owned by the caller and
+  leaves the existing row untouched.
 """
 
 from app.access_scope import AccessScope
@@ -22,10 +25,12 @@ from app.access_scope import Scope
 from tests.repositories._access_scope_cases import SEED_SOURCE
 from tests.repositories._access_scope_cases import AccessCase
 from tests.repositories._access_scope_cases import Grant
+from tests.repositories._access_scope_cases import Layout
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_cases import Source
 
 type ThreadRow = tuple[str, str, int]
+type InsertedRow = tuple[str, str, int, str]
 type StoreObservable = tuple[bool, tuple[ThreadRow, ...]]
 type CandidateObservable = tuple[str, str | None] | None
 
@@ -40,6 +45,8 @@ K3_THREAD = 'dedup-k3'
 K3_TEXT = 'K3 checked text'
 K4_THREAD = 'dedup-k4'
 K4_TEXT = 'K4 text alice sends twice'
+K5_THREAD = 'dedup-k5'
+K5_TEXT = 'K5 text stored without deduplication'
 
 
 def _request_scope(scope: Scope) -> AccessScope:
@@ -207,6 +214,63 @@ async def _k4_bob_private_after_alice(db: ScopedDb) -> None:
 # Bob's latest readable row is his own with other text, so he always inserts.
 _K4_BOB_INSERTS: StoreObservable = (False, (('k4_alice', 'alice', 0), ('k4_bob', 'bob', 0), ('new', 'bob', 0)))
 
+
+async def _insert_k5(db: ScopedDb, scope: Scope) -> tuple[InsertedRow, ...]:
+    """Insert the K5 text as the scope and return the thread afterwards.
+
+    Returns:
+        Every row of the thread in id order as ``(label, owner, version, visibility)``, the
+        row the insert returned labeled ``inserted``.
+    """
+    inserted_id = await db.repos.context.insert_entry(
+        K5_THREAD, SEED_SOURCE, 'text', K5_TEXT, scope=_request_scope(scope), visibility='private',
+    )
+    rows = await db.fetch_all(
+        'SELECT id, owner_id, version, visibility FROM context_entries WHERE thread_id = ? ORDER BY id', (K5_THREAD,),
+    )
+
+    def _label(context_id: str) -> str:
+        return 'inserted' if context_id == inserted_id else db.labels_of([context_id])[0]
+
+    return tuple((_label(str(row[0])), str(row[1]), int(str(row[2])), str(row[3])) for row in rows)
+
+
+async def _k5_alice_identical_latest(db: ScopedDb) -> None:
+    """Alice's public row carrying the K5 text is the latest of the thread."""
+    await db.add_entry('k5_alice', owner='alice', visibility='public', thread_id=K5_THREAD, text=K5_TEXT)
+
+
+async def _k5_bob_identical_latest(db: ScopedDb) -> None:
+    """Bob's public row carrying the K5 text is the latest of the thread."""
+    await db.add_entry('k5_bob', owner='bob', visibility='public', thread_id=K5_THREAD, text=K5_TEXT)
+
+
+def _k5_cases(layout: Layout, suffix: str) -> tuple[AccessCase, ...]:
+    """The K5 cases on one layout: an identical latest row of alice's and one of bob's."""
+
+    def _variant(name: str) -> str:
+        return '-'.join(part for part in (name, suffix) if part)
+
+    return (
+        AccessCase(
+            'K5', _insert_k5,
+            {
+                'alice': (('k5_alice', 'alice', 0, 'public'), ('inserted', 'alice', 0, 'private')),
+                'bob': (('k5_alice', 'alice', 0, 'public'), ('inserted', 'bob', 0, 'private')),
+            },
+            layout=layout, variant=_variant('alice-identical-latest'), setup=_k5_alice_identical_latest,
+        ),
+        AccessCase(
+            'K5', _insert_k5,
+            {
+                'alice': (('k5_bob', 'bob', 0, 'public'), ('inserted', 'alice', 0, 'private')),
+                'bob': (('k5_bob', 'bob', 0, 'public'), ('inserted', 'bob', 0, 'private')),
+            },
+            layout=layout, variant=_variant('bob-identical-latest'), setup=_k5_bob_identical_latest,
+        ),
+    )
+
+
 DEDUP_CASES: tuple[AccessCase, ...] = (
     AccessCase('K1', _resend_k1, _k1_foreign_latest_expected(), variant='readable-foreign', setup=_k1_alice_public_latest),
     AccessCase(
@@ -266,4 +330,6 @@ DEDUP_CASES: tuple[AccessCase, ...] = (
         {'alice': (True, (('k4_alice', 'alice', 1), ('k4_bob', 'bob', 0))), 'bob': _K4_BOB_INSERTS},
         variant='hidden-other', setup=_k4_bob_private_after_alice,
     ),
+    *_k5_cases('compressed', ''),
+    *_k5_cases('fp32', 'fp32'),
 )

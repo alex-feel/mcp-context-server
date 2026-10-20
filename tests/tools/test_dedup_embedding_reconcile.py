@@ -7,7 +7,8 @@ a row with no embeddings while generation is enabled, violating the
 generation-first guarantee. execute_store_in_transaction raises
 EmbeddingsReconcileRequiredError in that case; store_context and
 store_context_batch catch it, regenerate embeddings OUTSIDE the transaction, and
-retry. These tests exercise the catch/regenerate/retry loop wiring.
+retry. These tests exercise the catch/regenerate/retry loop wiring, and that a
+store with deduplicate=False, which skips no generation leg, never enters it.
 
 Also guards the variant-aware semantic_distance contract wording so the
 "L2 Euclidean (LOWER = better)" label with fixed thresholds does not regress
@@ -514,6 +515,117 @@ class TestStoreBatchReconcile:
         assert by_index[1]['success'] is False
         assert by_index[1]['error']
         assert 'Summary generation failed' in by_index[1]['error']
+
+
+def _repos_with_a_reusable_duplicate(mock_begin_transaction: object) -> AsyncMock:
+    """Mock repositories whose pre-check would offer a duplicate with stored embeddings and summary."""
+    mock_repos = AsyncMock()
+    mock_backend = MagicMock()
+    mock_backend.backend_type = 'sqlite'
+    mock_backend.begin_transaction = mock_begin_transaction
+    mock_repos.context.backend = mock_backend
+    mock_repos.context.check_latest_is_duplicate = AsyncMock(
+        return_value=DuplicateCandidate(context_id='dup-id', summary='Stored summary'),
+    )
+    mock_repos.context.insert_entry = AsyncMock(return_value='fresh-id')
+    mock_repos.embeddings.exists = AsyncMock(return_value=True)
+    return mock_repos
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestNoReconcileWithoutDeduplication:
+    """A store without deduplication skips no generation leg, so its fresh insert never needs a reconcile."""
+
+    @pytest.mark.asyncio
+    async def test_single_store_inserts_once(self) -> None:
+        """store_context runs one transaction that inserts; the reconcile regeneration never runs."""
+        from app.tools._transactions import execute_store_in_transaction
+        from app.tools.context.store import store_context
+
+        _, mock_begin_transaction = _make_mock_txn()
+        mock_repos = _repos_with_a_reusable_duplicate(mock_begin_transaction)
+
+        async def generation(
+            _text: str, _source: str, *, run_embedding: bool, run_summary: bool, run_nodes: bool,
+        ) -> tuple[list[tuple[str, list[float]]] | None, str | None, list[object] | None]:
+            # Honors the leg flags, so a leg the store skipped yields nothing, as run_generation does.
+            return (
+                _fake_chunk_embeddings() if run_embedding else None,
+                'Fresh summary' if run_summary else None,
+                [] if run_nodes else None,
+            )
+
+        with (
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.node_layer_active', return_value=True),
+            patch('app.tools.context.store.run_generation', new_callable=AsyncMock, side_effect=generation),
+            patch('app.tools.context.store.embed_then_compress', new_callable=AsyncMock) as mock_regenerate,
+            patch(
+                'app.tools.context.store.execute_store_in_transaction',
+                new_callable=AsyncMock,
+                side_effect=execute_store_in_transaction,
+            ) as mock_exec,
+        ):
+            result = await store_context(
+                thread_id='kb:handbook', source='user', text='z' * 600, deduplicate=False,
+            )
+
+        assert result['context_id'] == 'fresh-id'
+        assert mock_exec.await_count == 1
+        mock_regenerate.assert_not_awaited()
+        mock_repos.context.insert_entry.assert_awaited_once()
+        mock_repos.context.store_with_deduplication.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('atomic', [True, False])
+    async def test_batch_store_inserts_once(self, atomic: bool) -> None:
+        """store_context_batch runs one store per entry that inserts; the reconcile regeneration never runs."""
+        from app.tools._transactions import execute_store_in_transaction
+        from app.tools.batch.store import store_context_batch
+
+        _, mock_begin_transaction = _make_mock_txn()
+        mock_repos = _repos_with_a_reusable_duplicate(mock_begin_transaction)
+
+        with (
+            patch('app.tools.batch.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.batch.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.store.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.batch.store.node_layer_active', return_value=True),
+            patch(
+                'app.tools.batch.store.generate_embeddings_with_timeout',
+                new_callable=AsyncMock,
+                return_value=_fake_chunk_embeddings(),
+            ) as mock_gen_emb,
+            patch(
+                'app.tools.batch.store.generate_compression_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=lambda emb: emb,
+            ),
+            patch(
+                'app.tools.batch.store.generate_summary_with_timeout',
+                new_callable=AsyncMock,
+                return_value='Fresh summary',
+            ) as mock_gen_summary,
+            patch('app.tools.batch.store.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=[]),
+            patch(
+                'app.tools.batch.store.execute_store_in_transaction',
+                new_callable=AsyncMock,
+                side_effect=execute_store_in_transaction,
+            ) as mock_exec,
+        ):
+            result = await store_context_batch(
+                entries=[{'thread_id': 'kb:handbook', 'source': 'user', 'text': 'z' * 600, 'deduplicate': False}],
+                atomic=atomic,
+            )
+
+        assert result['results'][0]['context_id'] == 'fresh-id'
+        assert mock_exec.await_count == 1
+        assert mock_gen_emb.await_count == 1
+        assert mock_gen_summary.await_count == 1
+        mock_repos.context.check_latest_is_duplicate.assert_not_awaited()
+        mock_repos.context.insert_entry.assert_awaited_once()
 
 
 class TestSemanticDistanceContractWording:

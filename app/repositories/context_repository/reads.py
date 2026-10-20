@@ -7,7 +7,6 @@ from typing import Any
 from typing import cast
 
 from app.access_scope import AccessMode
-from app.access_scope import AccessPredicate
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.ids import normalize_id
@@ -24,19 +23,6 @@ if TYPE_CHECKING:
 
 # The probe of an entry that does not exist for the caller, absent or unreadable alike.
 _MISSING_PROBE = EntryProbe(False, None, None, None, False)
-
-
-def _admits_sql(predicate: AccessPredicate) -> str:
-    """Build a select-list expression telling whether the predicate admits the row.
-
-    Args:
-        predicate: An access predicate of the statement's ``context_entries`` row.
-
-    Returns:
-        ``CASE WHEN <predicate> THEN 1 ELSE 0 END``, or the constant ``1`` for the
-        system scope, whose empty predicate admits every row.
-    """
-    return f'CASE WHEN {predicate.sql} THEN 1 ELSE 0 END' if predicate.sql else '1'
 
 
 class ContextReadMixin(BaseRepository):
@@ -152,7 +138,7 @@ class ContextReadMixin(BaseRepository):
         )
         entries = self._readable('context_entries', alias='context_entries')
         query = (
-            f'SELECT source, version, owner_id, {_admits_sql(write)} AS can_write FROM {entries} '
+            f'SELECT source, version, owner_id, {write.admits_expression()} AS can_write FROM {entries} '
             f'WHERE id = {self._placeholder(id_position)}{read.and_clause()} LIMIT 1'
         )
         params: list[object] = [*write.params, context_id, *read.params]
@@ -239,7 +225,7 @@ class ContextReadMixin(BaseRepository):
                 start=first_id + len(chunk),
             )
             query = (
-                f'SELECT id, {_admits_sql(write)} AS can_write, {_admits_sql(owner)} AS is_owner '
+                f'SELECT id, {write.admits_expression()} AS can_write, {owner.admits_expression()} AS is_owner '
                 f'FROM {entries} WHERE id IN ({placeholders}){read.and_clause()}'
             )
             return query, [*write.params, *owner.params, *chunk, *read.params]

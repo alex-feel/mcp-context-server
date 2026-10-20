@@ -141,6 +141,18 @@ class AccessPredicate:
         """
         return f' WHERE {self.sql}' if self.sql else ''
 
+    def admits_expression(self) -> str:
+        """Return a select-list expression telling whether the predicate admits the row.
+
+        A statement reads its rows under one predicate and reports another per row this
+        way, such as whether the caller may modify or owns each row it may read.
+
+        Returns:
+            ``CASE WHEN <sql> THEN 1 ELSE 0 END``, or the constant ``1`` for the system
+            scope, whose empty predicate admits every row.
+        """
+        return f'CASE WHEN {self.sql} THEN 1 ELSE 0 END' if self.sql else '1'
+
 
 def build_access_predicate(
     scope: Scope,

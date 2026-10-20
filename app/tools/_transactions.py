@@ -143,13 +143,24 @@ async def transaction_heartbeat(txn: object) -> None:
 def is_connection_error(exc: Exception) -> bool:
     """Check if an exception is a transient DB error that is safe to retry.
 
-    Despite the historical name, this classifier covers four transient
-    families, all safe to retry because the database write that follows is
-    idempotent (store_context deduplicates; update_context is a keyed
-    partial update) and ALL embedding/summary/compression generation has
-    already completed OUTSIDE the transaction (generation-first invariant) --
-    so a retry re-runs only the rolled-back DB write and never regenerates or
-    skips generation:
+    The classifier covers four transient families, not only lost connections.
+    A retry is safe because the failed attempt never committed: PostgreSQL aborts
+    the transaction on families 2 and 3, SQLite refuses the write of family 4
+    before it takes effect and the transaction rolls back, and family 1 aborts
+    the transaction when the connection drops before COMMIT. ALL
+    embedding/summary/compression generation has already completed OUTSIDE the
+    transaction (generation-first invariant), so a retry re-runs only the
+    rolled-back DB write and never regenerates or skips generation.
+
+    The exception is a connection lost while COMMIT is in flight: the attempt's
+    outcome is unknown, and the retry runs the write again. An update keyed by id
+    or a delete by id still leaves no more than one attempt's effect, and a single
+    deduplicating store merges into the row its committed attempt inserted, but a
+    ``deduplicate=false`` store, or an atomic batch store of several entries, can
+    insert a second copy of an entry; for a corpus entry, the next sync plan lists
+    that copy as a duplicate delete.
+
+    The four families:
 
     1. Connection-level failures (the connection was lost, not a logical/data
        error): asyncpg.InterfaceError, asyncpg.ConnectionDoesNotExistError,
@@ -290,7 +301,8 @@ async def execute_store_in_transaction(
     summary: str | None,
     tags: list[str] | None,
     validated_images: list[dict[str, str]],
-    images_provided: bool | None = None,
+    images_provided: bool,
+    deduplicate: bool,
     chunk_embeddings: list[ChunkEmbedding] | None,
     embedding_model: str,
     embedding_generation_enabled: bool = False,
@@ -300,9 +312,10 @@ async def execute_store_in_transaction(
 ) -> tuple[str, bool, bool]:
     """Execute all store operations within an existing transaction.
 
-    Performs deduplication-aware storage of a single context entry:
-    1. Store entry with deduplication (store_with_deduplication) under the
-       caller's scope, stamping owner_id/visibility on a fresh INSERT
+    Performs the storage of a single context entry:
+    1. Store the entry: deduplicating through store_with_deduplication when
+       deduplicate is true, otherwise one fresh owner-stamped insert; either
+       way under the caller's scope, stamping owner_id/visibility on a fresh INSERT
     2. Store author-group read grants on a fresh INSERT (when configured)
     3. Store/replace tags based on dedup outcome
     4. Store/replace images based on dedup outcome
@@ -334,10 +347,13 @@ async def execute_store_in_transaction(
             a provided list (including []) REPLACES them, matching the
             documented replacement contract and update_context semantics.
         validated_images: Validated image list (may be empty).
-        images_provided: Whether the CALLER passed an images value. None (the
-            default) falls back to ``bool(validated_images)`` for callers that
-            predate the flag; True with an empty validated_images clears
-            existing images on a dedup UPDATE instead of preserving them.
+        images_provided: Whether the CALLER passed an images value; True with
+            an empty validated_images clears existing images on a dedup UPDATE
+            instead of preserving them.
+        deduplicate: True stores through store_with_deduplication, which
+            updates the caller's identical latest entry of the thread and
+            source instead of inserting a duplicate; False always inserts one
+            new entry owned by the caller through insert_entry.
         chunk_embeddings: Generated embeddings or None.
         embedding_model: Model name for embedding storage.
         embedding_generation_enabled: True when an embedding provider is
@@ -370,38 +386,37 @@ async def execute_store_in_transaction(
         - embedding_stored: True if embeddings were written to DB
 
     Raises:
-        ToolError: If store_with_deduplication fails (returns falsy context_id).
+        ToolError: If the store returns no context id.
         EmbeddingsReconcileRequiredError: If the store inserted a new entry while
             the caller's pre-check had skipped embedding generation, or (when
             nodes_pending) node-summary generation; signals the caller to
             regenerate the skipped legs outside the transaction and retry.
     """
-    # Resolve whether the CALLER passed an images value before any use: an
-    # explicitly provided empty list must behave as a REPLACEMENT (clear) on a
-    # dedup UPDATE, not as absent. Falls back to list truthiness for callers
-    # that predate the flag.
-    if images_provided is None:
-        images_provided = bool(validated_images)
-
-    # Store context entry with deduplication
-    context_id, was_updated = await repos.context.store_with_deduplication(
-        thread_id=thread_id,
-        source=source,
-        content_type=content_type,
-        text_content=text_content,
-        scope=scope,
-        visibility=visibility,
-        metadata=metadata_str,
-        summary=summary,
-        # Preserve the existing content_type on a dedup UPDATE only when no images
-        # value was provided this call (images are preserved, not replaced).
-        # Overwriting it then would flip a multimodal entry to 'text' while its
-        # image rows remain, making them unretrievable. When images ARE provided
-        # -- including an explicit empty list, which clears them below --
-        # content_type is overwritten to match the request.
-        preserve_content_type_on_dedup=not images_provided,
-        txn=txn,
-    )
+    if deduplicate:
+        context_id, was_updated = await repos.context.store_with_deduplication(
+            thread_id=thread_id,
+            source=source,
+            content_type=content_type,
+            text_content=text_content,
+            scope=scope,
+            visibility=visibility,
+            metadata=metadata_str,
+            summary=summary,
+            # Preserve the existing content_type on a dedup UPDATE only when no images
+            # value was provided this call (images are preserved, not replaced).
+            # Overwriting it then would flip a multimodal entry to 'text' while its
+            # image rows remain, making them unretrievable. When images ARE provided
+            # -- including an explicit empty list, which clears them below --
+            # content_type is overwritten to match the request.
+            preserve_content_type_on_dedup=not images_provided,
+            txn=txn,
+        )
+    else:
+        context_id = await repos.context.insert_entry(
+            thread_id, source, content_type, text_content,
+            scope=scope, visibility=visibility, metadata=metadata_str, summary=summary, txn=txn,
+        )
+        was_updated = False
 
     if not context_id:
         raise ToolError('Failed to store context')
@@ -453,9 +468,9 @@ async def execute_store_in_transaction(
 
     # Store or replace images depending on deduplication outcome, with the same
     # provided-vs-None distinction. validated_images is always a list (the
-    # validator normalizes None to []), so images_provided (resolved above)
-    # carries whether the CALLER passed an images value; when it did, an empty
-    # list clears existing images on a dedup UPDATE instead of preserving them.
+    # validator normalizes None to []), so images_provided carries whether the
+    # CALLER passed an images value; when it did, an empty list clears existing
+    # images on a dedup UPDATE instead of preserving them.
     if images_provided:
         if was_updated:
             await repos.images.replace_images_for_context(

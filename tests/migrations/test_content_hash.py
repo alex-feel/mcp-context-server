@@ -1,7 +1,6 @@
 """Tests for content hash deduplication optimization.
 
 Tests cover:
-- compute_content_hash() utility function
 - content_hash migration (idempotent, SQLite)
 - Hash-based deduplication in store_with_deduplication()
 - Hash-based pre-check in check_latest_is_duplicate()
@@ -22,11 +21,11 @@ import pytest_asyncio
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.backends.base import MAINTENANCE
+from app.digests import content_hash
 from app.ids import generate_id
 from app.migrations.access_control import apply_access_control_migration
 from app.migrations.content_hash import apply_content_hash_migration
 from app.repositories import RepositoryContainer
-from app.repositories.context_repository.helpers import compute_content_hash
 from tests.helpers import LOCAL_SCOPE
 
 # Module-level alias keeps `generate_id` reachable for ruff once test methods reference it.
@@ -113,54 +112,6 @@ async def backend_pre_migration(tmp_path: Path) -> AsyncGenerator[StorageBackend
 async def repos_pre_migration(backend_pre_migration: StorageBackend) -> RepositoryContainer:
     """Create repos on a pre-migration database (no content_hash column)."""
     return RepositoryContainer(backend_pre_migration)
-
-
-# ===========================================================================
-# compute_content_hash tests
-# ===========================================================================
-
-
-class TestComputeContentHash:
-    """Tests for the compute_content_hash utility function."""
-
-    def test_consistent_results(self) -> None:
-        """Same input always produces same hash."""
-        text = 'Hello, World!'
-        hash1 = compute_content_hash(text)
-        hash2 = compute_content_hash(text)
-        assert hash1 == hash2
-
-    def test_different_inputs_produce_different_hashes(self) -> None:
-        """Different inputs produce different hashes."""
-        hash1 = compute_content_hash('text A')
-        hash2 = compute_content_hash('text B')
-        assert hash1 != hash2
-
-    def test_returns_hex_string(self) -> None:
-        """Hash is a 64-character hex string (SHA-256)."""
-        result = compute_content_hash('test')
-        assert len(result) == 64
-        assert all(c in '0123456789abcdef' for c in result)
-
-    def test_empty_string(self) -> None:
-        """Empty string produces a valid hash."""
-        result = compute_content_hash('')
-        assert len(result) == 64
-        # SHA-256 of empty string is well-known
-        assert result == 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
-
-    def test_unicode_content(self) -> None:
-        """Unicode content is handled correctly."""
-        hash1 = compute_content_hash('Привет мир')
-        hash2 = compute_content_hash('Привет мир')
-        assert hash1 == hash2
-        assert len(hash1) == 64
-
-    def test_long_content(self) -> None:
-        """Long content produces same-length hash."""
-        long_text = 'A' * 100_000
-        result = compute_content_hash(long_text)
-        assert len(result) == 64
 
 
 # ===========================================================================
@@ -337,7 +288,7 @@ class TestHashStoredOnInsert:
             return row[0] if row else None
 
         stored_hash = await backend.execute_read(_read_hash, access_scope=MAINTENANCE)
-        assert stored_hash == compute_content_hash(text)
+        assert stored_hash == content_hash(text)
 
     async def test_hash_updated_on_dedup(
         self, backend: StorageBackend, repos: RepositoryContainer,
@@ -368,7 +319,7 @@ class TestHashStoredOnInsert:
             return row[0] if row else None
 
         stored_hash = await backend.execute_read(_read_hash, access_scope=MAINTENANCE)
-        assert stored_hash == compute_content_hash(text)
+        assert stored_hash == content_hash(text)
 
 
 # ===========================================================================
@@ -566,8 +517,8 @@ class TestHashRecomputationOnUpdate:
             return row[0] if row else None
 
         stored_hash = await backend.execute_read(_read_hash, access_scope=MAINTENANCE)
-        assert stored_hash == compute_content_hash(new_text)
-        assert stored_hash != compute_content_hash(original_text)
+        assert stored_hash == content_hash(new_text)
+        assert stored_hash != content_hash(original_text)
 
     async def test_hash_unchanged_when_only_metadata_updated(
         self, backend: StorageBackend, repos: RepositoryContainer,
@@ -581,7 +532,7 @@ class TestHashRecomputationOnUpdate:
             text_content=text, metadata=None,
         )
 
-        expected_hash = compute_content_hash(text)
+        expected_hash = content_hash(text)
 
         success, fields = await repos.context.update_context_entry(
             context_id=context_id, metadata=json.dumps({'key': 'value'}), scope=LOCAL_SCOPE,

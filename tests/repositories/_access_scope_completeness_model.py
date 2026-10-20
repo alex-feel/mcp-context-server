@@ -44,14 +44,20 @@ class Seam(StrEnum):
     SCOPED = 'scoped'  # the read predicate sits in the statement
     WRITE_AUTHORIZED = 'write_authorized'  # the write or owner predicate sits in the statement
     OWNER_KEYED = 'owner_keyed'  # the dedup candidate, interleave and update fragments
+    OWNER_STAMPED = 'owner_stamped'  # an insert whose owner_id is bound from the scope; no predicate
     CHILD_BY_TRUSTED_ID = 'child_by_trusted_id'  # id-keyed child read; its call sites are pinned
     CHILD_WRITER = 'child_writer'  # child write behind the write gate or the owned dedup; sites pinned
     SYSTEM = 'system'  # schema maintenance or a deployment-level figure
     COMPUTE = 'compute'  # a ranked-search closure that runs no SQL
 
 
-GUARDED = frozenset({Seam.SCOPED, Seam.WRITE_AUTHORIZED, Seam.OWNER_KEYED})
+# The classes whose methods render the access predicate.
+PREDICATE_SEAMS = frozenset({Seam.SCOPED, Seam.WRITE_AUTHORIZED, Seam.OWNER_KEYED})
+GUARDED = PREDICATE_SEAMS | {Seam.OWNER_STAMPED}
 CHILD = frozenset({Seam.CHILD_BY_TRUSTED_ID, Seam.CHILD_WRITER})
+
+# The statement builders an owner-stamped method may insert through instead of holding the INSERT itself.
+OWNER_STAMPED_BUILDERS = frozenset({'_insert_entry_sql'})
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,7 @@ _SEARCH = _REPO + 'context_repository.search:ContextSearchMixin.'
 _UPDATES = _REPO + 'context_repository.updates:ContextUpdateMixin.'
 _DELETES = _REPO + 'context_repository.deletes:ContextDeleteMixin.'
 _DEDUP = _REPO + 'context_repository.dedup:'
+_INGEST = _REPO + 'context_repository.ingest:ContextIngestMixin.'
 _EMBEDDINGS = _REPO + 'embedding_repository:EmbeddingRepository.'
 _FP32 = _REPO + 'embedding_repository.fp32_search:Fp32SearchMixin.'
 _COMPRESSED = _REPO + 'embedding_repository.compressed_search:CompressedSearchMixin.'
@@ -173,6 +180,7 @@ REGISTRY: dict[str, Entry] = {
     _STATISTICS + 'get_database_statistics': _guarded(Seam.SCOPED, 'A2'),
     _STATISTICS + 'get_summary_statistics': _guarded(Seam.SCOPED, 'A3'),
     _NODES + 'count_all_nodes': _guarded(Seam.SCOPED, 'A6'),
+    _INGEST + 'ingest_rows_in_range': _guarded(Seam.SCOPED, 'S8'),
     # Write-authorized: the write or owner predicate in the statement.
     _READS + 'entry_exists': _guarded(Seam.WRITE_AUTHORIZED, 'S6'),
     _READS + 'get_content_type': _guarded(Seam.WRITE_AUTHORIZED, 'W5'),
@@ -182,12 +190,16 @@ REGISTRY: dict[str, Entry] = {
     _UPDATES + 'update_content_type': _guarded(Seam.WRITE_AUTHORIZED, 'W4'),
     _DELETES + 'delete_by_ids': _guarded(Seam.WRITE_AUTHORIZED, 'X1'),
     _DELETES + 'get_ids_matching_batch_criteria': _guarded(Seam.WRITE_AUTHORIZED, 'X2'),
+    _INGEST + 'owned_ingest_page': _guarded(Seam.WRITE_AUTHORIZED, 'X3'),
     # Owner-keyed: the dedup candidate, the read-scoped interleave check and the owned update.
     _DEDUP + 'ContextDedupMixin.store_with_deduplication': _guarded(Seam.OWNER_KEYED, 'K1', 'K2', 'K4'),
     _DEDUP + 'ContextDedupMixin.check_latest_is_duplicate': _guarded(Seam.OWNER_KEYED, 'K3'),
     _DEDUP + '_candidate_sql': _guarded(Seam.OWNER_KEYED, 'K1', 'K3', 'K4'),
     _DEDUP + '_interleave_sql': _guarded(Seam.OWNER_KEYED, 'K2', 'K3'),
     _DEDUP + '_dedup_update_sql': _guarded(Seam.OWNER_KEYED, 'K1'),
+    # Owner-stamped: a fresh insert owned by the scope's principal.
+    _DEDUP + '_insert_entry_sql': _guarded(Seam.OWNER_STAMPED, 'K1', 'K5'),
+    _DEDUP + 'ContextDedupMixin.insert_entry': _guarded(Seam.OWNER_STAMPED, 'K5'),
     # Child readers keyed by ids a scoped read produced in the same request.
     _TAGS + 'get_tags_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, *_RESULT_HYDRATORS),
     _IMAGES + 'get_images_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, *_RESULT_HYDRATORS),

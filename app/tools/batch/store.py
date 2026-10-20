@@ -46,7 +46,8 @@ async def store_context_batch(
             'thread_id (str), source ("user" or "agent"), text (str). '
             'Optional: metadata (dict), tags (list[str]), images (list[dict]), '
             'visibility ("private" or "public"; omitted uses the server default, '
-            'publishing as public may require a configured role).',
+            'publishing as public may require a configured role), '
+            'deduplicate (bool, default true; false always inserts a new entry owned by the caller).',
             min_length=1,
             max_length=100,
         ),
@@ -74,6 +75,9 @@ async def store_context_batch(
     is inserted. Deduplication is suppressed when opposite-source entries the caller
     may read exist after the candidate, preserving chronological ordering.
     Pre-check optimization skips embedding/summary generation for likely duplicates.
+    An entry with deduplicate=False skips the candidate and always inserts a new entry
+    owned by the caller; a later deduplicating entry of the same batch with identical
+    text merges into that new entry, as it is then the latest one.
 
     Size limits:
     - Maximum 100 entries per batch
@@ -184,10 +188,11 @@ async def store_context_batch(
             # statement-level snapshot (see DuplicateCandidate): a separate
             # later summary read could observe a row version a concurrent
             # update committed in between, pairing a reused summary with text
-            # it does not describe.
+            # it does not describe. An entry that does not deduplicate always
+            # inserts, so it skips the pre-check and every leg runs for it.
             likely_duplicate_id: str | None = None
             duplicate_summary: str | None = None
-            if embedding_provider is not None or summary_provider is not None:
+            if entry['deduplicate'] and (embedding_provider is not None or summary_provider is not None):
                 duplicate_candidate = await repos.context.check_latest_is_duplicate(
                     thread_id=entry['thread_id'],
                     source=entry['source'],
@@ -448,6 +453,7 @@ async def store_context_batch(
                                     tags=entry.get('tags'),
                                     validated_images=entry.get('images', []),
                                     images_provided=bool(entry.get('images_provided')),
+                                    deduplicate=entry['deduplicate'],
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
@@ -592,6 +598,7 @@ async def store_context_batch(
                                     tags=entry.get('tags'),
                                     validated_images=entry.get('images', []),
                                     images_provided=bool(entry.get('images_provided')),
+                                    deduplicate=entry['deduplicate'],
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,

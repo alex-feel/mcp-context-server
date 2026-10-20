@@ -10,6 +10,7 @@ from fastmcp.exceptions import ToolError
 
 from app.access_scope import Scope
 from app.repositories.context_repository.records import EntryProbe
+from app.tools.context.retrieve import get_context_by_ids
 from tests.helpers import LOCAL_WRITE_SCOPE
 from tests.tools.batch._mocks import make_mock_txn
 
@@ -381,3 +382,92 @@ class TestUpdateBatchSiblingNotDropped:
         assert result['total'] == 2
         assert result['succeeded'] == 1
         assert result['failed'] == 1
+
+
+_INGEST_BLOCK: dict[str, object] = {
+    'scope': 'kb:handbook',
+    'source_id': 'guides/setup.md',
+    'meta_digest': 'ab' * 32,
+    'synced_at': '2026-10-18T12:00:00Z',
+}
+_PATCH_SHAPE_ERROR = (
+    'metadata_patch.ingest must be null or an object with exactly the keys meta_digest, scope, source_id, synced_at'
+)
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestUpdateBatchIngestBlock:
+    """update_context_batch refuses a malformed ingest block per entry, before any generation."""
+
+    @staticmethod
+    async def _store_three() -> list[str]:
+        from app.tools.batch.store import store_context_batch
+
+        stored = await store_context_batch(
+            entries=[
+                {'thread_id': 'kb:handbook', 'source': 'user', 'text': text, 'metadata': {'ingest': _INGEST_BLOCK}}
+                for text in ('Setup guide', 'FAQ', 'Release notes')
+            ],
+        )
+        ids = [item['context_id'] for item in stored['results']]
+        assert all(context_id is not None for context_id in ids)
+        return [context_id for context_id in ids if context_id is not None]
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_fails_only_the_malformed_update(self) -> None:
+        """A partial block in a patch fails that update; a null patch and a complete block apply."""
+        from app.tools.batch.update import update_context_batch
+
+        first, second, third = await self._store_three()
+        replacement = {**_INGEST_BLOCK, 'meta_digest': 'cd' * 32}
+
+        result = await update_context_batch(
+            updates=[
+                {'context_id': first, 'metadata_patch': {'ingest': None}},
+                {'context_id': second, 'metadata_patch': {'ingest': {'meta_digest': 'cd' * 32}}},
+                {'context_id': third, 'metadata': {'ingest': replacement}},
+            ],
+            atomic=False,
+        )
+
+        by_index = {item['index']: item for item in result['results']}
+        assert by_index[1] == {
+            'index': 1, 'context_id': second, 'success': False, 'updated_fields': None, 'error': _PATCH_SHAPE_ERROR,
+        }
+        assert by_index[0]['success'] is True
+        assert by_index[2]['success'] is True
+        fetched = {entry.get('id'): entry for entry in await get_context_by_ids(context_ids=[first, second, third])}
+        assert fetched[first].get('metadata') == {}
+        assert fetched[second].get('metadata') == {'ingest': _INGEST_BLOCK}
+        assert fetched[third].get('metadata') == {'ingest': replacement}
+
+    @pytest.mark.asyncio
+    async def test_atomic_aborts_naming_the_malformed_entry_before_generation(self) -> None:
+        """The atomic batch aborts naming the entry; no provider is reached and nothing changes."""
+        from app.tools.batch.update import update_context_batch
+
+        first, second, _ = await self._store_three()
+        embedding_provider = AsyncMock()
+        summary_provider = AsyncMock()
+        with (
+            patch('app.tools.batch.update.get_embedding_provider', return_value=embedding_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=embedding_provider),
+            patch('app.tools.batch.update.get_summary_provider', return_value=summary_provider),
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await update_context_batch(
+                updates=[
+                    {'context_id': first, 'text': 'Setup guide, revised'},
+                    {'context_id': second, 'metadata': {'ingest': {**_INGEST_BLOCK, 'scope': ''}}},
+                ],
+                atomic=True,
+            )
+
+        assert str(exc_info.value) == (
+            f'Validation failed for 1 entries. First error at context_id {second}: metadata.ingest.scope cannot be empty'
+        )
+        assert embedding_provider.mock_calls == []
+        assert summary_provider.mock_calls == []
+        fetched = {entry.get('id'): entry for entry in await get_context_by_ids(context_ids=[first, second])}
+        assert fetched[first].get('text_content') == 'Setup guide'
+        assert fetched[second].get('metadata') == {'ingest': _INGEST_BLOCK}

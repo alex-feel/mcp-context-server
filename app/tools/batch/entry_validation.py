@@ -8,9 +8,13 @@ import json
 from typing import Any
 from typing import cast
 
+from pydantic import TypeAdapter
+from pydantic import ValidationError
+
 from app.access_scope import AccessScope
 from app.auth import RequestPrincipal
 from app.auth import visibility_denied_reason
+from app.digests import normalize_stored_text
 from app.ids import resolve_or_normalize_id
 from app.metadata_types import non_finite_metadata_error
 from app.repositories.context_repository import ContextRepository
@@ -20,6 +24,8 @@ from app.tools._validation import tag_limits_error
 from app.tools._validation import validate_and_normalize_images
 
 settings = get_settings()
+
+_BOOL: TypeAdapter[bool] = TypeAdapter(bool)
 
 
 def validate_store_entry(
@@ -31,9 +37,9 @@ def validate_store_entry(
 
     The single-entry store_context is Pydantic-typed at the tool boundary; the
     batch path takes untyped dicts, so this helper re-imposes the same
-    rejections (types, image validity, tag caps, metadata storability, the
-    visibility enum, and the publish gate) so both paths accept and refuse
-    identical inputs.
+    rejections (types, the deduplicate flag, image validity, tag caps, metadata
+    storability, the visibility enum, and the publish gate) so both paths accept
+    and refuse identical inputs.
 
     Args:
         entry: The raw caller-supplied entry dict.
@@ -43,8 +49,9 @@ def validate_store_entry(
     Returns:
         ``(validated_entry, None)`` on success -- the dict carries the
         normalized fields the transaction phase consumes, including the
-        entry's EFFECTIVE visibility -- or ``(None, error_message)`` on the
-        first failed check.
+        entry's EFFECTIVE visibility and its deduplicate flag (True when the
+        key is absent) -- or ``(None, error_message)`` on the first failed
+        check.
     """
     # Validate required fields
     if 'thread_id' not in entry or not entry.get('thread_id'):
@@ -53,6 +60,16 @@ def validate_store_entry(
         return None, 'Missing or invalid source (must be "user" or "agent")'
     if 'text' not in entry or not entry.get('text'):
         return None, 'Missing required field: text'
+
+    # The per-entry deduplicate flag follows store_context's lax boolean parameter
+    # exactly (FastMCP validates it with pydantic in lax mode), never truthiness:
+    # the string 'false' is truthy and must still turn deduplication off.
+    deduplicate = True
+    if 'deduplicate' in entry:
+        try:
+            deduplicate = _BOOL.validate_python(entry['deduplicate'])
+        except ValidationError:
+            return None, 'deduplicate must be a boolean'
 
     # Clean input strings. Reject non-strings instead of str()-coercing:
     # coercion would silently persist the Python repr of a truthy dict/
@@ -66,7 +83,7 @@ def validate_store_entry(
     if not isinstance(text_raw, str):
         return None, 'text must be a string'
     thread_id = thread_id_raw.strip()
-    text = text_raw.strip()
+    text = normalize_stored_text(text_raw)
 
     if not thread_id:
         return None, 'thread_id cannot be empty or whitespace'
@@ -150,7 +167,8 @@ def validate_store_entry(
     # in a PostgreSQL btree index (thread_id, and every INDEXED metadata field)
     # and the DECLARED TYPE of a typed indexed field: an oversized value, or one
     # an integer or boolean index cannot cast, aborts the PostgreSQL INSERT where
-    # SQLite stores it.
+    # SQLite stores it. It also refuses a malformed reserved ingest metadata block,
+    # as store_context does.
     entry_error = entry_boundary_error(
         thread_id=thread_id,
         text=text,
@@ -174,6 +192,7 @@ def validate_store_entry(
         'images': images if images is not None else [],
         'images_provided': images_provided,
         'visibility': effective_visibility,
+        'deduplicate': deduplicate,
     }, None
 
 
@@ -232,7 +251,7 @@ async def validate_update_entry(
     if text is not None:
         if not isinstance(text, str):
             return None, context_id, 'text must be a string'
-        text = text.strip()
+        text = normalize_stored_text(text)
         if not text:
             return None, context_id, 'text cannot be empty or whitespace'
 
@@ -307,7 +326,8 @@ async def validate_update_entry(
     # the declared type of every INDEXED metadata field, in both the replacement
     # and the merge-patch form: an oversized value, or one an integer or boolean
     # index cannot cast, aborts the PostgreSQL UPDATE on idx_metadata_<field>
-    # where SQLite stores it.
+    # where SQLite stores it. It also refuses a malformed reserved ingest metadata
+    # block in either form, and a partial one in the merge patch, as update_context does.
     entry_error = entry_boundary_error(
         text=text,
         tags=cast('object', tags_field),

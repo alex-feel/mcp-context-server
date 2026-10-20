@@ -120,6 +120,8 @@ class ServerMixin(HarnessCore):
                 ('grep_context', 'read_only_hint', True),
                 ('navigate_context', 'read_only_hint', True),
                 ('read_context_range', 'read_only_hint', True),
+                ('plan_context_sync', 'read_only_hint', True),
+                ('list_ingest_state', 'read_only_hint', True),
                 ('store_context', 'read_only_hint', False),
                 ('store_context', 'destructive_hint', False),
                 ('update_context', 'destructive_hint', True),

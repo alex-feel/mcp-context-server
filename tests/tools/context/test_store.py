@@ -283,6 +283,130 @@ class TestStoreScope:
         assert precheck_call.kwargs['scope'] == expected
         assert store_call is not None
         assert store_call.kwargs['scope'] == expected
+        assert store_call.kwargs['deduplicate'] is True
+
+
+class TestStoreWithoutDeduplication:
+    """store_context with deduplicate=False inserts a fresh entry and skips every deduplication read."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_skips_the_precheck_and_runs_every_generation_leg(self) -> None:
+        """The pre-check and the embedding-existence probe are never awaited; every leg runs; False is forwarded."""
+        mock_repos = AsyncMock()
+        mock_backend = MagicMock()
+        mock_backend.begin_transaction = _mock_begin_transaction
+        mock_repos.context.backend = mock_backend
+        precheck = AsyncMock(return_value=DuplicateCandidate(context_id='dup-id', summary='Stored summary'))
+        mock_repos.context.check_latest_is_duplicate = precheck
+        mock_repos.embeddings.exists = AsyncMock(return_value=True)
+        text = 'Corpus document body. ' * 30
+
+        with (
+            patch('app.tools.context.store.ensure_repositories', return_value=mock_repos),
+            patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.context.store.get_summary_provider', return_value=MagicMock()),
+            patch(
+                'app.tools.context.store.run_generation',
+                new_callable=AsyncMock,
+                return_value=([('chunk-0', [0.1, 0.2])], 'Fresh summary', []),
+            ) as mock_generation,
+            patch(
+                'app.tools.context.store.execute_store_in_transaction',
+                new_callable=AsyncMock,
+                return_value=('new-id', False, True),
+            ) as mock_store,
+        ):
+            result = await store_context(thread_id='kb:handbook', source='user', text=text, deduplicate=False)
+
+        assert result['context_id'] == 'new-id'
+        precheck.assert_not_awaited()
+        mock_repos.embeddings.exists.assert_not_awaited()
+        generation_call = mock_generation.await_args
+        assert generation_call is not None
+        assert generation_call.kwargs == {'run_embedding': True, 'run_summary': True, 'run_nodes': True}
+        store_call = mock_store.await_args
+        assert store_call is not None
+        assert store_call.kwargs['deduplicate'] is False
+        assert store_call.kwargs['summary'] == 'Fresh summary'
+        assert store_call.kwargs['nodes_pending'] is False
+        assert store_call.kwargs['summary_pending'] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_identical_text_twice_gives_two_entries(self) -> None:
+        """Two identical stores without deduplication insert two entries; a default store then merges into the latest."""
+        first = await store_context(thread_id='kb:twins', source='user', text='Shared body', deduplicate=False)
+        second = await store_context(thread_id='kb:twins', source='user', text='Shared body', deduplicate=False)
+        merged = await store_context(thread_id='kb:twins', source='user', text='Shared body')
+
+        assert first['context_id'] != second['context_id']
+        assert merged['context_id'] == second['context_id']
+        listed = await search_context(limit=50, thread_id='kb:twins')
+        assert isinstance(listed, dict)
+        assert sorted(row['id'] for row in listed['results']) == sorted([first['context_id'], second['context_id']])
+
+
+_INGEST_BLOCK: dict[str, Any] = {
+    'scope': 'kb:handbook',
+    'source_id': 'guides/setup.md',
+    'meta_digest': 'ab' * 32,
+    'synced_at': '2026-10-18T12:00:00Z',
+}
+
+
+class TestStoreIngestBlock:
+    """store_context validates the reserved ingest block before any generation or database work."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('block', 'message'),
+        [
+            (
+                {'scope': 'kb:handbook'},
+                'metadata.ingest must be an object with exactly the keys meta_digest, scope, source_id, synced_at',
+            ),
+            ({**_INGEST_BLOCK, 'source_id': ''}, 'metadata.ingest.source_id cannot be empty'),
+            (
+                {**_INGEST_BLOCK, 'meta_digest': 'AB' * 32},
+                'metadata.ingest.meta_digest must be 64 lowercase hexadecimal characters',
+            ),
+            (
+                {**_INGEST_BLOCK, 'synced_at': '2026-10-18'},
+                'metadata.ingest.synced_at must be a UTC timestamp such as 2026-10-18T12:00:00Z',
+            ),
+        ],
+        ids=['partial', 'empty-source-id', 'uppercase-digest', 'date-only'],
+    )
+    async def test_malformed_block_refused_before_generation(self, block: dict[str, Any], message: str) -> None:
+        """A malformed block raises its fixed message; no provider and no repository is reached."""
+        embedding_provider = AsyncMock()
+        summary_provider = AsyncMock()
+        with (
+            patch('app.tools.context.store.ensure_repositories', new_callable=AsyncMock) as ensure,
+            patch('app.tools.context.store.get_embedding_provider', return_value=embedding_provider),
+            patch('app.tools.context.store.get_summary_provider', return_value=summary_provider),
+            patch('app.tools._generation.get_embedding_provider', return_value=embedding_provider),
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await store_context(
+                thread_id='kb:handbook', source='user', text='Setup guide', metadata={'title': 'Setup', 'ingest': block},
+            )
+
+        assert str(exc_info.value) == message
+        ensure.assert_not_awaited()
+        assert embedding_provider.mock_calls == []
+        assert summary_provider.mock_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_valid_block_is_stored_as_sent(self) -> None:
+        """A complete valid block passes the boundary and is stored unchanged."""
+        metadata: dict[str, Any] = {'title': 'Setup', 'ingest': _INGEST_BLOCK}
+        result = await store_context(thread_id='kb:handbook', source='user', text='Setup guide', metadata=metadata)
+
+        fetched = await get_context_by_ids(context_ids=[result['context_id']])
+        assert dict(fetched[0])['metadata'] == metadata
 
 
 @asynccontextmanager

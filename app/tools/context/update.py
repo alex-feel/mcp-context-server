@@ -11,6 +11,7 @@ from pydantic import Field
 from app.auth import resolve_effective_principal
 from app.auth import resolve_write_scope
 from app.auth import visibility_denied_reason
+from app.digests import normalize_stored_text
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.metadata_types import non_finite_metadata_error
@@ -32,6 +33,7 @@ from app.tools._transactions import execute_update_in_transaction
 from app.tools._transactions import is_connection_error
 from app.tools._transactions import reread_entry_version
 from app.tools._validation import reject_invalid_indexed_values
+from app.tools._validation import reject_invalid_ingest_block
 from app.tools._validation import reject_oversized_tags
 from app.tools._validation import reject_unstorable_input
 from app.tools._validation import validate_and_normalize_images
@@ -120,7 +122,7 @@ async def update_context(
 
         # Clean text input if provided
         if text is not None:
-            text = text.strip()
+            text = normalize_stored_text(text)
             # Business logic: if text provided, it cannot be empty after stripping
             if not text:
                 raise ToolError('text cannot be empty or contain only whitespace')
@@ -164,6 +166,10 @@ async def update_context(
         # caps and before any database work.
         for meta_value in (metadata, metadata_patch):
             reject_invalid_indexed_values(metadata=meta_value)
+
+        # Reject a malformed reserved ingest block, or a partial one in a merge patch,
+        # before any database work or generation, so the stored block stays complete.
+        reject_invalid_ingest_block(metadata=metadata, metadata_patch=metadata_patch)
 
         # Get repositories
         repos = await ensure_repositories()

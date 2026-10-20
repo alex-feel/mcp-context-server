@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from tests.integration.postgresql.conftest import SESSION_CONTAINER
 from tests.integration.postgresql.conftest import _project_name_for
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
@@ -29,3 +30,8 @@ def test_the_session_container_runs_under_the_checkout_project(pg_test_url: str)
     )
 
     assert f':{port}->5432/tcp' in result.stdout
+
+
+@pytest.mark.usefixtures('pg_test_url')
+def test_the_session_records_that_it_brought_the_container_up() -> None:
+    assert SESSION_CONTAINER.brought_up
