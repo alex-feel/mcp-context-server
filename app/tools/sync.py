@@ -93,9 +93,9 @@ async def plan_context_sync(
     entries whose metadata.ingest block names the thread as its scope, inside the
     range (source_id_after, source_id_through]; an omitted bound leaves that side
     open, and source ids compare by code point. An ordinary item carries the SHA-256
-    digest of the text it would store and the digest of its metadata; a keep item
-    {source_id, keep: true} marks a source the client could not read in this run,
-    so nothing stored for it changes.
+    digest of the text it would store after surrounding whitespace is removed, and
+    the digest of its metadata; a keep item {source_id, keep: true} marks a source
+    the client could not read in this run, so nothing stored for it changes.
 
     Creates and updates are named by manifest index: creates lists the items that
     have no stored entry, and updates names the stored entry each changed item
@@ -278,7 +278,10 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
 
     Decoding is strict: the cursor must be unpadded base64url of a UTF-8 JSON array
     of exactly two strings, a source id of 1 to ``MAX_SOURCE_ID_LENGTH`` code points
-    and a valid context id.
+    and a valid context id. Only that shape is checked, so a well-formed cursor this
+    tool never returned is accepted; the page read binds it as parameters under the
+    caller's owner predicate, so it moves the window only within the caller's own
+    entries.
 
     Args:
         cursor: The cursor a previous page returned.
@@ -287,7 +290,7 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
         The source id and the normalized context id of the last row of that page.
 
     Raises:
-        ToolError: If the cursor is not one this tool returned.
+        ToolError: If the cursor does not have that shape.
     """
     try:
         payload = base64.b64decode(cursor + '=' * (-len(cursor) % 4), altchars=b'-_', validate=True)

@@ -117,30 +117,49 @@ def _is_real_instant(timestamp: str) -> bool:
 
 
 class SyncManifestItem(BaseModel):
-    """One source document of a corpus as a sync client describes it.
+    """One source document of a corpus in a sync manifest.
 
-    An ordinary item carries both digests of the document; a keep item says the
-    source exists but the client could not read it in this run, so a plan
-    changes nothing stored for it. The source id is bounded like the stored
-    block's on every item, keep items included, and an unknown key is refused,
-    so a misspelled ``keep`` never turns a keep item into an ordinary one.
-
-    Attributes:
-        source_id: The document's identity inside the corpus, compared by code
-            point.
-        text_digest: ``app.digests.content_hash`` of the normalized text the
-            client would send; None on a keep item.
-        meta_digest: The client's digest of everything it sends besides the text;
-            None on a keep item.
-        keep: Whether the client could not read the source in this run.
+    An ordinary item is {source_id, text_digest, meta_digest} and carries both
+    digests; a keep item is {source_id, keep: true} and marks a source the client
+    could not read in this run, so the plan changes nothing stored for it. An item
+    carries no other key.
     """
 
+    # The served schema carries this docstring and the field descriptions as the
+    # client's contract, so neither names the server's own modules. An unknown key
+    # is refused, so a misspelled keep never turns a keep item into an ordinary one,
+    # and the source id is bounded like the stored block's on every item, keep items
+    # included.
     model_config = ConfigDict(extra='forbid')
 
-    source_id: Annotated[str, Field(min_length=1, max_length=MAX_SOURCE_ID_LENGTH)]
-    text_digest: Annotated[str | None, Field(pattern=DIGEST_PATTERN)] = None
-    meta_digest: Annotated[str | None, Field(pattern=DIGEST_PATTERN)] = None
-    keep: bool = False
+    source_id: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=MAX_SOURCE_ID_LENGTH,
+            description=f"The document's identity in the corpus, 1 to {MAX_SOURCE_ID_LENGTH} characters, "
+                        'compared by code point',
+        ),
+    ]
+    text_digest: Annotated[
+        str | None,
+        Field(
+            pattern=DIGEST_PATTERN,
+            description='Lowercase SHA-256 hex of the UTF-8 text after leading and trailing whitespace are removed '
+                        '(Python str.strip()), the form the server stores; omitted on a keep item',
+        ),
+    ] = None
+    meta_digest: Annotated[
+        str | None,
+        Field(
+            pattern=DIGEST_PATTERN,
+            description='The 64-hex digest the client writes into metadata.ingest.meta_digest; omitted on a keep item',
+        ),
+    ] = None
+    keep: Annotated[
+        bool,
+        Field(description='True marks a source the client could not read in this run; it carries no digests'),
+    ] = False
 
     @model_validator(mode='after')
     def _digests_match_keep(self) -> Self:
@@ -202,8 +221,8 @@ class PlanContextSyncDict(TypedDict):
         thread_id: The planned thread.
         creates: Manifest indices of the items to store as new entries.
         updates: The stored entries to update, by manifest index.
-        deletes: The first ``MAX_PLAN_DELETES`` planned deletes, ordered by
-            source id and then context id.
+        deletes: The first 100 planned deletes, ordered by source id and then
+            context id.
         deletes_total: How many deletes the plan holds in all.
         unchanged_count: Manifest items whose stored entry already matches.
         kept_count: Keep items, whose stored entries the plan leaves as they are.
@@ -227,8 +246,9 @@ class IngestStateEntryDict(TypedDict):
     Attributes:
         context_id: The entry id.
         source_id: The source id the entry's block carries.
-        text_digest: The stored ``content_hash`` of the entry's text; None for an
-            entry stored before content hashes existed.
+        text_digest: The stored SHA-256 digest of the entry's text, taken after
+            leading and trailing whitespace were removed; None when the server
+            holds no digest for the entry.
         meta_digest: The block's metadata digest.
         synced_at: When a sync last wrote the entry.
     """
