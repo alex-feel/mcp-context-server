@@ -140,7 +140,10 @@ def main() -> None:
         if not config.get('enabled', True):
             sys.exit(0)
 
-        input_data = json.load(sys.stdin)
+        # Claude Code writes the payload as UTF-8, so it is parsed from the raw
+        # bytes: the stdin text layer decodes with the locale's encoding, which on
+        # Windows is the ANSI code page.
+        input_data = json.load(sys.stdin.buffer)
 
         if input_data.get('hook_event_name') != 'SubagentStart':
             sys.exit(0)

@@ -71,7 +71,6 @@ Trigger: UserPromptSubmit
 import asyncio
 import ctypes
 import importlib.util
-import io
 import json
 import ntpath
 import os
@@ -383,8 +382,9 @@ def setup_windows_utf8() -> None:
         return
 
     try:
-        # Set Python to UTF-8 mode (Python 3.7+)
-        # This ensures all text I/O uses UTF-8 by default
+        # Run the subprocesses this hook starts, such as the stdio MCP server, in
+        # Python's UTF-8 mode; this process's own streams keep their encoding,
+        # which is why its payload is parsed from the stdin bytes
         os.environ['PYTHONUTF8'] = '1'
 
         # Set Windows console codepage to UTF-8 (65001)
@@ -2224,35 +2224,11 @@ def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
     # This prevents non-ASCII text corruption (mojibake) in MCP communication
     setup_windows_utf8()
 
-    # Reconfigure stdin to UTF-8 for Git Bash compatibility
-    # Git Bash on Windows uses MinGW64/MSYS2 runtime with Unix-style locale system.
-    # Without LANG/LC_ALL exports, it defaults to Windows codepage (CP1252/Windows-1251),
-    # causing stdin pipes to corrupt UTF-8 data BEFORE Python reads it.
-    # This reconfigures the already-open stdin stream to UTF-8 encoding.
-    #
-    # Use getattr() for type-safe access to reconfigure() method (Python 3.7+)
-    # sys.stdin is typed as TextIO in stubs but is TextIOWrapper at runtime
-    log_always('Reconfiguring stdin for UTF-8')
-    reconfigure_method = getattr(sys.stdin, 'reconfigure', None)
-    if reconfigure_method is not None:
-        # Python 3.7+ has reconfigure() method on TextIOWrapper
-        try:
-            reconfigure_method(encoding='utf-8')
-            log_always('stdin reconfigured to UTF-8 via reconfigure()')
-        except OSError as e:
-            log_always(f'stdin reconfigure failed: {e}', level='ERROR')
-    else:
-        # Fallback for Python < 3.7 or if reconfigure() not available
-        try:
-            sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
-            log_always('stdin wrapped with UTF-8 TextIOWrapper')
-        except Exception as e:
-            log_always(f'stdin UTF-8 fix failed: {e}', level='ERROR')
-
-    # Read input from stdin
+    # Claude Code writes the payload as UTF-8. The stdin text layer decodes with the locale's
+    # encoding unless Python runs in UTF-8 mode, so the payload is parsed from the raw bytes.
     log_always('Reading stdin data')
     try:
-        input_data = json.load(sys.stdin)
+        input_data = json.load(sys.stdin.buffer)
         log_always(f'stdin data keys: {list(input_data.keys())}')
     except json.JSONDecodeError as e:
         log_always(f'JSON decode error: {e}', level='ERROR')

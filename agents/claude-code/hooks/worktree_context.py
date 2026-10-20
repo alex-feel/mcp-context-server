@@ -185,6 +185,10 @@ def parse_repo_name_from_url(
 def run_git_command(args: list[str], cwd: str) -> str | None:
     """Run git command and return output, or None on failure.
 
+    Git writes paths and names as UTF-8, so its output is decoded as UTF-8
+    rather than with the locale's encoding, which on Windows is the ANSI code
+    page and cannot decode every byte of a non-ASCII path.
+
     Args:
         args: Git command arguments (without 'git' prefix).
         cwd: Working directory for command execution.
@@ -198,6 +202,8 @@ def run_git_command(args: list[str], cwd: str) -> str | None:
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=5,
             check=False,
         )
@@ -335,8 +341,10 @@ def main() -> None:
         if not config.get('enabled', True):
             sys.exit(0)
 
-        # Read JSON input from stdin
-        input_data = json.load(sys.stdin)
+        # Claude Code writes the payload as UTF-8, so it is parsed from the raw
+        # bytes: the stdin text layer decodes with the locale's encoding, which on
+        # Windows is the ANSI code page.
+        input_data = json.load(sys.stdin.buffer)
 
         # Extract and validate event type
         hook_event_name = input_data.get('hook_event_name', '')
