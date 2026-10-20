@@ -26,6 +26,7 @@ from tests.cli.ingest._stand_in import failing
 from tests.cli.ingest._stand_in import ingest_client
 from tests.cli.ingest._stand_in import serving
 from tests.cli.ingest._stand_in import status
+from tests.cli.ingest._stand_in import stream_ending
 
 
 class TestHttpClientFactory:
@@ -178,6 +179,23 @@ class TestStatusTable:
             ended = await exit_of_plan_call(client)
 
         assert (ended.code, ended.message) == (exit_code, message)
+
+    @pytest.mark.asyncio
+    async def test_a_200_that_is_no_mcp_response_ends_the_run(self, exchange: Exchange) -> None:
+        """A web page answered with 200 at the --server URL is a configuration error, not a lost stream."""
+
+        async def web_page(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, headers={'content-type': 'text/html'}, text='<html></html>', request=request)
+
+        exchange.script(PLAN_TOOL, web_page)
+
+        async with ingest_client(exchange) as client:
+            ended = await exit_of_plan_call(client)
+
+        assert (ended.code, ended.message) == (
+            EXIT_CONFIG,
+            'the call to plan_context_sync failed: Unexpected content type: text/html',
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('tool', [PLAN_TOOL, 'store_context_batch'])
@@ -346,6 +364,29 @@ class TestTransportErrors:
             (
                 f'the call to {tool} lost its connection to http://127.0.0.1:8765/mcp ({error.__name__}): '
                 "the call's outcome is unknown; rerun the sync, which plans from what the server stored"
+            ),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('error', [httpx2.ReadError, httpx2.RemoteProtocolError, None])
+    @pytest.mark.parametrize(('tool', 'arguments'), [(PLAN_TOOL, PLAN_ARGUMENTS), ('store_context_batch', {'entries': []})])
+    async def test_a_response_stream_ending_before_the_result_is_transient(
+        self, exchange: Exchange, error: type[httpx2.TransportError] | None, tool: str, arguments: dict[str, object],
+    ) -> None:
+        """A call the server accepted whose SSE stream ends before the result exits 69: the call's outcome is unknown."""
+        exchange.script(tool, stream_ending(error))
+
+        async with ingest_client(exchange) as client:
+            with pytest.raises(IngestExitError) as raised:
+                await client.call_tool(tool, arguments)
+
+        assert (raised.value.code, raised.value.message) == (
+            EXIT_TRANSIENT,
+            (
+                f'the call to {tool} lost its response stream from http://127.0.0.1:8765/mcp after the server accepted it '
+                "(SSE stream ended without a response): the call's outcome is unknown; rerun the sync, which plans "
+                'from what the server stored; when calls keep losing their stream after the same time, raise the '
+                f'response timeout of the proxy in front of the server to at least --call-timeout; see {LIMITS}'
             ),
         )
 

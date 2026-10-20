@@ -9,11 +9,11 @@ The MCP transport reports every refused HTTP request as the same opaque JSON-RPC
 error, so the client records the status and ``Retry-After`` header of each response
 with an HTTP event hook and classifies a failed exchange by what it recorded: a
 refused token or a wrong endpoint ends the run with exit code 2, an overloaded or
-unreachable server or a connection lost during a call with 69, and a request too
-large for the server or a proxy in front of it is a failure of that one call. A
-401 after the server accepted the token earlier in the run is retried once when
-the token file now holds another token, which is safe because the server's
-authentication refuses a request before any tool runs.
+unreachable server, or a connection or response stream lost during a call, with 69,
+and a request too large for the server or a proxy in front of it is a failure of
+that one call. A 401 after the server accepted the token earlier in the run is
+retried once when the token file now holds another token, which is safe because
+the server's authentication refuses a request before any tool runs.
 """
 
 import os
@@ -447,6 +447,17 @@ class IngestClient:
                 )
             if self.recorder.last_status is None:
                 return IngestExitError(EXIT_TRANSIENT, f'{what} failed before the server answered: {error.message}')
+            # The server answers a call with its SSE headers before the tool runs, so a
+            # restart or a proxy cutting the response afterwards closes an accepted call
+            # whose result never arrives; the server may or may not have applied it.
+            if error.code == CONNECTION_CLOSED:
+                return IngestExitError(
+                    EXIT_TRANSIENT,
+                    f'{what} lost its response stream from {self.server} after the server accepted it '
+                    f"({error.message}): the call's outcome is unknown; rerun the sync, which plans from what "
+                    'the server stored; when calls keep losing their stream after the same time, raise the '
+                    f'response timeout of the proxy in front of the server to at least --call-timeout; see {LIMITS_SECTION}',
+                )
             return self._classify_status(self.recorder.last_status, error.message, what)
         for carried in _carried(error):
             if isinstance(carried, httpx2.ConnectError):

@@ -10,12 +10,14 @@ in front of it produces, in both the negotiation and the tool calls.
 import asyncio
 import json
 from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from collections.abc import Awaitable
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+from typing import override
 
 import httpx2
 import pytest
@@ -150,6 +152,42 @@ def failing(error: type[httpx2.TransportError]) -> Responder:
 
     async def respond(request: httpx2.Request) -> httpx2.Response:
         raise error('scripted failure', request=request)
+
+    return respond
+
+
+class _EndingStream(httpx2.AsyncByteStream):
+    """An SSE body that sends one keep-alive comment and ends before any message."""
+
+    def __init__(self, request: httpx2.Request, error: type[httpx2.TransportError] | None) -> None:
+        self._request = request
+        self._error = error
+
+    @override
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield b': ping\r\n\r\n'
+        if self._error is not None:
+            raise self._error('scripted failure', request=self._request)
+
+
+def stream_ending(error: type[httpx2.TransportError] | None) -> Responder:
+    """Return a responder that accepts a call with an SSE stream that ends before the call's result.
+
+    Args:
+        error: The transport error the stream breaks off with, as it does when the
+            server restarts or a proxy drops the connection; None ends it cleanly.
+
+    Returns:
+        The responder.
+    """
+
+    async def respond(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={'content-type': 'text/event-stream'},
+            stream=_EndingStream(request, error),
+            request=request,
+        )
 
     return respond
 

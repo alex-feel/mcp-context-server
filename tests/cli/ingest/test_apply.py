@@ -37,6 +37,7 @@ from tests.cli.ingest._fake_server import Json
 from tests.cli.ingest._stand_in import Exchange
 from tests.cli.ingest._stand_in import failing
 from tests.cli.ingest._stand_in import ingest_client
+from tests.cli.ingest._stand_in import stream_ending
 from tests.cli.ingest._sync_run import DELETE
 from tests.cli.ingest._sync_run import PLAN
 from tests.cli.ingest._sync_run import SERVER
@@ -641,6 +642,30 @@ class TestRunEnding:
             ),
         ]
         assert [seen.tool for seen in exchange.seen if seen.tool is not None] == [PLAN]
+
+    @pytest.mark.asyncio
+    async def test_a_response_stream_lost_during_a_call_exits_69_with_a_report(
+        self, exchange: Exchange, tmp_path: Path,
+    ) -> None:
+        """A plan call whose SSE stream ends after the server accepted it ends the run with exit 69 and says why."""
+        write_document(tmp_path, 'a.md', 'alpha')
+        exchange.script(PLAN, stream_ending(httpx2.RemoteProtocolError))
+
+        def connect(config: RunConfig, auth: httpx2.Auth | None) -> IngestClient:
+            return ingest_client(exchange, auth=auth, call_timeout=config.call_timeout, server=config.server)
+
+        report = await run_sync(RunConfig(server=SERVER, corpus='handbook', source_dir=tmp_path), connect=connect)
+
+        assert report.exit_code == EXIT_TRANSIENT
+        assert report.errors == [
+            (
+                f'the call to {PLAN} lost its response stream from {SERVER} after the server accepted it '
+                "(SSE stream ended without a response): the call's outcome is unknown; rerun the sync, which plans "
+                'from what the server stored; when calls keep losing their stream after the same time, raise the '
+                'response timeout of the proxy in front of the server to at least --call-timeout; see '
+                "docs/knowledge-base.md, 'Limits'"
+            ),
+        ]
 
 
 class TestEmptyCorpus:

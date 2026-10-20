@@ -30,6 +30,8 @@ _MEANINGS = {
     EXIT_CONFIG: 'stopped on a configuration, authentication or plan error',
     EXIT_TRANSIENT: 'stopped on a transient failure; rerun later',
 }
+# The meaning of exit 0 after a dry run, which completes its plan and writes nothing.
+_PLANNED = 'planned; nothing was written'
 # A document the run could not synchronize, or could only keep as stored, leaves the
 # thread behind the corpus.
 _PARTIAL_OUTCOMES: frozenset[Outcome] = frozenset({'failed', 'kept'})
@@ -138,7 +140,8 @@ def render_summary(report: RunReport) -> str:
     lines.extend(
         f'{outcome.outcome}: {outcome.source_id}: {outcome.error}' for outcome in report.outcomes if outcome.error is not None
     )
-    lines.append(f'exit {report.exit_code}: {_MEANINGS[report.exit_code]}')
+    meaning = _PLANNED if report.dry_run and report.exit_code == EXIT_CONVERGED else _MEANINGS[report.exit_code]
+    lines.append(f'exit {report.exit_code}: {meaning}')
     return '\n'.join(lines)
 
 

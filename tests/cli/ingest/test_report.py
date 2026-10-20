@@ -155,14 +155,23 @@ class TestSummary:
         )
 
     def test_summary_of_a_dry_run(self) -> None:
-        """A dry run says it planned and wrote nothing."""
+        """A dry run says it planned and wrote nothing, in its first line and in its exit line."""
         report = _report(dry_run=True)
         report.add(DocumentOutcome(source_id='a.md', outcome='created', context_id=None, error=None))
 
         assert render_summary(report) == (
             'Dry run of kb:handbook with http://localhost:8000/mcp: nothing was written\n'
             'created 1, updated 0, deleted 0, unchanged 0, kept 0, foreign 0, failed 0, withheld 0\n'
-            'exit 0: completed'
+            'exit 0: planned; nothing was written'
+        )
+
+    def test_a_dry_run_with_problems_keeps_the_partial_meaning(self) -> None:
+        """Only a dry run that ends with exit 0 says it planned; a kept file still makes it partial."""
+        report = _report(dry_run=True)
+        report.add(DocumentOutcome(source_id='c.md', outcome='kept', context_id=None, error='the file cannot be read'))
+
+        assert render_summary(report).splitlines()[-1] == (
+            'exit 1: completed with problems: some documents were not synchronized'
         )
 
     @pytest.mark.parametrize(
@@ -172,9 +181,10 @@ class TestSummary:
             (EXIT_TRANSIENT, 'stopped on a transient failure; rerun later'),
         ],
     )
-    def test_summary_names_the_stopping_exit_codes(self, code: int, meaning: str) -> None:
-        """The exit line explains a run that stopped."""
-        report = _report()
+    @pytest.mark.parametrize('dry_run', [False, True])
+    def test_summary_names_the_stopping_exit_codes(self, code: int, meaning: str, dry_run: bool) -> None:
+        """The exit line explains a run that stopped, a dry run whose plan failed included."""
+        report = _report(dry_run=dry_run)
         report.escalate(code)
 
         assert render_summary(report).splitlines()[-1] == f'exit {code}: {meaning}'
