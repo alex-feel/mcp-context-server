@@ -4,9 +4,10 @@ Bare-name TABLE/INDEX DDL resolves through ``search_path``, so the compression
 and chunking tables land in ``mcp_test``, never in ``public``, and each
 migration is idempotent; the default-schema compression test is the
 ``public`` baseline, and the full migration sequence leaves no project table
-in ``public``. The ingest index lands on ``mcp_test.context_entries``, and its
-probe looks for it on that table alone, so an index of the same name that a
-deployment left in ``public`` neither hides it nor is touched.
+in ``public``. The ingest index and the ingest statistics land on
+``mcp_test.context_entries``, and their probes look for them on that table
+alone, so an index or a statistics object of the same name that a deployment
+left in ``public`` neither hides them nor is touched.
 """
 
 from __future__ import annotations
@@ -28,7 +29,9 @@ from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations.chunking import apply_chunking_migration
 from app.migrations.compression import apply_compression_migration
+from app.migrations.ingest import INGEST_STATISTICS_NAME
 from app.migrations.ingest import apply_ingest_index_migration
+from app.migrations.ingest import ingest_statistics_ddl
 from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
@@ -333,6 +336,30 @@ async def _ingest_index_tables(pg_url: str, schema: str) -> list[str]:
         await conn.close()
 
 
+async def _ingest_statistics_objects(pg_url: str) -> list[tuple[str, str, str]]:
+    """Return the schema of every statistics object named like the ingest statistics, with its table's schema and name."""
+    conn = await asyncpg.connect(pg_url)
+    try:
+        rows = await conn.fetch(
+            'SELECT statistics_schema.nspname AS statistics_schema, table_schema.nspname AS table_schema, '
+            'relation.relname AS table_name '
+            'FROM pg_statistic_ext AS statistics '
+            'JOIN pg_namespace AS statistics_schema ON statistics_schema.oid = statistics.stxnamespace '
+            'JOIN pg_class AS relation ON relation.oid = statistics.stxrelid '
+            'JOIN pg_namespace AS table_schema ON table_schema.oid = relation.relnamespace '
+            'WHERE statistics.stxname = $1 ORDER BY statistics_schema.nspname',
+            INGEST_STATISTICS_NAME,
+        )
+        return [(str(row['statistics_schema']), str(row['table_schema']), str(row['table_name'])) for row in rows]
+    finally:
+        await conn.close()
+
+
+def _first_build_steps() -> list[str]:
+    """Return the steps of the first application on a database holding neither the ingest index nor its statistics."""
+    return ['begin_migration', ingest_index_ddl('postgresql'), ingest_statistics_ddl(), 'ANALYZE context_entries']
+
+
 def _apply_ingest_index_migration_twice(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Prepare the base schema, apply the ingest index migration twice and return the lock and DDL steps it ran."""
     steps: list[str] = []
@@ -368,26 +395,30 @@ def test_ingest_index_migration_idempotent_under_non_default_schema(
     pg_non_default_schema_db: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The ingest index lands in ``mcp_test`` once; the second application runs no DDL and ``public`` has none."""
+    """The ingest index and statistics land in ``mcp_test`` once; a second application runs no DDL; ``public`` has neither."""
     install_search_path_patch(monkeypatch, NON_DEFAULT_SCHEMA)
     configure_non_default_env(monkeypatch, pg_non_default_schema_db)
 
     steps = _apply_ingest_index_migration_twice(pg_non_default_schema_db, monkeypatch)
 
-    assert steps == ['begin_migration', ingest_index_ddl('postgresql')]
+    assert steps == _first_build_steps()
     assert asyncio.run(_ingest_index_tables(pg_non_default_schema_db, NON_DEFAULT_SCHEMA)) == ['context_entries']
     assert asyncio.run(_ingest_index_tables(pg_non_default_schema_db, 'public')) == []
+    assert asyncio.run(_ingest_statistics_objects(pg_non_default_schema_db)) == [
+        (NON_DEFAULT_SCHEMA, NON_DEFAULT_SCHEMA, 'context_entries'),
+    ]
 
 
-def test_ingest_index_probe_ignores_a_same_named_index_in_public(
+def test_ingest_probes_ignore_a_same_named_index_and_statistics_in_public(
     pg_non_default_schema_db: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An ingest index a deployment left on ``public.context_entries`` does not stand in for the configured schema's.
+    """The ingest index and statistics a deployment left in ``public`` do not stand in for the configured schema's.
 
     ``search_path`` lists ``public`` after ``mcp_test``, so a bare ``to_regclass`` of the
-    index name would find the ``public`` index and skip the build; the probe instead looks
-    for the index on the table the DDL targets.
+    index name would find the ``public`` index and skip the build; the probes instead look
+    for the index and the statistics on the table the DDL targets, and leave the ``public``
+    objects as they are.
     """
     install_search_path_patch(monkeypatch, NON_DEFAULT_SCHEMA)
     configure_non_default_env(monkeypatch, pg_non_default_schema_db)
@@ -398,6 +429,7 @@ def test_ingest_index_probe_ignores_a_same_named_index_in_public(
             await conn.execute('SET search_path = public')
             await conn.execute('CREATE TABLE context_entries (id UUID PRIMARY KEY, thread_id TEXT NOT NULL, metadata JSONB)')
             await conn.execute(ingest_index_ddl('postgresql'))
+            await conn.execute(ingest_statistics_ddl())
         finally:
             await conn.close()
 
@@ -405,6 +437,10 @@ def test_ingest_index_probe_ignores_a_same_named_index_in_public(
 
     steps = _apply_ingest_index_migration_twice(pg_non_default_schema_db, monkeypatch)
 
-    assert steps == ['begin_migration', ingest_index_ddl('postgresql')]
+    assert steps == _first_build_steps()
     assert asyncio.run(_ingest_index_tables(pg_non_default_schema_db, NON_DEFAULT_SCHEMA)) == ['context_entries']
     assert asyncio.run(_ingest_index_tables(pg_non_default_schema_db, 'public')) == ['context_entries']
+    assert asyncio.run(_ingest_statistics_objects(pg_non_default_schema_db)) == [
+        (NON_DEFAULT_SCHEMA, NON_DEFAULT_SCHEMA, 'context_entries'),
+        ('public', 'public', 'context_entries'),
+    ]

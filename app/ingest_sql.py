@@ -5,6 +5,9 @@ meta_digest, synced_at}``. The repository reads compare, order and select the bl
 these fragments, and the ingest index is rendered from the same fragments, so a query
 expression always matches the index expression it relies on: SQLite matches expression
 indexes structurally (column qualifiers resolved), PostgreSQL by expression and collation.
+On PostgreSQL the ingest migration also renders its extended statistics on the block's
+scope from :func:`scope_sql`, so the planner matches them to the very expression the reads
+compare with the thread and estimates a corpus thread's members from them.
 
 The fragments are total: they read stored JSON through text accessors only (``json_extract``
 on SQLite; ``#>>`` and ``->`` on PostgreSQL) and never cast stored data, so they cannot raise

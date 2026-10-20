@@ -3,10 +3,12 @@
 The partial index serving the ingest reads is created by the migration alone, never by a
 base schema: its SQLite key names ``content_hash``, ``owner_id`` and ``visibility``, which
 the column migrations add on an in-place upgrade, and the base script also runs over
-databases that predate them. The SQLite tests run the server's own startup preparation
-on a fresh database and on one that predates the access-control columns; the PostgreSQL
-tests drive the migration's branch through a recording backend, and the integration
-tests under ``tests/integration/postgresql`` run it on a live server.
+databases that predate them. On PostgreSQL the migration also keeps extended statistics
+on the thread and the block's scope, rendered from the scope expression the reads
+compare. The SQLite tests run the server's own startup preparation on a fresh database
+and on one that predates the access-control columns; the PostgreSQL tests pin the
+statistics statement and drive the migration's branch through a recording backend, and
+the integration tests under ``tests/integration/postgresql`` run it on a live server.
 """
 
 import sqlite3
@@ -26,8 +28,11 @@ from app.backends.base import MAINTENANCE
 from app.backends.base import BackendAccess
 from app.ingest_sql import INGEST_INDEX_NAME
 from app.ingest_sql import ingest_index_ddl
+from app.ingest_sql import scope_sql
 from app.migrations import apply_ingest_index_migration
 from app.migrations import handle_metadata_indexes
+from app.migrations.ingest import INGEST_STATISTICS_NAME
+from app.migrations.ingest import ingest_statistics_ddl
 from app.schemas import load_schema
 from app.settings import get_settings
 from app.startup import init_database
@@ -109,13 +114,32 @@ async def test_the_metadata_index_reconciler_leaves_the_ingest_index_alone(
         assert len(await _ingest_index_sql(db.backend)) == 1
 
 
+_STATISTICS_DDL = (
+    "CREATE STATISTICS IF NOT EXISTS stat_context_ingest_scope (mcv, dependencies) "
+    "ON thread_id, ((metadata #>> '{ingest,scope}')) FROM context_entries"
+)
+_ANALYZE = 'ANALYZE context_entries'
+
+
+def test_statistics_ddl() -> None:
+    """The statistics carry the most common pairs and the dependency of the thread and the scope, created idempotently."""
+    assert INGEST_STATISTICS_NAME == 'stat_context_ingest_scope'
+    assert ingest_statistics_ddl() == _STATISTICS_DDL
+
+
+def test_statistics_describe_the_scope_expression_the_reads_compare() -> None:
+    """The statistics expression is the scope fragment itself, so the planner matches it to the reads' comparison."""
+    assert f'ON thread_id, ({scope_sql("postgresql")}) FROM context_entries' in ingest_statistics_ddl()
+
+
 class _RecordingPostgreSQLBackend:
-    """A PostgreSQL backend whose probe answers a fixed value and whose writes run on a placeholder connection."""
+    """A PostgreSQL backend whose probes answer fixed values and whose writes run on a placeholder connection."""
 
     backend_type = 'postgresql'
 
-    def __init__(self, *, index_exists: bool) -> None:
+    def __init__(self, *, index_exists: bool, statistics_exist: bool) -> None:
         self._index_exists = index_exists
+        self._statistics_exist = statistics_exist
         self.probe_args: list[tuple[object, ...]] = []
         self.writes = 0
 
@@ -128,8 +152,10 @@ class _RecordingPostgreSQLBackend:
         self.writes += 1
         await operation(object())
 
-    async def _fetchval(self, _sql: str, *args: object) -> bool:
+    async def _fetchval(self, sql: str, *args: object) -> bool:
         self.probe_args.append(args)
+        if 'pg_statistic_ext' in sql:
+            return self._statistics_exist
         return self._index_exists
 
 
@@ -151,14 +177,53 @@ def _record_migration_steps(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, 
     return steps
 
 
-@pytest.mark.asyncio
-async def test_postgresql_creates_the_index_under_the_migration_lock_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+async def _migrate(
+    monkeypatch: pytest.MonkeyPatch, *, index_exists: bool, statistics_exist: bool,
+) -> tuple[_RecordingPostgreSQLBackend, list[tuple[str, ...]]]:
+    """Apply the migration to a recording backend in the given state and return the backend and the recorded steps."""
     steps = _record_migration_steps(monkeypatch)
-    backend = _RecordingPostgreSQLBackend(index_exists=False)
+    backend = _RecordingPostgreSQLBackend(index_exists=index_exists, statistics_exist=statistics_exist)
 
     await apply_ingest_index_migration(cast(StorageBackend, backend))
 
-    assert backend.probe_args == [(INGEST_INDEX_NAME,)]
+    assert backend.probe_args == [(INGEST_INDEX_NAME,), (INGEST_STATISTICS_NAME,)]
+    return backend, steps
+
+
+@pytest.mark.asyncio
+async def test_postgresql_creates_the_index_and_the_statistics_under_one_lock_when_both_are_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, steps = await _migrate(monkeypatch, index_exists=False, statistics_exist=False)
+
+    assert backend.writes == 1
+    assert steps == [
+        ('begin_migration', '42.0'),
+        ('execute_migration_ddl', ingest_index_ddl('postgresql'), '42.0'),
+        ('execute_migration_ddl', _STATISTICS_DDL, '42.0'),
+        ('execute_migration_ddl', _ANALYZE, '42.0'),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_postgresql_creates_and_populates_the_statistics_when_only_they_are_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, steps = await _migrate(monkeypatch, index_exists=True, statistics_exist=False)
+
+    assert backend.writes == 1
+    assert steps == [
+        ('begin_migration', '42.0'),
+        ('execute_migration_ddl', _STATISTICS_DDL, '42.0'),
+        ('execute_migration_ddl', _ANALYZE, '42.0'),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_postgresql_creates_only_the_index_when_the_statistics_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The statistics already describe the table, so rebuilding the index needs no new sample."""
+    backend, steps = await _migrate(monkeypatch, index_exists=False, statistics_exist=True)
+
     assert backend.writes == 1
     assert steps == [
         ('begin_migration', '42.0'),
@@ -167,12 +232,8 @@ async def test_postgresql_creates_the_index_under_the_migration_lock_when_absent
 
 
 @pytest.mark.asyncio
-async def test_postgresql_takes_no_lock_and_runs_no_ddl_when_the_index_exists(monkeypatch: pytest.MonkeyPatch) -> None:
-    steps = _record_migration_steps(monkeypatch)
-    backend = _RecordingPostgreSQLBackend(index_exists=True)
+async def test_postgresql_takes_no_lock_and_writes_nothing_when_both_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend, steps = await _migrate(monkeypatch, index_exists=True, statistics_exist=True)
 
-    await apply_ingest_index_migration(cast(StorageBackend, backend))
-
-    assert backend.probe_args == [(INGEST_INDEX_NAME,)]
     assert backend.writes == 0
     assert steps == []
