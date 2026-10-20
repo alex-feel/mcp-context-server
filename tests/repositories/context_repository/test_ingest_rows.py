@@ -4,8 +4,10 @@ An entry is a member of thread T when its ``metadata.ingest`` block carries a so
 and names T as its scope. ``ingest_rows_in_range`` returns every member the caller may
 read inside an exclusive-inclusive source-id range and flags the ones the caller owns;
 ``owned_ingest_page`` pages through the members the caller owns in ``(source_id, id)``
-order. The SQLite tests run both reads on a real database; the PostgreSQL tests pin the
-rendered statements and the decoding of their rows through a recording connection.
+order. The SQLite tests run both reads on a real database that carries the ingest index,
+as every database the server's startup prepares does, because on SQLite both reads name
+it; the PostgreSQL tests pin the rendered statements and the decoding of their rows
+through a recording connection.
 """
 
 import json
@@ -17,6 +19,7 @@ from typing import cast
 from unittest.mock import Mock
 
 import pytest
+import pytest_asyncio
 
 from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessMode
@@ -28,6 +31,7 @@ from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.backends.base import base_relation
 from app.ids import generate_id
+from app.migrations import apply_ingest_index_migration
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
 from app.repositories.context_repository.records import IngestRow
@@ -38,6 +42,13 @@ OTHER_THREAD = 'kb:other'
 BOB = AccessScope('bob', frozenset())
 DIGEST = 'a' * 64
 SYNCED_AT = '2026-10-18T12:00:00Z'
+
+
+@pytest_asyncio.fixture
+async def repos(context_test_db: StorageBackend) -> RepositoryContainer:
+    """The repositories over the base-schema database once it carries the ingest index."""
+    await apply_ingest_index_migration(context_test_db)
+    return RepositoryContainer(context_test_db)
 
 
 def _block(source_id: str, *, scope: str = THREAD) -> dict[str, str]:

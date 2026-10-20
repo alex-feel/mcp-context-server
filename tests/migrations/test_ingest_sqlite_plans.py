@@ -6,12 +6,16 @@ the reads from index pages and never walks a row's text overflow pages to reach
 ``metadata``: the range read searches the index on the thread and the source-id bounds,
 and the owner page reads it in ``(source_id, id)`` order, so neither sorts.
 
-The pins run on a database that the server's startup preparation (``prepare_database``)
-builds, so every index a server has competes with the ingest index, and that holds
-members of a corpus thread beside rows of other threads. The database carries no
-``sqlite_stat1`` table, so the plans are the ones a database gets before any ``ANALYZE``
-has run. Each read runs through the repository as a request principal with and without
-groups, and its statement is planned with the parameters it bound.
+The pins run on databases that the server's startup preparation (``prepare_database``)
+builds, so every index a server has competes with the ingest index, and each read runs
+through the repository as a request principal with and without groups, its statement
+planned with the parameters it bound. Two databases are planned. One holds the members of
+a corpus thread beside the rows of one other thread and carries no ``sqlite_stat1``
+table, as a database is before any ``ANALYZE``. The other holds a corpus thread far larger
+than the database's average thread, beside many small threads, after ``ANALYZE``, the
+statistics the server's own ``PRAGMA optimize`` writes too: their averages make
+``idx_context_owner_thread`` and ``idx_thread_id`` look more selective than the ingest
+index, so the plans hold there only because the reads name the ingest index.
 """
 
 import re
@@ -37,6 +41,13 @@ from tests.repositories._access_scope_layouts import sqlite_scoped_db
 CORPUS = 'kb:plans'
 MEMBERS = 200
 FILLER_ROWS = 200
+# The analyzed database: a corpus thread of thousands of members beside many threads of a
+# few rows each, so the average thread holds a few rows and the corpus thread thousands.
+SKEWED_MEMBERS = 4000
+SMALL_THREADS = 400
+ROWS_PER_SMALL_THREAD = 10
+# The databases the reads are planned on: before any ANALYZE, and analyzed on the skewed corpus.
+_DATABASES = ['before-analyze', 'analyzed-skewed']
 # A plan step that reads context_entries under the alias both reads use.
 _ENTRY_STEP = re.compile(r'^(?:SCAN|SEARCH) ce\b')
 # A search of the ingest index that starts at the corpus thread, never a scan of every managed row.
@@ -63,6 +74,13 @@ _FILLER_SQL = (
     'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata, owner_id, visibility) '
     "SELECT lower(hex(randomblob(16))), 'plan-filler', 'agent', 'text', 'Filler ' || i, "
     "json_object('label', 'filler'), 'alice', 'private' FROM n"
+)
+# Rows spread round-robin over the small threads, two of every three owned by alice.
+_SMALL_THREADS_SQL = (
+    'WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) '
+    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata, owner_id, visibility) '
+    "SELECT lower(hex(randomblob(16))), 'session-' || (i % ?), 'agent', 'text', 'Session row ' || i, "
+    "json_object('status', 'done'), CASE WHEN i % 3 = 0 THEN 'bob' ELSE 'alice' END, 'private' FROM n"
 )
 
 
@@ -107,12 +125,27 @@ class _CapturingBackend:
         return await self.backend.execute_read(_recorded, access_scope=access_scope)
 
 
-@pytest_asyncio.fixture
-async def plan_db(async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[ScopedDb]:
-    """A database prepared by server startup, holding the members of :data:`CORPUS` and rows of another thread."""
+@pytest_asyncio.fixture(params=_DATABASES)
+async def plan_db(
+    request: pytest.FixtureRequest, async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncGenerator[ScopedDb]:
+    """A database prepared by server startup, holding the members of :data:`CORPUS` and rows of other threads.
+
+    ``before-analyze`` holds :data:`MEMBERS` members beside one thread of filler rows and
+    no statistics; ``analyzed-skewed`` holds :data:`SKEWED_MEMBERS` members beside
+    :data:`SMALL_THREADS` small threads, and ``ANALYZE`` has run on it.
+
+    Yields:
+        The seeded database.
+    """
     async with sqlite_scoped_db(async_db_initialized, 'fp32', monkeypatch) as db:
-        await db.execute(_SEED_SQL, (MEMBERS, CORPUS, CORPUS, '0' * 64))
-        await db.execute(_FILLER_SQL, (FILLER_ROWS,))
+        if request.param == 'before-analyze':
+            await db.execute(_SEED_SQL, (MEMBERS, CORPUS, CORPUS, '0' * 64))
+            await db.execute(_FILLER_SQL, (FILLER_ROWS,))
+        else:
+            await db.execute(_SEED_SQL, (SKEWED_MEMBERS, CORPUS, CORPUS, '0' * 64))
+            await db.execute(_SMALL_THREADS_SQL, (SMALL_THREADS * ROWS_PER_SMALL_THREAD, SMALL_THREADS))
+            await db.execute('ANALYZE')
         yield db
 
 
@@ -198,3 +231,22 @@ async def test_ingest_reads_search_the_ingest_index_without_sorting(
     for constraint in constraints:
         assert constraint in step, f'{statement.sql!r} does not search the index on {constraint}: {plan}'
     assert not any(_SORT_STEP in planned for planned in plan), f'{statement.sql!r} sorts: {plan}'
+
+
+@pytest.mark.parametrize('plan_db', ['analyzed-skewed'], indirect=True)
+@pytest.mark.asyncio
+async def test_the_analyzed_statistics_favor_the_owner_thread_index(plan_db: ScopedDb) -> None:
+    """``sqlite_stat1`` describes the ingest index, and its averages rank the owner-thread index ahead of it.
+
+    The first average of the ingest index counts the rows per thread, which on the skewed
+    corpus is the whole corpus thread; the owner-thread index's second average counts the
+    rows per owner and thread, a few rows. Planned by those averages alone, the owner pages
+    would read the owner-thread index and sort.
+    """
+    rows = await plan_db.fetch_all("SELECT idx, stat FROM sqlite_stat1 WHERE tbl = 'context_entries'")
+    stats = {str(name): [int(value) for value in str(stat).split()] for name, stat in rows}
+
+    assert INGEST_INDEX_NAME in stats, sorted(stats)
+    rows_per_thread = stats[INGEST_INDEX_NAME][1]
+    rows_per_owner_and_thread = stats['idx_context_owner_thread'][2]
+    assert rows_per_thread > 10 * rows_per_owner_and_thread, stats

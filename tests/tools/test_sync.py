@@ -2,7 +2,8 @@
 
 Both tools run through an in-process FastMCP server that registers them the way the
 server does and installs the JSON string middleware over them, against a SQLite
-database whose managed entries are inserted through the repository. Argument errors
+database that carries the ingest index, as every database the server's startup prepares
+does, and whose managed entries are inserted through the repository. Argument errors
 are checked at the boundary a client meets, the plan and the listing against the
 stored rows, and the middleware's repair of a stringified manifest.
 """
@@ -25,6 +26,7 @@ from app.auth import resolve_access_scope
 from app.backends import StorageBackend
 from app.digests import content_hash
 from app.ids import generate_id
+from app.migrations import apply_ingest_index_migration
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
 from app.startup import ensure_repositories
@@ -117,8 +119,8 @@ def _cursor_with_stray_character() -> str:
 
 @pytest_asyncio.fixture
 async def repos(nav_backend: StorageBackend) -> RepositoryContainer:
-    """The repositories the tools resolve, over the fixture's SQLite database."""
-    _ = nav_backend
+    """The repositories the tools resolve, over the fixture's SQLite database once it carries the ingest index."""
+    await apply_ingest_index_migration(nav_backend)
     return await ensure_repositories()
 
 

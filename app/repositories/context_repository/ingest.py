@@ -4,7 +4,10 @@ An entry is a member of thread T when its ``metadata.ingest`` block carries a so
 names T as its scope; membership is decided here, at read time, and the block itself takes
 no part in any access decision. Both reads name the relation through the read seam, apply
 the access predicate after every other condition, and compare and order source ids through
-the fragments of :mod:`app.ingest_sql`, from which the ingest index is rendered as well.
+the fragments of :mod:`app.ingest_sql`, from which the ingest index is rendered as well. On
+SQLite both reads also name the ingest index after the relation, because SQLite's
+statistics-driven choice of index misjudges a corpus thread far larger than the database's
+average thread.
 """
 
 import json
@@ -17,6 +20,7 @@ from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.ids import normalize_id
+from app.ingest_sql import INGEST_INDEX_NAME
 from app.ingest_sql import block_sql
 from app.ingest_sql import scope_sql
 from app.ingest_sql import source_id_key_sql
@@ -33,6 +37,28 @@ def _select_list(backend_type: str) -> str:
     source_id = source_id_sql(backend_type, 'ce')
     block = block_sql(backend_type, 'ce')
     return f'ce.id, {source_id} AS source_id, {block} AS block, ce.content_hash'
+
+
+def _index_hint(backend_type: str) -> str:
+    """Return the clause that makes SQLite read the ingest index, or an empty string on PostgreSQL.
+
+    Once ``sqlite_stat1`` exists, written by ``ANALYZE`` or by the ``PRAGMA optimize`` the
+    server runs when it closes its writer connection, SQLite picks an index from averages
+    of rows per key. A corpus thread far larger than the database's average thread then
+    makes ``idx_context_owner_thread`` or ``idx_thread_id`` look more selective than the
+    ingest index; a read through either seeks every member's table row instead of
+    answering from the index, and the owner page also sorts the rows it found. The clause
+    follows the relation, so the read seam still names the relation; a statement whose
+    constraints could not use the index would fail to prepare, and the index exists on
+    every database the server's startup prepares.
+
+    Args:
+        backend_type: ``'sqlite'`` or ``'postgresql'``.
+
+    Returns:
+        The clause, with its leading space, or an empty string.
+    """
+    return f' INDEXED BY {INGEST_INDEX_NAME}' if backend_type == 'sqlite' else ''
 
 
 def _membership_conditions(backend_type: str, thread_placeholder: str) -> list[str]:
@@ -91,7 +117,10 @@ class ContextIngestMixin(BaseRepository):
         The range is ``(source_id_after, source_id_through]`` in code-point order; an
         omitted bound leaves that side open. The READ predicate is the last condition, so a
         member the scope may not read is never returned, and the OWNER predicate in the
-        select list flags each returned member. The rows come back in no defined order.
+        select list flags each returned member. The rows come back in no defined order. On
+        SQLite the statement names the ingest index, because SQLite's statistics would
+        otherwise send the read of a corpus thread far larger than the database's average
+        thread through ``idx_thread_id``.
 
         Args:
             scope: The caller's scope.
@@ -121,9 +150,10 @@ class ContextIngestMixin(BaseRepository):
         )
         params.extend(read.params)
         where = ' AND '.join(conditions)
+        hint = _index_hint(backend_type)
         query = (
             f'SELECT {_select_list(backend_type)}, {owner.admits_expression()} AS is_owner '
-            f'FROM {entries} WHERE {where}{read.and_clause()}'
+            f'FROM {entries}{hint} WHERE {where}{read.and_clause()}'
         )
 
         if backend_type == 'sqlite':
@@ -160,7 +190,10 @@ class ContextIngestMixin(BaseRepository):
         The OWNER predicate precedes ORDER BY and LIMIT, so a member of another principal,
         readable or hidden, never takes a page slot. Under the system scope the predicate is
         empty and every member is listed. A caller that needs to know whether another page
-        follows asks for one row more than it shows.
+        follows asks for one row more than it shows. On SQLite the statement names the
+        ingest index, because SQLite's statistics would otherwise send the page of a corpus
+        thread far larger than the database's average thread through
+        ``idx_context_owner_thread`` and sort every member the caller owns.
 
         Args:
             scope: The caller's scope.
@@ -191,8 +224,9 @@ class ContextIngestMixin(BaseRepository):
         params.extend(owner.params)
         params.append(limit)
         where = ' AND '.join(conditions)
+        hint = _index_hint(backend_type)
         query = (
-            f'SELECT {_select_list(backend_type)} FROM {entries} WHERE {where}{owner.and_clause()} '
+            f'SELECT {_select_list(backend_type)} FROM {entries}{hint} WHERE {where}{owner.and_clause()} '
             f'ORDER BY {key}, ce.id LIMIT {self._placeholder(len(params))}'
         )
 
