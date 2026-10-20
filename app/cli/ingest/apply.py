@@ -17,6 +17,7 @@ as withheld.
 """
 
 import sys
+import time
 from collections.abc import Callable
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
@@ -335,7 +336,11 @@ class _Run:
         self._list_deletes(piece, plan)
 
     def _list_deletes(self, piece: ManifestSlice, plan: PlanContextSyncDict) -> None:
-        """Print the planned deletes of a range: as withheld when a directory was not listed, else as dry-run deletes."""
+        """Print and count a range's planned deletes: as withheld when a directory was not listed, else as dry-run deletes.
+
+        A plan lists at most 100 deletes of its range, so the listed ones are printed
+        and recorded one by one and the count covers every planned delete.
+        """
         withheld = self.prepared.withhold_deletes
         for delete in plan['deletes']:
             _say(f'{"withheld delete" if withheld else "would delete"} {_delete_line(delete)}')
@@ -346,6 +351,8 @@ class _Run:
             _say(f'... and {unlisted} more planned deletes in {_describe(piece)}')
         if withheld:
             self.report.count('withheld', plan['deletes_total'])
+        else:
+            self.report.count('deleted', unlisted)
 
     async def _create(self, plans: list[PlanContextSyncDict]) -> None:
         """Store every planned create as a fresh entry owned by the caller."""
@@ -389,37 +396,66 @@ class _Run:
     ) -> int:
         """Send entries through a batch tool in packed, non-atomic batches, one after another.
 
+        A generating server can take minutes per batch, so every batch prints a line
+        with the documents applied so far, its position, its failed entries and the
+        seconds since the leg began.
+
         Returns:
             How many entries the server applied.
+        """
+        started = time.monotonic()
+        batches = pack(entries, batch_size=self.config.batch_size, max_request_bytes=self.config.max_request_bytes)
+        applied = 0
+        offset = 0
+        for position, batch in enumerate(batches, start=1):
+            batch_sources = source_ids[offset:offset + len(batch)]
+            offset += len(batch)
+            done = await self._send_batch(tool, key, batch, batch_sources, outcome=outcome)
+            applied += done
+            _say(
+                f'{outcome} {applied} of {len(entries)} documents (batch {position} of {len(batches)}, '
+                f'{len(batch) - done} failed, {round(time.monotonic() - started)} s)',
+            )
+        return applied
+
+    async def _send_batch(
+        self,
+        tool: str,
+        key: Literal['entries', 'updates'],
+        batch: list[dict[str, object]],
+        batch_sources: list[str],
+        *,
+        outcome: Literal['created', 'updated'],
+    ) -> int:
+        """Send one batch and record each of its entries' outcome.
+
+        Returns:
+            How many of the batch's entries the server applied.
 
         Raises:
             IngestExitError: The server answered with something that is not the tool's response.
         """
+        result = await self.session.call_tool(tool, {key: batch, 'atomic': False})
+        if isinstance(result, ToolFailure):
+            for source_id in batch_sources:
+                self._add(source_id, 'failed', error=result.message)
+            return 0
+        adapter = _STORE_RESPONSE if key == 'entries' else _UPDATE_RESPONSE
+        try:
+            response = adapter.validate_python(result)
+        except ValidationError as error:
+            raise IngestExitError(EXIT_CONFIG, _unexpected(tool, error)) from error
+        results = {item['index']: item for item in response['results']}
         applied = 0
-        offset = 0
-        for batch in pack(entries, batch_size=self.config.batch_size, max_request_bytes=self.config.max_request_bytes):
-            batch_sources = source_ids[offset:offset + len(batch)]
-            offset += len(batch)
-            result = await self.session.call_tool(tool, {key: batch, 'atomic': False})
-            if isinstance(result, ToolFailure):
-                for source_id in batch_sources:
-                    self._add(source_id, 'failed', error=result.message)
-                continue
-            adapter = _STORE_RESPONSE if key == 'entries' else _UPDATE_RESPONSE
-            try:
-                response = adapter.validate_python(result)
-            except ValidationError as error:
-                raise IngestExitError(EXIT_CONFIG, _unexpected(tool, error)) from error
-            results = {item['index']: item for item in response['results']}
-            for index, source_id in enumerate(batch_sources):
-                item = results.get(index)
-                if item is None:
-                    self._add(source_id, 'failed', error=f'{tool} returned no result for this entry')
-                elif item['success']:
-                    applied += 1
-                    self._add(source_id, outcome, context_id=item['context_id'])
-                else:
-                    self._add(source_id, 'failed', context_id=item['context_id'], error=item['error'])
+        for index, source_id in enumerate(batch_sources):
+            item = results.get(index)
+            if item is None:
+                self._add(source_id, 'failed', error=f'{tool} returned no result for this entry')
+            elif item['success']:
+                applied += 1
+                self._add(source_id, outcome, context_id=item['context_id'])
+            else:
+                self._add(source_id, 'failed', context_id=item['context_id'], error=item['error'])
         return applied
 
     async def _delete(self) -> None:

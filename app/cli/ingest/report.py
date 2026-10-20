@@ -67,7 +67,8 @@ class RunReport:
         dry_run: Whether the run only planned.
         outcomes: One outcome per document, in the order the run settled them.
         errors: Run-level problems, such as an excluded file or a directory that could not be listed.
-        counts: The number of documents per outcome, the foreign members and the withheld deletes.
+        counts: The number of documents per outcome, the foreign members and the withheld deletes;
+            a dry run's ``deleted`` also counts the planned deletes its plans did not list.
         exit_code: The command's exit code, the most severe one any problem called for.
     """
 
@@ -89,8 +90,15 @@ class RunReport:
         if outcome.outcome in _PARTIAL_OUTCOMES:
             self.escalate(EXIT_PARTIAL)
 
-    def count(self, key: Literal['foreign', 'withheld'], amount: int) -> None:
-        """Add to a run-level count: members another principal owns, or deletes the run did not execute."""
+    def count(self, key: Literal['deleted', 'foreign', 'withheld'], amount: int) -> None:
+        """Add to a count no document outcome stands for.
+
+        Args:
+            key: ``foreign`` for members another principal owns, ``withheld`` for deletes
+                the run did not execute, or ``deleted`` for the planned deletes a dry run
+                counts beyond the ones the plan listed.
+            amount: How many to add.
+        """
         self.counts[key] += amount
 
     def fail(self, message: str, *, exit_code: int) -> None:

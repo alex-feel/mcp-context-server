@@ -7,13 +7,11 @@ thread converges on the corpus.
 
 import os
 from collections.abc import Iterator
-from collections.abc import Mapping
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TypedDict
-from typing import Unpack
 from typing import cast
 
+import httpx2
 import pytest
 
 from app.cli.ingest import corpus
@@ -23,60 +21,32 @@ from app.cli.ingest.client import EXIT_CONFIG
 from app.cli.ingest.client import EXIT_CONVERGED
 from app.cli.ingest.client import EXIT_PARTIAL
 from app.cli.ingest.client import EXIT_TRANSIENT
+from app.cli.ingest.client import IngestClient
 from app.cli.ingest.client import IngestExitError
 from app.cli.ingest.client import TokenFileAuth
 from app.cli.ingest.client import ToolFailure
 from app.cli.ingest.corpus import DirectoryFailure
-from app.cli.ingest.corpus import Visibility
 from app.cli.ingest.manifest import meta_digest
 from app.cli.ingest.manifest import request_bytes
 from app.cli.ingest.report import RunReport
 from app.ingest import INGEST_KEY
 from app.ingest import MAX_SOURCE_ID_LENGTH
 from app.ingest import ingest_block_error
-from tests.cli.ingest._fake_server import OTHER
 from tests.cli.ingest._fake_server import FakeServer
 from tests.cli.ingest._fake_server import Json
-
-THREAD_ID = 'kb:handbook'
-SERVER = 'http://127.0.0.1:8765/mcp'
-STORE = 'store_context_batch'
-UPDATE = 'update_context_batch'
-DELETE = 'delete_context_batch'
-PLAN = 'plan_context_sync'
-SYNCED_AT = '2026-10-18T12:00:00Z'
-
-
-def _write(root: Path, relative: str, text: str) -> Path:
-    """Write a corpus file, creating its directories."""
-    path = root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding='utf-8')
-    return path
-
-
-class _Settings(TypedDict, total=False):
-    """The run settings a test changes from their defaults."""
-
-    tags: tuple[str, ...]
-    metadata: Mapping[str, object]
-    visibility: Visibility
-    token_file: Path
-    dry_run: bool
-    allow_empty_corpus: bool
-    batch_size: int
-    max_request_bytes: int
-
-
-async def _sync(server: FakeServer, root: Path, **settings: Unpack[_Settings]) -> RunReport:
-    """Run a sync of a directory against the fake server."""
-    config = RunConfig(server=SERVER, corpus='handbook', source_dir=root, **settings)
-    return await run_sync(config, connect=server.connect)
-
-
-def _managed(source_id: str) -> Json:
-    """Return the metadata of an entry an earlier run stored for a source."""
-    return {INGEST_KEY: {'scope': THREAD_ID, 'source_id': source_id, 'meta_digest': '0' * 64, 'synced_at': SYNCED_AT}}
+from tests.cli.ingest._stand_in import Exchange
+from tests.cli.ingest._stand_in import failing
+from tests.cli.ingest._stand_in import ingest_client
+from tests.cli.ingest._sync_run import DELETE
+from tests.cli.ingest._sync_run import PLAN
+from tests.cli.ingest._sync_run import SERVER
+from tests.cli.ingest._sync_run import STORE
+from tests.cli.ingest._sync_run import THREAD_ID
+from tests.cli.ingest._sync_run import UPDATE
+from tests.cli.ingest._sync_run import managed_metadata
+from tests.cli.ingest._sync_run import sources_with
+from tests.cli.ingest._sync_run import sync_directory
+from tests.cli.ingest._sync_run import write_document
 
 
 def _sent(server: FakeServer, tool: str, key: str) -> list[Json]:
@@ -87,11 +57,6 @@ def _sent(server: FakeServer, tool: str, key: str) -> list[Json]:
 def _block(entry: Json) -> Json:
     """Return the ingest block of a sent entry."""
     return cast('Json', cast('Json', entry['metadata'])[INGEST_KEY])
-
-
-def _outcomes(report: RunReport, outcome: str) -> list[str]:
-    """Return the source ids of the documents with one outcome."""
-    return [item.source_id for item in report.outcomes if item.outcome == outcome]
 
 
 def _failures(report: RunReport) -> list[tuple[str, str | None]]:
@@ -123,10 +88,10 @@ class TestCreates:
     @pytest.mark.asyncio
     async def test_bootstrap_stores_every_document_without_deduplication(self, server: FakeServer, tmp_path: Path) -> None:
         """Every create goes through a non-atomic batch with deduplicate false and an explicit visibility."""
-        _write(tmp_path, 'a.md', '# Alpha\n\nfirst')
-        _write(tmp_path, 'guides/b.md', 'second')
+        write_document(tmp_path, 'a.md', '# Alpha\n\nfirst')
+        write_document(tmp_path, 'guides/b.md', 'second')
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONVERGED
         assert [call.arguments['atomic'] for call in server.calls_to(STORE)] == [False]
@@ -140,7 +105,7 @@ class TestCreates:
             assert ingest_block_error(_block(entry)) is None
             assert _block(entry)['scope'] == THREAD_ID
         assert sorted(server.by_source(THREAD_ID)) == ['a.md', 'guides/b.md']
-        assert _outcomes(report, 'created') == ['a.md', 'guides/b.md']
+        assert sources_with(report, 'created') == ['a.md', 'guides/b.md']
         assert {item.context_id for item in report.outcomes} == set(server.entries)
         assert server.calls_to(DELETE) == []
         assert report.errors == []
@@ -148,9 +113,9 @@ class TestCreates:
     @pytest.mark.asyncio
     async def test_sent_visibility_is_the_hashed_visibility(self, server: FakeServer, tmp_path: Path) -> None:
         """The digest each entry carries covers exactly the metadata, tags and visibility it is sent with."""
-        _write(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'a.md', 'alpha')
 
-        report = await _sync(server, tmp_path, visibility='public', tags=('Guide', 'ops'), metadata={'team': 'docs'})
+        report = await sync_directory(server, tmp_path, visibility='public', tags=('Guide', 'ops'), metadata={'team': 'docs'})
 
         assert report.exit_code == EXIT_CONVERGED
         (entry,) = _sent(server, STORE, 'entries')
@@ -163,15 +128,15 @@ class TestCreates:
     async def test_creates_are_packed_by_count_and_by_bytes(self, server: FakeServer, tmp_path: Path) -> None:
         """A batch holds at most --batch-size entries and never more bytes than the request budget."""
         for name in 'abcde':
-            _write(tmp_path, f'{name}.md', name * 2000)
+            write_document(tmp_path, f'{name}.md', name * 2000)
 
-        by_count = await _sync(server, tmp_path, batch_size=2)
+        by_count = await sync_directory(server, tmp_path, batch_size=2)
 
         assert by_count.exit_code == EXIT_CONVERGED
         assert [len(cast('list[Json]', call.arguments['entries'])) for call in server.calls_to(STORE)] == [2, 2, 1]
 
         bytes_server = FakeServer()
-        by_bytes = await _sync(bytes_server, tmp_path, max_request_bytes=6000)
+        by_bytes = await sync_directory(bytes_server, tmp_path, max_request_bytes=6000)
 
         assert by_bytes.exit_code == EXIT_CONVERGED
         batches = [cast('list[Json]', call.arguments['entries']) for call in bytes_server.calls_to(STORE)]
@@ -184,14 +149,14 @@ class TestCreates:
         self, server: FakeServer, tmp_path: Path,
     ) -> None:
         """A per-entry failure is that document's failure; the rest are stored and the final plan still shows it."""
-        _write(tmp_path, 'a.md', 'alpha')
-        _write(tmp_path, 'b.md', 'beta')
+        write_document(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'b.md', 'beta')
         server.failing_sources['b.md'] = 'Generation failed after exhausting configured retries'
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_PARTIAL
-        assert _outcomes(report, 'created') == ['a.md']
+        assert sources_with(report, 'created') == ['a.md']
         assert _failures(report) == [('b.md', 'Generation failed after exhausting configured retries')]
         assert any('did not converge' in error for error in report.errors)
 
@@ -200,40 +165,40 @@ class TestCreates:
         self, server: FakeServer, tmp_path: Path,
     ) -> None:
         """A batch the server or a proxy refused fails its own entries; the next batch is still sent."""
-        _write(tmp_path, 'a.md', 'alpha')
-        _write(tmp_path, 'b.md', 'beta')
+        write_document(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'b.md', 'beta')
         server.fail_next(STORE, ToolFailure('the request was too large for the server (HTTP 413)'))
 
-        report = await _sync(server, tmp_path, batch_size=1)
+        report = await sync_directory(server, tmp_path, batch_size=1)
 
         assert report.exit_code == EXIT_PARTIAL
         assert len(server.calls_to(STORE)) == 2
         assert _failures(report) == [('a.md', 'the request was too large for the server (HTTP 413)')]
-        assert _outcomes(report, 'created') == ['b.md']
+        assert sources_with(report, 'created') == ['b.md']
 
     @pytest.mark.asyncio
     async def test_an_entry_the_response_does_not_answer_fails(self, server: FakeServer, tmp_path: Path) -> None:
         """An entry without a per-entry result is a failure of that document."""
-        _write(tmp_path, 'a.md', 'alpha')
-        _write(tmp_path, 'b.md', 'beta')
+        write_document(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'b.md', 'beta')
         server.answer_next(STORE, {
             'success': True, 'total': 2, 'succeeded': 1, 'failed': 0, 'message': 'Stored 1',
             'results': [{'index': 0, 'success': True, 'context_id': '0190' + '0' * 28, 'error': None}],
         })
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_PARTIAL
-        assert _outcomes(report, 'created') == ['a.md']
+        assert sources_with(report, 'created') == ['a.md']
         assert _failures(report) == [('b.md', 'store_context_batch returned no result for this entry')]
 
     @pytest.mark.asyncio
     async def test_a_batch_response_of_another_shape_exits_2(self, server: FakeServer, tmp_path: Path) -> None:
         """A batch answer without the batch response's fields ends the run as a configuration error."""
-        _write(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'a.md', 'alpha')
         server.answer_next(STORE, {'stored': 1})
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONFIG
         assert any('store_context_batch with an unexpected result' in error for error in report.errors)
@@ -245,26 +210,26 @@ class TestUpdates:
     @pytest.mark.asyncio
     async def test_a_rerun_without_changes_writes_nothing(self, server: FakeServer, tmp_path: Path) -> None:
         """Every document is unchanged, so no batch tool is called."""
-        _write(tmp_path, 'a.md', 'alpha')
-        _write(tmp_path, 'b.md', 'beta')
-        await _sync(server, tmp_path)
+        write_document(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'b.md', 'beta')
+        await sync_directory(server, tmp_path)
         server.calls.clear()
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONVERGED
         assert {call.tool for call in server.calls} == {'preflight', PLAN}
-        assert _outcomes(report, 'unchanged') == ['a.md', 'b.md']
+        assert sources_with(report, 'unchanged') == ['a.md', 'b.md']
 
     @pytest.mark.asyncio
     async def test_a_text_change_sends_the_text_and_the_full_metadata(self, server: FakeServer, tmp_path: Path) -> None:
         """The update carries the text, the whole metadata with a fresh block, the tags and the visibility."""
-        path = _write(tmp_path, 'a.md', 'alpha')
-        await _sync(server, tmp_path)
+        path = write_document(tmp_path, 'a.md', 'alpha')
+        await sync_directory(server, tmp_path)
         (context_id,) = server.entries
         path.write_text('alpha, revised', encoding='utf-8')
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONVERGED
         assert [call.arguments['atomic'] for call in server.calls_to(UPDATE)] == [False]
@@ -280,10 +245,10 @@ class TestUpdates:
     @pytest.mark.asyncio
     async def test_a_metadata_change_sends_no_text(self, server: FakeServer, tmp_path: Path) -> None:
         """A tag change replaces the metadata, tags and visibility without regenerating the text."""
-        _write(tmp_path, 'a.md', 'alpha')
-        await _sync(server, tmp_path)
+        write_document(tmp_path, 'a.md', 'alpha')
+        await sync_directory(server, tmp_path)
 
-        report = await _sync(server, tmp_path, tags=('guide',))
+        report = await sync_directory(server, tmp_path, tags=('guide',))
 
         assert report.exit_code == EXIT_CONVERGED
         (update,) = _sent(server, UPDATE, 'updates')
@@ -293,11 +258,11 @@ class TestUpdates:
     @pytest.mark.asyncio
     async def test_a_text_and_metadata_change_sends_both(self, server: FakeServer, tmp_path: Path) -> None:
         """A change of both sends the text together with the full metadata."""
-        path = _write(tmp_path, 'a.md', 'alpha')
-        await _sync(server, tmp_path)
+        path = write_document(tmp_path, 'a.md', 'alpha')
+        await sync_directory(server, tmp_path)
         path.write_text('alpha, revised', encoding='utf-8')
 
-        report = await _sync(server, tmp_path, tags=('guide',))
+        report = await sync_directory(server, tmp_path, tags=('guide',))
 
         assert report.exit_code == EXIT_CONVERGED
         (update,) = _sent(server, UPDATE, 'updates')
@@ -306,13 +271,13 @@ class TestUpdates:
     @pytest.mark.asyncio
     async def test_a_refused_update_is_a_failure(self, server: FakeServer, tmp_path: Path) -> None:
         """A per-entry not-authorized answer fails that document."""
-        path = _write(tmp_path, 'a.md', 'alpha')
-        await _sync(server, tmp_path)
+        path = write_document(tmp_path, 'a.md', 'alpha')
+        await sync_directory(server, tmp_path)
         (context_id,) = server.entries
         server.failing_updates[context_id] = f'Not authorized to modify context entry {context_id}'
         path.write_text('alpha, revised', encoding='utf-8')
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_PARTIAL
         assert _failures(report) == [('a.md', f'Not authorized to modify context entry {context_id}')]
@@ -324,15 +289,15 @@ class TestDeletes:
     @pytest.mark.asyncio
     async def test_a_removed_document_is_deleted_by_id_after_the_updates(self, server: FakeServer, tmp_path: Path) -> None:
         """The delete names the entry's id alone and follows the update of the remaining document."""
-        path = _write(tmp_path, 'a.md', 'alpha')
-        removed = _write(tmp_path, 'b.md', 'beta')
-        await _sync(server, tmp_path)
+        path = write_document(tmp_path, 'a.md', 'alpha')
+        removed = write_document(tmp_path, 'b.md', 'beta')
+        await sync_directory(server, tmp_path)
         (removed_id,) = [entry.context_id for entry in server.by_source(THREAD_ID)['b.md']]
         removed.unlink()
         path.write_text('alpha, revised', encoding='utf-8')
         server.calls.clear()
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONVERGED
         tools = [call.tool for call in server.calls]
@@ -346,11 +311,11 @@ class TestDeletes:
     @pytest.mark.asyncio
     async def test_deletes_repeat_until_the_plan_lists_none(self, server: FakeServer, tmp_path: Path) -> None:
         """A plan lists at most 100 deletes, so the leg deletes, plans again and deletes the rest."""
-        _write(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'a.md', 'alpha')
         for number in range(150):
-            server.seed(thread_id=THREAD_ID, text=f'gone {number}', metadata=_managed(f'gone/{number:03}.md'))
+            server.seed(thread_id=THREAD_ID, text=f'gone {number}', metadata=managed_metadata(f'gone/{number:03}.md'))
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONVERGED
         assert [len(cast('list[str]', call.arguments['context_ids'])) for call in server.calls_to(DELETE)] == [100, 50]
@@ -363,13 +328,13 @@ class TestDeletes:
     ) -> None:
         """A small request budget splits the manifest into ranges, and a removal is deleted once, by its range."""
         for name in 'abcdef':
-            _write(tmp_path, f'{name}.md', name)
-        await _sync(server, tmp_path, max_request_bytes=2600)
+            write_document(tmp_path, f'{name}.md', name)
+        await sync_directory(server, tmp_path, max_request_bytes=2600)
         (removed_id,) = [entry.context_id for entry in server.by_source(THREAD_ID)['c.md']]
         (tmp_path / 'c.md').unlink()
         server.calls.clear()
 
-        report = await _sync(server, tmp_path, max_request_bytes=2600)
+        report = await sync_directory(server, tmp_path, max_request_bytes=2600)
 
         assert report.exit_code == EXIT_CONVERGED
         bounds = [
@@ -384,27 +349,27 @@ class TestDeletes:
     @pytest.mark.asyncio
     async def test_the_delete_loop_stops_when_a_round_makes_no_progress(self, server: FakeServer, tmp_path: Path) -> None:
         """A delete that removes nothing is not repeated, and the run reports it as not converged."""
-        _write(tmp_path, 'a.md', 'alpha')
-        stuck = server.seed(thread_id=THREAD_ID, text='gone', metadata=_managed('gone.md'))
+        write_document(tmp_path, 'a.md', 'alpha')
+        stuck = server.seed(thread_id=THREAD_ID, text='gone', metadata=managed_metadata('gone.md'))
         server.undeletable.add(stuck)
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_PARTIAL
         assert [call.arguments for call in server.calls_to(DELETE)] == [{'context_ids': [stuck]}]
         assert any('no progress' in error for error in report.errors)
         assert any('did not converge' in error for error in report.errors)
-        assert _outcomes(report, 'deleted') == []
+        assert sources_with(report, 'deleted') == []
 
     @pytest.mark.asyncio
     async def test_a_duplicate_is_deleted_and_the_newest_copy_survives(self, server: FakeServer, tmp_path: Path) -> None:
         """Two stored copies of one document converge on one: the plan's survivor."""
-        _write(tmp_path, 'a.md', 'alpha')
-        await _sync(server, tmp_path)
+        write_document(tmp_path, 'a.md', 'alpha')
+        await sync_directory(server, tmp_path)
         (original,) = server.entries
         newer = server.duplicate(original)
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONVERGED
         assert [entry.context_id for entry in server.by_source(THREAD_ID)['a.md']] == [newer]
@@ -415,13 +380,13 @@ class TestDeletes:
     @pytest.mark.asyncio
     async def test_a_refused_delete_call_fails_its_entries(self, server: FakeServer, tmp_path: Path) -> None:
         """A delete the server refuses fails the entries it named and leaves them stored."""
-        _write(tmp_path, 'a.md', 'alpha')
-        removed = _write(tmp_path, 'b.md', 'beta')
-        await _sync(server, tmp_path)
+        write_document(tmp_path, 'a.md', 'alpha')
+        removed = write_document(tmp_path, 'b.md', 'beta')
+        await sync_directory(server, tmp_path)
         removed.unlink()
         server.fail_next(DELETE, ToolFailure('Not authorized to delete context entries'))
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_PARTIAL
         assert _failures(report) == [('b.md', 'Not authorized to delete context entries')]
@@ -434,13 +399,13 @@ class TestUnusableFiles:
     @pytest.mark.asyncio
     async def test_an_unreadable_stored_document_is_kept(self, server: FakeServer, tmp_path: Path) -> None:
         """An undecodable file is a keep item: its stored entry is neither updated nor deleted."""
-        _write(tmp_path, 'a.md', 'alpha')
-        broken = _write(tmp_path, 'b.md', 'beta')
-        await _sync(server, tmp_path)
+        write_document(tmp_path, 'a.md', 'alpha')
+        broken = write_document(tmp_path, 'b.md', 'beta')
+        await sync_directory(server, tmp_path)
         broken.write_bytes(b'\xff\xfe not utf-8 \x80')
         server.calls.clear()
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_PARTIAL
         manifests = [cast('list[Json]', call.arguments['manifest']) for call in server.calls_to(PLAN)]
@@ -448,7 +413,7 @@ class TestUnusableFiles:
         assert server.calls_to(UPDATE) == []
         assert server.calls_to(DELETE) == []
         assert [entry.text for entry in server.by_source(THREAD_ID)['b.md']] == ['beta']
-        assert _outcomes(report, 'kept') == ['b.md']
+        assert sources_with(report, 'kept') == ['b.md']
         assert not any('did not converge' in error for error in report.errors)
 
     @pytest.mark.asyncio
@@ -456,7 +421,7 @@ class TestUnusableFiles:
         self, server: FakeServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A source id above the bound is in no manifest and no batch, and the run names it."""
-        path = _write(tmp_path, 'a.md', 'alpha')
+        path = write_document(tmp_path, 'a.md', 'alpha')
         too_long = 'x' * (MAX_SOURCE_ID_LENGTH + 1)
 
         def walk(
@@ -467,13 +432,13 @@ class TestUnusableFiles:
 
         monkeypatch.setattr(corpus, 'walk', walk)
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_PARTIAL
         manifests = [cast('list[Json]', call.arguments['manifest']) for call in server.calls_to(PLAN)]
         assert {item['source_id'] for manifest in manifests for item in manifest} == {'a.md'}
         assert [_block(entry)['source_id'] for entry in _sent(server, STORE, 'entries')] == ['a.md']
-        assert _outcomes(report, 'failed') == [too_long]
+        assert sources_with(report, 'failed') == [too_long]
         assert any(too_long in error for error in report.errors)
 
 
@@ -485,16 +450,16 @@ class TestDirectoryFailures:
         self, server: FakeServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The run creates and updates, never calls the delete tool, counts the withheld deletes and names the directory."""
-        top = _write(tmp_path, 'top.md', 'top')
-        _write(tmp_path, 'locked/inner.md', 'inner')
-        gone = _write(tmp_path, 'gone.md', 'gone')
-        await _sync(server, tmp_path)
+        top = write_document(tmp_path, 'top.md', 'top')
+        write_document(tmp_path, 'locked/inner.md', 'inner')
+        gone = write_document(tmp_path, 'gone.md', 'gone')
+        await sync_directory(server, tmp_path)
         gone.unlink()
         top.write_text('top, revised', encoding='utf-8')
-        _write(tmp_path, 'new.md', 'new')
+        write_document(tmp_path, 'new.md', 'new')
         _refuse_listing(monkeypatch, tmp_path / 'locked')
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_PARTIAL
         assert server.calls_to(DELETE) == []
@@ -512,20 +477,39 @@ class TestDirectoryFailures:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A dry run under a directory failure prints the planned deletes as withheld and writes nothing."""
-        _write(tmp_path, 'top.md', 'top')
-        _write(tmp_path, 'locked/inner.md', 'inner')
-        await _sync(server, tmp_path)
+        write_document(tmp_path, 'top.md', 'top')
+        write_document(tmp_path, 'locked/inner.md', 'inner')
+        await sync_directory(server, tmp_path)
         (inner_id,) = [entry.context_id for entry in server.by_source(THREAD_ID)['locked/inner.md']]
         _refuse_listing(monkeypatch, tmp_path / 'locked')
         capsys.readouterr()
 
-        report = await _sync(server, tmp_path, dry_run=True)
+        report = await sync_directory(server, tmp_path, dry_run=True)
 
         assert report.exit_code == EXIT_PARTIAL
         assert report.counts['withheld'] == 1
-        assert _outcomes(report, 'deleted') == []
+        assert sources_with(report, 'deleted') == []
         assert f'withheld delete locked/inner.md {inner_id} (absent)' in capsys.readouterr().out.splitlines()
         assert inner_id in server.entries
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('dry_run', [False, True])
+    async def test_withheld_deletes_past_the_listed_ones_count_as_withheld_alone(
+        self, server: FakeServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool,
+    ) -> None:
+        """Every planned delete, listed or not, is withheld, and none counts as deleted."""
+        write_document(tmp_path, 'top.md', 'top')
+        write_document(tmp_path, 'locked/inner.md', 'inner')
+        await sync_directory(server, tmp_path)
+        for number in range(104):
+            server.seed(thread_id=THREAD_ID, text=f'gone {number}', metadata=managed_metadata(f'gone/{number:03}.md'))
+        _refuse_listing(monkeypatch, tmp_path / 'locked')
+
+        report = await sync_directory(server, tmp_path, dry_run=dry_run)
+
+        assert report.exit_code == EXIT_PARTIAL
+        assert (report.counts['withheld'], report.counts['deleted']) == (105, 0)
+        assert server.calls_to(DELETE) == []
 
 
 class TestRunEnding:
@@ -534,12 +518,12 @@ class TestRunEnding:
     @pytest.mark.asyncio
     async def test_a_timed_out_call_is_never_resent(self, server: FakeServer, tmp_path: Path) -> None:
         """A store whose answer never came ends the run; the next run finds what it committed and converges."""
-        _write(tmp_path, 'a.md', 'alpha')
-        _write(tmp_path, 'b.md', 'beta')
+        write_document(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'b.md', 'beta')
         timeout = IngestExitError(EXIT_TRANSIENT, 'the call to store_context_batch got no answer within --call-timeout')
         server.fail_next(STORE, timeout, commit=True)
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_TRANSIENT
         assert report.errors == [timeout.message]
@@ -547,7 +531,7 @@ class TestRunEnding:
         assert server.calls[-1].tool == STORE
         server.calls.clear()
 
-        rerun = await _sync(server, tmp_path)
+        rerun = await sync_directory(server, tmp_path)
 
         assert rerun.exit_code == EXIT_CONVERGED
         assert server.calls_to(STORE) == []
@@ -556,11 +540,11 @@ class TestRunEnding:
     @pytest.mark.asyncio
     async def test_a_refused_plan_exits_2_before_any_write(self, server: FakeServer, tmp_path: Path) -> None:
         """The plan tool's error is a plan error, reported, and nothing is written."""
-        _write(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'a.md', 'alpha')
         refusal = "manifest repeats source_id values (each may appear once): 'a.md'"
         server.fail_next(PLAN, ToolFailure(refusal))
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONFIG
         assert any(refusal in error for error in report.errors)
@@ -584,10 +568,10 @@ class TestRunEnding:
         self, server: FakeServer, tmp_path: Path, answer: Json, message: str,
     ) -> None:
         """A plan without the plan's fields, or naming an index past the manifest, ends the run before any write."""
-        _write(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'a.md', 'alpha')
         server.answer_next(PLAN, answer)
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONFIG
         assert any(message in error for error in report.errors)
@@ -596,10 +580,10 @@ class TestRunEnding:
     @pytest.mark.asyncio
     async def test_a_failed_preflight_ends_the_run_with_its_code(self, server: FakeServer, tmp_path: Path) -> None:
         """A server without the sync tools is refused before the first plan."""
-        _write(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'a.md', 'alpha')
         server.preflight_exit = IngestExitError(EXIT_CONFIG, 'the server does not offer plan_context_sync')
 
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONFIG
         assert report.errors == ['the server does not offer plan_context_sync']
@@ -609,18 +593,18 @@ class TestRunEnding:
     async def test_the_token_file_is_read_before_the_server_is_contacted(self, server: FakeServer, tmp_path: Path) -> None:
         """An empty token file exits 2 without a connection; a usable one becomes the session's auth."""
         corpus_root = tmp_path / 'corpus'
-        _write(corpus_root, 'a.md', 'alpha')
+        write_document(corpus_root, 'a.md', 'alpha')
         token = tmp_path / 'token'
         token.write_text('\n', encoding='utf-8')
 
-        refused = await _sync(server, corpus_root, token_file=token)
+        refused = await sync_directory(server, corpus_root, token_file=token)
 
         assert refused.exit_code == EXIT_CONFIG
         assert refused.errors == [f'the token file is empty: {token}']
         assert server.connections == []
 
         token.write_text('ingest-token\n', encoding='utf-8')
-        accepted = await _sync(server, corpus_root, token_file=token)
+        accepted = await sync_directory(server, corpus_root, token_file=token)
 
         assert accepted.exit_code == EXIT_CONVERGED
         (auth,) = server.connections
@@ -630,93 +614,33 @@ class TestRunEnding:
     @pytest.mark.asyncio
     async def test_a_request_budget_below_one_plan_call_exits_2(self, server: FakeServer, tmp_path: Path) -> None:
         """A --max-request-bytes too small for a plan request is a configuration error found before contact."""
-        _write(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'a.md', 'alpha')
 
-        report = await _sync(server, tmp_path, max_request_bytes=500)
+        report = await sync_directory(server, tmp_path, max_request_bytes=500)
 
         assert report.exit_code == EXIT_CONFIG
         assert any('--max-request-bytes' in error for error in report.errors)
         assert server.connections == []
 
-
-class TestForeignEntries:
-    """Another principal's members are counted and warned about, never changed."""
-
     @pytest.mark.asyncio
-    async def test_foreign_members_warn_and_stay_untouched(
-        self, server: FakeServer, tmp_path: Path, capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """The run builds the caller's own copy and leaves the other principal's public entry alone."""
-        _write(tmp_path, 'a.md', 'alpha')
-        foreign = server.seed(thread_id=THREAD_ID, text='theirs', metadata=_managed('a.md'), owner=OTHER, visibility='public')
+    async def test_a_connection_lost_during_a_call_exits_69_with_a_report(self, exchange: Exchange, tmp_path: Path) -> None:
+        """A connection dropped during the plan call ends the run with exit 69, and the report says why."""
+        write_document(tmp_path, 'a.md', 'alpha')
+        exchange.script(PLAN, failing(httpx2.ReadError))
 
-        report = await _sync(server, tmp_path)
+        def connect(config: RunConfig, auth: httpx2.Auth | None) -> IngestClient:
+            return ingest_client(exchange, auth=auth, call_timeout=config.call_timeout, server=config.server)
 
-        assert report.exit_code == EXIT_CONVERGED
-        assert report.counts['foreign'] == 1
-        assert server.entries[foreign].text == 'theirs'
-        assert len(server.by_source(THREAD_ID)['a.md']) == 2
-        assert 'another principal owns' in capsys.readouterr().err
+        report = await run_sync(RunConfig(server=SERVER, corpus='handbook', source_dir=tmp_path), connect=connect)
 
-
-class TestDryRun:
-    """A dry run plans, prints the plan and writes nothing."""
-
-    @pytest.mark.asyncio
-    async def test_a_dry_run_prints_the_plan_and_writes_nothing(
-        self, server: FakeServer, tmp_path: Path, capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Creates, updates and deletes are printed with their ids, and only the plan tool is called."""
-        edited = _write(tmp_path, 'a.md', 'alpha')
-        removed = _write(tmp_path, 'b.md', 'beta')
-        await _sync(server, tmp_path)
-        ids = {source: entries[0].context_id for source, entries in server.by_source(THREAD_ID).items()}
-        edited.write_text('alpha, revised', encoding='utf-8')
-        removed.unlink()
-        _write(tmp_path, 'c.md', 'gamma')
-        server.calls.clear()
-        capsys.readouterr()
-
-        report = await _sync(server, tmp_path, dry_run=True)
-
-        assert report.exit_code == EXIT_CONVERGED
-        assert {call.tool for call in server.calls} == {'preflight', PLAN}
-        printed = capsys.readouterr().out.splitlines()
-        assert 'would create c.md' in printed
-        assert f'would update a.md {ids["a.md"]} (text)' in printed
-        assert f'would delete b.md {ids["b.md"]} (absent)' in printed
-        assert (report.counts['created'], report.counts['updated'], report.counts['deleted']) == (1, 1, 1)
-        assert server.entries[ids['a.md']].text == 'alpha'
-
-    @pytest.mark.asyncio
-    async def test_a_dry_run_names_the_planned_deletes_past_the_listed_ones(
-        self, server: FakeServer, tmp_path: Path, capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """A plan lists 100 deletes; the dry run prints them and how many more the plan holds."""
-        _write(tmp_path, 'a.md', 'alpha')
-        for number in range(105):
-            server.seed(thread_id=THREAD_ID, text=f'gone {number}', metadata=_managed(f'gone/{number:03}.md'))
-
-        report = await _sync(server, tmp_path, dry_run=True)
-
-        printed = capsys.readouterr().out.splitlines()
-        assert report.exit_code == EXIT_CONVERGED
-        assert 'plan: 1 to create, 0 to update, 105 to delete, 0 unchanged, 0 kept, 0 foreign' in printed
-        assert '... and 5 more planned deletes in the corpus' in printed
-        assert sum(line.startswith('would delete gone/') for line in printed) == 100
-        assert len(server.entries) == 105
-
-    @pytest.mark.asyncio
-    async def test_a_dry_run_with_a_kept_file_exits_1(self, server: FakeServer, tmp_path: Path) -> None:
-        """A keep item makes even a dry run partial."""
-        _write(tmp_path, 'a.md', 'alpha')
-        (tmp_path / 'b.md').write_bytes(b'\xff not utf-8')
-
-        report = await _sync(server, tmp_path, dry_run=True)
-
-        assert report.exit_code == EXIT_PARTIAL
-        assert _outcomes(report, 'kept') == ['b.md']
-        assert server.entries == {}
+        assert report.exit_code == EXIT_TRANSIENT
+        assert report.errors == [
+            (
+                f'the call to {PLAN} lost its connection to {SERVER} (ReadError): '
+                "the call's outcome is unknown; rerun the sync, which plans from what the server stored"
+            ),
+        ]
+        assert [seen.tool for seen in exchange.seen if seen.tool is not None] == [PLAN]
 
 
 class TestEmptyCorpus:
@@ -725,7 +649,7 @@ class TestEmptyCorpus:
     @pytest.mark.asyncio
     async def test_an_empty_walk_exits_2_without_contact(self, server: FakeServer, tmp_path: Path) -> None:
         """A directory without documents is refused before the server is contacted."""
-        report = await _sync(server, tmp_path)
+        report = await sync_directory(server, tmp_path)
 
         assert report.exit_code == EXIT_CONFIG
         assert any('--allow-empty-corpus' in error for error in report.errors)
@@ -734,14 +658,14 @@ class TestEmptyCorpus:
     @pytest.mark.asyncio
     async def test_the_flag_deletes_every_managed_entry(self, server: FakeServer, tmp_path: Path) -> None:
         """With the flag the empty manifest is confirmed and every entry of the corpus is deleted."""
-        first = _write(tmp_path, 'a.md', 'alpha')
-        second = _write(tmp_path, 'b.md', 'beta')
-        await _sync(server, tmp_path)
+        first = write_document(tmp_path, 'a.md', 'alpha')
+        second = write_document(tmp_path, 'b.md', 'beta')
+        await sync_directory(server, tmp_path)
         first.unlink()
         second.unlink()
         server.calls.clear()
 
-        report = await _sync(server, tmp_path, allow_empty_corpus=True)
+        report = await sync_directory(server, tmp_path, allow_empty_corpus=True)
 
         assert report.exit_code == EXIT_CONVERGED
         plans = server.calls_to(PLAN)

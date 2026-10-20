@@ -9,11 +9,11 @@ The MCP transport reports every refused HTTP request as the same opaque JSON-RPC
 error, so the client records the status and ``Retry-After`` header of each response
 with an HTTP event hook and classifies a failed exchange by what it recorded: a
 refused token or a wrong endpoint ends the run with exit code 2, an overloaded or
-unreachable server with 69, and a request too large for the server or a proxy in
-front of it is a failure of that one call. A 401 after the server accepted the
-token earlier in the run is retried once when the token file now holds another
-token, which is safe because the server's authentication refuses a request before
-any tool runs.
+unreachable server or a connection lost during a call with 69, and a request too
+large for the server or a proxy in front of it is a failure of that one call. A
+401 after the server accepted the token earlier in the run is retried once when
+the token file now holds another token, which is safe because the server's
+authentication refuses a request before any tool runs.
 """
 
 import os
@@ -456,6 +456,14 @@ class IngestClient:
                     EXIT_TRANSIENT,
                     f'{what} timed out talking to {self.server} ({type(carried).__name__}): '
                     'rerun the sync, or raise --call-timeout for batches that take longer',
+                )
+            # The server or a proxy closed the connection mid-exchange, as a restart or a
+            # reset connection does; the server may or may not have applied the call.
+            if isinstance(carried, httpx2.NetworkError | httpx2.RemoteProtocolError):
+                return IngestExitError(
+                    EXIT_TRANSIENT,
+                    f'{what} lost its connection to {self.server} ({type(carried).__name__}): '
+                    "the call's outcome is unknown; rerun the sync, which plans from what the server stored",
                 )
         return None
 

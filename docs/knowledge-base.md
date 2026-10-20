@@ -180,7 +180,7 @@ Every document's metadata starts with a `title`: the text of the file's first le
 6. **Delete.** Plan every slice again and delete each slice's listed deletes with `delete_context_batch(context_ids=...)`, planning again until `deletes_total` is 0 or a round removes nothing. Deletes run last, so a run that stops early never removed an entry before the content replacing it was stored.
 7. **Verify.** Plan every slice a last time; anything left to create, update or delete means the run did not converge and exits 1.
 
-Batches are packed by `--batch-size` and `--max-request-bytes` together and sent one after another, and one failed document never rolls back the others. With `--dry-run` the run stops after the plan: it prints each create, update and delete it would make and writes nothing.
+Batches are packed by `--batch-size` and `--max-request-bytes` together and sent one after another, and one failed document never rolls back the others. With `--dry-run` the run stops after the plan: it prints each create and update it would make and the deletes each slice's plan lists, at most 100 per slice followed by the number of further planned deletes, counts every planned delete, and writes nothing.
 
 ### Files and Directories the Run Cannot Use
 
@@ -197,9 +197,9 @@ A walk that finds no document at all exits 2 unless the run passes `--allow-empt
 | 0    | The thread matches the corpus                                                                                                                                                                |
 | 1    | The run completed with problems: a document failed or was kept, a file was left out, a directory could not be listed, a request was too large, or the final plan still holds changes         |
 | 2    | A configuration, authentication or plan error: an invalid flag, a refused token, a wrong `--server` path, a failed preflight, an empty corpus without `--allow-empty-corpus`, a refused plan |
-| 69   | A transient failure: the server is unreachable, a call timed out, or the server or a proxy answered 429, 502, 503 or 504; rerun later                                                        |
+| 69   | A transient failure: the server is unreachable, a call timed out, a connection was lost mid-call, or the server or a proxy answered 429, 502, 503 or 504; rerun later                        |
 
-When several apply, 2 outranks 69, which outranks 1. The command prints its progress and a summary on standard output and each run-level problem on standard error. `--report PATH` writes the same outcome as JSON: `server`, `thread_id`, `dry_run`, `exit_code`, `counts` (`created`, `updated`, `deleted`, `unchanged`, `kept`, `foreign`, `failed` and `withheld`), `documents` (one `{source_id, outcome, context_id, error}` per document or removed entry) and `errors`.
+When several apply, 2 outranks 69, which outranks 1. The command prints its progress and a summary on standard output and each run-level problem on standard error. The progress includes a line after every create and update batch with the documents the leg applied so far, the batch's position and failed entries, and the seconds since the leg began, such as `created 30 of 200 documents (batch 3 of 20, 1 failed, 1872 s)`. `--report PATH` writes the same outcome as JSON: `server`, `thread_id`, `dry_run`, `exit_code`, `counts` (`created`, `updated`, `deleted`, `unchanged`, `kept`, `foreign`, `failed` and `withheld`), `documents` (one `{source_id, outcome, context_id, error}` per document or removed entry) and `errors`. A dry run's `deleted` counts every planned delete, while its `documents` and its printed lines name at most 100 deletes per slice, the ones each plan lists.
 
 ### Scheduling and Batch Sizing
 

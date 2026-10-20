@@ -268,7 +268,7 @@ class TestStatusTable:
 
 
 class TestTransportErrors:
-    """A server that cannot be reached, or does not answer in time, is a transient failure."""
+    """A server that cannot be reached, does not answer in time or drops the connection is a transient failure."""
 
     @pytest.mark.asyncio
     async def test_connect_error_while_connecting(self, exchange: Exchange) -> None:
@@ -325,6 +325,41 @@ class TestTransportErrors:
                 'rerun the sync, which plans from what the server stored'
             ),
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'error', [httpx2.ReadError, httpx2.WriteError, httpx2.CloseError, httpx2.RemoteProtocolError],
+    )
+    @pytest.mark.parametrize(('tool', 'arguments'), [(PLAN_TOOL, PLAN_ARGUMENTS), ('store_context_batch', {'entries': []})])
+    async def test_a_connection_lost_mid_call_is_transient(
+        self, exchange: Exchange, error: type[httpx2.TransportError], tool: str, arguments: dict[str, object],
+    ) -> None:
+        """A connection the server or a proxy drops during a call exits 69: the call's outcome is unknown."""
+        exchange.script(tool, failing(error))
+
+        async with ingest_client(exchange) as client:
+            with pytest.raises(IngestExitError) as raised:
+                await client.call_tool(tool, arguments)
+
+        assert (raised.value.code, raised.value.message) == (
+            EXIT_TRANSIENT,
+            (
+                f'the call to {tool} lost its connection to http://127.0.0.1:8765/mcp ({error.__name__}): '
+                "the call's outcome is unknown; rerun the sync, which plans from what the server stored"
+            ),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('error', [httpx2.LocalProtocolError, httpx2.ProxyError])
+    async def test_a_client_side_transport_error_is_not_transient(
+        self, exchange: Exchange, error: type[httpx2.TransportError],
+    ) -> None:
+        """A request the client itself could not form, or a proxy the client could not use, is no transient failure."""
+        exchange.script(PLAN_TOOL, failing(error))
+
+        async with ingest_client(exchange) as client:
+            with pytest.raises(error):
+                await client.call_tool(PLAN_TOOL, PLAN_ARGUMENTS)
 
 
 class TestPreflight:
