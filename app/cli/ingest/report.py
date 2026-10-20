@@ -41,9 +41,13 @@ _PARTIAL_OUTCOMES: frozenset[Outcome] = frozenset({'failed', 'kept'})
 class DocumentOutcome:
     """What the run did with one document of the corpus, or with one stored entry it removed.
 
+    A dry run records the planned outcome instead: ``created``, ``updated`` or
+    ``deleted`` names the write the apply run that follows makes when the corpus
+    and the stored entries stay as they are and every write succeeds.
+
     Attributes:
         source_id: The document's source id.
-        outcome: What the run did.
+        outcome: What the run did, or under a dry run what it planned.
         context_id: The stored entry the outcome concerns, when there is one.
         error: Why the document failed or was kept, when it was.
     """
@@ -62,6 +66,12 @@ def _zero_counts() -> dict[CountKey, int]:
 @dataclass
 class RunReport:
     """The outcome of one sync run.
+
+    A dry run's counts are the planned ones, equal to what the apply run that follows
+    reports when the corpus and the stored entries stay as they are and every write
+    succeeds; its outcomes name the planned writes, the deletes as far as each plan
+    lists them; and its exit code 0 means that every slice was planned and every file
+    and directory was usable.
 
     Attributes:
         server: The server URL without userinfo.

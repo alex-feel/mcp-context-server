@@ -307,17 +307,19 @@ docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml run --rm --
   --server http://mcp-context-server:8000/mcp --corpus handbook --source-dir /corpus
 ```
 
-`--no-deps` starts no other service, `--entrypoint` replaces the server's entrypoint in that container only, and `--rm` removes the container when the run ends; the running server is untouched. Use the `-f` file of your stack. For a server that requires a bearer token, mount a token file, which the command reads before every request so a refresher can rotate it during a long run:
+`--no-deps` starts no other service, `--entrypoint` replaces the server's entrypoint in that container only, and `--rm` removes the container when the run ends; the running server is untouched. Use the `-f` file of your stack. For a server that requires a bearer token, mount the directory that holds a token file; the command reads the file before every request, so a refresher can rotate the token during a long run:
 
 ```bash
 docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml run --rm --no-deps \
-  -v /path/to/handbook:/corpus:ro -v /path/to/ingest-token:/run/secrets/ingest-token:ro \
+  -v /path/to/handbook:/corpus:ro -v /path/to/secrets:/run/secrets/ingest:ro \
   --entrypoint mcp-context-ingest mcp-context-server \
   --server http://mcp-context-server:8000/mcp --corpus handbook --source-dir /corpus \
-  --token-file /run/secrets/ingest-token
+  --token-file /run/secrets/ingest/token
 ```
 
-Alternatively pass a token exported in the shell with `-e INGEST_TOKEN` before `--entrypoint` and `--token-env INGEST_TOKEN` at the end. The container runs as UID 10001 (`appuser`): a mounted file that user cannot read is kept as stored, and a directory it cannot list makes the run withhold its deletes, so neither ever deletes an entry; make the tree readable to that user. From the host, point `--server` at the published port (`http://localhost:8000/mcp`) and run the command with `uvx --from mcp-context-server mcp-context-ingest` instead. Flags, exit codes and scheduling are in [The mcp-context-ingest CLI](../knowledge-base.md#the-mcp-context-ingest-cli).
+Mount the directory rather than the file. A bind mount of a single file keeps the file that existed when the container started, so a refresher that writes a new file and renames it over the old one, the usual way to replace a file atomically, never reaches the running command; a rename inside a mounted directory is visible in the container. Have the refresher replace `token` inside that directory. The container runs as UID 10001 (`appuser`), which must be able to read the file: make UID 10001 its owner, or GID 10001 its group with read permission for the group, or make it readable to every user; or run the container as the file's owner with `--user "$(id -u):$(id -g)"` before `--entrypoint`, which works because the command writes no file unless `--report` is given. A token file the command cannot read ends the run with exit 2 at the first request.
+
+Alternatively pass a token exported in the shell with `-e INGEST_TOKEN` before `--entrypoint` and `--token-env INGEST_TOKEN` at the end. The same user reads the corpus: a mounted file it cannot read is kept as stored, and a directory it cannot list makes the run withhold its deletes, so neither ever deletes an entry; make the tree readable to that user. From the host, point `--server` at the published port (`http://localhost:8000/mcp`) and run the command with `uvx --from mcp-context-server mcp-context-ingest` instead. Flags, exit codes and scheduling are in [The mcp-context-ingest CLI](../knowledge-base.md#the-mcp-context-ingest-cli).
 
 ## Architecture
 

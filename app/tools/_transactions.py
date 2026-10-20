@@ -143,13 +143,24 @@ async def transaction_heartbeat(txn: object) -> None:
 def is_connection_error(exc: Exception) -> bool:
     """Check if an exception is a transient DB error that is safe to retry.
 
-    Despite the historical name, this classifier covers four transient
-    families, all safe to retry because the database write that follows is
-    idempotent (store_context deduplicates; update_context is a keyed
-    partial update) and ALL embedding/summary/compression generation has
-    already completed OUTSIDE the transaction (generation-first invariant) --
-    so a retry re-runs only the rolled-back DB write and never regenerates or
-    skips generation:
+    The classifier covers four transient families, not only lost connections.
+    A retry is safe because the failed attempt never committed: PostgreSQL aborts
+    the transaction on families 2 and 3, SQLite refuses the write of family 4
+    before it takes effect and the transaction rolls back, and family 1 aborts
+    the transaction when the connection drops before COMMIT. ALL
+    embedding/summary/compression generation has already completed OUTSIDE the
+    transaction (generation-first invariant), so a retry re-runs only the
+    rolled-back DB write and never regenerates or skips generation.
+
+    The exception is a connection lost while COMMIT is in flight: the attempt's
+    outcome is unknown, and the retry runs the write again. An update keyed by id
+    or a delete by id still leaves no more than one attempt's effect, and a single
+    deduplicating store merges into the row its committed attempt inserted, but a
+    ``deduplicate=false`` store, or an atomic batch store of several entries, can
+    insert a second copy of an entry; for a corpus entry, the next sync plan lists
+    that copy as a duplicate delete.
+
+    The four families:
 
     1. Connection-level failures (the connection was lost, not a logical/data
        error): asyncpg.InterfaceError, asyncpg.ConnectionDoesNotExistError,

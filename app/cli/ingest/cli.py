@@ -2,8 +2,9 @@
 
 The command prints its progress and the run's summary on stdout and every
 run-level error on stderr, writes the JSON report ``--report`` names, and exits
-with 0 when the thread matches the corpus, 1 when the run completed with
-problems, 2 on a configuration, authentication or plan error, and 69 on a
+with 0 when the thread matches the corpus (after ``--dry-run``, when every slice
+was planned and every file and directory was usable), 1 when the run completed
+with problems, 2 on a configuration, authentication or plan error, and 69 on a
 transient failure. A bearer token is read from the file ``--token-file`` names or
 from the environment variable ``--token-env`` names, never from the command line.
 """
@@ -56,8 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
             'over MCP Streamable HTTP.'
         ),
         epilog=(
-            'Exit codes: 0 the thread matches the corpus, 1 completed with problems, 2 configuration, authentication '
-            "or plan error, 69 transient failure. See docs/knowledge-base.md, 'The mcp-context-ingest CLI'."
+            'Exit codes: 0 the thread matches the corpus (with --dry-run: every slice planned and every file and '
+            'directory usable), 1 completed with problems, 2 configuration, authentication or plan error, '
+            '69 transient failure. '
+            "See docs/knowledge-base.md, 'The mcp-context-ingest CLI'."
         ),
     )
     parser.add_argument(
