@@ -1,12 +1,14 @@
 """Ollama summary provider using LangChain ChatOllama integration.
 
-Uses ChatOllama for LLM-based abstractive summarization.
+Uses ChatOllama for LLM-based abstractive summarization, with the model's
+reasoning turned off for every call (Ollama's think=false request parameter).
 Default model: qwen3:0.6b (configurable via SUMMARY_MODEL).
 
 Qwen3 Family Model Recommendations:
     - qwen3:0.6b  - Default, lightweight and fast
     - qwen3:1.7b  - Higher quality, good balance of quality and speed
-    - qwen3:4b    - Higher quality, proven stability, concurrent support
+    - qwen3:4b    - Higher quality; the Ollama library build reasons on every call,
+                    and with reasoning off its reasoning lands in the summary text
     - qwen3:8b    - Highest quality, requires more resources
     - qwen3:14b   - Near-frontier quality, significant resources
     - qwen3:32b   - Frontier-level, requires GPU with >20GB VRAM
@@ -62,12 +64,15 @@ class OllamaSummaryProvider:
                 'langchain-ollama package required for Ollama summary provider',
             ) from e
 
+        # reasoning=False sends Ollama's think=false on every call, so a model that can
+        # reason (Qwen3) spends the num_predict budget on the summary, not a hidden trace.
         self._chat_model = ChatOllama(
             model=self._model,
             base_url=self._base_url,
             temperature=0,
             num_predict=self._max_tokens,
             num_ctx=self._num_ctx,
+            reasoning=False,
         )
         logger.info(
             f'Initialized Ollama summary provider: {self._model} at {self._base_url}, '

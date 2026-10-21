@@ -5,17 +5,28 @@ Tests verify:
 - initialize() creates ChatOllama with correct params
 - summarize() returns stripped content
 - summarize() raises RuntimeError when not initialized
+- summarize() and summarize_with_prompt() send /api/chat requests with think false
 - shutdown() sets _chat_model to None
 - is_available() returns True when model responds
 - is_available() returns False when not initialized
 - provider_name returns 'ollama'
 """
 
+import functools
+import json
+from collections.abc import Awaitable
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import httpx
 import pytest
+
+from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+type SummaryCall = Callable[[OllamaSummaryProvider], Awaitable[str]]
 
 
 @pytest.fixture
@@ -116,6 +127,7 @@ class TestOllamaSummaryProviderInitialize:
                     temperature=0,
                     num_predict=2000,
                     num_ctx=32768,
+                    reasoning=False,
                 )
                 assert provider._chat_model is not None
 
@@ -299,6 +311,90 @@ class TestOllamaSummaryProviderSummarize:
         # Must contain the runtime value
         assert '2000' in caplog.text
         assert 'SUMMARY_MAX_TOKENS' in caplog.text
+
+
+class _OllamaChatServer:
+    """In-memory Ollama /api/chat endpoint that records every request body it receives."""
+
+    def __init__(self) -> None:
+        self.bodies: list[dict[str, Any]] = []
+        self.content = 'Recorded summary.'
+        self.done_reason = 'stop'
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        """Record the request body and answer with one streamed reply in Ollama's NDJSON form."""
+        self.bodies.append(json.loads(request.content))
+        chunks = [
+            {'model': 'qwen3:0.6b', 'message': {'role': 'assistant', 'content': self.content}, 'done': False},
+            {'model': 'qwen3:0.6b', 'message': {'role': 'assistant', 'content': ''}, 'done': True,
+             'done_reason': self.done_reason},
+        ]
+        return httpx.Response(200, content=b''.join(json.dumps(chunk).encode() + b'\n' for chunk in chunks))
+
+
+@pytest.fixture
+def ollama_chat_server(monkeypatch: pytest.MonkeyPatch) -> _OllamaChatServer:
+    """Build the provider's real ChatOllama on an HTTP transport served by _OllamaChatServer."""
+    import langchain_ollama
+
+    server = _OllamaChatServer()
+    chat_ollama_on_mock_transport = functools.partial(
+        langchain_ollama.ChatOllama, async_client_kwargs={'transport': httpx.MockTransport(server.handle)},
+    )
+    monkeypatch.setattr(langchain_ollama, 'ChatOllama', chat_ollama_on_mock_transport)
+    return server
+
+
+async def _summarize_flat(provider: OllamaSummaryProvider) -> str:
+    return await provider.summarize('Text of the whole document.', 'agent')
+
+
+async def _summarize_section(provider: OllamaSummaryProvider) -> str:
+    return await provider.summarize_with_prompt('Text of one section.', 'Summarize this section.')
+
+
+@pytest.mark.usefixtures('mock_summary_settings', 'mock_retry')
+class TestOllamaSummaryProviderRequest:
+    """The /api/chat requests both summary calls send through the real ChatOllama client."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('call', [_summarize_flat, _summarize_section], ids=['flat', 'section'])
+    async def test_request_turns_reasoning_off(self, ollama_chat_server: _OllamaChatServer, call: SummaryCall) -> None:
+        """Every summary request carries think false and the configured output budget."""
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        result = await call(provider)
+
+        assert result == 'Recorded summary.'
+        assert len(ollama_chat_server.bodies) == 1
+        body = ollama_chat_server.bodies[0]
+        assert body.get('think') is False
+        assert body['model'] == 'qwen3:0.6b'
+        assert body['options']['num_predict'] == 2000
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('call', 'message'),
+        [
+            (_summarize_flat, 'Ollama summary generation produced empty output'),
+            (_summarize_section, 'Ollama node summary produced empty output'),
+        ],
+        ids=['flat', 'section'],
+    )
+    async def test_empty_answer_at_budget_still_raises(
+        self, ollama_chat_server: _OllamaChatServer, call: SummaryCall, message: str,
+    ) -> None:
+        """An empty answer that ran to the budget raises even with reasoning off."""
+        ollama_chat_server.content = ''
+        ollama_chat_server.done_reason = 'length'
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        with pytest.raises(RuntimeError, match=message):
+            await call(provider)
+
+        assert ollama_chat_server.bodies[0].get('think') is False
 
 
 @pytest.mark.usefixtures('mock_summary_settings')
