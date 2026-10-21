@@ -24,25 +24,28 @@ from tests.cli.ingest._sync_run import sync_directory
 from tests.cli.ingest._sync_run import write_document
 
 # The line a run prints after every batch call: the leg, the documents it applied so
-# far, the leg's documents, the batch's position, its failed entries and the seconds
-# since the leg began.
-_BATCH_LINE = re.compile(r'(created|updated) (\d+) of (\d+) documents \(batch (\d+) of (\d+), (\d+) failed, (\d+) s\)')
+# far, the leg's documents, the batch's position, its failed entries, the leg's
+# batches done so far and the seconds since the leg began.
+_BATCH_LINE = re.compile(
+    r'(created|updated) (\d+) of (\d+) documents \(batch (\d+) of (\d+), (\d+) failed, (\d+) of \5 batches done, (\d+) s\)',
+)
 
-type BatchLine = tuple[str, int, int, int, int, int]
+type BatchLine = tuple[str, int, int, int, int, int, int]
 
 
 def _batch_lines(printed: str) -> list[BatchLine]:
-    """Return the batch lines a run printed, in order, after checking that each leg's elapsed seconds never decrease."""
+    """Return the batch lines a run printed, in order, after checking that no running total of a leg ever decreases."""
     lines: list[BatchLine] = []
-    elapsed: dict[str, int] = {}
+    totals: dict[str, tuple[int, int, int]] = {}
     for line in printed.splitlines():
         match = _BATCH_LINE.fullmatch(line)
         if match is None:
             continue
-        leg, applied, total, position, batches, failed, seconds = match.groups()
-        assert int(seconds) >= elapsed.get(leg, 0)
-        elapsed[leg] = int(seconds)
-        lines.append((leg, int(applied), int(total), int(position), int(batches), int(failed)))
+        leg, applied, total, position, batches, failed, done, seconds = (match.group(1), *map(int, match.groups()[1:]))
+        running = (applied, done, seconds)
+        assert all(now >= before for now, before in zip(running, totals.get(leg, (0, 0, 0)), strict=True))
+        totals[leg] = running
+        lines.append((leg, applied, total, position, batches, failed, done))
     return lines
 
 
@@ -67,9 +70,9 @@ class TestBatchProgress:
         printed = capsys.readouterr().out
         assert created.exit_code == EXIT_CONVERGED
         assert _batch_lines(printed) == [
-            ('created', 10, 25, 1, 3, 0),
-            ('created', 20, 25, 2, 3, 0),
-            ('created', 25, 25, 3, 3, 0),
+            ('created', 10, 25, 1, 3, 0, 1),
+            ('created', 20, 25, 2, 3, 0, 2),
+            ('created', 25, 25, 3, 3, 0, 3),
         ]
         assert 'created 25 of 25 documents' in printed.splitlines()
 
@@ -81,9 +84,9 @@ class TestBatchProgress:
         printed = capsys.readouterr().out
         assert updated.exit_code == EXIT_CONVERGED
         assert _batch_lines(printed) == [
-            ('updated', 10, 25, 1, 3, 0),
-            ('updated', 20, 25, 2, 3, 0),
-            ('updated', 25, 25, 3, 3, 0),
+            ('updated', 10, 25, 1, 3, 0, 1),
+            ('updated', 20, 25, 2, 3, 0, 2),
+            ('updated', 25, 25, 3, 3, 0, 3),
         ]
         assert 'updated 25 of 25 documents' in printed.splitlines()
 
@@ -98,11 +101,11 @@ class TestBatchProgress:
         printed: list[str] = []
         answer = server.call_tool
 
-        async def call_tool(name: str, arguments: Json) -> Json | ToolFailure:
+        async def call_tool(name: str, arguments: Json, *, session: int) -> Json | ToolFailure:
             if name == STORE:
                 printed.append(capsys.readouterr().out)
                 before_each_store.append(_batch_lines(''.join(printed)))
-            return await answer(name, arguments)
+            return await answer(name, arguments, session=session)
 
         monkeypatch.setattr(server, 'call_tool', call_tool)
 
@@ -111,8 +114,8 @@ class TestBatchProgress:
         assert report.exit_code == EXIT_CONVERGED
         assert before_each_store == [
             [],
-            [('created', 10, 25, 1, 3, 0)],
-            [('created', 10, 25, 1, 3, 0), ('created', 20, 25, 2, 3, 0)],
+            [('created', 10, 25, 1, 3, 0, 1)],
+            [('created', 10, 25, 1, 3, 0, 1), ('created', 20, 25, 2, 3, 0, 2)],
         ]
 
     @pytest.mark.asyncio
@@ -128,11 +131,33 @@ class TestBatchProgress:
         printed = capsys.readouterr().out
         assert report.exit_code == EXIT_PARTIAL
         assert _batch_lines(printed) == [
-            ('created', 0, 25, 1, 3, 10),
-            ('created', 9, 25, 2, 3, 1),
-            ('created', 14, 25, 3, 3, 0),
+            ('created', 0, 25, 1, 3, 10, 1),
+            ('created', 9, 25, 2, 3, 1, 2),
+            ('created', 14, 25, 3, 3, 0, 3),
         ]
         assert 'created 14 of 25 documents' in printed.splitlines()
+
+    @pytest.mark.asyncio
+    async def test_batches_finishing_out_of_order_print_running_totals(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Each line names the batch that finished, and the documents applied and batches done only ever grow."""
+        server = FakeServer()
+        _write_documents(tmp_path, 25)
+        server.failing_sources['03.md'] = 'Generation failed after exhausting configured retries'
+        server.hold_next(STORE, 5, 1, 3)
+
+        report = await sync_directory(server, tmp_path, batch_size=10, concurrency=3)
+
+        printed = capsys.readouterr().out
+        assert report.exit_code == EXIT_PARTIAL
+        assert _batch_lines(printed) == [
+            ('created', 10, 25, 2, 3, 0, 1),
+            ('created', 15, 25, 3, 3, 0, 2),
+            ('created', 24, 25, 1, 3, 1, 3),
+        ]
+        assert 'created 24 of 25 documents' in printed.splitlines()
+        assert [item.source_id for item in report.outcomes] == [f'{number:02}.md' for number in range(25)]
 
 
 class TestForeignEntries:

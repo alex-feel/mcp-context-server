@@ -7,6 +7,13 @@ metadata in full, and deletes go by entry id after every create and update, so a
 run that stops early never removed anything before the new content landed. A
 final plan of every range verifies the result.
 
+The create and update legs keep up to ``--concurrency`` batch calls in flight, each
+on a session of its own, and record the outcomes in batch order, so a run reports
+what a sequential run reports however its batches finish. Every document goes into
+exactly one batch and every result is matched to its entry by index, so the order
+in which the server works through the entries of a batch never matters. Plans and
+deletes go over the run's first session, one call at a time.
+
 A run keeps no state of its own. Every run derives its plan from what the server
 stores, so a rerun converges after any failure, and a call whose answer never
 came is never sent again within the run: the next run's plan sees whatever it
@@ -16,18 +23,19 @@ creates and updates, executes no delete at all and reports every planned delete
 as withheld.
 """
 
+import itertools
 import sys
 import time
 from collections.abc import Callable
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
-from typing import Protocol
 from typing import cast
 
 import httpx2
@@ -51,6 +59,10 @@ from app.cli.ingest.manifest import pack
 from app.cli.ingest.manifest import slice_manifest
 from app.cli.ingest.report import DocumentOutcome
 from app.cli.ingest.report import RunReport
+from app.cli.ingest.sessions import RunSessions
+from app.cli.ingest.sessions import SyncSession
+from app.cli.ingest.sessions import send_over
+from app.cli.ingest.sessions import session_auth
 from app.ingest import PlanContextSyncDict
 from app.ingest import SyncDeleteDict
 from app.types import BulkStoreResponseDict
@@ -65,6 +77,10 @@ DEFAULT_MAX_REQUEST_BYTES = 3_145_728
 # The MCP SDK refuses an HTTP request body above 4 MiB, and the limit is not configurable.
 MAX_REQUEST_BYTES = 4_194_304
 DEFAULT_CALL_TIMEOUT = 3600.0
+DEFAULT_CONCURRENCY = 1
+# The server's embedding and summary concurrency settings go up to 20, so more batches
+# in flight would only wait for the server.
+MAX_CONCURRENCY = 20
 
 PLAN_TOOL = 'plan_context_sync'
 STORE_TOOL = 'store_context_batch'
@@ -101,6 +117,7 @@ class RunConfig:
         batch_size: The most entries one batch call carries.
         max_request_bytes: The request budget of one call.
         call_timeout: How long one call may take, in seconds.
+        concurrency: The most create or update batch calls in flight at once.
     """
 
     server: str
@@ -119,23 +136,12 @@ class RunConfig:
     batch_size: int = DEFAULT_BATCH_SIZE
     max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES
     call_timeout: float = DEFAULT_CALL_TIMEOUT
+    concurrency: int = DEFAULT_CONCURRENCY
 
     @property
     def thread_id(self) -> str:
         """Return the corpus thread, which is also the scope of every managed entry's ingest block."""
         return THREAD_PREFIX + self.corpus
-
-
-class SyncSession(Protocol):
-    """The MCP session a run calls the server through."""
-
-    async def preflight(self) -> None:
-        """Check that the server offers what a sync needs."""
-        ...
-
-    async def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object] | ToolFailure:
-        """Call a tool and return its structured result or the failure of that one call."""
-        ...
 
 
 type Connect = Callable[[RunConfig, httpx2.Auth | None], AbstractAsyncContextManager[SyncSession]]
@@ -159,11 +165,13 @@ async def run_sync(config: RunConfig, *, connect: Connect = connect_client) -> R
 
     Args:
         config: The run's settings.
-        connect: Opens the run's session; the default speaks Streamable HTTP to the
-            configured server.
+        connect: Opens each session of the run, the first and every further one; the
+            default speaks Streamable HTTP to the configured server.
 
     Returns:
-        The run's report; its exit code is the command's.
+        The run's report; its exit code is the command's. Every distinct failure that
+        ended the run is among its errors, the batches in flight at once possibly
+        ending it together.
     """
     report = RunReport(server=config.server, thread_id=config.thread_id, dry_run=config.dry_run)
     synced_at = format_synced_at(datetime.now(UTC))
@@ -171,12 +179,24 @@ async def run_sync(config: RunConfig, *, connect: Connect = connect_client) -> R
         auth = build_auth(token_file=config.token_file, token_env=config.token_env)
         prepared = _prepare(config, report)
         if prepared is not None:
-            async with connect(config, auth) as session:
+            async with AsyncExitStack() as stack:
+                session = await stack.enter_async_context(connect(config, auth))
                 await session.preflight()
-                await _Run(session=session, config=config, report=report, prepared=prepared, synced_at=synced_at).run()
-    except IngestExitError as error:
-        report.fail(error.message, exit_code=error.code)
+                sessions = RunSessions(session, open_session=lambda: connect(config, session_auth(auth)), stack=stack)
+                await _Run(sessions=sessions, config=config, report=report, prepared=prepared, synced_at=synced_at).run()
+    except* IngestExitError as ended:
+        for error in _distinct(ended):
+            report.fail(error.message, exit_code=error.code)
     return report
+
+
+def _distinct(ended: BaseExceptionGroup[IngestExitError]) -> list[IngestExitError]:
+    """Return each distinct failure that ended the run once, in the order the failures happened."""
+    distinct: dict[tuple[int, str], IngestExitError] = {}
+    for error in ended.exceptions:
+        for leaf in _distinct(error) if isinstance(error, BaseExceptionGroup) else [error]:
+            distinct.setdefault((leaf.code, leaf.message), leaf)
+    return list(distinct.values())
 
 
 @dataclass(frozen=True)
@@ -245,9 +265,9 @@ def _record_unusable(corpus: Corpus, report: RunReport) -> None:
 
 @dataclass
 class _Run:
-    """The legs of one run against an open session."""
+    """The legs of one run over its sessions."""
 
-    session: SyncSession
+    sessions: RunSessions
     config: RunConfig
     report: RunReport
     prepared: _Prepared
@@ -282,7 +302,7 @@ class _Run:
         if not piece.items:
             # An empty manifest reaches the plan only when --allow-empty-corpus confirmed it.
             arguments['allow_empty_manifest'] = True
-        result = await self.session.call_tool(PLAN_TOOL, arguments)
+        result = await self.sessions.first.call_tool(PLAN_TOOL, arguments)
         if isinstance(result, ToolFailure):
             raise IngestExitError(EXIT_CONFIG, f'{PLAN_TOOL} refused the plan of {_describe(piece)}: {result.message}')
         try:
@@ -394,69 +414,95 @@ class _Run:
         *,
         outcome: Literal['created', 'updated'],
     ) -> int:
-        """Send entries through a batch tool in packed, non-atomic batches, one after another.
+        """Send entries through a batch tool in packed, non-atomic batches, up to ``--concurrency`` at once.
 
-        A generating server can take minutes per batch, so every batch prints a line
-        with the documents applied so far, its position, its failed entries and the
-        seconds since the leg began.
+        The batches start in order, each on a session of its own while it is in flight,
+        and their outcomes are recorded in batch order when the leg ends, so the report
+        reads as a sequential run's however the batches finish. A generating server can
+        take minutes per batch, so every batch that finishes prints a line with the
+        documents applied so far, its position, its failed entries, the batches done
+        and the seconds since the leg began.
 
         Returns:
             How many entries the server applied.
         """
         started = time.monotonic()
         batches = pack(entries, batch_size=self.config.batch_size, max_request_bytes=self.config.max_request_bytes)
+        offsets = list(itertools.accumulate((len(batch) for batch in batches), initial=0))
+        settled: dict[int, list[DocumentOutcome]] = {}
         applied = 0
-        offset = 0
-        for position, batch in enumerate(batches, start=1):
-            batch_sources = source_ids[offset:offset + len(batch)]
-            offset += len(batch)
-            done = await self._send_batch(tool, key, batch, batch_sources, outcome=outcome)
+
+        async def send(session: SyncSession, position: int) -> None:
+            nonlocal applied
+            batch = batches[position]
+            batch_sources = source_ids[offsets[position]:offsets[position + 1]]
+            outcomes = await self._send_batch(tool, key, batch, batch_sources, session=session, outcome=outcome)
+            settled[position] = outcomes
+            done = sum(item.outcome == outcome for item in outcomes)
             applied += done
             _say(
-                f'{outcome} {applied} of {len(entries)} documents (batch {position} of {len(batches)}, '
-                f'{len(batch) - done} failed, {round(time.monotonic() - started)} s)',
+                f'{outcome} {applied} of {len(entries)} documents (batch {position + 1} of {len(batches)}, '
+                f'{len(batch) - done} failed, {len(settled)} of {len(batches)} batches done, '
+                f'{round(time.monotonic() - started)} s)',
             )
+
+        sessions = await self.sessions.take(min(self.config.concurrency, len(batches)))
+        try:
+            await send_over(sessions, count=len(batches), send=send)
+        finally:
+            for position in sorted(settled):
+                for item in settled[position]:
+                    self.report.add(item)
         return applied
 
+    @staticmethod
     async def _send_batch(
-        self,
         tool: str,
         key: Literal['entries', 'updates'],
         batch: list[dict[str, object]],
         batch_sources: list[str],
         *,
+        session: SyncSession,
         outcome: Literal['created', 'updated'],
-    ) -> int:
-        """Send one batch and record each of its entries' outcome.
+    ) -> list[DocumentOutcome]:
+        """Send one batch over a session and return its entries' outcomes in the batch's order.
+
+        The server's per-entry results are matched to the entries by their index, so the
+        order in which the server lists them never matters.
 
         Returns:
-            How many of the batch's entries the server applied.
+            One outcome per entry of the batch.
 
         Raises:
             IngestExitError: The server answered with something that is not the tool's response.
         """
-        result = await self.session.call_tool(tool, {key: batch, 'atomic': False})
+        result = await session.call_tool(tool, {key: batch, 'atomic': False})
         if isinstance(result, ToolFailure):
-            for source_id in batch_sources:
-                self._add(source_id, 'failed', error=result.message)
-            return 0
+            return [
+                DocumentOutcome(source_id=source_id, outcome='failed', context_id=None, error=result.message)
+                for source_id in batch_sources
+            ]
         adapter = _STORE_RESPONSE if key == 'entries' else _UPDATE_RESPONSE
         try:
             response = adapter.validate_python(result)
         except ValidationError as error:
             raise IngestExitError(EXIT_CONFIG, _unexpected(tool, error)) from error
         results = {item['index']: item for item in response['results']}
-        applied = 0
+        outcomes: list[DocumentOutcome] = []
         for index, source_id in enumerate(batch_sources):
             item = results.get(index)
             if item is None:
-                self._add(source_id, 'failed', error=f'{tool} returned no result for this entry')
-            elif item['success']:
-                applied += 1
-                self._add(source_id, outcome, context_id=item['context_id'])
-            else:
-                self._add(source_id, 'failed', context_id=item['context_id'], error=item['error'])
-        return applied
+                unanswered = f'{tool} returned no result for this entry'
+                outcomes.append(DocumentOutcome(source_id=source_id, outcome='failed', context_id=None, error=unanswered))
+                continue
+            applied = item['success']
+            outcomes.append(DocumentOutcome(
+                source_id=source_id,
+                outcome=outcome if applied else 'failed',
+                context_id=item['context_id'],
+                error=None if applied else item['error'],
+            ))
+        return outcomes
 
     async def _delete(self) -> None:
         """Plan every range again and delete its planned deletes until none remain, unless deletes are withheld."""
@@ -477,7 +523,8 @@ class _Run:
         """Delete the listed deletes of a range and plan again, until the plan holds none or a round removes nothing."""
         while plan['deletes_total'] > 0:
             listed = plan['deletes']
-            result = await self.session.call_tool(DELETE_TOOL, {'context_ids': [delete['context_id'] for delete in listed]})
+            arguments: dict[str, object] = {'context_ids': [delete['context_id'] for delete in listed]}
+            result = await self.sessions.first.call_tool(DELETE_TOOL, arguments)
             if isinstance(result, ToolFailure):
                 for delete in listed:
                     self._add(delete['source_id'], 'failed', context_id=delete['context_id'], error=result.message)

@@ -41,10 +41,12 @@ class RunSettings(TypedDict, total=False):
     metadata: Mapping[str, object]
     visibility: Visibility
     token_file: Path
+    token_env: str
     dry_run: bool
     allow_empty_corpus: bool
     batch_size: int
     max_request_bytes: int
+    concurrency: int
 
 
 async def sync_directory(server: FakeServer, root: Path, **settings: Unpack[RunSettings]) -> RunReport:
