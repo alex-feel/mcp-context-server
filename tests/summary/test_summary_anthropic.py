@@ -3,6 +3,7 @@
 Tests verify:
 - __init__ reads settings correctly
 - initialize() creates ChatAnthropic with correct params
+- initialize() sets temperature=0 only for a model whose profile declares temperature support
 - initialize() raises ValueError when API key is missing
 - summarize() returns stripped content
 - summarize() raises RuntimeError when not initialized
@@ -100,13 +101,49 @@ class TestAnthropicSummaryProviderInitialize:
 
             mock_chat_cls.assert_called_once_with(
                 model='claude-haiku-4-5-20251001',
-                temperature=0,
                 max_tokens=1800,
                 api_key='sk-ant-test',
                 max_retries=0,
                 timeout=None,
             )
             assert provider._chat_model is not None
+
+    @pytest.mark.asyncio
+    async def test_initialize_sets_temperature_when_profile_declares_support(self) -> None:
+        """initialize() copies the client with temperature=0 when its model profile declares temperature support."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        mock_chat_cls = MagicMock()
+        built = mock_chat_cls.return_value
+        built.profile = {'temperature': True}
+        mock_module = MagicMock()
+        mock_module.ChatAnthropic = mock_chat_cls
+        with patch.dict('sys.modules', {'langchain_anthropic': mock_module}):
+            provider = AnthropicSummaryProvider()
+            await provider.initialize()
+
+        built.model_copy.assert_called_once_with(update={'temperature': 0})
+        assert provider._chat_model is built.model_copy.return_value
+
+    @pytest.mark.parametrize('profile', [{'temperature': False}, {}, None])
+    @pytest.mark.asyncio
+    async def test_initialize_keeps_default_temperature_without_declared_support(
+        self, profile: dict[str, bool] | None,
+    ) -> None:
+        """initialize() keeps the model's default temperature when the profile refuses it or does not declare it."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        mock_chat_cls = MagicMock()
+        built = mock_chat_cls.return_value
+        built.profile = profile
+        mock_module = MagicMock()
+        mock_module.ChatAnthropic = mock_chat_cls
+        with patch.dict('sys.modules', {'langchain_anthropic': mock_module}):
+            provider = AnthropicSummaryProvider()
+            await provider.initialize()
+
+        built.model_copy.assert_not_called()
+        assert provider._chat_model is built
 
     @pytest.mark.asyncio
     async def test_initialize_disables_sdk_internal_retry_and_timeout(self) -> None:
@@ -150,7 +187,6 @@ class TestAnthropicSummaryProviderInitialize:
 
             mock_chat_cls.assert_called_once_with(
                 model='claude-haiku-4-5-20251001',
-                temperature=0,
                 max_tokens=1800,
                 api_key='sk-ant-test',
                 max_retries=0,
@@ -432,6 +468,65 @@ class TestAnthropicSummaryProviderIsAvailable:
 
         result = await provider.is_available()
         assert result is False
+
+
+class TestAnthropicSummaryProviderTemperature:
+    """initialize() against the real ChatAnthropic and its bundled model profiles.
+
+    Current Claude models reject sampling parameters with HTTP 400, so the provider
+    sends temperature=0 only to a model whose profile declares temperature support.
+    """
+
+    @pytest.mark.parametrize('model', ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6', 'claude-opus-4-6'])
+    @pytest.mark.asyncio
+    async def test_model_accepting_temperature_gets_zero(self, mock_anthropic_settings: MagicMock, model: str) -> None:
+        """A model whose profile declares temperature support is built with temperature=0."""
+        from langchain_anthropic import ChatAnthropic
+
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        mock_anthropic_settings.return_value.summary.model = model
+        provider = AnthropicSummaryProvider()
+        await provider.initialize()
+
+        assert isinstance(provider._chat_model, ChatAnthropic)
+        assert provider._chat_model.model == model
+        assert provider._chat_model.temperature == 0
+        assert provider._chat_model.max_tokens == 1800
+        assert provider._chat_model.max_retries == 0
+        assert provider._chat_model.default_request_timeout is None
+
+    @pytest.mark.parametrize(
+        'model',
+        ['claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5-1'],
+    )
+    @pytest.mark.asyncio
+    async def test_model_refusing_temperature_gets_none(self, mock_anthropic_settings: MagicMock, model: str) -> None:
+        """A model whose profile refuses temperature is built without one, so the request carries none."""
+        from langchain_anthropic import ChatAnthropic
+
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        mock_anthropic_settings.return_value.summary.model = model
+        provider = AnthropicSummaryProvider()
+        await provider.initialize()
+
+        assert isinstance(provider._chat_model, ChatAnthropic)
+        assert provider._chat_model.model == model
+        assert provider._chat_model.temperature is None
+        assert provider._chat_model.max_tokens == 1800
+
+    @pytest.mark.asyncio
+    async def test_model_without_profile_gets_none(self, mock_anthropic_settings: MagicMock) -> None:
+        """A model absent from the bundled profile data is built without a temperature."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        mock_anthropic_settings.return_value.summary.model = 'claude-sonnet-4-20250514'
+        provider = AnthropicSummaryProvider()
+        await provider.initialize()
+
+        assert not provider._chat_model.profile
+        assert provider._chat_model.temperature is None
 
 
 @pytest.mark.usefixtures('mock_anthropic_settings')

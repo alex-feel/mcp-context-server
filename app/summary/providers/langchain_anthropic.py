@@ -7,7 +7,11 @@ Requires ANTHROPIC_API_KEY environment variable (read from SummarySettings, pass
 
 
 import logging
+from collections.abc import Mapping
 from typing import Any
+from typing import Protocol
+from typing import Self
+from typing import cast
 
 from app.errors import ConfigurationError
 from app.errors import is_client_error
@@ -16,6 +20,24 @@ from app.summary.instructions import resolve_summary_prompt
 from app.summary.retry import with_summary_retry_and_timeout
 
 logger = logging.getLogger(__name__)
+
+
+class _ProfiledChatModel(Protocol):
+    """The part of a ChatAnthropic client that decides whether it gets a temperature."""
+
+    @property
+    def profile(self) -> Mapping[str, object] | None:
+        """Model capabilities bundled with langchain-anthropic, resolved when the client is built."""
+        ...
+
+    @property
+    def temperature(self) -> float | None:
+        """Sampling temperature sent with each request, or None for the model's default."""
+        ...
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        """Return a copy of the client with the given fields replaced."""
+        ...
 
 
 class AnthropicSummaryProvider:
@@ -69,7 +91,6 @@ class AnthropicSummaryProvider:
         # retries on top, multiplying call volume and inflating the per-attempt budget.
         kwargs: dict[str, Any] = {
             'model': self._model,
-            'temperature': 0,
             'max_tokens': self._max_tokens,
             'api_key': self._api_key.get_secret_value(),
             'max_retries': 0,
@@ -77,10 +98,19 @@ class AnthropicSummaryProvider:
         }
         if self._effort is not None:
             kwargs['effort'] = self._effort
-        self._chat_model = ChatAnthropic(**kwargs)
+        chat_model = cast(_ProfiledChatModel, ChatAnthropic(**kwargs))
+        # Claude Opus 4.7 and later, Sonnet 5 and Fable 5 reject sampling parameters with
+        # HTTP 400. The client's bundled model profile records whether its model accepts a
+        # temperature, so temperature=0 is set only when the profile declares support; any
+        # other model, including one the profile data does not list, keeps its default.
+        profile: Mapping[str, object] = chat_model.profile or {}
+        if profile.get('temperature') is True:
+            chat_model = chat_model.model_copy(update={'temperature': 0})
+        self._chat_model = chat_model
         logger.info(
             f'Initialized Anthropic summary provider: {self._model}, '
-            f'max_tokens={self._max_tokens}, effort={self._effort}',
+            f'max_tokens={self._max_tokens}, effort={self._effort}, '
+            f'temperature={chat_model.temperature}',
         )
 
     async def shutdown(self) -> None:
