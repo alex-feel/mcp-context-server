@@ -41,6 +41,7 @@ def mock_summary_settings():
         mock.return_value.summary.retry_base_delay_s = 0.01
         mock.return_value.summary.ollama_truncate = False
         mock.return_value.summary.ollama_num_ctx = 32768
+        mock.return_value.summary.ollama_presence_penalty = None
         mock.return_value.ollama.host = 'http://localhost:11434'
         yield mock
 
@@ -103,6 +104,35 @@ class TestOllamaSummaryProviderInit:
         provider = OllamaSummaryProvider()
         assert provider._num_ctx == 32768
 
+    @pytest.mark.parametrize(
+        ('model', 'expected'),
+        [
+            ('qwen3:0.6b', 1.5), ('qwen3:8b', 1.5), ('QWEN3:1.7b-q8_0', 1.5), ('qwen3', 1.5),
+            ('llama3.2', None), ('qwen3-coder:30b', None), ('gemma3:4b', None),
+        ],
+    )
+    def test_init_derives_the_presence_penalty_from_the_model_family(
+        self, mock_summary_settings: MagicMock, model: str, expected: float | None,
+    ) -> None:
+        """Unset, the penalty is the Qwen3 model card's 1.5 for that family and none for any other."""
+        mock_summary_settings.return_value.summary.model = model
+
+        provider = OllamaSummaryProvider()
+
+        assert provider._presence_penalty == expected
+
+    @pytest.mark.parametrize(('model', 'configured'), [('llama3.2', 0.7), ('qwen3:0.6b', 0.0), ('qwen3:8b', 2.0)])
+    def test_init_prefers_the_configured_presence_penalty(
+        self, mock_summary_settings: MagicMock, model: str, configured: float,
+    ) -> None:
+        """SUMMARY_OLLAMA_PRESENCE_PENALTY applies to whatever model is configured, zero included."""
+        mock_summary_settings.return_value.summary.model = model
+        mock_summary_settings.return_value.summary.ollama_presence_penalty = configured
+
+        provider = OllamaSummaryProvider()
+
+        assert provider._presence_penalty == configured
+
 
 @pytest.mark.usefixtures('mock_summary_settings')
 class TestOllamaSummaryProviderInitialize:
@@ -124,12 +154,12 @@ class TestOllamaSummaryProviderInitialize:
                 mock_chat.assert_called_once_with(
                     model='qwen3:0.6b',
                     base_url='http://localhost:11434',
-                    temperature=0,
-                    num_predict=2000,
-                    num_ctx=32768,
                     reasoning=False,
                 )
                 assert provider._chat_model is not None
+                assert provider._options == {
+                    'num_ctx': 32768, 'num_predict': 2000, 'temperature': 0, 'presence_penalty': 1.5,
+                }
 
     @pytest.mark.asyncio
     async def test_initialize_raises_import_error(self) -> None:
@@ -371,7 +401,48 @@ class TestOllamaSummaryProviderRequest:
         body = ollama_chat_server.bodies[0]
         assert body.get('think') is False
         assert body['model'] == 'qwen3:0.6b'
-        assert body['options']['num_predict'] == 2000
+        assert body['options'] == {'num_ctx': 32768, 'num_predict': 2000, 'temperature': 0, 'presence_penalty': 1.5}
+
+    @pytest.mark.asyncio
+    async def test_request_leaves_another_family_without_a_penalty(
+        self, mock_summary_settings: MagicMock, ollama_chat_server: _OllamaChatServer,
+    ) -> None:
+        """A model outside the qwen3 family gets no presence penalty unless one is configured."""
+        mock_summary_settings.return_value.summary.model = 'llama3.2'
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        await provider.summarize('Text of the whole document.', 'agent')
+
+        options = ollama_chat_server.bodies[0]['options']
+        assert 'presence_penalty' not in options
+        assert options['temperature'] == 0
+
+    @pytest.mark.asyncio
+    async def test_request_sends_the_configured_penalty(
+        self, mock_summary_settings: MagicMock, ollama_chat_server: _OllamaChatServer,
+    ) -> None:
+        """SUMMARY_OLLAMA_PRESENCE_PENALTY reaches the request for any model."""
+        mock_summary_settings.return_value.summary.model = 'llama3.2'
+        mock_summary_settings.return_value.summary.ollama_presence_penalty = 0.7
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        await provider.summarize_with_prompt('Text of one section.', 'Summarize this section.')
+
+        assert ollama_chat_server.bodies[0]['options']['presence_penalty'] == 0.7
+
+    @pytest.mark.asyncio
+    async def test_availability_probe_sends_the_summary_options(self, ollama_chat_server: _OllamaChatServer) -> None:
+        """The startup probe runs with the summary options, so it exercises the configuration the summaries use."""
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        assert await provider.is_available() is True
+
+        body = ollama_chat_server.bodies[0]
+        assert body.get('think') is False
+        assert body['options']['presence_penalty'] == 1.5
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

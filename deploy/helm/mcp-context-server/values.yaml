@@ -266,6 +266,9 @@ ollama:
   summaryTruncate: false
   # Summary context window size in tokens (range: 512-2097152)
   summaryNumCtx: 32768
+  # Presence penalty for summary calls (0-2). Empty keeps the server's model-family default:
+  # 1.5 for a qwen3 model, no penalty for any other model
+  summaryPresencePenalty: ""
   # Auto-pull models on startup via initContainer (derived from search.semantic.model and search.summary.model)
   # Set to false to disable auto-pull (models must be pre-loaded manually)
   autoPull: true

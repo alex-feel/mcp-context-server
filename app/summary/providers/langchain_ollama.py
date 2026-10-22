@@ -24,6 +24,27 @@ from app.summary.retry import with_summary_retry_and_timeout
 
 logger = logging.getLogger(__name__)
 
+# The presence penalty the Qwen3 model card prescribes against endless repetition.
+QWEN3_PRESENCE_PENALTY = 1.5
+
+
+def default_presence_penalty(model: str) -> float | None:
+    """Return the presence penalty a model gets when SUMMARY_OLLAMA_PRESENCE_PENALTY is unset.
+
+    With reasoning off, a Qwen3 model given low-entropy text (a document made of one repeated
+    token) copies it until the num_predict budget runs out, and no sampling temperature stops
+    that; the model card's remedy is a presence penalty of 1.5. A model of another family keeps
+    Ollama's default of no penalty, because its authors give no such guidance.
+
+    Args:
+        model: The configured SUMMARY_MODEL, an Ollama model name such as qwen3:0.6b.
+
+    Returns:
+        The penalty to send, or None to send none.
+    """
+    family = model.split(':', 1)[0].strip().lower()
+    return QWEN3_PRESENCE_PENALTY if family == 'qwen3' else None
+
 
 class OllamaSummaryProvider:
     """Ollama summary provider using LangChain ChatOllama integration.
@@ -37,6 +58,8 @@ class OllamaSummaryProvider:
         SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 4000)
         SUMMARY_OLLAMA_NUM_CTX: Context length in tokens (default: 32768)
         SUMMARY_OLLAMA_TRUNCATE: Control truncation behavior (default: false = error on exceed)
+        SUMMARY_OLLAMA_PRESENCE_PENALTY: Presence penalty sent with every call (default: 1.5 for
+            the qwen3 family, none for any other model)
     """
 
     def __init__(self) -> None:
@@ -47,7 +70,10 @@ class OllamaSummaryProvider:
         self._max_tokens = settings.summary.max_tokens
         self._truncate = settings.summary.ollama_truncate
         self._num_ctx = settings.summary.ollama_num_ctx
+        configured = settings.summary.ollama_presence_penalty
+        self._presence_penalty = default_presence_penalty(self._model) if configured is None else configured
         self._chat_model: Any = None
+        self._options: dict[str, Any] = {}
 
     async def initialize(self) -> None:
         """Initialize LangChain ChatOllama client.
@@ -64,17 +90,16 @@ class OllamaSummaryProvider:
 
         # reasoning=False sends Ollama's think=false on every call, so a model that can
         # reason (Qwen3) spends the num_predict budget on the summary, not a hidden trace.
-        self._chat_model = ChatOllama(
-            model=self._model,
-            base_url=self._base_url,
-            temperature=0,
-            num_predict=self._max_tokens,
-            num_ctx=self._num_ctx,
-            reasoning=False,
-        )
+        self._chat_model = ChatOllama(model=self._model, base_url=self._base_url, reasoning=False)
+        # The request options travel with every call: ChatOllama has no field for the presence
+        # penalty, and an options dict passed per call replaces the client's own options.
+        self._options = {'num_ctx': self._num_ctx, 'num_predict': self._max_tokens, 'temperature': 0}
+        if self._presence_penalty is not None:
+            self._options['presence_penalty'] = self._presence_penalty
         logger.info(
             f'Initialized Ollama summary provider: {self._model} at {self._base_url}, '
-            f'num_ctx={self._num_ctx}, max_tokens={self._max_tokens}',
+            f'num_ctx={self._num_ctx}, max_tokens={self._max_tokens}, '
+            f'presence_penalty={self._presence_penalty}',
         )
         if not self._truncate:
             logger.info(
@@ -121,7 +146,7 @@ class OllamaSummaryProvider:
         ]
 
         async def _summarize() -> str:
-            response = await self._chat_model.ainvoke(messages)
+            response = await self._chat_model.ainvoke(messages, options=self._options)
             result = str(response.content).strip()
             # Detect token-limit truncation
             done_reason = response.response_metadata.get('done_reason')
@@ -176,7 +201,7 @@ class OllamaSummaryProvider:
         ]
 
         async def _summarize() -> str:
-            response = await self._chat_model.ainvoke(messages)
+            response = await self._chat_model.ainvoke(messages, options=self._options)
             result = str(response.content).strip()
             done_reason = response.response_metadata.get('done_reason')
             if done_reason == 'length' and not result:
@@ -261,7 +286,7 @@ class OllamaSummaryProvider:
         try:
             from langchain_core.messages import HumanMessage
 
-            await self._chat_model.ainvoke([HumanMessage(content='test')])
+            await self._chat_model.ainvoke([HumanMessage(content='test')], options=self._options)
         except Exception as e:
             if is_client_error(e):
                 raise ConfigurationError(

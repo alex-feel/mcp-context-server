@@ -124,6 +124,16 @@ class SummarySettings(CommonSettings):
                     'False (default): Returns error on exceeded context. '
                     'True: Silently truncates input (summary generated from incomplete text).',
     )
+    ollama_presence_penalty: float | None = Field(
+        default=None,
+        alias='SUMMARY_OLLAMA_PRESENCE_PENALTY',
+        ge=0,
+        le=2,
+        description='Presence penalty sent with every Ollama summary call (0-2). '
+                    'Unset: a qwen3 model gets 1.5, the value its model card prescribes against '
+                    'endless repetition with reasoning off; any other model gets no penalty. '
+                    'An explicit value applies to whatever model is configured; 0 disables it.',
+    )
 
     # OpenAI-specific authentication (shared env var with EmbeddingSettings)
     openai_api_key: SecretStr | None = Field(
