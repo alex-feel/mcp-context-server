@@ -22,7 +22,9 @@ Prompt engineering design decisions:
 10. A model that answers without reasoning opens with the most salient noun phrase of
     the task statement, so no prompt names the user, the text, or the section as the
     thing to describe (a focus line "what the user is requesting" yields summaries
-    that open "The user is requesting"), and the section prompt says what to open with
+    that open "The user is requesting"), and the section prompt asks for a headline-style
+    noun phrase: asked for a sentence, such a model copies one from the section, and given
+    a worked example, it copies the example
 
 The content to summarize is passed separately as a user/human message
 at runtime (not part of the prompt constants).  HumanMessage receives
@@ -40,13 +42,13 @@ _SUMMARY_BASE_REQUIREMENTS: str = '''Requirements:
 - Write exactly one paragraph with no line breaks
 - Target approximately 100-250 words
 - Do not add any labels, prefixes, headers, or explanations
-- Do not start with "This text", "The user", "The author", or similar meta-references
+- Do not start with "This text", "The text", "The user", "The author", or similar meta-references
 - Output ONLY the summary text, nothing else'''
 
 USER_SUMMARY_PROMPT: str = (f'''
 /no_think
 You are an expert summarizer for a context storage system used by AI agents.
-The following text was written by a human user: a message, a note, or a document. Your task is to produce a single, dense paragraph that captures its essential meaning.
+What follows was written by a human user: a message, a note, or a document. Your task is to produce a single, dense paragraph that captures its essential meaning.
 
 Focus on intent, specific requirements, constraints, and any decisions or directives.
 
@@ -94,20 +96,22 @@ def resolve_summary_prompt(source: str) -> str:
 
 
 # Dedicated SHORT prompt for index_tree per-node section abstracts. Distinct from
-# the 100-250-word entry-summary prompts: a navigation node needs a one-line gist,
+# the 100-250-word entry-summary prompts: a navigation node needs a one-line headline,
 # not a dense paragraph. Reuses the /no_think + English + no-labels conventions.
 DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT: str = ('''
 /no_think
-You are summarizing one section of a Markdown document for a navigation index used by AI agents.
-Write one sentence of about 10-30 words that an agent can read to decide whether to read this section.
+You are writing one entry of a navigation index for a Markdown document used by AI agents. The text below is one section of that document.
+Write the entry as a headline of 12-25 words: a noun phrase that names the section's subject and then the specifics an agent would search for (named entities, decisions, numbers, actions), so an agent can decide whether to read the section.
 
 Requirements:
-- Open with a named entity, topic, decision, or action from the section, never with a reference to the section, the text, or the document
-- Use specific terms from the section (named entities, topics, decisions)
+- A noun phrase, not a full sentence, and not a sentence copied from the section
+- More specific than the section's heading: add what the section says that the heading does not
+- Name the subject first, never the section itself ("This section", "The section", "The text")
+- Use specific terms from the section
 - Always write in English regardless of the input language
-- Write exactly one sentence with no line breaks
+- Write exactly one line with no line breaks and no trailing period
 - Do not add any labels, prefixes, headers, or explanations
-- Output ONLY the sentence, nothing else
+- Output ONLY the headline, nothing else
 ''').strip()
 
 

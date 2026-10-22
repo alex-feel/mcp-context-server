@@ -747,7 +747,7 @@
           "default": "true"
         },
         {
-          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt.",
+          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short headline-style abstract prompt.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1984,7 +1984,7 @@
           "default": "true"
         },
         {
-          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt.",
+          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short headline-style abstract prompt.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,

@@ -234,7 +234,7 @@ The built-in prompts (from `app/summary/instructions.py`) use source-specific in
 ```text
 /no_think
 You are an expert summarizer for a context storage system used by AI agents.
-The following text was written by a human user: a message, a note, or a document. Your task is to produce
+What follows was written by a human user: a message, a note, or a document. Your task is to produce
 a single, dense paragraph that captures its essential meaning.
 ...
 ```
@@ -253,7 +253,7 @@ a single, dense paragraph that captures the essential meaning of the agent's rep
 - Zero-shot format maximizes input token budget on resource-constrained models
 - Single-paragraph constraint is easiest for small models to follow consistently
 - Negative constraints (`Do not...`) prevent common small-model failure modes
-- A model that answers without reasoning opens with the most salient noun phrase of the task statement, so no prompt names the user, the text, or the section as the thing to describe, and the per-section prompt says what to open with
+- A model that answers without reasoning opens with the most salient noun phrase of the task statement, so no prompt names the user, the text, or the section as the thing to describe; the per-section prompt asks for a headline-style noun phrase, because such a model copies a sentence from the section when asked for a sentence and copies a worked example when given one
 - Summaries are always in English regardless of input language
 
 ### Overriding the Prompt

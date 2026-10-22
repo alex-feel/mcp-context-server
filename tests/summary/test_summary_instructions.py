@@ -145,17 +145,17 @@ class TestReasoningOffWording:
     def test_entry_prompts_name_no_requester(self, prompt: str) -> None:
         """Neither entry prompt asks what the user is requesting, the line summaries opened with."""
         assert 'what the user is requesting' not in prompt
-        assert 'Do not start with "This text", "The user", "The author"' in prompt
+        assert 'Do not start with "This text", "The text", "The user", "The author"' in prompt
 
-    def test_section_prompt_says_what_to_open_with(self) -> None:
-        """The section prompt opens with a named entity, topic, decision, or action from the section."""
+    def test_section_prompt_asks_for_a_headline(self) -> None:
+        """The section prompt asks for a headline-style noun phrase, more specific than the heading."""
         from app.summary.instructions import DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
 
         assert DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT.startswith('/no_think')
-        opener = 'Open with a named entity, topic, decision, or action from the section'
-        assert opener in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
+        assert 'A noun phrase, not a full sentence' in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
+        assert "More specific than the section's heading" in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
         assert 'what this section is about' not in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
-        assert 'Output ONLY the sentence' in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
+        assert 'Output ONLY the headline' in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
 
 
 class TestAgentSummaryPrompt:
