@@ -36,8 +36,7 @@ class SummarySettings(CommonSettings):
         default='qwen3:0.6b',
         alias='SUMMARY_MODEL',
         description='Summary generation model name. Default: qwen3:0.6b. '
-                    'Alternatives: qwen3:1.7b (higher quality), qwen3:4b (high quality), '
-                    'qwen3:8b (highest quality)',
+                    'Alternatives: qwen3:1.7b (higher quality), qwen3:8b (highest quality)',
     )
 
     max_tokens: int = Field(
@@ -93,7 +92,8 @@ class SummarySettings(CommonSettings):
         description='Custom summarization prompt. Overrides the built-in default prompt. '
                     'The prompt is used as the system message when calling the LLM. '
                     'Should instruct the model to output only the summary text. '
-                    'For Qwen3 models, include /no_think prefix to disable reasoning mode.',
+                    'The Ollama provider turns reasoning off itself; for Qwen3 behind another '
+                    'provider, include a /no_think prefix to skip reasoning.',
     )
 
     min_content_length: int = Field(

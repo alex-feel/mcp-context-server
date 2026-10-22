@@ -24,7 +24,7 @@ Select a provider via the `SUMMARY_PROVIDER` environment variable.
 
 - **Python**: 3.12+ (already required by MCP Context Server)
 - **Ollama** (for default provider): Installed from [ollama.com/download](https://ollama.com/download)
-- **RAM**: 2GB minimum for `qwen3:0.6b`; 8GB recommended for `qwen3:4b`
+- **RAM**: 2GB minimum for `qwen3:0.6b`; 4GB recommended for `qwen3:1.7b` and 16GB for `qwen3:8b`
 
 ## Installation
 
@@ -107,24 +107,23 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 
 The Ollama provider sends every summary call, the document summary and each per-section summary alike, with the model's reasoning turned off: LangChain's `reasoning=False`, which sends Ollama's `think: false` request parameter. A model that can reason, such as Qwen3, then writes the summary straight away, so `SUMMARY_MAX_TOKENS` bounds the summary text instead of a hidden reasoning trace followed by the summary.
 
-Ollama turns reasoning off only for models that allow it. The hybrid Qwen3 builds `qwen3:0.6b`, `qwen3:1.7b` and `qwen3:8b` allow it. The build the Ollama library serves as `qwen3:4b` reasons on every call; with reasoning off, Ollama returns that reasoning and its closing `</think>` tag as part of the answer, so the stored summary starts with the model's reasoning and the reasoning counts against `SUMMARY_MAX_TOKENS`. With any model, a call that uses the whole budget and returns no text fails: a failed document summary means the server does not store the entry (see [How It Works](#how-it-works)), and a failed per-section summary leaves that section without a summary while the entry is stored.
+Ollama turns reasoning off only for models that allow it. The hybrid Qwen3 builds `qwen3:0.6b`, `qwen3:1.7b` and `qwen3:8b` allow it. The builds the Ollama library currently serves as `qwen3:4b` and `qwen3:30b` reason on every call, so they are unsuitable while reasoning is off: Ollama returns their reasoning and the closing `</think>` tag as part of the answer, the stored summary starts with the model's reasoning, and the reasoning counts against `SUMMARY_MAX_TOKENS`. With any model, a call that uses the whole budget and returns no text fails: a failed document summary means the server does not store the entry (see [How It Works](#how-it-works)), and a failed per-section summary leaves that section without a summary while the entry is stored.
 
 #### Qwen3 Model Options (Ollama)
 
 The Qwen3 family offers a range of sizes for different resource constraints and quality requirements:
 
-| Model        | RAM Required | Quality   | Speed     | Notes                                            |
-|--------------|--------------|-----------|-----------|--------------------------------------------------|
-| `qwen3:0.6b` | ~2GB         | Basic     | Fastest   | **Default**. Lightweight, minimal resources      |
-| `qwen3:1.7b` | ~4GB         | Good      | Fast      | Higher quality, good balance for most uses       |
-| `qwen3:4b`   | ~8GB         | Better    | Moderate  | Higher quality; [always reasons](#reasoning-off) |
-| `qwen3:8b`   | ~16GB        | Best      | Slower    | Highest quality, requires dedicated hardware     |
+| Model        | RAM Required | Quality   | Speed     | Notes                                          |
+|--------------|--------------|-----------|-----------|------------------------------------------------|
+| `qwen3:0.6b` | ~2GB         | Basic     | Fastest   | **Default**. Lightweight, minimal resources    |
+| `qwen3:1.7b` | ~4GB         | Good      | Fast      | Higher quality, good balance for most uses     |
+| `qwen3:8b`   | ~16GB        | Best      | Slower    | Highest quality, requires dedicated hardware   |
 
-**Recommendation:** Start with `qwen3:0.6b` (default). Upgrade to `qwen3:1.7b` or `qwen3:4b` if summary quality is insufficient for your use case. Read [Reasoning Off](#reasoning-off) before choosing `qwen3:4b`.
+**Recommendation:** Start with `qwen3:0.6b` (default). Upgrade to `qwen3:1.7b` if summary quality is insufficient for your use case, or to `qwen3:8b` for the highest quality on dedicated hardware.
 
 Pull any alternative model before use:
 ```bash
-ollama pull qwen3:4b
+ollama pull qwen3:1.7b
 ```
 
 ### OpenAI
@@ -277,13 +276,13 @@ When using reasoning models for summary generation, each provider has specific l
 
 | Provider      | Control Mechanism                 | Limitation                                                                           |
 |---------------|-----------------------------------|--------------------------------------------------------------------------------------|
-| **Ollama**    | `think: false` on every request   | Only models that allow it; `qwen3:4b` returns its reasoning inside the summary       |
+| **Ollama**    | `think: false` on every request   | Only models that allow it; see [Reasoning Off](#reasoning-off)                       |
 | **OpenAI**    | `SUMMARY_OPENAI_REASONING_EFFORT` | Controls reasoning token budget. Default `low` (valid across all model generations)  |
 | **Anthropic** | `SUMMARY_ANTHROPIC_EFFORT`        | Controls adaptive thinking. Not supported on all models (e.g., Haiku 4.5)            |
 
 ### Known Constraints
 
-- **Reasoning off needs a model that allows it (Ollama):** A reasoning-only model, such as the build the Ollama library serves as `qwen3:4b`, keeps reasoning under `think: false`, and Ollama then returns the reasoning as part of the summary ([langchain-ai/langchain#33993](https://github.com/langchain-ai/langchain/issues/33993) reports that case). Use a hybrid model with this provider; see [Reasoning Off](#reasoning-off).
+- **Reasoning off needs a model that allows it (Ollama):** A model that reasons on every call keeps reasoning under `think: false`, and Ollama then returns the reasoning as part of the summary ([langchain-ai/langchain#33993](https://github.com/langchain-ai/langchain/issues/33993) reports that case). Use a hybrid model, such as `qwen3:1.7b` or `qwen3:8b`, with this provider; see [Reasoning Off](#reasoning-off).
 - **`effort` is not supported on Haiku 4.5 (Anthropic):** The `SUMMARY_ANTHROPIC_EFFORT` setting defaults to `None` (parameter omitted) because Claude Haiku 4.5 does not support the `effort` parameter. Set this only when using models that support adaptive thinking (e.g., Claude Sonnet 4, Claude Opus 4).
 - **Temperature goes only to models that accept it (Anthropic):** The Ollama and OpenAI providers request `temperature=0` for consistent output. Claude Opus 4.7 and later, Claude Sonnet 5 and Claude Fable 5 reject sampling parameters with HTTP 400, so the Anthropic provider sends `temperature=0` only when the model profile bundled with `langchain-anthropic` declares temperature support, as it does for Claude Haiku 4.5 and the Claude Sonnet and Opus 4.5 and 4.6 models. Any other model, including one missing from that profile data, receives no temperature and uses its default. Extended thinking with a token budget requires `temperature=1`, so it cannot run on a model that receives `temperature=0`; the `effort` parameter controls adaptive thinking, a different mechanism, and works either way.
 - **Non-Qwen3 reasoning models require model-specific approaches:** There is no universal mechanism to disable or control reasoning across all model families. When using a new reasoning model, consult its documentation for the appropriate control mechanism.
@@ -474,7 +473,7 @@ Or disable summary generation: `ENABLE_SUMMARY_GENERATION=false`
 ### Poor Summary Quality
 
 **Solutions:**
-- Upgrade to a larger model (`qwen3:4b` or `qwen3:8b`); read [Reasoning Off](#reasoning-off) before choosing `qwen3:4b`
+- Upgrade to a larger model (`qwen3:1.7b` or `qwen3:8b`)
 - Increase `SUMMARY_MAX_TOKENS` to allow longer, more detailed summaries
 - Provide a custom `SUMMARY_PROMPT` tailored to your domain
 

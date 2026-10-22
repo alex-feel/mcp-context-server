@@ -7,8 +7,6 @@ Default model: qwen3:0.6b (configurable via SUMMARY_MODEL).
 Qwen3 Family Model Recommendations:
     - qwen3:0.6b  - Default, lightweight and fast
     - qwen3:1.7b  - Higher quality, good balance of quality and speed
-    - qwen3:4b    - Higher quality; the Ollama library build reasons on every call,
-                    and with reasoning off its reasoning lands in the summary text
     - qwen3:8b    - Highest quality, requires more resources
     - qwen3:14b   - Near-frontier quality, significant resources
     - qwen3:32b   - Frontier-level, requires GPU with >20GB VRAM
