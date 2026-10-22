@@ -36,8 +36,7 @@ class SummarySettings(CommonSettings):
         default='qwen3:0.6b',
         alias='SUMMARY_MODEL',
         description='Summary generation model name. Default: qwen3:0.6b. '
-                    'Alternatives: qwen3:1.7b (higher quality), qwen3:4b (high quality), '
-                    'qwen3:8b (highest quality)',
+                    'Alternatives: qwen3:1.7b (higher quality), qwen3:8b (highest quality)',
     )
 
     max_tokens: int = Field(
@@ -93,7 +92,8 @@ class SummarySettings(CommonSettings):
         description='Custom summarization prompt. Overrides the built-in default prompt. '
                     'The prompt is used as the system message when calling the LLM. '
                     'Should instruct the model to output only the summary text. '
-                    'For Qwen3 models, include /no_think prefix to disable reasoning mode.',
+                    'The Ollama provider turns reasoning off itself; for Qwen3 behind another '
+                    'provider, include a /no_think prefix to skip reasoning.',
     )
 
     min_content_length: int = Field(
@@ -123,6 +123,16 @@ class SummarySettings(CommonSettings):
         description='Control text truncation when exceeding summary context length. '
                     'False (default): Returns error on exceeded context. '
                     'True: Silently truncates input (summary generated from incomplete text).',
+    )
+    ollama_presence_penalty: float | None = Field(
+        default=None,
+        alias='SUMMARY_OLLAMA_PRESENCE_PENALTY',
+        ge=0,
+        le=2,
+        description='Presence penalty sent with every Ollama summary call (0-2). '
+                    'Unset: a qwen3 model gets 1.5, the value its model card prescribes against '
+                    'endless repetition with reasoning off; any other model gets no penalty. '
+                    'An explicit value applies to whatever model is configured; 0 disables it.',
     )
 
     # OpenAI-specific authentication (shared env var with EmbeddingSettings)
@@ -234,6 +244,17 @@ class IndexTreeNodeSummarySettings(CommonSettings):
         le=600,
         description='Per-node summary timeout in seconds; a timeout omits that node, '
                     'never aborts the store.',
+    )
+
+    max_tokens: int = Field(
+        default=120,
+        alias='INDEX_TREE_NODE_SUMMARY_MAX_TOKENS',
+        ge=20,
+        le=4000,
+        description='Output token budget for one per-node summary call (num_predict for Ollama, '
+                    'max_tokens for OpenAI and Anthropic). The default covers a 25-word headline. '
+                    'A node answer cut off at this budget is dropped and that node gets no summary, '
+                    'so a model that loops on one section spends this budget, never SUMMARY_MAX_TOKENS.',
     )
 
     max_nodes: int = Field(

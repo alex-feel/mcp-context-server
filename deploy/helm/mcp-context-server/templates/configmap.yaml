@@ -108,6 +108,11 @@ data:
   EMBEDDING_OLLAMA_NUM_CTX: {{ .Values.ollama.embeddingNumCtx | quote }}
   SUMMARY_OLLAMA_TRUNCATE: {{ .Values.ollama.summaryTruncate | quote }}
   SUMMARY_OLLAMA_NUM_CTX: {{ .Values.ollama.summaryNumCtx | quote }}
+  {{- if not (kindIs "invalid" .Values.ollama.summaryPresencePenalty) }}
+  {{- if ne (toString .Values.ollama.summaryPresencePenalty) "" }}
+  SUMMARY_OLLAMA_PRESENCE_PENALTY: {{ .Values.ollama.summaryPresencePenalty | quote }}
+  {{- end }}
+  {{- end }}
   {{- end }}
   # LangSmith tracing (optional)
   {{- if .Values.langsmith.enabled }}

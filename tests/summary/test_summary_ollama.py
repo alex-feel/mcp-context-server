@@ -5,17 +5,28 @@ Tests verify:
 - initialize() creates ChatOllama with correct params
 - summarize() returns stripped content
 - summarize() raises RuntimeError when not initialized
+- summarize() and summarize_with_prompt() send /api/chat requests with think false
 - shutdown() sets _chat_model to None
 - is_available() returns True when model responds
 - is_available() returns False when not initialized
 - provider_name returns 'ollama'
 """
 
+import functools
+import json
+from collections.abc import Awaitable
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import httpx
 import pytest
+
+from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+type SummaryCall = Callable[[OllamaSummaryProvider], Awaitable[str]]
 
 
 @pytest.fixture
@@ -30,6 +41,8 @@ def mock_summary_settings():
         mock.return_value.summary.retry_base_delay_s = 0.01
         mock.return_value.summary.ollama_truncate = False
         mock.return_value.summary.ollama_num_ctx = 32768
+        mock.return_value.summary.ollama_presence_penalty = None
+        mock.return_value.index_tree.max_tokens = 120
         mock.return_value.ollama.host = 'http://localhost:11434'
         yield mock
 
@@ -92,6 +105,35 @@ class TestOllamaSummaryProviderInit:
         provider = OllamaSummaryProvider()
         assert provider._num_ctx == 32768
 
+    @pytest.mark.parametrize(
+        ('model', 'expected'),
+        [
+            ('qwen3:0.6b', 1.5), ('qwen3:8b', 1.5), ('QWEN3:1.7b-q8_0', 1.5), ('qwen3', 1.5),
+            ('llama3.2', None), ('qwen3-coder:30b', None), ('gemma3:4b', None),
+        ],
+    )
+    def test_init_derives_the_presence_penalty_from_the_model_family(
+        self, mock_summary_settings: MagicMock, model: str, expected: float | None,
+    ) -> None:
+        """Unset, the penalty is the Qwen3 model card's 1.5 for that family and none for any other."""
+        mock_summary_settings.return_value.summary.model = model
+
+        provider = OllamaSummaryProvider()
+
+        assert provider._presence_penalty == expected
+
+    @pytest.mark.parametrize(('model', 'configured'), [('llama3.2', 0.7), ('qwen3:0.6b', 0.0), ('qwen3:8b', 2.0)])
+    def test_init_prefers_the_configured_presence_penalty(
+        self, mock_summary_settings: MagicMock, model: str, configured: float,
+    ) -> None:
+        """SUMMARY_OLLAMA_PRESENCE_PENALTY applies to whatever model is configured, zero included."""
+        mock_summary_settings.return_value.summary.model = model
+        mock_summary_settings.return_value.summary.ollama_presence_penalty = configured
+
+        provider = OllamaSummaryProvider()
+
+        assert provider._presence_penalty == configured
+
 
 @pytest.mark.usefixtures('mock_summary_settings')
 class TestOllamaSummaryProviderInitialize:
@@ -113,11 +155,15 @@ class TestOllamaSummaryProviderInitialize:
                 mock_chat.assert_called_once_with(
                     model='qwen3:0.6b',
                     base_url='http://localhost:11434',
-                    temperature=0,
-                    num_predict=2000,
-                    num_ctx=32768,
+                    reasoning=False,
                 )
                 assert provider._chat_model is not None
+                assert provider._options == {
+                    'num_ctx': 32768, 'num_predict': 2000, 'temperature': 0, 'presence_penalty': 1.5,
+                }
+                assert provider._node_options == {
+                    'num_ctx': 32768, 'num_predict': 120, 'temperature': 0, 'presence_penalty': 1.5,
+                }
 
     @pytest.mark.asyncio
     async def test_initialize_raises_import_error(self) -> None:
@@ -299,6 +345,147 @@ class TestOllamaSummaryProviderSummarize:
         # Must contain the runtime value
         assert '2000' in caplog.text
         assert 'SUMMARY_MAX_TOKENS' in caplog.text
+
+
+class _OllamaChatServer:
+    """In-memory Ollama /api/chat endpoint that records every request body it receives."""
+
+    def __init__(self) -> None:
+        self.bodies: list[dict[str, Any]] = []
+        self.content = 'Recorded summary.'
+        self.done_reason = 'stop'
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        """Record the request body and answer with one streamed reply in Ollama's NDJSON form."""
+        self.bodies.append(json.loads(request.content))
+        chunks = [
+            {'model': 'qwen3:0.6b', 'message': {'role': 'assistant', 'content': self.content}, 'done': False},
+            {'model': 'qwen3:0.6b', 'message': {'role': 'assistant', 'content': ''}, 'done': True,
+             'done_reason': self.done_reason},
+        ]
+        return httpx.Response(200, content=b''.join(json.dumps(chunk).encode() + b'\n' for chunk in chunks))
+
+
+@pytest.fixture
+def ollama_chat_server(monkeypatch: pytest.MonkeyPatch) -> _OllamaChatServer:
+    """Build the provider's real ChatOllama on an HTTP transport served by _OllamaChatServer."""
+    import langchain_ollama
+
+    server = _OllamaChatServer()
+    chat_ollama_on_mock_transport = functools.partial(
+        langchain_ollama.ChatOllama, async_client_kwargs={'transport': httpx.MockTransport(server.handle)},
+    )
+    monkeypatch.setattr(langchain_ollama, 'ChatOllama', chat_ollama_on_mock_transport)
+    return server
+
+
+async def _summarize_flat(provider: OllamaSummaryProvider) -> str:
+    return await provider.summarize('Text of the whole document.', 'agent')
+
+
+async def _summarize_section(provider: OllamaSummaryProvider) -> str:
+    return await provider.summarize_with_prompt('Text of one section.', 'Summarize this section.')
+
+
+@pytest.mark.usefixtures('mock_summary_settings', 'mock_retry')
+class TestOllamaSummaryProviderRequest:
+    """The /api/chat requests both summary calls send through the real ChatOllama client."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('call', [_summarize_flat, _summarize_section], ids=['flat', 'section'])
+    async def test_request_turns_reasoning_off(self, ollama_chat_server: _OllamaChatServer, call: SummaryCall) -> None:
+        """Every summary request carries think false and its own output budget.
+
+        The document summary gets SUMMARY_MAX_TOKENS, a section INDEX_TREE_NODE_SUMMARY_MAX_TOKENS.
+        """
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        result = await call(provider)
+
+        assert result == 'Recorded summary.'
+        assert len(ollama_chat_server.bodies) == 1
+        body = ollama_chat_server.bodies[0]
+        assert body.get('think') is False
+        assert body['model'] == 'qwen3:0.6b'
+        budget = 2000 if call is _summarize_flat else 120
+        assert body['options'] == {'num_ctx': 32768, 'num_predict': budget, 'temperature': 0, 'presence_penalty': 1.5}
+
+    @pytest.mark.asyncio
+    async def test_request_leaves_another_family_without_a_penalty(
+        self, mock_summary_settings: MagicMock, ollama_chat_server: _OllamaChatServer,
+    ) -> None:
+        """A model outside the qwen3 family gets no presence penalty unless one is configured."""
+        mock_summary_settings.return_value.summary.model = 'llama3.2'
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        await provider.summarize('Text of the whole document.', 'agent')
+
+        options = ollama_chat_server.bodies[0]['options']
+        assert 'presence_penalty' not in options
+        assert options['temperature'] == 0
+
+    @pytest.mark.asyncio
+    async def test_request_sends_the_configured_penalty(
+        self, mock_summary_settings: MagicMock, ollama_chat_server: _OllamaChatServer,
+    ) -> None:
+        """SUMMARY_OLLAMA_PRESENCE_PENALTY reaches the request for any model."""
+        mock_summary_settings.return_value.summary.model = 'llama3.2'
+        mock_summary_settings.return_value.summary.ollama_presence_penalty = 0.7
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        await provider.summarize_with_prompt('Text of one section.', 'Summarize this section.')
+
+        assert ollama_chat_server.bodies[0]['options']['presence_penalty'] == 0.7
+
+    @pytest.mark.asyncio
+    async def test_availability_probe_sends_the_summary_options(self, ollama_chat_server: _OllamaChatServer) -> None:
+        """The startup probe runs with the summary options, so it exercises the configuration the summaries use."""
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        assert await provider.is_available() is True
+
+        body = ollama_chat_server.bodies[0]
+        assert body.get('think') is False
+        assert body['options']['presence_penalty'] == 1.5
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('call', 'message'),
+        [
+            (_summarize_flat, 'Ollama summary generation produced empty output'),
+            (_summarize_section, 'Ollama node summary ran to its per-node token budget'),
+        ],
+        ids=['flat', 'section'],
+    )
+    async def test_empty_answer_at_budget_still_raises(
+        self, ollama_chat_server: _OllamaChatServer, call: SummaryCall, message: str,
+    ) -> None:
+        """An empty answer that ran to the budget raises even with reasoning off."""
+        ollama_chat_server.content = ''
+        ollama_chat_server.done_reason = 'length'
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        with pytest.raises(RuntimeError, match=message):
+            await call(provider)
+
+        assert ollama_chat_server.bodies[0].get('think') is False
+
+    @pytest.mark.asyncio
+    async def test_section_answer_cut_at_the_budget_is_dropped(self, ollama_chat_server: _OllamaChatServer) -> None:
+        """A section answer that ran to the per-node budget fails even with text; the document summary is kept."""
+        ollama_chat_server.content = 'Rollback plans, retries, and'
+        ollama_chat_server.done_reason = 'length'
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        assert await _summarize_flat(provider) == 'Rollback plans, retries, and'
+        with pytest.raises(RuntimeError, match='per-node token budget'):
+            await _summarize_section(provider)
 
 
 @pytest.mark.usefixtures('mock_summary_settings')

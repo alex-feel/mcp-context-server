@@ -33,7 +33,7 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.provider == 'ollama'
 
-    def test_summary_model_default_is_qwen3_1_7b(self) -> None:
+    def test_summary_model_default_is_qwen3_0_6b(self) -> None:
         """Verify SUMMARY_MODEL defaults to 'qwen3:0.6b'."""
         settings = SummarySettings()
         assert settings.model == 'qwen3:0.6b'
@@ -490,3 +490,46 @@ class TestIndexTreeNodeSummarySettings:
         get_settings.cache_clear()
         with pytest.raises(ValidationError):
             get_settings()
+
+
+class TestSummaryOllamaPresencePenaltySettings:
+    """SUMMARY_OLLAMA_PRESENCE_PENALTY: unset leaves the model-family default to the provider."""
+
+    def test_default_is_unset(self) -> None:
+        """Unset, the setting is None so the provider derives the penalty from the model family."""
+        with env_vars(SUMMARY_OLLAMA_PRESENCE_PENALTY=None):
+            settings = AppSettings()
+            assert settings.summary.ollama_presence_penalty is None
+
+    @pytest.mark.parametrize(('value', 'expected'), [('0', 0.0), ('0.7', 0.7), ('2', 2.0)])
+    def test_accepts_values_from_zero_to_two(self, value: str, expected: float) -> None:
+        """Any value in the 0 to 2 range is accepted, zero included, which disables the penalty."""
+        with env_vars(SUMMARY_OLLAMA_PRESENCE_PENALTY=value):
+            settings = AppSettings()
+            assert settings.summary.ollama_presence_penalty == expected
+
+    @pytest.mark.parametrize('value', ['-0.5', '2.5', 'high'])
+    def test_rejects_values_outside_the_range(self, value: str) -> None:
+        """A value outside 0 to 2, or not a number, is refused rather than sent to Ollama."""
+        with env_vars(SUMMARY_OLLAMA_PRESENCE_PENALTY=value), pytest.raises(ValidationError):
+            AppSettings()
+
+
+class TestIndexTreeNodeSummaryMaxTokens:
+    """INDEX_TREE_NODE_SUMMARY_MAX_TOKENS bounds the output of one per-node summary call."""
+
+    def test_default_is_120(self) -> None:
+        """Unset, a per-node call gets 120 tokens, enough for a 25-word headline."""
+        with env_vars(INDEX_TREE_NODE_SUMMARY_MAX_TOKENS=None):
+            assert AppSettings().index_tree.max_tokens == 120
+
+    def test_can_be_customized(self) -> None:
+        """An operator whose node prompt asks for longer entries raises the budget."""
+        with env_vars(INDEX_TREE_NODE_SUMMARY_MAX_TOKENS='300'):
+            assert AppSettings().index_tree.max_tokens == 300
+
+    @pytest.mark.parametrize('value', ['19', '4001', 'many'])
+    def test_rejects_values_outside_the_range(self, value: str) -> None:
+        """A budget below 20, above 4000, or not a number is refused."""
+        with env_vars(INDEX_TREE_NODE_SUMMARY_MAX_TOKENS=value), pytest.raises(ValidationError):
+            AppSettings()

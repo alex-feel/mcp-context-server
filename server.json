@@ -593,6 +593,13 @@
           "name": "SUMMARY_OLLAMA_TRUNCATE"
         },
         {
+          "description": "Presence penalty sent with every Ollama summary call (0-2). Unset: a qwen3 model gets 1.5, the value its model card prescribes against endless repetition with reasoning off; any other model gets no penalty. An explicit value applies to whatever model is configured; 0 disables it",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_OLLAMA_PRESENCE_PENALTY"
+        },
+        {
           "description": "Reasoning effort level for OpenAI reasoning models (default: low). Valid values vary by generation: gpt-5: low, medium, high; gpt-5.1+: none, low, medium, high, xhigh. Default low is universally valid across all generations",
           "isRequired": false,
           "format": "string",
@@ -740,7 +747,7 @@
           "default": "true"
         },
         {
-          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt.",
+          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short headline-style abstract prompt.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -759,6 +766,13 @@
           "format": "number",
           "isSecret": false,
           "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Output token budget of one per-node index_tree summary call (num_predict for Ollama, max_tokens for OpenAI and Anthropic). Default 120, sized for a 25-word headline; an answer cut off at this budget drops that node's summary, so a model that loops on one section never spends SUMMARY_MAX_TOKENS",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_TOKENS"
         },
         {
           "description": "Node-task fan-out cap for per-node index_tree summary coroutines; NOT a second model budget (summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT). Default min(cpu_count, 4).",
@@ -1823,6 +1837,13 @@
           "name": "SUMMARY_OLLAMA_TRUNCATE"
         },
         {
+          "description": "Presence penalty sent with every Ollama summary call (0-2). Unset: a qwen3 model gets 1.5, the value its model card prescribes against endless repetition with reasoning off; any other model gets no penalty. An explicit value applies to whatever model is configured; 0 disables it",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_OLLAMA_PRESENCE_PENALTY"
+        },
+        {
           "description": "Reasoning effort level for OpenAI reasoning models (default: low). Valid values vary by generation: gpt-5: low, medium, high; gpt-5.1+: none, low, medium, high, xhigh. Default low is universally valid across all generations",
           "isRequired": false,
           "format": "string",
@@ -1970,7 +1991,7 @@
           "default": "true"
         },
         {
-          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt.",
+          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short headline-style abstract prompt.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1989,6 +2010,13 @@
           "format": "number",
           "isSecret": false,
           "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Output token budget of one per-node index_tree summary call (num_predict for Ollama, max_tokens for OpenAI and Anthropic). Default 120, sized for a 25-word headline; an answer cut off at this budget drops that node's summary, so a model that loops on one section never spends SUMMARY_MAX_TOKENS",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_TOKENS"
         },
         {
           "description": "Node-task fan-out cap for per-node index_tree summary coroutines; NOT a second model budget (summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT). Default min(cpu_count, 4).",

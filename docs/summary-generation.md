@@ -24,7 +24,7 @@ Select a provider via the `SUMMARY_PROVIDER` environment variable.
 
 - **Python**: 3.12+ (already required by MCP Context Server)
 - **Ollama** (for default provider): Installed from [ollama.com/download](https://ollama.com/download)
-- **RAM**: 2GB minimum for `qwen3:0.6b`; 8GB recommended for `qwen3:4b`
+- **RAM**: 2GB minimum for `qwen3:0.6b`; 4GB recommended for `qwen3:1.7b` and 16GB for `qwen3:8b`
 
 ## Installation
 
@@ -88,20 +88,29 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 
 #### Environment Variables
 
-| Variable                     | Default      | Description                                                                                                                                            |
-|------------------------------|--------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `ENABLE_SUMMARY_GENERATION`  | `true`       | Enable/disable summary generation                                                                                                                      |
-| `SUMMARY_PROVIDER`           | `ollama`     | Set to `ollama`                                                                                                                                        |
-| `SUMMARY_MODEL`              | `qwen3:0.6b` | Ollama model name (see model table below)                                                                                                              |
-| `SUMMARY_MAX_TOKENS`         | `4000`       | Maximum output tokens for summary generation (50-16384)                                                                                                |
-| `SUMMARY_TIMEOUT_S`          | `240.0`      | Timeout in seconds for summary generation API calls                                                                                                    |
-| `SUMMARY_RETRY_MAX_ATTEMPTS` | `5`          | Maximum retry attempts on transient errors                                                                                                             |
-| `SUMMARY_RETRY_BASE_DELAY_S` | `3.0`        | Base delay in seconds between retries (exponential backoff)                                                                                            |
-| `SUMMARY_MAX_CONCURRENT`     | `2`          | Maximum concurrent calls against the summary model (1-20). Shared budget covering both the flat document summary and the index_tree per-node summaries |
-| `SUMMARY_MIN_CONTENT_LENGTH` | `500`        | Minimum text length (characters) to trigger summary generation. 0 = always generate                                                                    |
-| `SUMMARY_PROMPT`             | (built-in)   | Custom system prompt. Overrides both source-specific defaults. See [Custom Prompt](#custom-prompt)                                                     |
-| `SUMMARY_OLLAMA_NUM_CTX`     | `32768`      | Ollama context window in tokens (512-2097152). Must accommodate input text + prompt + output budget                                                    |
-| `SUMMARY_OLLAMA_TRUNCATE`    | `false`      | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation                                                   |
+| Variable                            | Default      | Description                                                                                                                                            |
+|-------------------------------------|--------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_SUMMARY_GENERATION`         | `true`       | Enable/disable summary generation                                                                                                                      |
+| `SUMMARY_PROVIDER`                  | `ollama`     | Set to `ollama`                                                                                                                                        |
+| `SUMMARY_MODEL`                     | `qwen3:0.6b` | Ollama model name (see model table below)                                                                                                              |
+| `SUMMARY_MAX_TOKENS`                | `4000`       | Token budget per call (50-16384), sent as `num_predict`. With [reasoning off](#reasoning-off), it covers only the summary text                         |
+| `SUMMARY_TIMEOUT_S`                 | `240.0`      | Timeout in seconds for summary generation API calls                                                                                                    |
+| `SUMMARY_RETRY_MAX_ATTEMPTS`        | `5`          | Maximum retry attempts on transient errors                                                                                                             |
+| `SUMMARY_RETRY_BASE_DELAY_S`        | `3.0`        | Base delay in seconds between retries (exponential backoff)                                                                                            |
+| `SUMMARY_MAX_CONCURRENT`            | `2`          | Maximum concurrent calls against the summary model (1-20). Shared budget covering both the flat document summary and the index_tree per-node summaries |
+| `SUMMARY_MIN_CONTENT_LENGTH`        | `500`        | Minimum text length (characters) to trigger summary generation. 0 = always generate                                                                    |
+| `SUMMARY_PROMPT`                    | (built-in)   | Custom system prompt. Overrides both source-specific defaults. See [Custom Prompt](#custom-prompt)                                                     |
+| `SUMMARY_OLLAMA_NUM_CTX`            | `32768`      | Ollama context window in tokens (512-2097152). Must accommodate input text + prompt + output budget                                                    |
+| `SUMMARY_OLLAMA_TRUNCATE`           | `false`      | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation                                                   |
+| `SUMMARY_OLLAMA_PRESENCE_PENALTY`   | _(unset)_    | Presence penalty (0-2) sent with every call. Unset: `1.5` for a `qwen3` model, none for any other; see [Reasoning Off](#reasoning-off)                 |
+
+#### Reasoning Off
+
+The Ollama provider sends every summary call, the document summary and each per-section summary alike, with the model's reasoning turned off: LangChain's `reasoning=False`, which sends Ollama's `think: false` request parameter. A model that can reason, such as Qwen3, then writes the summary straight away, so `SUMMARY_MAX_TOKENS` bounds the summary text instead of a hidden reasoning trace followed by the summary.
+
+Ollama turns reasoning off only for models that allow it. The hybrid Qwen3 builds `qwen3:0.6b`, `qwen3:1.7b` and `qwen3:8b` allow it. The builds the Ollama library currently serves as `qwen3:4b` and `qwen3:30b` reason on every call, so they are unsuitable while reasoning is off: Ollama returns their reasoning and the closing `</think>` tag as part of the answer, the stored summary starts with the model's reasoning, and the reasoning counts against `SUMMARY_MAX_TOKENS`. With any model, a call that uses the whole budget and returns no text fails: a failed document summary means the server does not store the entry (see [How It Works](#how-it-works)), and a failed per-section summary leaves that section without a summary while the entry is stored.
+
+Reasoning off also removes the planning step that kept a small model from copying its input. Given low-entropy text, such as a document made of one repeated token, `qwen3:0.6b` echoes the text until the `SUMMARY_MAX_TOKENS` budget runs out, every attempt then exceeds `SUMMARY_TIMEOUT_S`, and the store fails once the retries are spent; a sampling temperature does not stop it. The Qwen3 model card's remedy is a presence penalty, so the provider sends `presence_penalty: 1.5` with every call to a `qwen3` model and no penalty to a model of another family, whose authors give no such guidance. `SUMMARY_OLLAMA_PRESENCE_PENALTY` (0-2) replaces that default for whatever model is configured, and `0` disables the penalty. The penalty lowers the odds of a token the output already contains, so a summary repeats a term a little less often; the model card notes that higher values occasionally mix languages. Each per-section summary runs under its own output budget, `INDEX_TREE_NODE_SUMMARY_MAX_TOKENS` (default 120, sized for a headline), and an answer that runs to that budget drops the section's summary instead of being stored cut off.
 
 #### Qwen3 Model Options (Ollama)
 
@@ -111,14 +120,13 @@ The Qwen3 family offers a range of sizes for different resource constraints and 
 |--------------|--------------|-----------|-----------|------------------------------------------------|
 | `qwen3:0.6b` | ~2GB         | Basic     | Fastest   | **Default**. Lightweight, minimal resources    |
 | `qwen3:1.7b` | ~4GB         | Good      | Fast      | Higher quality, good balance for most uses     |
-| `qwen3:4b`   | ~8GB         | Better    | Moderate  | Recommended when higher quality is needed      |
 | `qwen3:8b`   | ~16GB        | Best      | Slower    | Highest quality, requires dedicated hardware   |
 
-**Recommendation:** Start with `qwen3:0.6b` (default). Upgrade to `qwen3:1.7b` or `qwen3:4b` if summary quality is insufficient for your use case.
+**Recommendation:** Start with `qwen3:0.6b` (default). Upgrade to `qwen3:1.7b` if summary quality is insufficient for your use case, or to `qwen3:8b` for the highest quality on dedicated hardware.
 
 Pull any alternative model before use:
 ```bash
-ollama pull qwen3:4b
+ollama pull qwen3:1.7b
 ```
 
 ### OpenAI
@@ -226,8 +234,8 @@ The built-in prompts (from `app/summary/instructions.py`) use source-specific in
 ```text
 /no_think
 You are an expert summarizer for a context storage system used by AI agents.
-The following text is a message from a human user. Your task is to produce
-a single, dense paragraph that captures the essential meaning of the user's message.
+What follows was written by a human user: a message, a note, or a document. Your task is to produce
+a single, dense paragraph that captures its essential meaning.
 ...
 ```
 
@@ -241,10 +249,11 @@ a single, dense paragraph that captures the essential meaning of the agent's rep
 ```
 
 **Design notes:**
-- `/no_think` disables Qwen3 reasoning mode (saves tokens and time for small models)
+- `/no_think` is Qwen3's in-prompt switch for skipping reasoning; the Ollama provider also turns reasoning off in the request itself (see [Reasoning Off](#reasoning-off))
 - Zero-shot format maximizes input token budget on resource-constrained models
 - Single-paragraph constraint is easiest for small models to follow consistently
 - Negative constraints (`Do not...`) prevent common small-model failure modes
+- A model that answers without reasoning opens with the most salient noun phrase of the task statement, so no prompt names the user, the text, or the section as the thing to describe; the per-section prompt asks for a headline-style noun phrase, because such a model copies a sentence from the section when asked for a sentence and copies a worked example when given one
 - Summaries are always in English regardless of input language
 
 ### Overriding the Prompt
@@ -263,7 +272,7 @@ Set `SUMMARY_PROMPT` to your custom system message:
 - The prompt is used as the **system message**. The text to summarize is passed separately as the user message (AS-IS, without any prefix).
 - When `SUMMARY_PROMPT` is set, it overrides BOTH source-specific prompts (user and agent get the same custom prompt).
 - An empty string or whitespace-only value falls back to the source-specific default prompts (unlike `MCP_SERVER_INSTRUCTIONS` where empty string disables the feature).
-- For Qwen3 models, include `/no_think` at the start of your prompt to disable the model's reasoning mode and save tokens.
+- The Ollama provider turns reasoning off in the request, so a custom prompt needs no `/no_think` there. For Qwen3 served through another provider, such as an OpenAI-compatible endpoint, start your prompt with `/no_think` to skip reasoning and save tokens.
 
 ## Cross-Provider Reasoning Limitations
 
@@ -271,16 +280,16 @@ When using reasoning models for summary generation, each provider has specific l
 
 | Provider      | Control Mechanism                 | Limitation                                                                           |
 |---------------|-----------------------------------|--------------------------------------------------------------------------------------|
-| **Ollama**    | `/no_think` prompt prefix         | Qwen3-specific. Other reasoning models require model-specific approaches             |
+| **Ollama**    | `think: false` on every request   | Only models that allow it; see [Reasoning Off](#reasoning-off)                       |
 | **OpenAI**    | `SUMMARY_OPENAI_REASONING_EFFORT` | Controls reasoning token budget. Default `low` (valid across all model generations)  |
 | **Anthropic** | `SUMMARY_ANTHROPIC_EFFORT`        | Controls adaptive thinking. Not supported on all models (e.g., Haiku 4.5)            |
 
 ### Known Constraints
 
-- **`/no_think` is Qwen3-specific (Ollama):** The `/no_think` prefix in the default prompt disables reasoning mode only for Qwen3 models. Non-Qwen3 reasoning models running on Ollama ignore this prefix and require model-specific approaches to control reasoning behavior.
+- **A repetitive document needs the presence penalty (Ollama):** With reasoning off, a `qwen3` model copies low-entropy text until its token budget runs out, so the provider sends the model card's `presence_penalty: 1.5` to that family; another family gets none unless `SUMMARY_OLLAMA_PRESENCE_PENALTY` sets one. See [Reasoning Off](#reasoning-off).
+- **Reasoning off needs a model that allows it (Ollama):** A model that reasons on every call keeps reasoning under `think: false`, and Ollama then returns the reasoning as part of the summary ([langchain-ai/langchain#33993](https://github.com/langchain-ai/langchain/issues/33993) reports that case). Use a hybrid model, such as `qwen3:1.7b` or `qwen3:8b`, with this provider; see [Reasoning Off](#reasoning-off).
 - **`effort` is not supported on Haiku 4.5 (Anthropic):** The `SUMMARY_ANTHROPIC_EFFORT` setting defaults to `None` (parameter omitted) because Claude Haiku 4.5 does not support the `effort` parameter. Set this only when using models that support adaptive thinking (e.g., Claude Sonnet 4, Claude Opus 4).
 - **Temperature goes only to models that accept it (Anthropic):** The Ollama and OpenAI providers request `temperature=0` for consistent output. Claude Opus 4.7 and later, Claude Sonnet 5 and Claude Fable 5 reject sampling parameters with HTTP 400, so the Anthropic provider sends `temperature=0` only when the model profile bundled with `langchain-anthropic` declares temperature support, as it does for Claude Haiku 4.5 and the Claude Sonnet and Opus 4.5 and 4.6 models. Any other model, including one missing from that profile data, receives no temperature and uses its default. Extended thinking with a token budget requires `temperature=1`, so it cannot run on a model that receives `temperature=0`; the `effort` parameter controls adaptive thinking, a different mechanism, and works either way.
-- **`reasoning=False` bug (LangChain):** LangChain has a known bug ([#33993](https://github.com/langchain-ai/langchain/issues/33993)) where setting `reasoning=False` on certain models may not work as expected. The server avoids this parameter entirely, relying instead on provider-specific effort controls.
 - **Non-Qwen3 reasoning models require model-specific approaches:** There is no universal mechanism to disable or control reasoning across all model families. When using a new reasoning model, consult its documentation for the appropriate control mechanism.
 
 ## How It Works
@@ -469,7 +478,7 @@ Or disable summary generation: `ENABLE_SUMMARY_GENERATION=false`
 ### Poor Summary Quality
 
 **Solutions:**
-- Upgrade to a larger model (`qwen3:4b` or `qwen3:8b`)
+- Upgrade to a larger model (`qwen3:1.7b` or `qwen3:8b`)
 - Increase `SUMMARY_MAX_TOKENS` to allow longer, more detailed summaries
 - Provide a custom `SUMMARY_PROMPT` tailored to your domain
 
@@ -481,6 +490,7 @@ Or disable summary generation: `ENABLE_SUMMARY_GENERATION=false`
 - Increase `SUMMARY_TIMEOUT_S` (e.g., `300`)
 - Use a smaller/faster model (`qwen3:0.6b`) or upgrade to `qwen3:1.7b` for better quality
 - Reduce `SUMMARY_MAX_CONCURRENT` to limit parallel load on the model server (this single budget caps both flat document summaries and index_tree per-node summaries)
+- A model that echoes a repetitive document until `SUMMARY_MAX_TOKENS` runs out times out on every attempt; a `qwen3` model gets the presence penalty that stops it, and another family needs `SUMMARY_OLLAMA_PRESENCE_PENALTY` (see [Reasoning Off](#reasoning-off))
 
 ## Additional Resources
 

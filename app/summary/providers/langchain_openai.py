@@ -35,6 +35,7 @@ class OpenAISummaryProvider:
         settings = get_settings()
         self._model = settings.summary.model
         self._max_tokens = settings.summary.max_tokens
+        self._node_max_tokens = settings.index_tree.max_tokens
         self._reasoning_effort = settings.summary.openai_reasoning_effort
         self._api_key = settings.summary.openai_api_key
         self._api_base = settings.summary.openai_api_base
@@ -156,8 +157,8 @@ class OpenAISummaryProvider:
             Summary string (may be empty if the model returns nothing).
 
         Raises:
-            RuntimeError: If the provider is not initialized or output is empty
-                due to the max_tokens budget being fully consumed.
+            RuntimeError: If the provider is not initialized or the answer ran to the
+                per-node token budget (INDEX_TREE_NODE_SUMMARY_MAX_TOKENS).
         """
         if self._chat_model is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
@@ -171,14 +172,14 @@ class OpenAISummaryProvider:
         ]
 
         async def _summarize() -> str:
-            response = await self._chat_model.ainvoke(messages)
+            response = await self._chat_model.ainvoke(messages, max_tokens=self._node_max_tokens)
             result = str(response.content).strip()
-            finish_reason = response.response_metadata.get('finish_reason')
-            if finish_reason == 'length' and not result:
+            if response.response_metadata.get('finish_reason') == 'length':
                 raise RuntimeError(
-                    'OpenAI node summary produced empty output (finish_reason=length); '
-                    f'the max_tokens budget ({self._max_tokens}) was consumed. '
-                    'Fix: reduce SUMMARY_OPENAI_REASONING_EFFORT or increase SUMMARY_MAX_TOKENS.',
+                    'OpenAI node summary ran to its per-node token budget (finish_reason=length; '
+                    f'INDEX_TREE_NODE_SUMMARY_MAX_TOKENS={self._node_max_tokens}), so the node gets '
+                    'no summary. Raise INDEX_TREE_NODE_SUMMARY_MAX_TOKENS only when the node prompt '
+                    'asks for longer entries or a reasoning model spends it before answering.',
                 )
             return result
 

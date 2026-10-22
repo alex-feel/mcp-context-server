@@ -30,6 +30,7 @@ def mock_anthropic_settings():
     with patch('app.summary.providers.langchain_anthropic.get_settings') as mock:
         mock.return_value.summary.model = 'claude-haiku-4-5-20251001'
         mock.return_value.summary.max_tokens = 1800
+        mock.return_value.index_tree.max_tokens = 120
         mock.return_value.summary.anthropic_effort = None
         mock.return_value.summary.anthropic_api_key = SecretStr('sk-ant-test')
         mock.return_value.summary.prompt = None
@@ -539,3 +540,40 @@ class TestAnthropicSummaryProviderName:
 
         provider = AnthropicSummaryProvider()
         assert provider.provider_name == 'anthropic'
+
+
+@pytest.mark.usefixtures('mock_anthropic_settings', 'mock_anthropic_retry')
+class TestAnthropicSummaryProviderNodeSummary:
+    """summarize_with_prompt() runs under the per-node token budget."""
+
+    @pytest.mark.asyncio
+    async def test_node_call_sends_the_node_budget(self) -> None:
+        """A per-section call carries INDEX_TREE_NODE_SUMMARY_MAX_TOKENS, not SUMMARY_MAX_TOKENS."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        provider = AnthropicSummaryProvider()
+        mock_response = MagicMock()
+        mock_response.content = 'Rollback plans: retries and escalation'
+        mock_response.response_metadata = {'stop_reason': 'end_turn'}
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        result = await provider.summarize_with_prompt('Section text', 'Write a headline.')
+
+        assert result == 'Rollback plans: retries and escalation'
+        assert provider._chat_model.ainvoke.call_args.kwargs == {'max_tokens': 120}
+
+    @pytest.mark.asyncio
+    async def test_node_answer_cut_at_the_budget_is_dropped(self) -> None:
+        """A section answer that ran to the per-node budget fails even with text, so the node gets no summary."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        provider = AnthropicSummaryProvider()
+        mock_response = MagicMock()
+        mock_response.content = 'Rollback plans, retries, and'
+        mock_response.response_metadata = {'stop_reason': 'max_tokens'}
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match='per-node token budget'):
+            await provider.summarize_with_prompt('Section text', 'Write a headline.')

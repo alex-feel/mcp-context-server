@@ -57,6 +57,7 @@ class AnthropicSummaryProvider:
         settings = get_settings()
         self._model = settings.summary.model
         self._max_tokens = settings.summary.max_tokens
+        self._node_max_tokens = settings.index_tree.max_tokens
         self._effort = settings.summary.anthropic_effort
         self._api_key = settings.summary.anthropic_api_key
         self._chat_model: Any = None
@@ -186,8 +187,8 @@ class AnthropicSummaryProvider:
             Summary string (may be empty if the model returns nothing).
 
         Raises:
-            RuntimeError: If the provider is not initialized or output is empty
-                due to the max_tokens budget being fully consumed.
+            RuntimeError: If the provider is not initialized or the answer ran to the
+                per-node token budget (INDEX_TREE_NODE_SUMMARY_MAX_TOKENS).
         """
         if self._chat_model is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
@@ -201,14 +202,14 @@ class AnthropicSummaryProvider:
         ]
 
         async def _summarize() -> str:
-            response = await self._chat_model.ainvoke(messages)
+            response = await self._chat_model.ainvoke(messages, max_tokens=self._node_max_tokens)
             result = str(response.content).strip()
-            stop_reason = response.response_metadata.get('stop_reason')
-            if stop_reason == 'max_tokens' and not result:
+            if response.response_metadata.get('stop_reason') == 'max_tokens':
                 raise RuntimeError(
-                    'Anthropic node summary produced empty output (stop_reason=max_tokens); '
-                    f'the max_tokens budget ({self._max_tokens}) was consumed. '
-                    'Fix: increase SUMMARY_MAX_TOKENS.',
+                    'Anthropic node summary ran to its per-node token budget (stop_reason=max_tokens; '
+                    f'INDEX_TREE_NODE_SUMMARY_MAX_TOKENS={self._node_max_tokens}), so the node gets '
+                    'no summary. Raise INDEX_TREE_NODE_SUMMARY_MAX_TOKENS only when the node prompt '
+                    'asks for longer entries.',
                 )
             return result
 

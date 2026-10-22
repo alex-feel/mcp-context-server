@@ -79,6 +79,7 @@ Every behavior is identical on SQLite and PostgreSQL: all matching, line splitti
 | `INDEX_TREE_NODE_SUMMARY_PROMPT`             | (built-in short prompt) | Override the per-node summary system prompt                       |
 | `INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH` | `500`                   | Skip node summaries for sections shorter than this                |
 | `INDEX_TREE_NODE_SUMMARY_TIMEOUT_S`          | `240.0`                 | Per-node summary timeout                                          |
+| `INDEX_TREE_NODE_SUMMARY_MAX_TOKENS`         | `120`                   | Output budget per node call; a cut-off answer drops the node      |
 | `INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT`     | `min(cpu_count, 4)`     | Node-task fan-out cap; budget = `SUMMARY_MAX_CONCURRENT`          |
 
 See [Environment Variables](environment-variables.md) for the full reference and [API Reference](api-reference.md) for exact parameters and return shapes.
