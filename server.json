@@ -768,6 +768,13 @@
           "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
         },
         {
+          "description": "Output token budget of one per-node index_tree summary call (num_predict for Ollama, max_tokens for OpenAI and Anthropic). Default 120, sized for a 25-word headline; an answer cut off at this budget drops that node's summary, so a model that loops on one section never spends SUMMARY_MAX_TOKENS",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_TOKENS"
+        },
+        {
           "description": "Node-task fan-out cap for per-node index_tree summary coroutines; NOT a second model budget (summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT). Default min(cpu_count, 4).",
           "isRequired": false,
           "format": "number",
@@ -2003,6 +2010,13 @@
           "format": "number",
           "isSecret": false,
           "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Output token budget of one per-node index_tree summary call (num_predict for Ollama, max_tokens for OpenAI and Anthropic). Default 120, sized for a 25-word headline; an answer cut off at this budget drops that node's summary, so a model that loops on one section never spends SUMMARY_MAX_TOKENS",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_TOKENS"
         },
         {
           "description": "Node-task fan-out cap for per-node index_tree summary coroutines; NOT a second model budget (summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT). Default min(cpu_count, 4).",

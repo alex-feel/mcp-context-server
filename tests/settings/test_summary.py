@@ -513,3 +513,23 @@ class TestSummaryOllamaPresencePenaltySettings:
         """A value outside 0 to 2, or not a number, is refused rather than sent to Ollama."""
         with env_vars(SUMMARY_OLLAMA_PRESENCE_PENALTY=value), pytest.raises(ValidationError):
             AppSettings()
+
+
+class TestIndexTreeNodeSummaryMaxTokens:
+    """INDEX_TREE_NODE_SUMMARY_MAX_TOKENS bounds the output of one per-node summary call."""
+
+    def test_default_is_120(self) -> None:
+        """Unset, a per-node call gets 120 tokens, enough for a 25-word headline."""
+        with env_vars(INDEX_TREE_NODE_SUMMARY_MAX_TOKENS=None):
+            assert AppSettings().index_tree.max_tokens == 120
+
+    def test_can_be_customized(self) -> None:
+        """An operator whose node prompt asks for longer entries raises the budget."""
+        with env_vars(INDEX_TREE_NODE_SUMMARY_MAX_TOKENS='300'):
+            assert AppSettings().index_tree.max_tokens == 300
+
+    @pytest.mark.parametrize('value', ['19', '4001', 'many'])
+    def test_rejects_values_outside_the_range(self, value: str) -> None:
+        """A budget below 20, above 4000, or not a number is refused."""
+        with env_vars(INDEX_TREE_NODE_SUMMARY_MAX_TOKENS=value), pytest.raises(ValidationError):
+            AppSettings()

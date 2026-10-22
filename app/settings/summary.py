@@ -246,6 +246,17 @@ class IndexTreeNodeSummarySettings(CommonSettings):
                     'never aborts the store.',
     )
 
+    max_tokens: int = Field(
+        default=120,
+        alias='INDEX_TREE_NODE_SUMMARY_MAX_TOKENS',
+        ge=20,
+        le=4000,
+        description='Output token budget for one per-node summary call (num_predict for Ollama, '
+                    'max_tokens for OpenAI and Anthropic). The default covers a 25-word headline. '
+                    'A node answer cut off at this budget is dropped and that node gets no summary, '
+                    'so a model that loops on one section spends this budget, never SUMMARY_MAX_TOKENS.',
+    )
+
     max_nodes: int = Field(
         default=200,
         alias='INDEX_TREE_NODE_SUMMARY_MAX_NODES',

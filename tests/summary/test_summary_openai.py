@@ -30,6 +30,7 @@ def mock_openai_settings():
     with patch('app.summary.providers.langchain_openai.get_settings') as mock:
         mock.return_value.summary.model = 'gpt-5.4-nano'
         mock.return_value.summary.max_tokens = 1500
+        mock.return_value.index_tree.max_tokens = 120
         mock.return_value.summary.openai_reasoning_effort = 'low'
         mock.return_value.summary.openai_api_key = SecretStr('sk-test-key')
         mock.return_value.summary.openai_api_base = None
@@ -482,3 +483,40 @@ class TestOpenAISummaryProviderName:
 
         provider = OpenAISummaryProvider()
         assert provider.provider_name == 'openai'
+
+
+@pytest.mark.usefixtures('mock_openai_settings', 'mock_openai_retry')
+class TestOpenAISummaryProviderNodeSummary:
+    """summarize_with_prompt() runs under the per-node token budget."""
+
+    @pytest.mark.asyncio
+    async def test_node_call_sends_the_node_budget(self) -> None:
+        """A per-section call carries INDEX_TREE_NODE_SUMMARY_MAX_TOKENS, not SUMMARY_MAX_TOKENS."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        provider = OpenAISummaryProvider()
+        mock_response = MagicMock()
+        mock_response.content = 'Rollback plans: retries and escalation'
+        mock_response.response_metadata = {'finish_reason': 'stop'}
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        result = await provider.summarize_with_prompt('Section text', 'Write a headline.')
+
+        assert result == 'Rollback plans: retries and escalation'
+        assert provider._chat_model.ainvoke.call_args.kwargs == {'max_tokens': 120}
+
+    @pytest.mark.asyncio
+    async def test_node_answer_cut_at_the_budget_is_dropped(self) -> None:
+        """A section answer that ran to the per-node budget fails even with text, so the node gets no summary."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        provider = OpenAISummaryProvider()
+        mock_response = MagicMock()
+        mock_response.content = 'Rollback plans, retries, and'
+        mock_response.response_metadata = {'finish_reason': 'length'}
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match='per-node token budget'):
+            await provider.summarize_with_prompt('Section text', 'Write a headline.')

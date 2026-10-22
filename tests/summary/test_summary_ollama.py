@@ -42,6 +42,7 @@ def mock_summary_settings():
         mock.return_value.summary.ollama_truncate = False
         mock.return_value.summary.ollama_num_ctx = 32768
         mock.return_value.summary.ollama_presence_penalty = None
+        mock.return_value.index_tree.max_tokens = 120
         mock.return_value.ollama.host = 'http://localhost:11434'
         yield mock
 
@@ -159,6 +160,9 @@ class TestOllamaSummaryProviderInitialize:
                 assert provider._chat_model is not None
                 assert provider._options == {
                     'num_ctx': 32768, 'num_predict': 2000, 'temperature': 0, 'presence_penalty': 1.5,
+                }
+                assert provider._node_options == {
+                    'num_ctx': 32768, 'num_predict': 120, 'temperature': 0, 'presence_penalty': 1.5,
                 }
 
     @pytest.mark.asyncio
@@ -390,7 +394,10 @@ class TestOllamaSummaryProviderRequest:
     @pytest.mark.asyncio
     @pytest.mark.parametrize('call', [_summarize_flat, _summarize_section], ids=['flat', 'section'])
     async def test_request_turns_reasoning_off(self, ollama_chat_server: _OllamaChatServer, call: SummaryCall) -> None:
-        """Every summary request carries think false and the configured output budget."""
+        """Every summary request carries think false and its own output budget.
+
+        The document summary gets SUMMARY_MAX_TOKENS, a section INDEX_TREE_NODE_SUMMARY_MAX_TOKENS.
+        """
         provider = OllamaSummaryProvider()
         await provider.initialize()
 
@@ -401,7 +408,8 @@ class TestOllamaSummaryProviderRequest:
         body = ollama_chat_server.bodies[0]
         assert body.get('think') is False
         assert body['model'] == 'qwen3:0.6b'
-        assert body['options'] == {'num_ctx': 32768, 'num_predict': 2000, 'temperature': 0, 'presence_penalty': 1.5}
+        budget = 2000 if call is _summarize_flat else 120
+        assert body['options'] == {'num_ctx': 32768, 'num_predict': budget, 'temperature': 0, 'presence_penalty': 1.5}
 
     @pytest.mark.asyncio
     async def test_request_leaves_another_family_without_a_penalty(
@@ -449,7 +457,7 @@ class TestOllamaSummaryProviderRequest:
         ('call', 'message'),
         [
             (_summarize_flat, 'Ollama summary generation produced empty output'),
-            (_summarize_section, 'Ollama node summary produced empty output'),
+            (_summarize_section, 'Ollama node summary ran to its per-node token budget'),
         ],
         ids=['flat', 'section'],
     )
@@ -466,6 +474,18 @@ class TestOllamaSummaryProviderRequest:
             await call(provider)
 
         assert ollama_chat_server.bodies[0].get('think') is False
+
+    @pytest.mark.asyncio
+    async def test_section_answer_cut_at_the_budget_is_dropped(self, ollama_chat_server: _OllamaChatServer) -> None:
+        """A section answer that ran to the per-node budget fails even with text; the document summary is kept."""
+        ollama_chat_server.content = 'Rollback plans, retries, and'
+        ollama_chat_server.done_reason = 'length'
+        provider = OllamaSummaryProvider()
+        await provider.initialize()
+
+        assert await _summarize_flat(provider) == 'Rollback plans, retries, and'
+        with pytest.raises(RuntimeError, match='per-node token budget'):
+            await _summarize_section(provider)
 
 
 @pytest.mark.usefixtures('mock_summary_settings')
