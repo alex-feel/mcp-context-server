@@ -71,9 +71,9 @@ class TestGenerateId:
         """UUIDv7 lex-string ordering matches creation time at millisecond granularity."""
         # Per RFC 9562 paragraph 5.7: UUIDv7 lex-string ordering matches creation
         # order at MILLISECOND granularity. Within the same millisecond, ordering
-        # depends on the implementation's monotonic strategy. uuid_utils 0.14.x
-        # uses a random tail; we sample many IDs and verify SORTED order at coarse
-        # (>= ms) timing granularity.
+        # depends on the generator's own monotonic strategy, which nothing in the
+        # project relies on; we sample IDs 2 ms apart and verify SORTED order at
+        # that granularity.
         ids: list[str] = []
         for _ in range(5):
             ids.append(generate_id())
