@@ -23,9 +23,11 @@ from urllib.parse import urlsplit
 
 from app.cli.ingest.apply import DEFAULT_BATCH_SIZE
 from app.cli.ingest.apply import DEFAULT_CALL_TIMEOUT
+from app.cli.ingest.apply import DEFAULT_CONCURRENCY
 from app.cli.ingest.apply import DEFAULT_INCLUDES
 from app.cli.ingest.apply import DEFAULT_MAX_REQUEST_BYTES
 from app.cli.ingest.apply import MAX_BATCH_SIZE
+from app.cli.ingest.apply import MAX_CONCURRENCY
 from app.cli.ingest.apply import MAX_REQUEST_BYTES
 from app.cli.ingest.apply import THREAD_PREFIX
 from app.cli.ingest.apply import RunConfig
@@ -116,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
         '--call-timeout', metavar='SECONDS', type=_seconds, default=DEFAULT_CALL_TIMEOUT,
         help=f'how long one call may take (default {DEFAULT_CALL_TIMEOUT:g})',
     )
+    parser.add_argument(
+        '--concurrency', metavar='N', type=_whole_number(1, MAX_CONCURRENCY), default=DEFAULT_CONCURRENCY,
+        help=(
+            f'the most create and update batch calls in flight at once, 1 to {MAX_CONCURRENCY} '
+            f'(default {DEFAULT_CONCURRENCY}); deletes and plans run one at a time'
+        ),
+    )
     return parser
 
 
@@ -149,6 +158,7 @@ def parse_config(argv: list[str] | None = None) -> RunConfig:
         batch_size=args.batch_size,
         max_request_bytes=args.max_request_bytes,
         call_timeout=args.call_timeout,
+        concurrency=args.concurrency,
     )
 
 

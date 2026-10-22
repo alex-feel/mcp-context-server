@@ -4,11 +4,18 @@ The fake answers the tools a sync calls the way the server does for the caller's
 principal: it plans with the server's own diff over the managed entries the
 caller can read, stores every batch entry as a fresh entry owned by the caller,
 replaces the fields an update names and deletes only the caller's own entries.
-It records every call, and a test can make a call fail or end the run, make one
-entry fail, or keep an entry from being deleted, so each leg meets the failures
-a real server produces.
+It records every call with the number of calls in flight when it arrived, and a
+test can make a call fail or end the run, make one entry fail, keep an entry from
+being deleted, hold calls so they finish in a chosen order, or answer a batch's
+per-entry results in reverse order, so each leg meets the failures and the
+timing a real server produces.
+
+Every connection is a session of its own that carries one call at a time, as the
+command's client does, and a session that receives a second call while the first
+is still running fails the test.
 """
 
+import asyncio
 import copy
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -68,10 +75,19 @@ class Stored:
 
 @dataclass
 class Call:
-    """One call the fake server received."""
+    """One call the fake server received.
+
+    Attributes:
+        tool: The tool it called, or ``preflight``.
+        arguments: The tool arguments.
+        in_flight: The calls in flight when it arrived, itself included.
+        session: The session it came over, numbered from 1 in the order the server opened them.
+    """
 
     tool: str
     arguments: Json
+    in_flight: int
+    session: int
 
 
 @dataclass
@@ -93,15 +109,20 @@ class FakeServer:
     failing_updates: dict[str, str] = field(default_factory=dict[str, str])
     undeletable: set[str] = field(default_factory=set[str])
     preflight_exit: IngestExitError | None = None
+    reverse_results: bool = False
     _scripts: dict[str, list[_Scripted]] = field(default_factory=dict[str, list[_Scripted]])
+    _holds: dict[str, list[int]] = field(default_factory=dict[str, list[int]])
     _issued: int = 0
+    _in_flight: int = 0
+    _opened: int = 0
 
     @asynccontextmanager
-    async def connect(self, config: RunConfig, auth: httpx2.Auth | None) -> AsyncGenerator['FakeServer']:
-        """Open a session the way the command's connector does, recording the auth the run built."""
+    async def connect(self, config: RunConfig, auth: httpx2.Auth | None) -> AsyncGenerator['FakeSession']:
+        """Open a session the way the command's connector does, recording the auth the run built for it."""
         del config
         self.connections.append(auth)
-        yield self
+        self._opened += 1
+        yield FakeSession(self, number=self._opened)
 
     def fail_next(self, tool: str, outcome: ToolFailure | IngestExitError, *, commit: bool = False) -> None:
         """Make the next call of a tool fail or end the run, after applying the call when commit is set."""
@@ -110,6 +131,14 @@ class FakeServer:
     def answer_next(self, tool: str, result: Json) -> None:
         """Make the next call of a tool answer with a given result, as a server of another version might."""
         self._scripts.setdefault(tool, []).append(_Scripted(outcome=result, commit=False))
+
+    def hold_next(self, tool: str, *turns: int) -> None:
+        """Make the next calls of a tool yield to the event loop the given number of times before they answer.
+
+        Every other call yields once, so calls in flight at once overlap; a call held
+        longer finishes after the ones sent beside it.
+        """
+        self._holds.setdefault(tool, []).extend(turns)
 
     def seed(
         self,
@@ -159,24 +188,39 @@ class FakeServer:
                 grouped.setdefault(entry.source_id, []).append(entry)
         return grouped
 
-    async def preflight(self) -> None:
+    async def preflight(self, *, session: int) -> None:
         """Pass the preflight unless a test made it end the run."""
-        self.calls.append(Call(tool='preflight', arguments={}))
+        self.calls.append(Call(tool='preflight', arguments={}, in_flight=self._in_flight + 1, session=session))
         if self.preflight_exit is not None:
             raise self.preflight_exit
 
-    async def call_tool(self, name: str, arguments: Json) -> Json | ToolFailure:
-        """Answer a tool call as the server does, or as a test scripted it."""
-        self.calls.append(Call(tool=name, arguments=copy.deepcopy(arguments)))
+    async def call_tool(self, name: str, arguments: Json, *, session: int) -> Json | ToolFailure:
+        """Answer a tool call as the server does, or as a test scripted it, after the call's hold.
+
+        A script and a hold belong to the calls of a tool in the order the calls
+        arrive, whichever of them finishes first.
+
+        Returns:
+            The tool's result or the call's failure.
+        """
+        self._in_flight += 1
+        self.calls.append(Call(tool=name, arguments=copy.deepcopy(arguments), in_flight=self._in_flight, session=session))
         scripted = self._scripts.get(name)
-        if scripted:
-            step = scripted.pop(0)
+        step = scripted.pop(0) if scripted else None
+        holds = self._holds.get(name)
+        turns = holds.pop(0) if holds else 1
+        try:
+            for _ in range(turns):
+                await asyncio.sleep(0)
+            if step is None:
+                return self._answer(name, arguments)
             if step.commit:
                 self._answer(name, arguments)
             if isinstance(step.outcome, IngestExitError):
                 raise step.outcome
             return step.outcome
-        return self._answer(name, arguments)
+        finally:
+            self._in_flight -= 1
 
     def _answer(self, name: str, arguments: Json) -> Json | ToolFailure:
         """Run the tool a call names."""
@@ -259,7 +303,7 @@ class FakeServer:
                 tags=cast('list[str]', entry['tags']),
             )
             results.append({'index': index, 'success': True, 'context_id': context_id, 'error': None})
-        return _batch_response(results, 'Stored')
+        return _batch_response(results, 'Stored', reverse=self.reverse_results)
 
     def _update(self, updates: list[Json]) -> Json:
         """Replace the fields each update names on the caller's own entries."""
@@ -288,7 +332,7 @@ class FakeServer:
             results.append({
                 'index': index, 'context_id': context_id, 'success': True, 'updated_fields': fields, 'error': None,
             })
-        return _batch_response(results, 'Updated')
+        return _batch_response(results, 'Updated', reverse=self.reverse_results)
 
     def _delete(self, context_ids: list[str]) -> Json:
         """Delete the caller's own entries among the named ones."""
@@ -301,14 +345,42 @@ class FakeServer:
         return {'success': True, 'deleted_count': deleted, 'criteria_used': ['context_ids'], 'message': f'Deleted {deleted}'}
 
 
-def _batch_response(results: list[Json], verb: str) -> Json:
-    """Return a batch tool's response for its per-entry results."""
+@dataclass
+class FakeSession:
+    """One session with the fake server, carrying one call at a time as the command's client does.
+
+    Attributes:
+        server: The server the session talks to.
+        number: The session's number, from 1 in the order the server opened its sessions.
+        busy: Whether the session carries a call now.
+    """
+
+    server: FakeServer
+    number: int
+    busy: bool = False
+
+    async def preflight(self) -> None:
+        """Run the preflight on the server."""
+        await self.server.preflight(session=self.number)
+
+    async def call_tool(self, name: str, arguments: Json) -> Json | ToolFailure:
+        """Pass a call to the server; a second call while one is running fails the test."""
+        assert not self.busy, f'a session received a call to {name} while it still carried another call'
+        self.busy = True
+        try:
+            return await self.server.call_tool(name, arguments, session=self.number)
+        finally:
+            self.busy = False
+
+
+def _batch_response(results: list[Json], verb: str, *, reverse: bool) -> Json:
+    """Return a batch tool's response for its per-entry results, listed in reverse order when asked."""
     succeeded = sum(1 for result in results if result['success'])
     return {
         'success': succeeded == len(results),
         'total': len(results),
         'succeeded': succeeded,
         'failed': len(results) - succeeded,
-        'results': results,
+        'results': results[::-1] if reverse else results,
         'message': f'{verb} {succeeded} of {len(results)}',
     }

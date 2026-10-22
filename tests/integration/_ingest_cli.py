@@ -512,7 +512,7 @@ async def verify_unusable_files_are_kept(base_url: str, work: Path) -> None:
 
 
 async def verify_corpus_above_the_request_limit(base_url: str, work: Path) -> None:
-    """Bootstrap and then rewrite a corpus larger than one HTTP request may carry.
+    """Bootstrap a corpus larger than one HTTP request may carry with two batches in flight, then rewrite it.
 
     Args:
         base_url: Origin of a server that requires no authentication.
@@ -523,7 +523,10 @@ async def verify_corpus_above_the_request_limit(base_url: str, work: Path) -> No
     assert sum(len(text.encode('utf-8')) for text in files.values()) > MAX_REQUEST_BYTES
     write_files(corpus, files)
 
-    (await ingest(base_url, 'packed', corpus, work=work)).expect(0, created=6)
+    bootstrap = await ingest(base_url, 'packed', corpus, '--concurrency', '2', work=work)
+    bootstrap.expect(0, created=6)
+    assert '2 of 2 batches done' in bootstrap.stdout, bootstrap.stdout
+    assert bootstrap.outcomes('created') == sorted(files)
     async with open_client(base_url) as client:
         ids = by_source(await managed_state(client, thread))
     assert sorted(ids) == sorted(files)

@@ -64,6 +64,7 @@ class TestDefaults:
         assert (config.token_file, config.token_env, config.report) == (None, None, None)
         assert (config.dry_run, config.allow_empty_corpus) == (False, False)
         assert (config.batch_size, config.max_request_bytes, config.call_timeout) == (10, 3_145_728, 3600.0)
+        assert config.concurrency == 1
 
     def test_repeatable_flags_collect_in_order_and_an_include_replaces_the_default(self, tmp_path: Path) -> None:
         """--include, --exclude and --tag repeat; an explicit include drops the Markdown default."""
@@ -72,7 +73,7 @@ class TestDefaults:
             '--include', 'docs/**', '--include', '*.txt', '--exclude', 'drafts/**', '--tag', 'guide', '--tag', 'ops',
             '--metadata-json', '{"team": "docs", "level": 2}', '--visibility', 'public', '--token-env', 'INGEST_TOKEN',
             '--dry-run', '--allow-empty-corpus', '--report', str(tmp_path / 'report.json'), '--batch-size', '100',
-            '--max-request-bytes', '4194304', '--call-timeout', '90.5',
+            '--max-request-bytes', '4194304', '--call-timeout', '90.5', '--concurrency', '4',
         ))
 
         assert config.includes == ('docs/**', '*.txt')
@@ -83,6 +84,7 @@ class TestDefaults:
         assert (config.dry_run, config.allow_empty_corpus) == (True, True)
         assert config.report == tmp_path / 'report.json'
         assert (config.batch_size, config.max_request_bytes, config.call_timeout) == (100, 4_194_304, 90.5)
+        assert config.concurrency == 4
 
 
 class TestValidation:
@@ -144,6 +146,9 @@ class TestValidation:
             ('--max-request-bytes', '4194305'),
             ('--call-timeout', '0'),
             ('--call-timeout', '-5'),
+            ('--concurrency', '0'),
+            ('--concurrency', '21'),
+            ('--concurrency', 'two'),
             ('--visibility', 'shared'),
             ('--include', '[z-a].md'),
         ],
@@ -151,7 +156,7 @@ class TestValidation:
     def test_out_of_range_values_are_refused(
         self, flag: str, value: str, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Batch sizes stay within 1..100, the request budget within the server's 4 MiB, timeouts positive."""
+        """Batch sizes and concurrency stay within their bounds, the request budget within 4 MiB, timeouts positive."""
         error = _refused(_required(tmp_path, flag, value), capsys)
 
         assert flag in error
@@ -182,7 +187,7 @@ class TestValidation:
         for flag in (
             '--server', '--corpus', '--source-dir', '--include', '--exclude', '--tag', '--metadata-json',
             '--visibility', '--token-file', '--token-env', '--dry-run', '--allow-empty-corpus', '--report',
-            '--batch-size', '--max-request-bytes', '--call-timeout',
+            '--batch-size', '--max-request-bytes', '--call-timeout', '--concurrency',
         ):
             assert flag in printed
 
