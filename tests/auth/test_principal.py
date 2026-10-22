@@ -3,19 +3,25 @@
 Covers app.auth.principal.resolve_request_principal against mocked FastMCP
 access tokens: only the jwt provider yields a principal (simple_token requests
 resolve like stdio and none), JWT subject and claim mapping, the client-id
-fallback for jwt tokens without a sub claim, and configured claim keys. Also
+fallback for jwt tokens without a sub claim (``unknown`` when the token names no
+client either), and configured claim keys. Also
 covers RequestPrincipal.access_scope, the scope a principal reads and writes
 context entries as.
 """
 
 import dataclasses
 import os
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
 from fastmcp.server.auth import AccessToken
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+from fastmcp.server.auth.providers.jwt import RSAKeyPair
+from joserfc import jwt
+from joserfc.jwk import RSAKey
 
 from app.access_scope import AccessScope
 from app.auth.principal import RequestPrincipal
@@ -101,6 +107,28 @@ class TestResolveRequestPrincipal:
         assert principal.principal_id == 'ci-service'
         assert principal.groups == frozenset()
         assert principal.roles == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_jwt_without_sub_client_id_or_azp_resolves_to_unknown(self) -> None:
+        """fastmcp names a verified token that carries no sub, client_id or azp claim ``unknown``.
+
+        Every such token therefore resolves to the one shared principal ``unknown``;
+        the identity providers the deployment guides cover always issue ``sub``.
+        """
+        key_pair = RSAKeyPair.generate()
+        verifier = JWTVerifier(public_key=key_pair.public_key, issuer='https://issuer.test', algorithm='RS256')
+        now = int(time.time())
+        claims = {'iss': 'https://issuer.test', 'iat': now, 'exp': now + 600}
+        signing_key = RSAKey.import_key(key_pair.private_key.get_secret_value())
+        token = await verifier.load_access_token(jwt.encode({'alg': 'RS256'}, claims, signing_key))
+        assert token is not None
+        with (
+            _auth_provider('jwt'),
+            patch('app.auth.principal.get_access_token', return_value=token),
+        ):
+            principal = resolve_request_principal()
+        assert principal is not None
+        assert principal.principal_id == 'unknown'
 
     def test_non_string_sub_falls_back_to_client_id(self) -> None:
         """A non-string or empty sub claim falls back to the client id."""

@@ -7,7 +7,9 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.access_scope import AccessMode
-from app.auth import resolve_access_scope
+from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
+from app.auth.access import reject_read_only_principal
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_ids
 from app.startup import ensure_repositories
@@ -64,6 +66,14 @@ async def delete_context(
             deletion fails.
     """
     try:
+        # The caller's identity comes first: the read-only principal is refused
+        # before any argument check, repository access or id resolution. A prefix
+        # resolves over the entries the caller may read, and only the entries the
+        # caller owns are deleted.
+        principal = resolve_effective_principal()
+        reject_read_only_principal(principal, tool='delete_context')
+        scope = resolve_write_scope(principal)
+
         # Ensure at least one parameter is provided (business logic validation)
         if not context_ids and not thread_id:
             raise ToolError('Must provide either context_ids or thread_id')
@@ -91,9 +101,6 @@ async def delete_context(
 
         # Get repositories first; prefix resolution below needs the context repo.
         repos = await ensure_repositories()
-        # A prefix resolves over the entries the caller may read, and only the
-        # entries the caller owns are deleted.
-        scope = resolve_access_scope()
 
         # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
         # 8-31 char hex prefixes (uniform with get_context_by_ids/update_context).

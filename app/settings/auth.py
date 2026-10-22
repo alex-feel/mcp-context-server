@@ -2,10 +2,12 @@
 
 import re
 from typing import Literal
+from typing import Self
 
 from pydantic import Field
 from pydantic import SecretStr
 from pydantic import field_validator
+from pydantic import model_validator
 
 from app.settings.base import CommonSettings
 
@@ -116,8 +118,9 @@ class AccessControlSettings(CommonSettings):
     owner and every grantee) or 'public' (readable by everyone). These settings
     define the default principal, the default visibility for writes that do not
     specify one, whether the author's group memberships become read grants
-    automatically, and which role (if any) is required to publish entries as
-    'public'.
+    automatically, which role (if any) is required to publish entries as
+    'public', and which jwt subject (if any) is the read-only principal that
+    every write tool refuses.
 
     The application enforces the model on both backends. On PostgreSQL,
     ``ENABLE_POSTGRESQL_RLS`` additionally enforces it in the database through
@@ -152,6 +155,15 @@ class AccessControlSettings(CommonSettings):
         description="Role required to set visibility 'public'. Unset (default) lets any "
                     'owner publish; set to a role name to restrict publishing to callers '
                     'whose verified roles claim carries that role',
+    )
+    anonymous_principal: str | None = Field(
+        default=None,
+        alias='ACCESS_CONTROL_ANONYMOUS_PRINCIPAL',
+        description='Principal id of the read-only jwt subject, matched verbatim against the token sub claim: '
+                    'every write tool refuses it, its groups and roles are discarded, and its token must carry '
+                    'exp. Unset (default) makes no principal read-only, and a value that differs from the minted '
+                    'sub leaves that token an ordinary writable principal, so the startup log names the value. '
+                    'Must differ from ACCESS_CONTROL_DEFAULT_PRINCIPAL',
     )
     postgresql_rls_enabled: bool = Field(
         default=False,
@@ -194,3 +206,48 @@ class AccessControlSettings(CommonSettings):
                 'A-Z a-z 0-9 . _ @ : + - (no quotes, spaces, or backslashes)',
             )
         return value
+
+    @field_validator('anonymous_principal')
+    @classmethod
+    def _validate_anonymous_principal(cls, value: str | None) -> str | None:
+        """Refuse a read-only principal that no jwt subject could ever equal.
+
+        The value is compared verbatim with the token's ``sub`` claim, so any
+        charset and length is valid, but an empty, whitespace-only or
+        whitespace-padded value would silently bind nobody.
+
+        Returns:
+            The validated principal id, or None when unset.
+
+        Raises:
+            ValueError: If the value is empty, whitespace-only, or has leading or
+                trailing whitespace.
+        """
+        if value is not None and (not value.strip() or value != value.strip()):
+            raise ValueError(
+                'ACCESS_CONTROL_ANONYMOUS_PRINCIPAL must be a principal id without leading or trailing '
+                'whitespace, matching the read-only token sub claim verbatim; unset it to make no '
+                'principal read-only',
+            )
+        return value
+
+    @model_validator(mode='after')
+    def _refuse_read_only_default_principal(self) -> Self:
+        """Refuse a read-only principal equal to the default principal.
+
+        The default principal owns every stdio, ``none`` and ``simple_token``
+        request and every backfilled row, so making it read-only would refuse
+        those writes and hand those rows to the holders of the read-only token.
+
+        Returns:
+            The validated settings.
+
+        Raises:
+            ValueError: If the read-only principal equals the default principal.
+        """
+        if self.anonymous_principal is not None and self.anonymous_principal == self.default_principal:
+            raise ValueError(
+                'ACCESS_CONTROL_ANONYMOUS_PRINCIPAL must differ from ACCESS_CONTROL_DEFAULT_PRINCIPAL, '
+                'which owns every request without a jwt identity',
+            )
+        return self

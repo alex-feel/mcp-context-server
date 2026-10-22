@@ -5,11 +5,14 @@ using centralized AuthSettings from app.settings.auth.
 """
 
 import os
+import time
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
+from joserfc import jwt
+from joserfc.jwk import RSAKey
 
 from app.settings import get_settings
 
@@ -469,6 +472,23 @@ class TestJwtVerifierClaimsRoundTrip:
                 expires_in_seconds=-60,
             )
             assert await provider.verify_token(token) is None
+
+    @pytest.mark.asyncio
+    async def test_token_without_expiry_is_accepted_for_an_ordinary_principal(self, rsa_key_pair: RSAKeyPair) -> None:
+        """A token without exp verifies and never expires; only the read-only principal's is refused, by the tools."""
+        with patch.dict(os.environ, self._verifier_env(rsa_key_pair), clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            provider = create_auth_provider()
+            assert provider is not None
+            claims = {'sub': 'alice', 'iss': 'https://issuer.test', 'aud': 'ctx-server', 'iat': int(time.time())}
+            signing_key = RSAKey.import_key(rsa_key_pair.private_key.get_secret_value())
+            token = jwt.encode({'alg': 'RS256'}, claims, signing_key)
+            access_token = await provider.verify_token(token)
+            assert access_token is not None
+            assert access_token.expires_at is None
+            assert access_token.claims.get('sub') == 'alice'
 
     @pytest.mark.asyncio
     async def test_wrong_audience_is_rejected(self, rsa_key_pair: RSAKeyPair) -> None:

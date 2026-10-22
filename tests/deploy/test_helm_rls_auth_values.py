@@ -46,6 +46,7 @@ _CONFIG_KEYS = (
     'ACCESS_CONTROL_DEFAULT_VISIBILITY',
     'ACCESS_CONTROL_DEFAULT_GROUP_GRANTS',
     'ACCESS_CONTROL_PUBLISH_ROLE',
+    'ACCESS_CONTROL_ANONYMOUS_PRINCIPAL',
 )
 _SECRET_ENVS = ('POSTGRESQL_MIGRATION_PASSWORD', 'MCP_AUTH_TOKEN', 'MCP_AUTH_JWT_PUBLIC_KEY')
 _SECRET_KEYS = ('postgresql-migration-password', 'mcp-auth-token', 'mcp-auth-jwt-public-key')
@@ -289,6 +290,7 @@ def test_auth_and_access_control_values_render_in_the_configmap() -> None:
         '--set', 'accessControl.defaultVisibility=public',
         '--set', 'accessControl.defaultGroupGrants=author_groups',
         '--set', 'accessControl.publishRole=publisher',
+        '--set', 'accessControl.anonymousPrincipal=anonymous',
     ))
     assert {key: config[key] for key in config if key.startswith(('MCP_AUTH_', 'ACCESS_CONTROL_'))} == {
         'MCP_AUTH_PROVIDER': 'jwt',
@@ -303,6 +305,7 @@ def test_auth_and_access_control_values_render_in_the_configmap() -> None:
         'ACCESS_CONTROL_DEFAULT_VISIBILITY': 'public',
         'ACCESS_CONTROL_DEFAULT_GROUP_GRANTS': 'author_groups',
         'ACCESS_CONTROL_PUBLISH_ROLE': 'publisher',
+        'ACCESS_CONTROL_ANONYMOUS_PRINCIPAL': 'anonymous',
     }
 
 

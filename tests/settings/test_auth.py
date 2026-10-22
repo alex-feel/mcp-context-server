@@ -2,8 +2,9 @@
 
 Covers AuthSettings (provider selection, the bearer token and client id, the JWT
 fields) and AccessControlSettings (defaults, env-var aliases, the enum constraints
-on visibility and group-grant policy, and the DDL-safe character-set validation
-on the default principal).
+on visibility and group-grant policy, the DDL-safe character-set validation on
+the default principal, and the read-only principal's blank, padding and
+default-principal refusals).
 """
 
 import os
@@ -102,6 +103,44 @@ class TestAccessControlSettings:
         """Principals that could break the DDL literal are refused at settings build."""
         with pytest.raises(ValidationError):
             AccessControlSettings(ACCESS_CONTROL_DEFAULT_PRINCIPAL=principal)
+
+    def test_anonymous_principal_defaults_to_unset(self) -> None:
+        """Without ACCESS_CONTROL_ANONYMOUS_PRINCIPAL no principal is read-only."""
+        assert AccessControlSettings().anonymous_principal is None
+
+    @pytest.mark.parametrize('principal', ['anonymous', 'auth0|public reader', 'x' * 300])
+    def test_anonymous_principal_is_read_verbatim(self, principal: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The read-only principal takes any charset and length, because it must equal a jwt sub verbatim."""
+        monkeypatch.setenv('ACCESS_CONTROL_ANONYMOUS_PRINCIPAL', principal)
+        assert AccessControlSettings().anonymous_principal == principal
+
+    @pytest.mark.parametrize('principal', ['', '   ', ' anonymous', 'anonymous ', '\tanonymous'])
+    def test_blank_or_padded_anonymous_principal_rejected(self, principal: str) -> None:
+        """An empty, whitespace-only or whitespace-padded read-only principal could never match a sub."""
+        with pytest.raises(ValidationError, match='ACCESS_CONTROL_ANONYMOUS_PRINCIPAL'):
+            AccessControlSettings(ACCESS_CONTROL_ANONYMOUS_PRINCIPAL=principal)
+
+    @pytest.mark.parametrize(
+        ('default_principal', 'anonymous_principal'),
+        [('local', 'local'), ('kb-service', 'kb-service')],
+    )
+    def test_anonymous_principal_equal_to_the_default_principal_rejected(
+        self, default_principal: str, anonymous_principal: str,
+    ) -> None:
+        """The default principal owns every stdio, none and simple_token row, so it cannot be read-only."""
+        with pytest.raises(ValidationError, match='ACCESS_CONTROL_DEFAULT_PRINCIPAL'):
+            AccessControlSettings(
+                ACCESS_CONTROL_DEFAULT_PRINCIPAL=default_principal,
+                ACCESS_CONTROL_ANONYMOUS_PRINCIPAL=anonymous_principal,
+            )
+
+    def test_anonymous_principal_distinct_from_the_default_principal_accepted(self) -> None:
+        """A read-only principal other than the default principal validates."""
+        settings = AccessControlSettings(
+            ACCESS_CONTROL_DEFAULT_PRINCIPAL='kb-service',
+            ACCESS_CONTROL_ANONYMOUS_PRINCIPAL='anonymous',
+        )
+        assert settings.anonymous_principal == 'anonymous'
 
     def test_composed_into_app_settings(self) -> None:
         """AppSettings exposes the nested access_control settings."""

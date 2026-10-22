@@ -1184,6 +1184,13 @@
           "name": "ACCESS_CONTROL_PUBLISH_ROLE"
         },
         {
+          "description": "Principal id of the read-only jwt subject, matched verbatim against the token sub claim: every write tool refuses it, its groups and roles are discarded, and its token must carry exp. Unset (default) makes no principal read-only, and a value that differs from the minted sub leaves that token an ordinary writable principal, so the startup log names the value. Must differ from ACCESS_CONTROL_DEFAULT_PRINCIPAL.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_ANONYMOUS_PRINCIPAL"
+        },
+        {
           "description": "Also enforce the access model in PostgreSQL through row-level security. Requires STORAGE_BACKEND=postgresql and POSTGRESQL_MIGRATION_USER naming the role that owns the tables; requests must connect as a different role that is a member of POSTGRESQL_RLS_POLICY_ROLE and neither superuser nor BYPASSRLS. Default false.",
           "isRequired": false,
           "format": "boolean",
@@ -2426,6 +2433,13 @@
           "format": "string",
           "isSecret": false,
           "name": "ACCESS_CONTROL_PUBLISH_ROLE"
+        },
+        {
+          "description": "Principal id of the read-only jwt subject, matched verbatim against the token sub claim: every write tool refuses it, its groups and roles are discarded, and its token must carry exp. Unset (default) makes no principal read-only, and a value that differs from the minted sub leaves that token an ordinary writable principal, so the startup log names the value. Must differ from ACCESS_CONTROL_DEFAULT_PRINCIPAL.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ACCESS_CONTROL_ANONYMOUS_PRINCIPAL"
         },
         {
           "description": "Also enforce the access model in PostgreSQL through row-level security. Requires STORAGE_BACKEND=postgresql and POSTGRESQL_MIGRATION_USER naming the role that owns the tables; requests must connect as a different role that is a member of POSTGRESQL_RLS_POLICY_ROLE and neither superuser nor BYPASSRLS. Default false.",

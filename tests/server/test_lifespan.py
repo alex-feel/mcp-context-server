@@ -6,7 +6,8 @@ discovered and refused before any DDL when the policies could not hold it, the s
 prepared on a maintenance backend logged in as the table owner, the runtime check
 refuses request and migration credentials that resolve to one role with row-level
 security on, and the request backend opens afterwards and is checked whenever the roles
-are split.
+are split. The read-only principal is logged right after the row-level security posture
+warning, before any tool registers.
 """
 
 import dataclasses
@@ -260,6 +261,7 @@ class _PostgreSQLStart:
         self.settings.storage.postgresql_migration_user = None if request_role is None else 'mcp_owner'
         self.settings.access_control.postgresql_rls_enabled = rls
         self.settings.access_control.postgresql_rls_policy_role = 'mcp_context_request'
+        self.settings.access_control.anonymous_principal = None
         self.settings.auth.provider = 'none'
         self.maintenance = self._backend('maintenance')
         self.request = self._backend('request')
@@ -424,6 +426,36 @@ class TestPostgreSQLMaintenancePhase:
 
         assert start.steps[-2:] == ['read_login_role', 'maintenance.shutdown']
         assert 'create_backend' not in start.steps
+
+    @pytest.mark.asyncio
+    async def test_the_read_only_principal_is_logged_right_after_the_rls_posture_warning(self) -> None:
+        from app.server import lifespan
+
+        start = _PostgreSQLStart(request_role=APP_ROLE, maintenance_role='mcp_owner', rls=True)
+
+        def _warn(settings: object) -> None:
+            assert settings is start.settings
+            start.steps.append('warn_jwt_without_rls')
+
+        def _log(access: object) -> None:
+            assert access is start.settings.access_control
+            start.steps.append('log_read_only_principal')
+
+        with (
+            start.patched(),
+            patch('app.server.warn_jwt_without_rls', side_effect=_warn),
+            patch('app.server.log_read_only_principal', side_effect=_log),
+        ):
+            async with lifespan(MagicMock()):
+                pass
+
+        assert start.steps[start.steps.index('verify_rls_posture'):] == [
+            'verify_rls_posture',
+            'warn_jwt_without_rls',
+            'log_read_only_principal',
+            'register_core_tools',
+            'request.shutdown',
+        ]
 
     @pytest.mark.asyncio
     async def test_a_refused_posture_shuts_the_request_backend_down(self) -> None:

@@ -13,6 +13,7 @@ from pydantic import Field
 
 from app.auth import resolve_effective_principal
 from app.auth import resolve_write_scope
+from app.auth.access import reject_read_only_principal
 from app.errors import format_exception_message
 from app.repositories.context_repository.records import VersionConflictError
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -100,11 +101,14 @@ async def update_context_batch(
         ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
     """
     try:
-        repos = await ensure_repositories()
         # The caller's identity, resolved once before anything that can reveal whether
-        # an entry exists: id resolution and the existence probes below see only the
-        # entries the caller may read, and the publish gate needs the caller's roles.
+        # an entry exists. The read-only principal is refused before any entry is
+        # validated or the repositories are reached; id resolution and the existence
+        # probes below see only the entries the caller may read, and the publish gate
+        # needs the caller's roles.
         principal = resolve_effective_principal()
+        reject_read_only_principal(principal, tool='update_context_batch')
+        repos = await ensure_repositories()
         scope = resolve_write_scope(principal)
 
         # === PHASE 1: Validate all updates before processing ===

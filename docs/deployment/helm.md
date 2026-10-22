@@ -250,7 +250,10 @@ accessControl:
   defaultVisibility: ""   # ACCESS_CONTROL_DEFAULT_VISIBILITY: private or public
   defaultGroupGrants: ""  # ACCESS_CONTROL_DEFAULT_GROUP_GRANTS: none or author_groups
   publishRole: ""         # ACCESS_CONTROL_PUBLISH_ROLE
+  anonymousPrincipal: ""  # ACCESS_CONTROL_ANONYMOUS_PRINCIPAL: the jwt subject every write tool refuses
 ```
+
+`accessControl.anonymousPrincipal` makes one jwt subject read-only. The server matches it verbatim against the token's `sub`, so a value that differs from the subject you minted leaves that token writable. The server logs `Read-only principal: <id>` at INFO level on startup, and a `store_context` call with the token must answer `The anonymous principal is read-only: store_context is not permitted` before you hand the token out.
 
 ### Search Configuration
 

@@ -66,6 +66,9 @@ data:
   {{- with .Values.accessControl.publishRole }}
   ACCESS_CONTROL_PUBLISH_ROLE: {{ . | quote }}
   {{- end }}
+  {{- with .Values.accessControl.anonymousPrincipal }}
+  ACCESS_CONTROL_ANONYMOUS_PRINCIPAL: {{ . | quote }}
+  {{- end }}
   {{- if .Values.storage.postgresql.rls.enabled }}
   ENABLE_POSTGRESQL_RLS: "true"
   {{- end }}

@@ -166,6 +166,10 @@ accessControl:
   defaultGroupGrants: ""
   # ACCESS_CONTROL_PUBLISH_ROLE
   publishRole: ""
+  # ACCESS_CONTROL_ANONYMOUS_PRINCIPAL: the jwt subject every write tool refuses.
+  # Empty makes no principal read-only; a value that differs from the minted sub
+  # leaves that token writable.
+  anonymousPrincipal: ""
 
 # Search features. The fts/semantic/hybrid `enabled` flags map to the server's
 # tri-state search toggles: true renders ENABLE_*="auto" (register the tool when

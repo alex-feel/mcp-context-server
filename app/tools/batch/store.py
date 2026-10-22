@@ -13,6 +13,7 @@ from pydantic import Field
 
 from app.auth import resolve_effective_principal
 from app.auth import resolve_write_scope
+from app.auth.access import reject_read_only_principal
 from app.errors import format_exception_message
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -95,13 +96,14 @@ async def store_context_batch(
         ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
     """
     try:
-        repos = await ensure_repositories()
-
         # Resolve the effective principal ONCE for the whole batch (one request,
-        # one caller identity), the scope every entry deduplicates and stamps
-        # under, and the author-group grant policy; the publish gate is then
-        # enforced per entry on each entry's EFFECTIVE visibility.
+        # one caller identity) and refuse the read-only principal before any entry
+        # is validated or the repositories are reached; then the scope every entry
+        # deduplicates and stamps under, and the author-group grant policy. The
+        # publish gate is enforced per entry on each entry's EFFECTIVE visibility.
         principal = resolve_effective_principal()
+        reject_read_only_principal(principal, tool='store_context_batch')
+        repos = await ensure_repositories()
         scope = resolve_write_scope(principal)
         author_group_grants: frozenset[str] = (
             principal.groups
