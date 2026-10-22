@@ -16,6 +16,8 @@ Tests verify:
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 from app.summary.instructions import AGENT_SUMMARY_PROMPT
 from app.summary.instructions import DEFAULT_SUMMARY_PROMPT
 from app.summary.instructions import USER_SUMMARY_PROMPT
@@ -110,8 +112,8 @@ class TestUserSummaryPrompt:
     """Tests for USER_SUMMARY_PROMPT constant."""
 
     def test_contains_user_context(self) -> None:
-        """USER_SUMMARY_PROMPT references human user messages."""
-        assert 'message from a human user' in USER_SUMMARY_PROMPT
+        """USER_SUMMARY_PROMPT references text written by a human user."""
+        assert 'written by a human user' in USER_SUMMARY_PROMPT
 
     def test_does_not_contain_agent_context(self) -> None:
         """USER_SUMMARY_PROMPT does not reference agent reports."""
@@ -134,6 +136,26 @@ class TestUserSummaryPrompt:
     def test_contains_word_count_guidance(self) -> None:
         """USER_SUMMARY_PROMPT contains word count guidance."""
         assert '100-250 words' in USER_SUMMARY_PROMPT
+
+
+class TestReasoningOffWording:
+    """Wording a model that answers without reasoning would echo as the summary's opener."""
+
+    @pytest.mark.parametrize('prompt', [USER_SUMMARY_PROMPT, AGENT_SUMMARY_PROMPT], ids=['user', 'agent'])
+    def test_entry_prompts_name_no_requester(self, prompt: str) -> None:
+        """Neither entry prompt asks what the user is requesting, the line summaries opened with."""
+        assert 'what the user is requesting' not in prompt
+        assert 'Do not start with "This text", "The user", "The author"' in prompt
+
+    def test_section_prompt_says_what_to_open_with(self) -> None:
+        """The section prompt opens with a named entity, topic, decision, or action from the section."""
+        from app.summary.instructions import DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
+
+        assert DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT.startswith('/no_think')
+        opener = 'Open with a named entity, topic, decision, or action from the section'
+        assert opener in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
+        assert 'what this section is about' not in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
+        assert 'Output ONLY the sentence' in DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT
 
 
 class TestAgentSummaryPrompt:
