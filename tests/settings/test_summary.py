@@ -33,7 +33,7 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.provider == 'ollama'
 
-    def test_summary_model_default_is_qwen3_1_7b(self) -> None:
+    def test_summary_model_default_is_qwen3_0_6b(self) -> None:
         """Verify SUMMARY_MODEL defaults to 'qwen3:0.6b'."""
         settings = SummarySettings()
         assert settings.model == 'qwen3:0.6b'
