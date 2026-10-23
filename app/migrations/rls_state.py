@@ -139,7 +139,7 @@ class RlsState:
         columns: The live columns of ``context_entries``, quoted, in attribute order;
             empty when the table does not exist.
         view: The read view's ownership, options and ACL; None when it does not exist.
-        helpers_executable: Whether the policy role may execute all three helpers.
+        helpers_executable: Whether the policy role may execute every helper.
     """
 
     tables: Mapping[str, bool]
