@@ -630,3 +630,23 @@ class TestAuthTransportInteraction:
 
             # This should NOT raise ValueError — auth is skipped on stdio
             main()
+
+    def test_stdio_start_never_builds_the_jwt_verifiers(self) -> None:
+        """On stdio neither the jwt verifier nor the anonymous verifier is built, whatever the jwt settings say."""
+        mock_settings = self._make_mock_settings(transport='stdio', auth_provider='jwt')
+
+        with (
+            patch('app.server.settings', mock_settings),
+            patch('app.server.FastMCP') as mock_fastmcp,
+            patch('app.instructions.resolve_instructions', return_value=None),
+            patch('app.auth._create_jwt_verifier') as create_jwt_verifier,
+            patch('app.auth._create_anonymous_verifier') as create_anonymous_verifier,
+        ):
+            mock_fastmcp.return_value.run.return_value = None
+
+            from app.server import main
+
+            main()
+
+        create_jwt_verifier.assert_not_called()
+        create_anonymous_verifier.assert_not_called()

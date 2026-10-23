@@ -1139,6 +1139,20 @@
           "name": "MCP_AUTH_JWT_ALGORITHM"
         },
         {
+          "description": "PEM-encoded public key (asymmetric algorithms) or shared secret (HS* algorithms) of a second, operator-held verifier that accepts only ACCESS_CONTROL_ANONYMOUS_PRINCIPAL, composed beside the JWKS verifier. Applies only with MCP_AUTH_JWT_JWKS_URI and requires ACCESS_CONTROL_ANONYMOUS_PRINCIPAL; a static-key deployment signs the anonymous token with its own MCP_AUTH_JWT_PUBLIC_KEY counterpart",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY"
+        },
+        {
+          "description": "Signing algorithm the anonymous verifier accepts (default RS256; used with MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY). Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512, EdDSA, Ed25519, Ed448",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_ANONYMOUS_JWT_ALGORITHM"
+        },
+        {
           "description": "Claim carrying the caller group memberships (default groups). Supports dotted paths and full-URL claim keys",
           "isRequired": false,
           "format": "string",
@@ -2388,6 +2402,20 @@
           "format": "string",
           "isSecret": false,
           "name": "MCP_AUTH_JWT_ALGORITHM"
+        },
+        {
+          "description": "PEM-encoded public key (asymmetric algorithms) or shared secret (HS* algorithms) of a second, operator-held verifier that accepts only ACCESS_CONTROL_ANONYMOUS_PRINCIPAL, composed beside the JWKS verifier. Applies only with MCP_AUTH_JWT_JWKS_URI and requires ACCESS_CONTROL_ANONYMOUS_PRINCIPAL; a static-key deployment signs the anonymous token with its own MCP_AUTH_JWT_PUBLIC_KEY counterpart",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY"
+        },
+        {
+          "description": "Signing algorithm the anonymous verifier accepts (default RS256; used with MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY). Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512, EdDSA, Ed25519, Ed448",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_ANONYMOUS_JWT_ALGORITHM"
         },
         {
           "description": "Claim carrying the caller group memberships (default groups). Supports dotted paths and full-URL claim keys",

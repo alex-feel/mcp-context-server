@@ -48,6 +48,9 @@ data:
   {{- with .Values.auth.jwt.algorithm }}
   MCP_AUTH_JWT_ALGORITHM: {{ . | quote }}
   {{- end }}
+  {{- with .Values.auth.jwt.anonymousAlgorithm }}
+  MCP_AUTH_ANONYMOUS_JWT_ALGORITHM: {{ . | quote }}
+  {{- end }}
   {{- with .Values.auth.groupsClaim }}
   MCP_AUTH_GROUPS_CLAIM: {{ . | quote }}
   {{- end }}

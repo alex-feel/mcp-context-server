@@ -1,7 +1,7 @@
 """Tests for app/settings/auth.py.
 
 Covers AuthSettings (provider selection, the bearer token and client id, the JWT
-fields) and AccessControlSettings (defaults, env-var aliases, the enum constraints
+fields, the anonymous verifier's key and algorithm) and AccessControlSettings (defaults, env-var aliases, the enum constraints
 on visibility and group-grant policy, the DDL-safe character-set validation on
 the default principal, and the read-only principal's blank, padding and
 default-principal refusals).
@@ -228,3 +228,48 @@ class TestJwtAuthSettings:
             settings = AuthSettings()
             assert 'hs-shared-secret' not in str(settings.jwt_public_key)
             assert 'hs-shared-secret' not in repr(settings.jwt_public_key)
+
+
+class TestAnonymousVerifierSettings:
+    """The anonymous verifier's key and algorithm on AuthSettings."""
+
+    def test_defaults(self) -> None:
+        """Without configuration there is no anonymous key and the algorithm is RS256."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith('MCP_AUTH')}
+        with patch.dict(os.environ, env, clear=True):
+            settings = AuthSettings()
+        assert settings.anonymous_jwt_public_key is None
+        assert settings.anonymous_jwt_algorithm == 'RS256'
+
+    def test_fields_load_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY and MCP_AUTH_ANONYMOUS_JWT_ALGORITHM map onto their fields."""
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY', 'anonymous-shared-secret')
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_ALGORITHM', 'HS512')
+        settings = AuthSettings()
+        assert settings.anonymous_jwt_public_key is not None
+        assert settings.anonymous_jwt_public_key.get_secret_value() == 'anonymous-shared-secret'
+        assert settings.anonymous_jwt_algorithm == 'HS512'
+
+    def test_key_is_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The anonymous key or shared secret is masked in string representations."""
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY', 'anonymous-shared-secret')
+        settings = AuthSettings()
+        assert 'anonymous-shared-secret' not in str(settings.anonymous_jwt_public_key)
+        assert 'anonymous-shared-secret' not in repr(settings.anonymous_jwt_public_key)
+
+    def test_settings_never_validate_the_combination(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A key with no JWKS URI, no read-only principal and an unknown algorithm still builds settings.
+
+        The auth factory validates these, and it runs only for HTTP transports, so a
+        stdio start never fails over them.
+        """
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY', 'anonymous-shared-secret')
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_ALGORITHM', 'none')
+        monkeypatch.delenv('MCP_AUTH_JWT_JWKS_URI', raising=False)
+        monkeypatch.delenv('ACCESS_CONTROL_ANONYMOUS_PRINCIPAL', raising=False)
+        get_settings.cache_clear()
+        try:
+            settings = get_settings()
+            assert settings.auth.anonymous_jwt_algorithm == 'none'
+        finally:
+            get_settings.cache_clear()

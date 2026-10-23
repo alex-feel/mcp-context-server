@@ -4,12 +4,14 @@ Covers app.auth.principal.resolve_request_principal against mocked FastMCP
 access tokens: only the jwt provider yields a principal (simple_token requests
 resolve like stdio and none), JWT subject and claim mapping, the client-id
 fallback for jwt tokens without a sub claim (``unknown`` when the token names no
-client either), and configured claim keys. Also
+client either, and the verifier's own client id when fastmcp's MultiAuth
+qualified it with its source), and configured claim keys. Also
 covers RequestPrincipal.access_scope, the scope a principal reads and writes
 context entries as.
 """
 
 import dataclasses
+import json
 import os
 import time
 from collections.abc import Generator
@@ -18,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 from fastmcp.server.auth import AccessToken
+from fastmcp.server.auth import MultiAuth
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
 from joserfc import jwt
@@ -129,6 +132,45 @@ class TestResolveRequestPrincipal:
             principal = resolve_request_principal()
         assert principal is not None
         assert principal.principal_id == 'unknown'
+
+    @pytest.mark.asyncio
+    async def test_multiauth_token_without_sub_resolves_to_the_inner_client_id(self) -> None:
+        """MultiAuth qualifies the client id with its source; the principal is the verifier's own client id.
+
+        Composing the anonymous verifier beside the jwt verifier must not change
+        the principal of a token without ``sub``, which owns its entries by that id.
+        """
+        key_pair = RSAKeyPair.generate()
+        composed = MultiAuth(verifiers={'jwt': JWTVerifier(public_key=key_pair.public_key, algorithm='RS256')})
+        now = int(time.time())
+        claims = {'client_id': 'ci-service', 'iat': now, 'exp': now + 600}
+        signing_key = RSAKey.import_key(key_pair.private_key.get_secret_value())
+        token = await composed.verify_token(jwt.encode({'alg': 'RS256'}, claims, signing_key))
+        assert token is not None
+        assert json.loads(token.client_id)[0] == 'jwt'
+        assert token.original_client_id == 'ci-service'
+        with (
+            _auth_provider('jwt'),
+            patch('app.auth.principal.get_access_token', return_value=token),
+        ):
+            principal = resolve_request_principal()
+        assert principal is not None
+        assert principal.principal_id == 'ci-service'
+
+    @pytest.mark.asyncio
+    async def test_multiauth_token_with_sub_resolves_to_the_subject(self) -> None:
+        """A MultiAuth-verified token that carries ``sub`` still resolves to that subject."""
+        key_pair = RSAKeyPair.generate()
+        composed = MultiAuth(verifiers={'jwt': JWTVerifier(public_key=key_pair.public_key, algorithm='RS256')})
+        token = await composed.verify_token(key_pair.create_token(subject='alice', additional_claims={'azp': 'portal'}))
+        assert token is not None
+        with (
+            _auth_provider('jwt'),
+            patch('app.auth.principal.get_access_token', return_value=token),
+        ):
+            principal = resolve_request_principal()
+        assert principal is not None
+        assert principal.principal_id == 'alice'
 
     def test_non_string_sub_falls_back_to_client_id(self) -> None:
         """A non-string or empty sub claim falls back to the client id."""

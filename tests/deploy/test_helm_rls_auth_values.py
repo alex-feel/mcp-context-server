@@ -40,6 +40,7 @@ _CONFIG_KEYS = (
     'MCP_AUTH_JWT_ISSUER',
     'MCP_AUTH_JWT_AUDIENCE',
     'MCP_AUTH_JWT_ALGORITHM',
+    'MCP_AUTH_ANONYMOUS_JWT_ALGORITHM',
     'MCP_AUTH_GROUPS_CLAIM',
     'MCP_AUTH_ROLES_CLAIM',
     'ACCESS_CONTROL_DEFAULT_PRINCIPAL',
@@ -48,8 +49,19 @@ _CONFIG_KEYS = (
     'ACCESS_CONTROL_PUBLISH_ROLE',
     'ACCESS_CONTROL_ANONYMOUS_PRINCIPAL',
 )
-_SECRET_ENVS = ('POSTGRESQL_MIGRATION_PASSWORD', 'MCP_AUTH_TOKEN', 'MCP_AUTH_JWT_PUBLIC_KEY')
-_SECRET_KEYS = ('postgresql-migration-password', 'mcp-auth-token', 'mcp-auth-jwt-public-key')
+_SECRET_ENVS = (
+    'POSTGRESQL_MIGRATION_PASSWORD',
+    'MCP_AUTH_TOKEN',
+    'MCP_AUTH_JWT_PUBLIC_KEY',
+    'MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY',
+)
+_SECRET_KEYS = (
+    'postgresql-migration-password',
+    'mcp-auth-token',
+    'mcp-auth-jwt-public-key',
+    'mcp-auth-anonymous-jwt-public-key',
+)
+_JWKS = ('--set', 'auth.provider=jwt', '--set', 'auth.jwt.jwksUri=https://idp.example/jwks.json')
 
 
 def _helm(*args: str) -> subprocess.CompletedProcess[str]:
@@ -284,6 +296,7 @@ def test_auth_and_access_control_values_render_in_the_configmap() -> None:
         '--set', 'auth.jwt.issuer=https://idp.example/',
         '--set', 'auth.jwt.audience=mcp-context',
         '--set', 'auth.jwt.algorithm=ES256',
+        '--set', 'auth.jwt.anonymousAlgorithm=ES384',
         '--set', 'auth.groupsClaim=realm_access.groups',
         '--set', 'auth.rolesClaim=realm_access.roles',
         '--set', 'accessControl.defaultPrincipal=service',
@@ -299,6 +312,7 @@ def test_auth_and_access_control_values_render_in_the_configmap() -> None:
         'MCP_AUTH_JWT_ISSUER': 'https://idp.example/',
         'MCP_AUTH_JWT_AUDIENCE': 'mcp-context',
         'MCP_AUTH_JWT_ALGORITHM': 'ES256',
+        'MCP_AUTH_ANONYMOUS_JWT_ALGORITHM': 'ES384',
         'MCP_AUTH_GROUPS_CLAIM': 'realm_access.groups',
         'MCP_AUTH_ROLES_CLAIM': 'realm_access.roles',
         'ACCESS_CONTROL_DEFAULT_PRINCIPAL': 'service',
@@ -370,6 +384,67 @@ def test_jwks_uri_with_an_existing_secret_references_no_public_key() -> None:
     ))
     assert 'MCP_AUTH_JWT_PUBLIC_KEY' not in env
     assert 'MCP_AUTH_TOKEN' not in env
+
+
+def test_inline_anonymous_key_goes_to_the_chart_secret_on_a_jwks_deployment() -> None:
+    """With jwt and a JWKS URI, the inline anonymous key lands in the chart Secret and the container reads it."""
+    docs = _render(*_JWKS, '--set', 'auth.jwt.anonymousPublicKey=anonymous-pem')
+    assert _secret_data(docs)['mcp-auth-anonymous-jwt-public-key'] == 'anonymous-pem'
+    env = _env(docs)
+    assert _secret_ref(env['MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY']) == (_FULLNAME, 'mcp-auth-anonymous-jwt-public-key')
+    assert 'MCP_AUTH_JWT_PUBLIC_KEY' not in env
+
+
+@pytest.mark.parametrize(
+    'deployment',
+    [
+        ('--set', 'auth.provider=jwt', '--set', 'auth.jwt.publicKey=static-pem'),
+        ('--set', 'auth.provider=simple_token', '--set', 'auth.jwt.jwksUri=https://idp.example/jwks.json'),
+        ('--set', 'auth.jwt.jwksUri=https://idp.example/jwks.json'),
+    ],
+    ids=['jwt-static-key', 'simple-token', 'no-provider'],
+)
+def test_inline_anonymous_key_renders_only_for_jwt_with_a_jwks_uri(deployment: tuple[str, ...]) -> None:
+    """The anonymous verifier exists only beside a JWKS verifier, so no other deployment renders its key."""
+    docs = _render(*deployment, '--set', 'auth.jwt.anonymousPublicKey=anonymous-pem')
+    assert 'MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY' not in _env(docs)
+    assert 'mcp-auth-anonymous-jwt-public-key' not in _secret_data(docs)
+
+
+@pytest.mark.parametrize(
+    ('key_override', 'expected_key'),
+    [
+        ((), 'mcp-auth-anonymous-jwt-public-key'),
+        (('--set', 'auth.jwt.anonymousPublicKeySecretKey=anon-pem'), 'anon-pem'),
+    ],
+    ids=['default-key', 'key-override'],
+)
+def test_anonymous_key_from_an_existing_secret_on_a_jwks_deployment(
+    key_override: tuple[str, ...], expected_key: str,
+) -> None:
+    """An existing secret supplies the anonymous key on a JWKS deployment, as an optional reference.
+
+    A JWKS deployment whose secret carries no anonymous key keeps starting: the
+    reference is optional, and without the variable the server composes no
+    anonymous verifier.
+    """
+    docs = _render(
+        *_JWKS,
+        '--set', 'auth.existingSecret=authsec',
+        '--set', 'auth.jwt.anonymousPublicKey=ignored',
+        *key_override,
+    )
+    entry = _env(docs)['MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY']
+    assert _secret_ref(entry) == ('authsec', expected_key)
+    assert entry['valueFrom']['secretKeyRef']['optional'] is True
+    assert 'mcp-auth-anonymous-jwt-public-key' not in _secret_data(docs)
+
+
+def test_existing_secret_without_a_jwks_uri_references_no_anonymous_key() -> None:
+    """A static-key jwt deployment reads only its public key from the existing secret."""
+    env = _env(_render('--set', 'auth.provider=jwt', '--set', 'auth.existingSecret=authsec'))
+    assert 'MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY' not in env
+    assert 'MCP_AUTH_JWT_PUBLIC_KEY' in env
 
 
 def test_every_rendered_variable_is_a_server_setting() -> None:

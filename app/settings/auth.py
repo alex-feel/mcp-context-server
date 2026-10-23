@@ -35,10 +35,11 @@ class AuthSettings(CommonSettings):
     JWT provider configuration is intentionally NOT cross-validated here:
     auth is architecturally inert on stdio transport (create_auth_provider()
     is only called for HTTP transports), so requirements like "exactly one of
-    public key / JWKS URI" are enforced at provider construction in app.auth,
-    mirroring the simple_token precedent (MCP_AUTH_TOKEN presence is checked
-    in SimpleTokenVerifier, not here). A pydantic validator would crash stdio
-    startups over configuration that is never used.
+    public key / JWKS URI" and "the anonymous verifier's key needs a JWKS URI
+    and the anonymous principal" are enforced at provider construction in
+    app.auth, mirroring the simple_token precedent (MCP_AUTH_TOKEN presence is
+    checked in SimpleTokenVerifier, not here). A pydantic validator would crash
+    stdio startups over configuration that is never used.
     """
 
     provider: Literal['none', 'simple_token', 'jwt'] = Field(
@@ -92,6 +93,21 @@ class AuthSettings(CommonSettings):
         default='RS256',
         alias='MCP_AUTH_JWT_ALGORITHM',
         description='JWT signing algorithm to accept. '
+                    'Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512, EdDSA, Ed25519, Ed448',
+    )
+    anonymous_jwt_public_key: SecretStr | None = Field(
+        default=None,
+        alias='MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY',
+        description='PEM-encoded public key (asymmetric algorithms) or shared secret (HS* algorithms) of a '
+                    'second, operator-held verifier that accepts only ACCESS_CONTROL_ANONYMOUS_PRINCIPAL, '
+                    'composed beside the JWKS verifier. Applies only with MCP_AUTH_JWT_JWKS_URI and requires '
+                    'ACCESS_CONTROL_ANONYMOUS_PRINCIPAL; a static-key deployment signs the anonymous token '
+                    'with its own MCP_AUTH_JWT_PUBLIC_KEY counterpart',
+    )
+    anonymous_jwt_algorithm: str = Field(
+        default='RS256',
+        alias='MCP_AUTH_ANONYMOUS_JWT_ALGORITHM',
+        description='Signing algorithm the anonymous verifier accepts (used with MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY). '
                     'Supported: HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512, EdDSA, Ed25519, Ed448',
     )
     groups_claim: str = Field(

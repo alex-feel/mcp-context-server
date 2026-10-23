@@ -33,7 +33,7 @@ class RequestPrincipal:
 
     Attributes:
         principal_id: Stable caller identifier -- the JWT ``sub`` claim when
-            present, else the access token's client id.
+            present, else the client id the verifier assigned to the token.
         groups: Normalized group memberships from the configured groups claim.
         roles: Normalized roles from the configured roles claim.
     """
@@ -74,7 +74,11 @@ def resolve_request_principal() -> RequestPrincipal | None:
 
     claims = token.claims
     subject = claims.get('sub')
-    principal_id = subject if isinstance(subject, str) and subject else token.client_id
+    # fastmcp's MultiAuth (the anonymous verifier composed beside a JWKS
+    # verifier) rewrites client_id into a source-qualified JSON array and keeps
+    # the verifier's own client id in original_client_id; that inner id is the
+    # principal, so composing verifiers never renames a principal without sub.
+    principal_id = subject if isinstance(subject, str) and subject else (token.original_client_id or token.client_id)
 
     return RequestPrincipal(
         principal_id=principal_id,
