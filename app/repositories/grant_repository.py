@@ -250,9 +250,10 @@ class GrantRepository(BaseRepository):
     ) -> list[GrantRecord]:
         """List every grant of an entry the caller owns.
 
-        The grants come ordered by principal type, principal id and permission, an order
-        the unique index on the entry and those three columns serves without a sort. A
-        caller who does not own the entry, whatever it may read or edit, gets no grant.
+        The grants come ordered by principal type, principal id and permission: SQLite
+        reads that order from the unique index on the entry and those three columns, and
+        PostgreSQL sorts the few rows of one entry. A caller who does not own the entry,
+        whatever it may read or edit, gets no grant.
 
         Args:
             context_id: ID of the context entry.

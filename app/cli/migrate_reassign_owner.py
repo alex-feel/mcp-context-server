@@ -14,8 +14,13 @@ the environment variable cannot hold them.
 The statement sets ``updated_at`` to the current time on both backends and
 leaves ``version`` alone: the version token guards content against concurrent
 updates, and the server is stopped while the reassignment runs.
-``context_entry_grants`` is not touched, because ``granted_by`` records who
-created a grant and the grantee rows name principals, not owners.
+The grants on the reassigned entries are kept: each keeps its grantee, its
+permission and its ``granted_by``, which records who created it and can name
+the previous owner. On PostgreSQL each grant also records its entry's owner in
+``entry_owner_id``, and the composite foreign key's ``ON UPDATE CASCADE``
+carries the new owner into that column in the same statement; this module
+issues no statement against ``context_entry_grants``. SQLite grants carry no
+owner.
 
 The CLI is single-backend: the source is the database under operation and
 ``--target-url`` is ignored (mirrors ``--compress``, ``--decompress``,
