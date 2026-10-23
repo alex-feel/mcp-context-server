@@ -158,7 +158,7 @@ response = httpx.post(
 
 ## JWT Authentication
 
-> **Experimental.** The `jwt` provider verifies IdP-issued tokens, rejects unauthenticated requests, and runs every request as the token's principal: each stored entry is owned by the principal that wrote it, and every read, update and delete reaches only the entries that principal may access (see [Access Model](#access-model)). Grants are created only by `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups` when an entry is stored: no tool lists, adds or removes grants, and responses do not report an entry's owner or visibility. Prefer PostgreSQL for deployments with more than one principal (see [Enforcement and Its Limits](#enforcement-and-its-limits)).
+The `jwt` provider verifies IdP-issued tokens, rejects unauthenticated requests, and runs every request as the token's principal: each stored entry is owned by the principal that wrote it, every read, update and delete reaches only the entries that principal may access, an entry's owner shares it with users and groups through `share_context`, and every returned entry reports its `visibility` and whether the caller owns it (see [Access Model](#access-model), [Sharing Entries](#sharing-entries) and [Anonymous Read Access](#anonymous-read-access)). Prefer PostgreSQL with row-level security for deployments with more than one principal (see [Enforcement and Its Limits](#enforcement-and-its-limits)).
 
 ### When to Use
 
@@ -168,7 +168,7 @@ response = httpx.post(
 
 ### How It Works
 
-With `MCP_AUTH_PROVIDER=jwt`, the server validates each bearer token as a JWT: signature (static key or JWKS lookup), expiration, and, when configured, issuer and audience. Verified claims from the token (subject, groups, roles) are available to the server for identity resolution.
+With `MCP_AUTH_PROVIDER=jwt`, the server validates each bearer token as a JWT: its signature (static key or JWKS lookup), its `exp` expiry, and, when configured, its issuer and audience. A token without an `exp` claim never expires, except that the server refuses such a token for the [anonymous principal](#anonymous-read-access), and the `nbf` (not before) claim is not checked. Verified claims from the token (subject, groups, roles) are available to the server for identity resolution.
 
 Two key modes are supported, and exactly one must be configured:
 
@@ -259,7 +259,7 @@ Auth0 subjects carry a `|` (`auth0|...`, `google-oauth2|...`), which `ACCESS_CON
 1. **Pin issuer and audience**: leaving `MCP_AUTH_JWT_ISSUER`/`MCP_AUTH_JWT_AUDIENCE` unset skips those checks, so any token signed by the configured key is accepted
 2. **Prefer JWKS mode** for real IdPs: key rotation at the IdP is picked up automatically
 3. **Use HTTPS in production**: the JWT travels in the Authorization header and requires TLS
-4. **Keep token lifetimes short**: expiration is validated on every request
+4. **Keep token lifetimes short**: the server checks `exp` on every request, but a token without `exp` never expires and `nbf` is not checked, so mint every token you issue yourself with a bounded `exp`
 5. **Rotate long-running clients' tokens through a file**: `mcp-context-ingest --token-file PATH` reads the token from the file before every request, so a refresher can replace a short-lived token while a long sync runs; after a 401, the command retries the call once when the file holds a new token (see [The mcp-context-ingest CLI](knowledge-base.md#the-mcp-context-ingest-cli))
 
 ### Switching an Existing Deployment to JWT
@@ -275,20 +275,127 @@ Entries written over STDIO, `MCP_AUTH_PROVIDER=none` or `simple_token` are owned
 
    The CLI binds both values as statement parameters, so it has no character-set limit. It rewrites the owner of every entry owned by `local` in one statement, bumps `updated_at`, and keeps every grant on those entries (see [Sharing Entries](#sharing-entries)). With `--dry-run` it prints the number of matching entries and changes nothing. See [Reassigning Entry Ownership](migration-v2-to-v3.md#reassigning-entry-ownership).
 
+### Anonymous Read Access
+
+A `jwt` deployment can hand one shared token to readers who have no account at the identity provider, such as the readers of a public knowledge base. Set `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` to the subject that token carries, for example `anonymous`, and the server treats every request whose token carries that `sub` as a read-only principal:
+
+- **Writes are refused.** `store_context`, `store_context_batch`, `update_context`, `update_context_batch`, `delete_context`, `delete_context_batch`, `share_context` and `unshare_context` answer `The anonymous principal is read-only: {tool} is not permitted` before they check any argument, look up any entry or generate anything. With `ENABLE_POSTGRESQL_RLS=true`, the database refuses the principal's inserts as well.
+- **Reads work as for any principal.** The read tools, `list_context_grants` included, apply the usual rules. The principal owns no entry, so it reads the `public` entries, every returned entry reports `is_owner: false`, and `list_context_grants` answers it with not found or not authorized.
+- **Groups and roles are discarded.** A token minted with a groups or roles claim by mistake reaches no group grant and never holds the publish role.
+- **The token must expire.** The server refuses an anonymous-principal token without an `exp` claim with `The anonymous principal's token carries no expiry (exp); mint it with a bounded exp`.
+- **Nobody shares with it.** `share_context` refuses a `user` grant to this principal, so through the tools an entry reaches anonymous readers only by being `public`.
+
+The setting is compared verbatim with the token's `sub` claim, and it fails open: when it is unset, or differs from the subject you minted by one character, the token is an ordinary principal that stores, updates and deletes its own entries. The server logs `Read-only principal: <id>` at INFO level on startup, or `Read-only principal: none` when the setting is unset, and the [check before distribution](#checking-the-token-before-distributing-it) proves the match for each token. The value must differ from `ACCESS_CONTROL_DEFAULT_PRINCIPAL`, and an empty or whitespace-padded value is refused; either stops the server at startup with exit 78.
+
+Clients send the token as a static header, `Authorization: Bearer <token>`. The server publishes no OAuth protected-resource metadata, so no client can discover a way to obtain a token by itself. `/health` answers without a token, as it does for every provider.
+
+#### Minting the Token
+
+The holder of the signing key mints the token: the private key behind `MCP_AUTH_JWT_PUBLIC_KEY` on a static-key deployment, or the private key behind `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY` on a JWKS deployment (see [JWKS Deployments](#jwks-deployments)). For an `HS*` algorithm the key is the shared secret itself. The script below uses joserfc, a dependency of fastmcp that the server image and every server installation already carry; anywhere else, run it with `uv run --with joserfc mint.py`. Save it as `mint.py` beside `private.pem` (the PEM private key, or a file that holds only the `HS*` shared secret), set `ALGORITHM`, fill in the `iss` and `aud` values or delete those lines, and run it:
+
+```python
+import time
+import uuid
+from pathlib import Path
+
+from joserfc import jwt
+from joserfc.jwk import ECKey, OctKey, OKPKey, RSAKey
+
+ALGORITHM = 'RS256'  # MCP_AUTH_JWT_ALGORITHM, or MCP_AUTH_ANONYMOUS_JWT_ALGORITHM on a JWKS deployment
+KEY_CLASSES = {'RS': RSAKey, 'PS': RSAKey, 'ES': ECKey, 'Ed': OKPKey, 'HS': OctKey}
+key = KEY_CLASSES[ALGORITHM[:2]].import_key(Path('private.pem').read_text().strip())
+now = int(time.time())
+claims = {
+    'sub': 'anonymous',                # ACCESS_CONTROL_ANONYMOUS_PRINCIPAL
+    'iss': '<MCP_AUTH_JWT_ISSUER>',    # only when the server sets MCP_AUTH_JWT_ISSUER
+    'aud': '<MCP_AUTH_JWT_AUDIENCE>',  # only when the server sets MCP_AUTH_JWT_AUDIENCE
+    'iat': now,
+    'exp': now + 90 * 86400,           # always set exp, and mint the next token before it passes
+    'jti': str(uuid.uuid4()),
+}
+print(jwt.encode({'alg': ALGORITHM}, claims, key, algorithms=[ALGORITHM]))
+```
+
+- `ALGORITHM` names the algorithm the server is configured to accept, and the script passes it to `jwt.encode`, because joserfc refuses algorithms it does not recommend, such as RS512, PS256 and HS512, unless the call names them. For an Ed25519 or Ed448 key, configure the server and the script with `Ed25519` or `Ed448`: joserfc warns about the generic `EdDSA` name, which RFC 9864 deprecates, although the server still accepts it.
+- The script strips the key file, because the server strips `MCP_AUTH_JWT_PUBLIC_KEY` and `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY`, and an HS* secret read with a trailing newline would sign with a different key.
+- The token carries no groups or roles claim. The server would discard both for this principal anyway.
+- `jti` gives each token its own identity, so logs and audits can tell two tokens apart; the server does not check it.
+- With an HS* algorithm the shared secret sits in the server configuration, so whoever can read that configuration can mint tokens: for any principal on a static-key deployment, and for the anonymous principal on a JWKS deployment. An asymmetric algorithm keeps the private key off the server.
+
+#### Checking the Token Before Distributing It
+
+Run this check with every token you mint, before you hand it out: a mistyped `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` leaves the token writable, and nothing else reports it. The script calls `store_context` with the token and passes only when the server refuses with the exact read-only text:
+
+```python
+import asyncio
+
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.exceptions import ToolError
+
+URL = 'https://mcp.example.com/mcp'
+TOKEN = '<the minted token>'
+REFUSAL = 'The anonymous principal is read-only: store_context is not permitted'
+
+
+async def main() -> None:
+    transport = StreamableHttpTransport(URL, headers={'Authorization': f'Bearer {TOKEN}'})
+    async with Client(transport) as client:
+        try:
+            result = await client.call_tool(
+                'store_context',
+                {'thread_id': 'anonymous-token-check', 'source': 'agent', 'text': 'Anonymous token check'},
+            )
+        except ToolError as error:
+            if REFUSAL in str(error):
+                print('The token is read-only: distribute it')
+                return
+            raise SystemExit(f'Do not distribute the token: {error}') from error
+        await client.call_tool('delete_context', {'context_ids': [result.structured_content['context_id']]})
+        raise SystemExit('Do not distribute the token: the server stored an entry for it, so it can write')
+
+
+asyncio.run(main())
+```
+
+Any other outcome means the token must not be distributed. A stored entry means the setting is unset or differs from the token's `sub`; the script deletes that entry again. A 401 means the server rejects the token's signature, algorithm, issuer, audience or expiry. The expiry refusal means the token carries no `exp`.
+
+#### JWKS Deployments
+
+On a JWKS deployment the server trusts only tokens its identity provider signs, so you cannot mint the anonymous token with the provider's key. Add a second verifier whose key you hold:
+
+1. Create a key pair, or an HS* shared secret, that only you hold. Set `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY` to its PEM public key (or the secret) and `MCP_AUTH_ANONYMOUS_JWT_ALGORITHM` to its algorithm (default `RS256`).
+2. Set `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` to a subject no user of the identity provider carries, such as `anonymous`. The second verifier accepts tokens for that subject only and rejects a correctly signed token for any other subject.
+3. Pin `MCP_AUTH_JWT_AUDIENCE`, and `MCP_AUTH_JWT_ISSUER` where you can (see the JWT [Security Best Practices](#security-best-practices-1)). The second verifier checks the same issuer and audience as the JWKS verifier, so the `iss` and `aud` lines of the script carry the same values.
+4. Mint the token with the script above, signing with the private key of step 1, and run the check.
+
+The server then tries the anonymous verifier first and the JWKS verifier second, and logs `Authentication: JWTVerifier (JWKS endpoint, algorithm <alg>) composed with the anonymous static-key verifier (algorithm <alg>, subject <id>)` at startup. It refuses to start, with exit 78, when `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY` is set without `MCP_AUTH_JWT_JWKS_URI` or without `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL`. On a static-key deployment, leave `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY` unset and sign the anonymous token with the private key behind `MCP_AUTH_JWT_PUBLIC_KEY`.
+
+#### Token Lifetime and Revocation
+
+- **Bounded lifetime.** Always set `exp`. The example uses 90 days; keep the lifetime under a year, and mint and distribute the next token before the current one expires.
+- **No revocation of one token.** The server keeps no list of tokens, so it cannot revoke a single anonymous token. Rotating the signing key (`MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY` on a JWKS deployment, `MCP_AUTH_JWT_PUBLIC_KEY` on a static-key one) invalidates every token signed with the old key, and on a static-key deployment that includes the tokens of every other principal.
+- **One shared identity.** Every holder of every anonymous token is the same principal. Everything `public` reaches all of them, and so does any grant to that principal that reaches the database without `share_context`, such as a row inserted with raw SQL.
+
+#### Publishing to Anonymous Readers
+
+Making an entry `public` exposes it to every anonymous token holder. On a deployment that hands out an anonymous token, set `ACCESS_CONTROL_PUBLISH_ROLE` so that only principals holding that role may publish. The role gates the `public` visibility only: it does not restrict `share_context`, and a group grant reaches every member of the group (see [Sharing Entries](#sharing-entries)).
+
 ## Access Model
 
 Every request runs as one principal, and every entry belongs to the principal that stored it. The server enforces the model on every read, update and delete, on SQLite and PostgreSQL alike, and with `ENABLE_POSTGRESQL_RLS=true` PostgreSQL enforces it in the database as well (see [Enforcement and Its Limits](#enforcement-and-its-limits)).
 
 ### Principals
 
-| Request                                    | Principal                                                    | Groups and roles                                        |
-|--------------------------------------------|--------------------------------------------------------------|---------------------------------------------------------|
-| STDIO transport                            | `ACCESS_CONTROL_DEFAULT_PRINCIPAL` (default `local`)         | None                                                    |
-| HTTP with `MCP_AUTH_PROVIDER=none`         | `ACCESS_CONTROL_DEFAULT_PRINCIPAL`                           | None                                                    |
-| HTTP with `MCP_AUTH_PROVIDER=simple_token` | `ACCESS_CONTROL_DEFAULT_PRINCIPAL`                           | None                                                    |
-| HTTP with `MCP_AUTH_PROVIDER=jwt`          | The token's `sub` claim (its client id when `sub` is absent) | From `MCP_AUTH_GROUPS_CLAIM` and `MCP_AUTH_ROLES_CLAIM` |
+| Request                                                                                | Principal                                                                   | Groups and roles                                        |
+|----------------------------------------------------------------------------------------|-----------------------------------------------------------------------------|---------------------------------------------------------|
+| STDIO transport                                                                        | `ACCESS_CONTROL_DEFAULT_PRINCIPAL` (default `local`)                        | None                                                    |
+| HTTP with `MCP_AUTH_PROVIDER=none`                                                     | `ACCESS_CONTROL_DEFAULT_PRINCIPAL`                                          | None                                                    |
+| HTTP with `MCP_AUTH_PROVIDER=simple_token`                                             | `ACCESS_CONTROL_DEFAULT_PRINCIPAL`                                          | None                                                    |
+| HTTP with `MCP_AUTH_PROVIDER=jwt`                                                      | The token's `sub` claim (its client id when `sub` is absent)                | From `MCP_AUTH_GROUPS_CLAIM` and `MCP_AUTH_ROLES_CLAIM` |
+| HTTP with `MCP_AUTH_PROVIDER=jwt`, `sub` equal to `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` | That `sub`, read-only (see [Anonymous Read Access](#anonymous-read-access)) | None: the server discards the token's groups and roles  |
 
-Without `jwt`, every request shares the default principal, which owns every entry those requests store, so the server behaves as a single-user store.
+Without `jwt`, every request shares the default principal, which owns every entry those requests store, so the server behaves as a single-user store. Under `jwt`, the client id is the token's `client_id` claim, or its `azp` claim when `client_id` is absent; a token that carries none of `sub`, `client_id` and `azp` runs as the principal `unknown`. The identity providers this guide covers put `sub` in every token.
 
 ### Ownership, Visibility and Grants
 
@@ -340,13 +447,18 @@ Row-level security guards against defects in how the server builds its queries: 
 The isolation has these limits:
 
 - **SQLite full-text scores.** On SQLite, `fts_score` comes from FTS5 `bm25()`, which draws on statistics of the whole index (row count, average length, how many entries contain each term), entries the caller cannot read included. The scores of readable entries and their relative order can therefore shift as other principals' entries change, and the same score feeds the full-text leg of `hybrid_search_context`; which entries match, and how many results a page holds, depend only on what the caller can read. PostgreSQL's `ts_rank_cd` scores each entry on its own.
-- **Deployment-wide statistics.** `get_statistics` reports `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` (query counters and the last error text) and the configuration fields for the whole deployment, identically for every caller. Every entry, thread, image, tag, embedding, index, summary and node figure counts only the entries the caller may read.
+- **Deployment-wide statistics.** `get_statistics` reports `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` (query counters and the last error text) and the configuration fields for the whole deployment, identically for every caller, an anonymous token holder included. Every entry, thread, image, tag, embedding, index, summary and node figure counts only the entries the caller may read.
+- **Public thread IDs.** `list_threads` lists every thread that holds an entry the caller may read, so a thread with one `public` entry shows its ID, and the figures of its readable entries, to every caller. Choose thread IDs that reveal nothing for threads that hold public entries.
 - **Full-text migration progress.** While a full-text index rebuild runs, `fts_search_context` reports `estimated_remaining_seconds` computed from the total entry count.
 - **Query plans.** With `explain_query=True` on PostgreSQL, the returned query plan carries row estimates from table-wide planner statistics.
 - **Timing.** By timing many requests, a principal can roughly estimate how many entries it cannot read contain a chosen word or metadata value. The channel is coarse, noisy and content-dependent, and it exists with and without row-level security.
 - **No leakproof barrier inside view reads.** With row-level security on, plain reads go through a view so that every search index stays usable, and PostgreSQL's leakproof protection therefore does not apply to them: the server's own conditions, such as a metadata filter, may be evaluated on entries the caller cannot read, as they are with row-level security off. No condition the server generates can raise an error on any stored value, and tests pin that.
 - **Foreign-key checks.** PostgreSQL checks foreign keys without applying policies. Entry ids are server-generated UUIDv7 values, and an insert that names an entry the caller cannot read fails with the same error as one that names no entry, so the check reveals nothing.
-- **Concurrent grant changes.** A statement evaluates grants as of its own snapshot, so a statement that runs while a grant is added or removed sees the grants as they were when it started.
+- **Concurrent grant changes.** A statement evaluates grants as of its own snapshot, so a statement that runs while a grant is added or removed sees the grants as they were when it started. A tool call spans several statements, so an `unshare_context` that removes a caller's access while that caller's call runs shows up as a missing entry: a `navigate_context` call reports `Context entry not found: {id}` instead of an outline, and an `update_context` or `update_context_batch` call by a write grantee whose write grant goes away after the update checked it reports the entry as not found, even when the grantee can still read the entry through another grant or because it is `public`. With row-level security on, a tag, image or per-node summary write of such an update can instead fail with a generic error. Either way the update writes nothing.
+- **One shared anonymous identity.** Every holder of an anonymous token is the same principal, reads the same entries and cannot be told apart by the server, and one token cannot be revoked without rotating the signing key (see [Token Lifetime and Revocation](#token-lifetime-and-revocation)).
+- **The read-only setting fails open.** `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` makes a principal read-only only when it equals the token's `sub` exactly; unset or mistyped, the anonymous token can write. The startup line `Read-only principal: <id>` and the [check before distribution](#checking-the-token-before-distributing-it) expose a mismatch.
+- **The publish role gates visibility only.** `ACCESS_CONTROL_PUBLISH_ROLE` decides who may make an entry `public`. It does not limit who may share: an owner can grant any user or group, and a group grant reaches every member of the group, including a group the identity provider gives every authenticated user.
+- **Refused calls are logged.** FastMCP logs every refused tool call at ERROR level as `Error calling tool '<name>'`, without a traceback, so a public endpoint whose anonymous clients attempt writes logs one ERROR line per refused call.
 
 For deployments with more than one principal, use PostgreSQL with row-level security enabled.
 
@@ -422,16 +534,27 @@ headers = {"Authorization": f"Bearer {token}"}
 
 ### JWT Authentication
 
-| Variable                  | Required            | Default  | Description                                              |
-|---------------------------|---------------------|----------|----------------------------------------------------------|
-| `MCP_AUTH_PROVIDER`       | Yes                 | -        | `jwt`                                                    |
-| `MCP_AUTH_JWT_JWKS_URI`   | One of the key pair | -        | JWKS endpoint URI                                        |
-| `MCP_AUTH_JWT_PUBLIC_KEY` | One of the key pair | -        | PEM public key or HS* shared secret                      |
-| `MCP_AUTH_JWT_ISSUER`     | No                  | -        | Expected `iss` claim value                               |
-| `MCP_AUTH_JWT_AUDIENCE`   | No                  | -        | Expected `aud` claim value                               |
-| `MCP_AUTH_JWT_ALGORITHM`  | No                  | `RS256`  | Accepted signing algorithm                               |
-| `MCP_AUTH_GROUPS_CLAIM`   | No                  | `groups` | Claim key for group memberships                          |
-| `MCP_AUTH_ROLES_CLAIM`    | No                  | `roles`  | Claim key for roles                                      |
+| Variable                            | Required            | Default  | Description                                                                                      |
+|-------------------------------------|---------------------|----------|--------------------------------------------------------------------------------------------------|
+| `MCP_AUTH_PROVIDER`                 | Yes                 | -        | `jwt`                                                                                            |
+| `MCP_AUTH_JWT_JWKS_URI`             | One of the key pair | -        | JWKS endpoint URI                                                                                |
+| `MCP_AUTH_JWT_PUBLIC_KEY`           | One of the key pair | -        | PEM public key or HS* shared secret                                                              |
+| `MCP_AUTH_JWT_ISSUER`               | No                  | -        | Expected `iss` claim value                                                                       |
+| `MCP_AUTH_JWT_AUDIENCE`             | No                  | -        | Expected `aud` claim value                                                                       |
+| `MCP_AUTH_JWT_ALGORITHM`            | No                  | `RS256`  | Accepted signing algorithm                                                                       |
+| `MCP_AUTH_GROUPS_CLAIM`             | No                  | `groups` | Claim key for group memberships                                                                  |
+| `MCP_AUTH_ROLES_CLAIM`              | No                  | `roles`  | Claim key for roles                                                                              |
+| `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY` | No                  | -        | PEM public key or HS* shared secret of the anonymous verifier; JWKS deployments only             |
+| `MCP_AUTH_ANONYMOUS_JWT_ALGORITHM`  | No                  | `RS256`  | Signing algorithm the anonymous verifier accepts                                                 |
+
+### Access Control
+
+| Variable                             | Required | Default | Description                                                                                          |
+|--------------------------------------|----------|---------|------------------------------------------------------------------------------------------------------|
+| `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` | No       | -       | The `jwt` subject every write tool refuses; compared verbatim with `sub`, so a mismatch fails open   |
+| `ACCESS_CONTROL_PUBLISH_ROLE`        | No       | -       | Role a principal must hold to make an entry `public`; recommended with an anonymous token            |
+
+The other access-control settings (`ACCESS_CONTROL_DEFAULT_PRINCIPAL`, `ACCESS_CONTROL_DEFAULT_VISIBILITY`, `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS` and the row-level security settings) are described in the [Environment Variables Reference](environment-variables.md).
 
 ## Troubleshooting
 
@@ -490,13 +613,18 @@ curl -v -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8000/mcp
 
 ### Common Error Messages
 
-| Error                            | Cause                             | Solution                                                 |
-|----------------------------------|-----------------------------------|----------------------------------------------------------|
-| `MCP_AUTH_TOKEN cannot be empty` | Token set to empty string         | Provide valid token or remove auth                       |
-| `Token validation failed`        | Token mismatch                    | Verify token matches exactly                             |
-| `requires exactly one of ...`    | Neither JWT key source configured | Set `MCP_AUTH_JWT_PUBLIC_KEY` or `MCP_AUTH_JWT_JWKS_URI` |
-| `... are mutually exclusive`     | Both JWT key sources configured   | Unset one of the two key sources                         |
-| `Unsupported algorithm`          | Invalid `MCP_AUTH_JWT_ALGORITHM`  | Use a supported HS*/RS*/ES*/PS* value                    |
+| Error                                                                           | Cause                                                                                | Solution                                                                                |
+|---------------------------------------------------------------------------------|--------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `MCP_AUTH_TOKEN cannot be empty`                                                | Token set to empty string                                                            | Provide valid token or remove auth                                                      |
+| `Token validation failed`                                                       | Token mismatch                                                                       | Verify token matches exactly                                                            |
+| `requires exactly one of ...`                                                   | Neither JWT key source configured                                                    | Set `MCP_AUTH_JWT_PUBLIC_KEY` or `MCP_AUTH_JWT_JWKS_URI`                                |
+| `... are mutually exclusive`                                                    | Both JWT key sources configured                                                      | Unset one of the two key sources                                                        |
+| `Unsupported algorithm`                                                         | Invalid `MCP_AUTH_JWT_ALGORITHM` or `MCP_AUTH_ANONYMOUS_JWT_ALGORITHM`               | Use a supported HS*/RS*/ES*/PS*/Ed* value                                               |
+| `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY applies to MCP_AUTH_JWT_JWKS_URI ...`        | The anonymous verifier key is set on a static-key deployment                         | Unset it and sign the anonymous token with the private key of `MCP_AUTH_JWT_PUBLIC_KEY` |
+| `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY requires ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` | The anonymous verifier key is set without the anonymous principal                    | Set `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` to the subject the token carries               |
+| `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL must ...`                                   | The value is empty, whitespace-padded or equal to `ACCESS_CONTROL_DEFAULT_PRINCIPAL` | Set the exact `sub` of the anonymous token, distinct from the default principal         |
+| `The anonymous principal is read-only: {tool} is not permitted`                 | A write by the principal `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` names                  | Expected for the anonymous token; write with another principal's token                  |
+| `The anonymous principal's token carries no expiry (exp) ...`                   | The anonymous token was minted without `exp`                                         | Mint a new token with a bounded `exp` (see [Minting the Token](#minting-the-token))     |
 
 ## Security Recommendations
 
@@ -526,6 +654,7 @@ curl -v -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8000/mcp
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata filtering with operators
+- **Knowledge Base**: [Knowledge Base Guide](knowledge-base.md) - document corpora, their visibility and sharing them
 - **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - HTTP transport configuration
 - **Main Documentation**: [README.md](../README.md) - overview and quick start
 - **FastMCP Authentication**: [FastMCP Auth](https://gofastmcp.com/servers/auth) - FastMCP auth documentation

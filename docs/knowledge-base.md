@@ -14,10 +14,20 @@ The server stores session context for agents, and it also hosts document corpora
 
 `mcp-context-ingest` sends an explicit visibility with every create and every update: `private`, or `public` when the run passes `--visibility public`. The visibility is part of each entry's `meta_digest`, so a run with a different `--visibility` updates every entry of the corpus to the new value, and a later run without the flag makes them `private` again. Only the owner may change an entry's visibility, which never stands in a sync's way, because a sync updates only the entries its own principal owns.
 
-- **`private`** entries are readable by their owner and every grantee. With `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups`, the server writes a read grant for each group of the writing principal when it first stores an entry, so the groups of the principal that syncs a corpus under `jwt` can read it. No tool creates any other grant.
-- **`public`** entries are readable by every caller, which suits a corpus everyone who uses the server may read. When `ACCESS_CONTROL_PUBLISH_ROLE` is set, only a principal holding that role may store or update an entry as `public`; the server refuses every such create and update from any other principal, and the run exits 1.
+- **`private`** entries are readable by their owner and every grantee. With `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups`, the server writes a read grant for each group of the writing principal when it first stores an entry, so the groups of the principal that syncs a corpus under `jwt` can read it. The owner of an entry can grant further users and groups access with `share_context` (see [Sharing a Corpus](#sharing-a-corpus)).
+- **`public`** entries are readable by every caller, which suits a corpus everyone who uses the server may read. That includes every holder of an anonymous token when the server hands one out (see [Anonymous Read Access](authentication.md#anonymous-read-access)). When `ACCESS_CONTROL_PUBLISH_ROLE` is set, only a principal holding that role may store or update an entry as `public`; the server refuses every such create and update from any other principal, and the run exits 1.
 
 On a server that several principals use, run PostgreSQL with row-level security, which enforces the same rules in the database as well; see [Row-level security (PostgreSQL)](database-backends.md#row-level-security-postgresql) and the [Access Model](authentication.md#access-model).
+
+## Sharing a Corpus
+
+The owner of a corpus entry, the principal that syncs the corpus, can grant other users and groups `read` or `write` access to it with `share_context`, remove a grant with `unshare_context` and list the grants of an entry with `list_context_grants` (see [Sharing Entries](authentication.md#sharing-entries)). Grants are per entry: no tool shares a whole thread, so sharing a corpus this way takes one call per entry and grantee.
+
+- **A sync leaves the grants of the entries it keeps alone.** Grants are not part of `meta_digest`, so a grant never makes an entry differ from its document, and an update keeps the entry and every grant on it. The sync sends no grant itself: a run changes grants only by deleting entries, whose grants go with them, and by storing entries, for which the server writes the `author_groups` grants.
+- **A re-created entry loses its explicit grants.** When a document is renamed or moved, the sync deletes the old entry and stores the document as a new one, and the same happens to a document that disappears and later returns. Grants made with `share_context` are deleted with the old entry. With `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups`, the server writes the author-group read grants again when it stores the new entry.
+- **A removed author-group grant stays removed.** An update never writes grants, so unsharing an `author_groups` grant from an entry is permanent for that entry.
+- **For a whole corpus, use visibility or author groups.** To open a corpus to every caller, sync it with `--visibility public`. To open it to a group, sync it under `jwt` as a service principal that belongs to the group, with `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups`: every entry the sync stores then carries a read grant for the group, re-created entries included.
+- **Text edits through a write grant last until the next sync.** A principal holding a write grant may edit a corpus entry, and the grant survives every sync, but the owner's next sync restores the document's text when the stored text differs from it (see [Concurrency and Recovery](#concurrency-and-recovery)).
 
 ## The Ingest Metadata Block
 
@@ -307,7 +317,7 @@ Both backends serve the sync reads from the partial index `idx_context_ingest`, 
 ## Related Documentation
 
 - **API Reference**: [Sync Tools](api-reference.md#sync-tools) - `plan_context_sync` and `list_ingest_state`, and the `deduplicate` parameter of [store_context](api-reference.md#store_context)
-- **Authentication**: [Authentication Guide](authentication.md) - tokens, JWT principals and the access model
+- **Authentication**: [Authentication Guide](authentication.md) - tokens, JWT principals, the access model, sharing entries and anonymous read access
 - **Metadata**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - the reserved `ingest` key and metadata filtering
 - **Environment Variables**: [Environment Variables Reference](environment-variables.md) - `ENABLE_CONTEXT_SYNC` and the access-control settings
 - **Database Backends**: [Database Backends Guide](database-backends.md) - SQLite, PostgreSQL and row-level security

@@ -18,7 +18,8 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Multimodal Context Storage**: Store and retrieve both text and images
 - **UUIDv7 Context Identifiers**: Every context entry is identified by a 32-character lowercase hex UUIDv7 value, providing time-ordered, globally unique IDs with a stable lex-string ordering
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
-- **Per-Record Access Control**: Every entry has an owner, a `private` or `public` visibility, and optional user or group grants, enforced on every read, update and delete on both SQLite and PostgreSQL. With IdP-issued JWTs, each caller finds, counts and changes only the entries it may access. See the [Access Model](docs/authentication.md#access-model)
+- **Per-Record Access Control**: Every entry has an owner, a `private` or `public` visibility, and optional user or group grants, enforced on every read, update and delete on both SQLite and PostgreSQL. With IdP-issued JWTs, each caller finds, counts and changes only the entries it may access, the owner of an entry shares it with users or groups through `share_context`, and every returned entry reports its `visibility` and whether the caller owns it. See the [Access Model](docs/authentication.md#access-model)
+- **Anonymous Read Access**: Hand readers without an identity-provider account one shared token that reads `public` entries and can never write: the server refuses every write by the principal `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` names, and the token must expire. See [Anonymous Read Access](docs/authentication.md#anonymous-read-access)
 - **PostgreSQL Row-Level Security (optional)**: With `ENABLE_POSTGRESQL_RLS=true`, PostgreSQL also enforces the access model in the database, so a defect in how a query applies the access rules cannot expose another principal's entries. Reads go through an owner-owned, role-gated view that keeps every search index in use. See [Row-level security (PostgreSQL)](docs/database-backends.md#row-level-security-postgresql)
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 16 powerful operators
 - **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
@@ -80,7 +81,7 @@ For detailed configuration instructions including PostgreSQL setup with Docker, 
 
 ## API Reference
 
-The MCP Context Server exposes 18 MCP tools for context management:
+The MCP Context Server exposes 21 MCP tools for context management:
 
 **Core Operations:** `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`
 
@@ -89,6 +90,8 @@ The MCP Context Server exposes 18 MCP tools for context management:
 **Navigation Tools (locate / navigate / extract):** `grep_context`, `navigate_context`, `read_context_range`
 
 **Sync Tools:** `plan_context_sync`, `list_ingest_state`
+
+**Sharing Tools:** `share_context`, `unshare_context`, `list_context_grants`
 
 **Batch Operations:** `store_context_batch`, `update_context_batch`, `delete_context_batch`
 
@@ -104,7 +107,7 @@ For Kubernetes deployments, a Helm chart is provided with configurable values fo
 
 ## Authentication
 
-For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token and IdP-issued JWT configuration.
+For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token and IdP-issued JWT configuration, sharing entries with users and groups, and anonymous read access through an operator-minted token.
 
 ## Getting Help
 
