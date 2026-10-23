@@ -78,32 +78,43 @@ class EntryNotFoundError(ControlFlowError):
         self.context_id = context_id
 
 
+type RefusedAction = Literal['modify', 'delete', 'share', 'unshare', 'list_grants']
+
+# The text each refusal reports, given the comma-separated ids it names.
+_REFUSAL_MESSAGES: dict[RefusedAction, str] = {
+    'modify': 'Not authorized to modify context entry with ID {ids}',
+    'delete': 'Not authorized to delete context entries: {ids}',
+    'share': 'Not authorized to share context entry with ID {ids}',
+    'unshare': 'Not authorized to unshare context entry with ID {ids}',
+    'list_grants': 'Not authorized to list the grants of context entry with ID {ids}',
+}
+
+
 class EntryNotAuthorizedError(ControlFlowError):
-    """Internal control-flow signal: the caller may read the entries but not modify or delete them.
+    """Internal control-flow signal: the caller may read the entries but not do what it asked with them.
 
     An entry the caller may not read is reported as not found instead, so this
     signal never reveals a hidden entry: the caller already knows these entries
     exist. Like ``EntryNotFoundError`` it is a ``ControlFlowError`` -- a refused
     request is a client-input outcome, never charged to the circuit breaker --
     and its message is the exact text the tools report:
-    ``Not authorized to modify context entry with ID {id}`` for ``modify`` and
-    ``Not authorized to delete context entries: {ids}`` for ``delete``, the ids
-    comma-separated in the order the caller named them.
+
+    - ``modify``: ``Not authorized to modify context entry with ID {id}``
+    - ``delete``: ``Not authorized to delete context entries: {ids}``, the ids
+      comma-separated in the order the caller named them
+    - ``share``: ``Not authorized to share context entry with ID {id}``
+    - ``unshare``: ``Not authorized to unshare context entry with ID {id}``
+    - ``list_grants``: ``Not authorized to list the grants of context entry with ID {id}``
 
     Attributes:
         context_ids: The refused entry ids, in the caller's order.
         action: What the caller was refused.
     """
 
-    def __init__(self, context_ids: Sequence[str], *, action: Literal['modify', 'delete']) -> None:
+    def __init__(self, context_ids: Sequence[str], *, action: RefusedAction) -> None:
         self.context_ids = tuple(context_ids)
         self.action = action
-        joined = ', '.join(self.context_ids)
-        if action == 'modify':
-            message = f'Not authorized to modify context entry with ID {joined}'
-        else:
-            message = f'Not authorized to delete context entries: {joined}'
-        super().__init__(message)
+        super().__init__(_REFUSAL_MESSAGES[action].format(ids=', '.join(self.context_ids)))
 
 
 # ---------------------------------------------------------------------------

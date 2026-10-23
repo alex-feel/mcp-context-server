@@ -1,9 +1,9 @@
 """Input validation shared by the write, read, and search tools.
 
 Rejects PostgreSQL-unstorable text, oversized or too many tags, indexed
-metadata values the backend cannot store or index, and a malformed reserved
-ingest metadata block, and validates and normalizes image attachments before
-any generation or database work starts.
+metadata values the backend cannot store or index, a malformed reserved
+ingest metadata block, and a grantee id no grant could match, and validates and
+normalizes image attachments before any generation or database work starts.
 """
 
 import base64
@@ -21,6 +21,7 @@ from app.ingest import is_ingest_block_shaped
 from app.metadata_types import pg_indexed_cast_error
 from app.metadata_types import pg_indexed_metadata_text
 from app.metadata_types import unstorable_string_error
+from app.models import MAX_GRANT_PRINCIPAL_ID_LENGTH
 from app.models import MAX_IMAGES_PER_ENTRY
 from app.models import MAX_INDEXED_METADATA_VALUE_LENGTH
 from app.models import MAX_TAG_LENGTH
@@ -63,6 +64,32 @@ def reject_unstorable_input(**fields: object) -> None:
         message = unstorable_string_error(value)
         if message is not None:
             raise ToolError(f'{name}: {message}')
+
+
+def validate_grant_principal_id(principal_id: str) -> None:
+    """Raise ``ToolError`` unless ``principal_id`` can name a grantee.
+
+    A grantee id is matched verbatim against a token's subject or one of its groups,
+    so it is case-sensitive and may use any characters, but it must be storable on
+    both backends, non-empty, free of surrounding whitespace (a grant to ``"bob "``
+    would never match the subject ``bob``, so the id is refused rather than silently
+    stripped), and at most ``MAX_GRANT_PRINCIPAL_ID_LENGTH`` code points. Whether a
+    user or group of that id exists is not checked: the server learns principals
+    only from the tokens they present.
+
+    Args:
+        principal_id: The user or group id a share or unshare names.
+
+    Raises:
+        ToolError: On the first rule the id breaks.
+    """
+    reject_unstorable_input(principal_id=principal_id)
+    if not principal_id.strip():
+        raise ToolError('principal_id cannot be empty or whitespace')
+    if principal_id != principal_id.strip():
+        raise ToolError('principal_id cannot have leading or trailing whitespace')
+    if len(principal_id) > MAX_GRANT_PRINCIPAL_ID_LENGTH:
+        raise ToolError(f'principal_id exceeds {MAX_GRANT_PRINCIPAL_ID_LENGTH} characters')
 
 
 def tag_limits_error(tags: list[str] | None) -> str | None:

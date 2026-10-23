@@ -16,7 +16,9 @@ from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummaries
 from app.startup import ensure_repositories
+from app.tools.sharing import unshare_context
 from tests.helpers import as_principal
+from tests.helpers import insert_grant
 from tests.tools._navigation import navigate_as_dict
 from tests.tools._navigation import store_entry
 
@@ -301,6 +303,49 @@ class TestNavigateNodeSummaries:
         first = result['root']['children'][0]
         assert first['title'] == 'New'
         assert first['summary'] == 'New section abstract.'
+
+    @pytest.mark.asyncio
+    async def test_navigate_unshare_inside_the_window_reports_not_found(self, nav_backend: StorageBackend) -> None:
+        """An unshare revoking the caller's read access between the two reads ends in not found.
+
+        The default principal reads alice's private entry through a read grant. Alice
+        removes that grant after navigate read the text and before it read the node
+        summaries: the closing probe no longer sees the entry, the snapshot is retaken,
+        and the retaken read finds nothing, so neither the outline nor the node
+        summaries read inside the window reach the caller.
+        """
+        await apply_index_tree_migration(nav_backend, force=True)
+        repos = await ensure_repositories()
+        cid = await store_entry(nav_backend, '# Alice\nshared body\n', owner='alice')
+        await insert_grant(nav_backend, cid, 'user', 'local', 'read', 'alice')
+        await repos.index_nodes.replace_nodes_for_context(cid, [
+            IndexNodeRow(
+                node_id='alice', level=1, ordinal=1, title='Alice',
+                node_summary='Shared section abstract.', char_start=0, char_end=20,
+            ),
+        ], scope=MAINTENANCE)
+
+        real_get_nodes = repos.index_nodes.get_nodes_for_context
+        revoked = False
+
+        async def revoking_get_nodes(context_id: str, *, scope: BackendAccess) -> StoredNodeSummaries:
+            nonlocal revoked
+            if not revoked:
+                revoked = True
+                with as_principal('alice'):
+                    await unshare_context(
+                        context_id=context_id, principal_type='user', principal_id='local', permission='read',
+                    )
+            return await real_get_nodes(context_id, scope=scope)
+
+        with (
+            patch.object(repos.index_nodes, 'get_nodes_for_context', revoking_get_nodes),
+            pytest.raises(ToolError) as error,
+        ):
+            await navigate_as_dict(context_id=cid, include_node_summaries=True)
+
+        assert revoked
+        assert str(error.value) == f'Context entry not found: {cid}'
 
     @pytest.mark.asyncio
     async def test_summaries_omitted_by_default(self, nav_backend: StorageBackend) -> None:

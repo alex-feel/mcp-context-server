@@ -10,6 +10,7 @@ This package contains all MCP tool functions, organized by domain:
 - discovery.py: list_threads, get_statistics
 - navigation.py: grep_context, navigate_context, read_context_range
 - sync.py: plan_context_sync, list_ingest_state (the corpus sync tools)
+- sharing.py: share_context, unshare_context, list_context_grants (the owner-only grant tools)
 - _sync_plan.py: The pure corpus sync diff plan_context_sync computes (not re-exported)
 - batch/: store_context_batch (store.py), update_context_batch (update.py), delete_context_batch
   (delete.py), the per-entry validation they share (entry_validation.py), and the update tool's
@@ -53,6 +54,9 @@ from app.tools.search.browse import search_context
 from app.tools.search.fts import fts_search_context
 from app.tools.search.hybrid import hybrid_search_context
 from app.tools.search.semantic import semantic_search_context
+from app.tools.sharing import list_context_grants
+from app.tools.sharing import share_context
+from app.tools.sharing import unshare_context
 from app.tools.sync import list_ingest_state
 from app.tools.sync import plan_context_sync
 
@@ -75,6 +79,13 @@ TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
         'title': 'Store Context (Batch)',
         'readOnlyHint': False,
         'destructiveHint': False,
+    },
+    # A share adds a grant, and repeating it changes nothing, so it is also idempotent
+    'share_context': {
+        'title': 'Share Context',
+        'readOnlyHint': False,
+        'destructiveHint': False,
+        'idempotentHint': True,
     },
     # Read-only tools (no modifications)
     'search_context': {
@@ -125,6 +136,10 @@ TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
         'title': 'List Ingest State',
         'readOnlyHint': True,
     },
+    'list_context_grants': {
+        'title': 'List Context Grants',
+        'readOnlyHint': True,
+    },
     # Update tools (destructive, not idempotent)
     'update_context': {
         'title': 'Update Context',
@@ -139,6 +154,12 @@ TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
         'idempotentHint': False,
     },
     # Delete tools (destructive, idempotent)
+    'unshare_context': {
+        'title': 'Unshare Context',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': True,
+    },
     'delete_context': {
         'title': 'Delete Context',
         'readOnlyHint': False,
@@ -234,6 +255,10 @@ __all__ = [
     # Corpus sync tools
     'list_ingest_state',
     'plan_context_sync',
+    # Sharing tools
+    'list_context_grants',
+    'share_context',
+    'unshare_context',
     # Batch tools
     'delete_context_batch',
     'store_context_batch',

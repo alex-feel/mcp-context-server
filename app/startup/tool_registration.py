@@ -25,6 +25,7 @@ from app.tools import get_context_by_ids
 from app.tools import get_statistics
 from app.tools import grep_context
 from app.tools import hybrid_search_context
+from app.tools import list_context_grants
 from app.tools import list_ingest_state
 from app.tools import list_threads
 from app.tools import navigate_context
@@ -33,8 +34,10 @@ from app.tools import read_context_range
 from app.tools import register_tool
 from app.tools import search_context
 from app.tools import semantic_search_context
+from app.tools import share_context
 from app.tools import store_context
 from app.tools import store_context_batch
+from app.tools import unshare_context
 from app.tools import update_context
 from app.tools import update_context_batch
 
@@ -42,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 def register_core_tools(mcp: FastMCP[None], settings: AppSettings) -> None:
-    """Register the tools that need no provider: CRUD, browsing, discovery, navigation, and corpus sync.
+    """Register the tools that need no provider: CRUD, browsing, discovery, navigation, corpus sync, and sharing.
 
     Args:
         mcp: The FastMCP server instance to register the tools on.
@@ -90,6 +93,12 @@ def register_core_tools(mcp: FastMCP[None], settings: AppSettings) -> None:
     # Delete tools (destructive, idempotent)
     register_tool(mcp, delete_context)
     register_tool(mcp, delete_context_batch)
+
+    # Owner-only grant tools. They need no prerequisite and no toggle gates them;
+    # DISABLED_TOOLS leaves any of them out like any other core tool.
+    register_tool(mcp, share_context)
+    register_tool(mcp, unshare_context)
+    register_tool(mcp, list_context_grants)
 
 
 async def register_search_tools(

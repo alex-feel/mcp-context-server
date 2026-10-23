@@ -547,7 +547,11 @@ async def navigate_context(
         # retry virtually always converges. updated_at is NOT a usable probe:
         # SQLite CURRENT_TIMESTAMP has second granularity, so two commits inside
         # the same wall-clock second compare equal and a torn pairing would be
-        # accepted.
+        # accepted. The probes also catch a revocation: when an unshare removes the
+        # caller's read access inside the window, the closing probe finds no readable
+        # entry (no version), the snapshot is retaken, and the retaken read reports
+        # the entry as not found, so node summaries read inside the window are never
+        # returned.
         text = ''
         root_summary: str | None = None
         access: EntryAccessFields = {'visibility': 'private', 'is_owner': False}

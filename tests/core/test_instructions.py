@@ -53,10 +53,10 @@ class TestDefaultInstructions:
         assert 'references' in DEFAULT_INSTRUCTIONS.lower()
 
     def test_default_instructions_character_budget(self) -> None:
-        """DEFAULT_INSTRUCTIONS should be within reasonable character budget (~2000-5300 chars)."""
+        """DEFAULT_INSTRUCTIONS should be within reasonable character budget (~2000-5800 chars)."""
         from app.instructions import DEFAULT_INSTRUCTIONS
 
-        assert 2000 < len(DEFAULT_INSTRUCTIONS) < 5300
+        assert 2000 < len(DEFAULT_INSTRUCTIONS) < 5800
 
     def test_default_instructions_lists_navigation_tools(self) -> None:
         """DEFAULT_INSTRUCTIONS must list the v3 navigation tools so clients discover them."""
@@ -73,6 +73,18 @@ class TestDefaultInstructions:
         assert '| `plan_context_sync`       |' in DEFAULT_INSTRUCTIONS
         assert '| `list_ingest_state`       |' in DEFAULT_INSTRUCTIONS
         assert '`kb:<corpus>`' in DEFAULT_INSTRUCTIONS
+
+    def test_default_instructions_list_sharing_tools_and_the_access_concept(self) -> None:
+        """DEFAULT_INSTRUCTIONS lists the three sharing tools and states who reads and shares an entry."""
+        from app.instructions import DEFAULT_INSTRUCTIONS
+
+        assert '| `share_context`           | Share your entry with a user or group (read/write)' in DEFAULT_INSTRUCTIONS
+        assert '| `unshare_context`         | Remove a grant from your entry' in DEFAULT_INSTRUCTIONS
+        assert '| `list_context_grants`     | List the grants on your entry' in DEFAULT_INSTRUCTIONS
+        assert (
+            "- **Access**: entries are private to their owner unless public or shared; results carry "
+            "`visibility` and `is_owner`, and only an entry's owner shares it."
+        ) in DEFAULT_INSTRUCTIONS
 
     def test_default_instructions_tool_rows_share_the_column_widths(self) -> None:
         """Every row of the tool table is as wide as its header row."""

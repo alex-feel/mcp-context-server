@@ -497,6 +497,57 @@ class UpdateContextSuccessDict(TypedDict):
     message: str
 
 
+# Sharing TypedDicts
+
+
+class ShareContextResultDict(TypedDict):
+    """Response of share_context: the grant it names and whether this call created it."""
+
+    success: bool
+    context_id: str
+    principal_type: Literal['user', 'group']
+    principal_id: str
+    permission: Literal['read', 'write']
+    created: bool
+    message: str
+
+
+class UnshareContextResultDict(TypedDict):
+    """Response of unshare_context: the grant it names, whether this call removed it, and what the grantee keeps.
+
+    ``remaining_permissions`` lists the permissions the same principal type and id
+    still hold on the entry; access through a group the grantee belongs to is not
+    counted.
+    """
+
+    success: bool
+    context_id: str
+    principal_type: Literal['user', 'group']
+    principal_id: str
+    permission: Literal['read', 'write']
+    removed: bool
+    remaining_permissions: list[Literal['read', 'write']]
+    message: str
+
+
+class ContextGrantDict(TypedDict):
+    """One grant on an entry, as list_context_grants reports it to the entry's owner."""
+
+    principal_type: Literal['user', 'group']
+    principal_id: str
+    permission: Literal['read', 'write']
+    granted_by: str
+    created_at: str
+
+
+class ListContextGrantsResultDict(TypedDict):
+    """Response of list_context_grants: every grant of the entry in principal type, id and permission order."""
+
+    context_id: str
+    grants: list[ContextGrantDict]
+    count: int
+
+
 # Bulk operation TypedDicts
 
 

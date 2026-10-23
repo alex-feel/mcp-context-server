@@ -38,10 +38,10 @@ Prefixes shorter than 8 characters or containing non-hex characters are rejected
 
 **Input Format Support by Tool:**
 
-| Parameter Kind                                                                                                                                                                      | Accepts Full UUID (32-hex / 36-hyphenated) | Accepts Prefix (8-31 hex)                 |
-|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------|-------------------------------------------|
-| Single-ID parameters (`update_context.context_id`, `navigate_context.context_id`, `read_context_range.context_id`)                                                                  | Yes                                        | Yes                                       |
-| Bulk / batch list parameters (`get_context_by_ids.context_ids`, `delete_context.context_ids`, `delete_context_batch.context_ids`, each `update_context_batch` entry's `context_id`) | Yes                                        | Yes (each element resolved independently) |
+| Parameter Kind                                                                                                                                                                                           | Accepts Full UUID (32-hex / 36-hyphenated) | Accepts Prefix (8-31 hex)                 |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------|-------------------------------------------|
+| Single-ID parameters (`update_context.context_id`, `navigate_context.context_id`, `read_context_range.context_id`, and the `context_id` of `share_context`, `unshare_context` and `list_context_grants`) | Yes                                        | Yes                                       |
+| Bulk / batch list parameters (`get_context_by_ids.context_ids`, `delete_context.context_ids`, `delete_context_batch.context_ids`, each `update_context_batch` entry's `context_id`)                      | Yes                                        | Yes (each element resolved independently) |
 
 **Bulk Parameter Example:**
 
@@ -579,6 +579,59 @@ List one page of the caller's own managed entries of a thread, ordered by `sourc
 - `cursor` (str, optional): The `next_cursor` of the previous page; omitted reads the first page. A malformed cursor is refused with `invalid cursor`.
 
 **Returns:** `{thread_id, entries, count, next_cursor}`. Each entry is `{context_id, source_id, text_digest, meta_digest, synced_at}`, where `text_digest` is the stored content hash. `next_cursor` is null on the last page, including a page that ends exactly at the last entry. See [Listing Ingest State](knowledge-base.md#listing-ingest-state).
+
+## Sharing Tools
+
+The owner of an entry uses these tools to give other principals access to it, take that access away, and see who holds it. Only the entry's owner may call them on it. An entry the caller may not read gets `Context entry with ID {id} not found`, exactly like an ID no entry carries; an entry the caller may read but does not own (through a read or write grant, or because it is `public`) gets an explicit refusal. A write grant lets its holder edit an entry but never share it. Each call names one entry by its full ID or by an 8-31 character hex prefix, which resolves over the entries the caller may read. All three tools register by default, and `DISABLED_TOOLS` can leave any of them out. [Sharing Entries](authentication.md#sharing-entries) describes how grants combine with visibility.
+
+### share_context
+
+Grant one user or one group `read` or `write` permission on an entry the caller owns.
+
+**Parameters:**
+- `context_id` (str, required): The entry's 32-character hex or 36-character hyphenated ID, or an 8-31 character hex prefix.
+- `principal_type` (str, required): `user` for one principal (a token subject) or `group` for every member of a group.
+- `principal_id` (str, required): The user or group ID, matched verbatim against the token's subject or groups: case-sensitive, any characters, 1 to 256 characters, no leading or trailing whitespace. The server does not check that the user or group exists.
+- `permission` (str, required): `read`, or `write`, which also allows reading and lets the grantee change text, metadata, tags and images (but not visibility, deletion or sharing).
+
+Sharing is idempotent: a grant the entry already holds stays as it is and the response reports `created: false`, a group read grant written by `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups` included. `read` and `write` are separate grants, so sharing `read` with a principal that holds `write` stores a second grant. A group grant reaches every member of the group. Grants leave the entry's `updated_at` unchanged and never conflict with a concurrent `update_context`.
+
+**Returns:** `{success, context_id, principal_type, principal_id, permission, created, message}`. `context_id` is the resolved full ID. `message` is `Granted {permission} on context entry {id} to {principal_type} {principal_id}`, or `{principal_type} {principal_id} already holds {permission} on context entry {id}` when `created` is false.
+
+**Errors:**
+- `Context entry with ID {id} not found`: the caller may not read the entry, or no entry has the ID.
+- `Not authorized to share context entry with ID {id}`: the caller may read the entry but does not own it.
+- `Cannot share context entry with ID {id} with its owner`: a `user` grant naming the owner. A group grant to a group the owner belongs to is allowed.
+- `Cannot share context entry with ID {id} with the anonymous principal; set its visibility to 'public' to publish it`: a `user` grant naming the principal that `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` names. The server refuses it before looking the ID up, and `{id}` is the value the caller passed.
+- `principal_id cannot be empty or whitespace`, `principal_id cannot have leading or trailing whitespace`, `principal_id exceeds 256 characters`, or a `principal_id:` error for text the database cannot store.
+- `The anonymous principal is read-only: share_context is not permitted`.
+
+### unshare_context
+
+Remove exactly one grant from an entry the caller owns.
+
+**Parameters:**
+- `context_id` (str, required): The entry's full ID or an 8-31 character hex prefix.
+- `principal_type` (str, required): `user` or `group`.
+- `principal_id` (str, required): The grantee's ID, under the same rules as for `share_context`.
+- `permission` (str, required): The permission of the grant to remove, `read` or `write`.
+
+The call removes only the named grant: removing `read` from a principal that also holds `write` leaves the `write` grant, which still allows reading. Removing a grant the entry does not hold changes nothing and reports `removed: false`. The owner can remove any grant the entry holds, including one naming the owner or the anonymous principal that reached the database without `share_context`. Grants leave the entry's `updated_at` unchanged.
+
+**Returns:** `{success, context_id, principal_type, principal_id, permission, removed, remaining_permissions, message}`. `remaining_permissions` lists the permissions the same principal type and ID still hold on the entry after the call, read in the same transaction; a group grant can still give that principal access through its membership. `message` is `Removed {permission} on context entry {id} from {principal_type} {principal_id}`, or `No {permission} grant on context entry {id} for {principal_type} {principal_id}` when `removed` is false.
+
+**Errors:** `Context entry with ID {id} not found`; `Not authorized to unshare context entry with ID {id}`; the `principal_id` validation errors of `share_context`; `The anonymous principal is read-only: unshare_context is not permitted`.
+
+### list_context_grants
+
+List every grant of an entry the caller owns, with no paging and no cap.
+
+**Parameters:**
+- `context_id` (str, required): The entry's full ID or an 8-31 character hex prefix.
+
+**Returns:** `{context_id, grants, count}`. Each grant is `{principal_type, principal_id, permission, granted_by, created_at}`, ordered by `principal_type`, then `principal_id`, then `permission`. `granted_by` names the principal that stored the grant, and `created_at` is a UTC timestamp such as `2026-01-01T12:00:00Z`.
+
+**Errors:** `Context entry with ID {id} not found`; `Not authorized to list the grants of context entry with ID {id}`.
 
 ## Batch Operations
 
