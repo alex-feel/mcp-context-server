@@ -12,7 +12,9 @@ listed.
 
 The module-level helpers build blocks, manifest items and store entries for the
 other vehicles that exercise the sync tools: the second-principal checks in
-``access_scoping.py`` and the JWT scenario in ``tests/integration/_http_jwt.py``.
+``access_scoping.py``, the JWT scenarios in ``tests/integration/_http_jwt_access.py``
+and ``tests/integration/_http_jwt_anonymous.py``, and the payload ceiling test in
+``tests/integration/sqlite/test_sync_payload_ceiling.py``.
 """
 
 from operator import itemgetter
