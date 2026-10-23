@@ -17,14 +17,14 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.auth import resolve_access_scope
+from app.discovery_types import StatisticsResponseDict
+from app.discovery_types import ThreadListDict
 from app.errors import format_exception_message
 from app.settings import get_settings
 from app.startup import DB_PATH
 from app.startup import ensure_backend
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
-from app.types import StatisticsResponseDict
-from app.types import ThreadListDict
 
 logger = logging.getLogger(__name__)
 settings = get_settings()

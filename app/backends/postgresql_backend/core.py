@@ -210,7 +210,8 @@ class PostgreSQLBackendCore:
             ``pool_min_size`` and ``pool_max_size`` share that condition, and the
             pgpool / session-pooler keys appear only once their detection ran. The
             rest are always present. Every key is declared in
-            ``ConnectionMetricsDict``, which drives the advertised outputSchema.
+            ``ConnectionMetricsDict`` (app/discovery_types.py), which drives the
+            advertised outputSchema.
         """
         pool_metrics: dict[str, Any] = {
             'backend_type': self.backend_type,

@@ -583,7 +583,7 @@ class StorageBackend(Protocol):
 
         The mapping is published to MCP clients verbatim as ``connection_metrics``
         (app/tools/discovery.py), and its declared shape is
-        ``ConnectionMetricsDict`` in app/types.py, which FastMCP turns into the
+        ``ConnectionMetricsDict`` in app/discovery_types.py, which FastMCP turns into the
         advertised ``get_statistics`` outputSchema. A key an implementation emits
         but that TypedDict does not declare is DROPPED for every client consuming
         the typed output, so a new backend must either restrict itself to the

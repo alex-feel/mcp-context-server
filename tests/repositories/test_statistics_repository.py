@@ -75,7 +75,7 @@ class TestStatisticsRepository:
         returns the chronologically latest id per thread.
 
         The contract is documented in docs/api-reference.md (regex ^[0-9a-f]{32}$)
-        and is reflected in app/types.py ThreadInfoDict.last_id: str.
+        and is reflected in app/discovery_types.py ThreadInfoDict.last_id: str.
         """
 
         def _insert_data(conn: sqlite3.Connection) -> None:

@@ -1,7 +1,7 @@
 """Tests for the StatisticsResponseDict typed surface of ``get_statistics``.
 
 ``app.tools.discovery.get_statistics`` returns a ``StatisticsResponseDict``
-declared in ``app/types.py``. The TypedDict gives static type checkers
+declared in ``app/discovery_types.py``. The TypedDict gives static type checkers
 information about the response shape without changing runtime behavior.
 
 Two assertions in this test:
@@ -47,16 +47,16 @@ def _get_statistics_response_dict() -> object:
     """Resolve StatisticsResponseDict at call time.
 
     Resolving at call time means the test file loads even if the TypedDict
-    has not yet been added to ``app.types`` (TDD: this test must fail on
-    the missing attribute, not crash at import).
+    is missing from ``app.discovery_types``, so the test fails on the missing
+    name instead of crashing at import.
 
     Returns:
         The StatisticsResponseDict TypedDict class.
     """
-    types_module = importlib.import_module('app.types')
+    types_module = importlib.import_module('app.discovery_types')
     if not hasattr(types_module, 'StatisticsResponseDict'):
         pytest.fail(
-            'StatisticsResponseDict is missing from app.types',
+            'StatisticsResponseDict is missing from app.discovery_types',
         )
     return types_module.StatisticsResponseDict
 
@@ -227,7 +227,7 @@ def _declared_connection_metric_keys() -> set[str]:
     Returns:
         The declared key names of the connection_metrics sub-block TypedDict.
     """
-    types_module = importlib.import_module('app.types')
+    types_module = importlib.import_module('app.discovery_types')
     return set(types_module.ConnectionMetricsDict.__annotations__)
 
 
