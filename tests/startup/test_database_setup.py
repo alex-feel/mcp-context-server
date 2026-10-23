@@ -3,7 +3,9 @@
 Starting with ``ENABLE_POSTGRESQL_RLS`` off over the row-level security objects is
 refused right after the compression guard, before any provisioning migration runs. The
 ingest index runs right after the access-control migration, because its SQLite key names
-the access columns that migration adds on an in-place upgrade. The request role's grants
+the access columns that migration adds on an in-place upgrade, and the grant owner
+migration follows it, because its index and foreign key name ``owner_id``, which the
+access-control migration adds the same way. The request role's grants
 and then the row-level security migration run last, once every table and column this
 boot provisions exists, so the grants cover every managed table and the read view lists
 every column.
@@ -35,6 +37,7 @@ _ASYNC_STEPS = (
     'apply_version_migration',
     'apply_access_control_migration',
     'apply_ingest_index_migration',
+    'apply_grant_owner_migration',
     'apply_tag_uniqueness_migration',
     'apply_compression_migration',
     'apply_index_tree_migration',
@@ -102,3 +105,18 @@ async def test_the_ingest_index_is_created_right_after_the_access_control_migrat
     names = [name for name, _ in calls]
     assert names.index('apply_ingest_index_migration') == names.index('apply_access_control_migration') + 1
     assert dict(calls)['apply_ingest_index_migration'] == (backend,)
+
+
+@pytest.mark.asyncio
+async def test_the_grant_owner_migration_follows_the_access_columns_and_precedes_the_grants_and_rls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = cast(StorageBackend, SimpleNamespace(backend_type='postgresql'))
+
+    calls = await _recorded_steps(monkeypatch, backend, cast(AppSettings, SimpleNamespace()))
+
+    names = [name for name, _ in calls]
+    assert names.index('apply_grant_owner_migration') == names.index('apply_ingest_index_migration') + 1
+    assert names.index('apply_grant_owner_migration') < names.index('apply_tag_uniqueness_migration')
+    assert names.index('apply_grant_owner_migration') < names.index('apply_request_role_grants')
+    assert dict(calls)['apply_grant_owner_migration'] == (backend,)

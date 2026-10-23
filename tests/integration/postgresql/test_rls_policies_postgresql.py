@@ -59,8 +59,9 @@ INSERT_ENTRY = (
     "VALUES ($1, 'rls-policies', 'agent', 'text', 'policy probe', $2, $3) RETURNING id"
 )
 INSERT_GRANT = (
-    'INSERT INTO context_entry_grants (context_entry_id, principal_type, principal_id, permission, granted_by) '
-    'VALUES ($1, $2, $3, $4, $5)'
+    'INSERT INTO context_entry_grants '
+    '(context_entry_id, principal_type, principal_id, permission, granted_by, entry_owner_id) '
+    'VALUES ($1, $2, $3, $4, $5, $6)'
 )
 # The grant repository's idempotent form; the conflict target and RETURNING also apply the read policy to the new row.
 UPSERT_GRANT = (
@@ -369,14 +370,14 @@ class TestGrants:
         granted = entry_uuid(matrix_db, 'alice_private_bob_write')
 
         async with scoped_transaction(app_conn, ALICE):
-            assert await app_conn.execute(INSERT_GRANT, owned, 'user', 'dave', 'read', 'alice') == 'INSERT 0 1'
+            assert await app_conn.execute(INSERT_GRANT, owned, 'user', 'dave', 'read', 'alice', 'alice') == 'INSERT 0 1'
         for scope, entry, grantor in [(BOB, granted, 'bob'), (ALICE, owned, 'bob'), (None, owned, 'alice')]:
             async with scoped_transaction(app_conn, scope):
                 with pytest.raises(REFUSED, match='context_entry_grants'):
-                    await app_conn.execute(INSERT_GRANT, entry, 'user', 'dave', 'read', grantor)
+                    await app_conn.execute(INSERT_GRANT, entry, 'user', 'dave', 'read', grantor, 'alice')
         async with scoped_transaction(app_conn, ALICE):
             with pytest.raises(REFUSED, match='context_entry_grants'):
-                await app_conn.fetchval(UPSERT_GRANT, owned, 'user', 'dave', 'read', 'alice')
+                await app_conn.fetchval(UPSERT_GRANT, owned, 'user', 'dave', 'read', 'alice', 'alice')
 
     @pytest.mark.asyncio
     async def test_grant_rows_are_visible_to_their_grantees_only(self, app_conn: asyncpg.Connection) -> None:
@@ -406,8 +407,8 @@ class TestGrants:
         entry = uuid.uuid4()
         async with scoped_transaction(app_conn, CAROL):
             assert await app_conn.fetchval(INSERT_ENTRY, entry, 'carol', 'private') == entry
-            assert await app_conn.fetchval(UPSERT_GRANT, entry, 'group', 'team-x', 'read', 'carol') is not None
-            assert await app_conn.fetchval(UPSERT_GRANT, entry, 'group', 'team-x', 'read', 'carol') is None
+            assert await app_conn.fetchval(UPSERT_GRANT, entry, 'group', 'team-x', 'read', 'carol', 'carol') is not None
+            assert await app_conn.fetchval(UPSERT_GRANT, entry, 'group', 'team-x', 'read', 'carol', 'carol') is None
             rows = await app_conn.fetch(
                 'SELECT principal_type, principal_id, permission FROM context_entry_grants WHERE context_entry_id = $1',
                 entry,

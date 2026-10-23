@@ -43,7 +43,9 @@ class Seam(StrEnum):
 
     SCOPED = 'scoped'  # the read predicate sits in the statement
     WRITE_AUTHORIZED = 'write_authorized'  # the write or owner predicate sits in the statement
-    OWNER_KEYED = 'owner_keyed'  # the dedup candidate, interleave and update fragments
+    # an owner predicate keyed on a caller principal that also stamps or matches it: the dedup fragments
+    # and the grant statements
+    OWNER_KEYED = 'owner_keyed'
     OWNER_STAMPED = 'owner_stamped'  # an insert whose owner_id is bound from the scope; no predicate
     CHILD_BY_TRUSTED_ID = 'child_by_trusted_id'  # id-keyed child read; its call sites are pinned
     CHILD_WRITER = 'child_writer'  # child write behind the write gate or the owned dedup; sites pinned
@@ -197,6 +199,9 @@ REGISTRY: dict[str, Entry] = {
     _DEDUP + '_candidate_sql': _guarded(Seam.OWNER_KEYED, 'K1', 'K3', 'K4'),
     _DEDUP + '_interleave_sql': _guarded(Seam.OWNER_KEYED, 'K2', 'K3'),
     _DEDUP + '_dedup_update_sql': _guarded(Seam.OWNER_KEYED, 'K1'),
+    # Owner-keyed: the grant statements, which act only on an entry the caller owns and record the caller as grantor.
+    _GRANTS + 'store_group_read_grants': _guarded(Seam.OWNER_KEYED, 'G1'),
+    _GRANTS + '_grant_insert_sql': _guarded(Seam.OWNER_KEYED, 'G1', 'G2'),
     # Owner-stamped: a fresh insert owned by the scope's principal.
     _DEDUP + '_insert_entry_sql': _guarded(Seam.OWNER_STAMPED, 'K1', 'K5'),
     _DEDUP + 'ContextDedupMixin.insert_entry': _guarded(Seam.OWNER_STAMPED, 'K5'),
@@ -223,12 +228,6 @@ REGISTRY: dict[str, Entry] = {
     _IMAGES + 'store_images': _child(Seam.CHILD_WRITER, _STORE_TX),
     _IMAGES + 'replace_images_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX, _UPDATE_TX),
     _NODES + 'replace_nodes_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX),
-    _GRANTS + 'store_group_read_grants': _child(Seam.CHILD_WRITER, _STORE_TX),
-    _GRANTS + '_insert_grant_sql': _child(
-        Seam.CHILD_WRITER,
-        'repositories/grant_repository.py:GrantRepository.store_group_read_grants._store_sqlite',
-        'repositories/grant_repository.py:GrantRepository.store_group_read_grants._store_postgresql',
-    ),
     # The embedding CLI commands run outside any request and write by the ids they read.
     _CHUNKS + 'store_chunked': _child(
         Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX, 'cli/migrate_embeddings.py:_embed_missing_async', _REEMBED,

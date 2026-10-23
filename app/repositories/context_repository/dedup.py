@@ -27,6 +27,7 @@ from app.access_scope import build_access_predicate
 from app.ids import generate_id
 from app.ids import normalize_id
 from app.repositories.base import BaseRepository
+from app.repositories.base import Statement
 from app.repositories.context_repository.records import DuplicateCandidate
 
 if TYPE_CHECKING:
@@ -36,8 +37,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-type Statement = tuple[str, list[object]]
 
 
 def _param(backend_type: str, position: int) -> str:

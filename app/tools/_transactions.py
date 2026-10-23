@@ -447,13 +447,7 @@ async def execute_store_in_transaction(
     # UPDATE targets a row whose grants were stamped when it was inserted, and a
     # retransmit must not widen (or re-attribute) existing access.
     if not was_updated and author_group_grants:
-        await repos.grants.store_group_read_grants(
-            context_id,
-            author_group_grants,
-            granted_by=scope.principal_id,
-            txn=txn,
-            scope=scope,
-        )
+        await repos.grants.store_group_read_grants(context_id, author_group_grants, scope=scope, txn=txn)
 
     # Store or replace tags depending on deduplication outcome. The documented
     # contract distinguishes PROVIDED from None: an explicitly provided empty

@@ -13,8 +13,9 @@ share. Six rules hold:
 3. Predicate reference: every scoped, write-authorized and owner-keyed method builds the
    access predicate, hands its scope to a predicate fragment helper, or is a dispatcher
    that forwards its scope to every executor it names; every owner-stamped method binds
-   ``owner_id`` from its own scope, in its INSERT or through the INSERT builder, and names
-   neither the system nor the maintenance identity.
+   ``owner_id`` from its own scope, in its INSERT or through the INSERT builder, and every
+   method that inserts a grant binds ``granted_by`` the same way, and neither names the
+   system or the maintenance identity.
 4. Closure list: the closures of the two ranked searches are classified one by one.
 5. Signatures and cases: a guarded method takes a required keyword-only ``scope``; every
    guarded entry names two-principal cases that exist in the case registry and run on
@@ -74,7 +75,12 @@ PREDICATE_MODULE = 'access_scope.py'
 PREDICATE_BUILDERS = frozenset({'build_access_predicate', 'build_readable_parent_predicate'})
 
 # Helpers that build the access predicate for the method that hands them its scope.
-PREDICATE_HELPERS = frozenset({'_candidate_sql', '_interleave_sql', '_dedup_update_sql', '_build_context_filter_clause'})
+PREDICATE_HELPERS = frozenset({
+    '_candidate_sql', '_interleave_sql', '_dedup_update_sql', '_build_context_filter_clause', '_grant_insert_sql',
+})
+
+# The statement builders a grant-inserting method may insert through instead of holding the INSERT itself.
+GRANTOR_STAMPED_BUILDERS = frozenset({'_grant_insert_sql'})
 
 RESOLVERS = frozenset({'resolve_access_scope', 'resolve_effective_principal'})
 SYSTEM_SCOPE_NAMES = frozenset({'SYSTEM_SCOPE', 'SystemScope'})
@@ -82,6 +88,9 @@ MAINTENANCE_NAMES = frozenset({'MAINTENANCE', 'MaintenanceAccess'})
 
 # An INSERT into the context table and the column list it names.
 CONTEXT_INSERT = re.compile(r'INSERT INTO context_entries\s*\((?P<columns>[^)]*)\)', re.IGNORECASE)
+
+# An INSERT into the grants table and the column list it names.
+GRANT_INSERT = re.compile(r'INSERT INTO context_entry_grants\s*\((?P<columns>[^)]*)\)', re.IGNORECASE)
 
 # Tool-layer helpers that carry the caller's scope to the repositories.
 SCOPE_CARRYING_HELPERS = (
@@ -259,6 +268,116 @@ def test_owner_stamped_rule_rejects_an_owner_not_bound_from_the_scope(source: st
     node, module = _snippet(source)
 
     assert owner_stamped_violations(node, module) == [violation]
+
+
+def grantor_stamped_violations(node: ast.AST, module: ParsedModule) -> list[str]:
+    """List how a grant-inserting method fails to bind ``granted_by`` from its own scope.
+
+    The method either holds the INSERT itself, naming ``granted_by`` among its columns and
+    reading ``scope.principal_id``, or holds no INSERT and inserts through a grantor-stamped
+    builder, handing every call its own ``scope``. Either way it never names the system or
+    the maintenance identity.
+
+    Args:
+        node: The method.
+        module: The parsed module that defines it.
+
+    Returns:
+        One message per violation, empty for a method that passes.
+    """
+    violations: list[str] = []
+    inserts = [match for _line, value in string_constants(node, module) for match in GRANT_INSERT.finditer(value)]
+    builder_calls = [
+        call for call in ast.walk(node) if isinstance(call, ast.Call) and callee_name(call) in GRANTOR_STAMPED_BUILDERS
+    ]
+    if inserts:
+        if not all('granted_by' in (column.strip() for column in match['columns'].split(',')) for match in inserts):
+            violations.append('an INSERT does not name granted_by')
+        if not _reads_scope_principal(node):
+            violations.append('the INSERT does not bind granted_by from scope.principal_id')
+    elif builder_calls:
+        if not all(hands_over_scope(call) for call in builder_calls):
+            violations.append('a builder call does not hand over the scope')
+    else:
+        violations.append('neither holds an INSERT nor calls a grantor-stamped builder')
+    if _names_identity(node, SYSTEM_SCOPE_NAMES | MAINTENANCE_NAMES):
+        violations.append('names the system or the maintenance identity')
+    return violations
+
+
+def _grant_inserting_methods() -> list[str]:
+    """The repository methods that hold an INSERT into the grants table or call a grantor-stamped builder, sorted."""
+    return sorted(
+        key for key, (node, module) in repository_methods().items()
+        if any(GRANT_INSERT.search(value) for _line, value in string_constants(node, module))
+        or any(isinstance(call, ast.Call) and callee_name(call) in GRANTOR_STAMPED_BUILDERS for call in ast.walk(node))
+    )
+
+
+def test_the_grant_builder_is_a_grant_inserting_method() -> None:
+    """The rule below reads the builder itself, so it never passes over an empty set of methods."""
+    assert 'app.repositories.grant_repository:GrantRepository._grant_insert_sql' in _grant_inserting_methods()
+
+
+@pytest.mark.parametrize('key', _grant_inserting_methods())
+def test_grant_insert_binds_the_grantor_from_its_scope(key: str) -> None:
+    """A grant is recorded as granted by the caller's principal and by nothing else."""
+    node, module = repository_methods()[key]
+
+    assert grantor_stamped_violations(node, module) == []
+
+
+@pytest.mark.parametrize(
+    ('source', 'violation'),
+    [
+        pytest.param(
+            '''
+            def insert(scope):
+                return 'INSERT INTO context_entry_grants (context_entry_id, granted_by) VALUES (?, ?)', ['id', 'local']
+            ''',
+            'the INSERT does not bind granted_by from scope.principal_id',
+            id='literal-grantor',
+        ),
+        pytest.param(
+            '''
+            def insert(scope):
+                return 'INSERT INTO context_entry_grants (context_entry_id, principal_id) VALUES (?, ?)', [scope.principal_id]
+            ''',
+            'an INSERT does not name granted_by',
+            id='grantor-column-missing',
+        ),
+        pytest.param(
+            '''
+            async def insert(self, scope):
+                return self._grant_insert_sql('sqlite', 'id', 'group', 'team-x', 'read')
+            ''',
+            'a builder call does not hand over the scope',
+            id='builder-without-scope',
+        ),
+        pytest.param(
+            '''
+            async def insert(self, scope):
+                sql, values = self._grant_insert_sql('sqlite', 'id', 'group', 'team-x', 'read', scope=scope)
+                return await self.backend.execute_write(sql, access_scope=MAINTENANCE)
+            ''',
+            'names the system or the maintenance identity',
+            id='maintenance-identity',
+        ),
+        pytest.param(
+            '''
+            def insert(scope):
+                return 'SELECT 1', []
+            ''',
+            'neither holds an INSERT nor calls a grantor-stamped builder',
+            id='no-insert',
+        ),
+    ],
+)
+def test_grantor_stamped_rule_rejects_a_grantor_not_bound_from_the_scope(source: str, violation: str) -> None:
+    """Each way of recording a grantor other than the caller's own scope is reported."""
+    node, module = _snippet(source)
+
+    assert grantor_stamped_violations(node, module) == [violation]
 
 
 # Part 4: closure list.

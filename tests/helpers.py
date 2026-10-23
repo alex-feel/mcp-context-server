@@ -278,6 +278,7 @@ def patch_database_setup_steps() -> AbstractContextManager[Any]:
         apply_version_migration=AsyncMock(),
         apply_access_control_migration=AsyncMock(),
         apply_ingest_index_migration=AsyncMock(),
+        apply_grant_owner_migration=AsyncMock(),
         apply_tag_uniqueness_migration=AsyncMock(),
     )
 
@@ -378,6 +379,12 @@ def as_principal(
 
 
 _INSERT_GRANT_COLUMNS = '(context_entry_id, principal_type, principal_id, permission, granted_by)'
+# PostgreSQL also records the entry's owner on each grant, copied from the entry itself.
+_INSERT_GRANT_POSTGRESQL = (
+    'INSERT INTO context_entry_grants '
+    '(context_entry_id, principal_type, principal_id, permission, granted_by, entry_owner_id) '
+    'SELECT ce.id, $2, $3, $4, $5, ce.owner_id FROM context_entries ce WHERE ce.id = $1'
+)
 _READ_GRANTS_SQL = (
     'SELECT principal_type, principal_id, permission, granted_by FROM context_entry_grants '
     'WHERE context_entry_id = {placeholder} ORDER BY principal_type, principal_id, permission'
@@ -399,7 +406,9 @@ async def insert_grant(
     grants and write grants with this helper. The row is written as the role the
     backend logs in as, so on PostgreSQL pass a backend of the table owner or of
     a superuser (the oracle channel), never the request backend of a deployment
-    whose database policies filter the request role's writes.
+    whose database policies filter the request role's writes. On PostgreSQL the
+    row also records the entry's owner, read from the entry, which every database
+    the server prepared requires.
 
     Args:
         backend: The backend whose database receives the row.
@@ -408,6 +417,10 @@ async def insert_grant(
         principal_id: The grantee principal or group id.
         permission: ``'read'`` or ``'write'``.
         granted_by: The principal id recorded as the grantor.
+
+    Raises:
+        LookupError: If no entry has the id ``context_id`` on PostgreSQL, where the
+            row's owner comes from the entry.
     """
     values = (context_id, principal_type, principal_id, permission, granted_by)
 
@@ -419,10 +432,11 @@ async def insert_grant(
         await backend.execute_write(_insert_sqlite, access_scope=MAINTENANCE)
         return
 
-    async def _insert_postgresql(conn: 'asyncpg.Connection') -> None:
-        await conn.execute(f'INSERT INTO context_entry_grants {_INSERT_GRANT_COLUMNS} VALUES ($1, $2, $3, $4, $5)', *values)
+    async def _insert_postgresql(conn: 'asyncpg.Connection') -> str:
+        return str(await conn.execute(_INSERT_GRANT_POSTGRESQL, *values))
 
-    await backend.execute_write(_insert_postgresql, access_scope=MAINTENANCE)
+    if await backend.execute_write(_insert_postgresql, access_scope=MAINTENANCE) != 'INSERT 0 1':
+        raise LookupError(f'no context entry {context_id} to grant access to')
 
 
 async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[str, str, str, str]]:

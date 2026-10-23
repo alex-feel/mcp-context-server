@@ -60,6 +60,7 @@ export STORAGE_BACKEND=postgresql
 - Initialize the schema (creates tables and indexes)
 - Enable pgvector extension (comes pre-installed in the Docker image)
 - Apply semantic search migration if enabled
+- Record on each access grant the owner of its entry (`context_entry_grants.entry_owner_id`, kept exact by a foreign key onto `context_entries (id, owner_id)` that follows an ownership change and removes the grants with their entry)
 
 ### Configuration in .mcp.json
 
