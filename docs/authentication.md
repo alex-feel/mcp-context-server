@@ -273,7 +273,7 @@ Entries written over STDIO, `MCP_AUTH_PROVIDER=none` or `simple_token` are owned
    mcp-context-server-migrate --source-url <url> --reassign-owner local <subject>
    ```
 
-   The CLI binds both values as statement parameters, so it has no character-set limit. It rewrites the owner of every entry owned by `local` in one statement, bumps `updated_at`, and leaves grants unchanged. With `--dry-run` it prints the number of matching entries and changes nothing. See [Reassigning Entry Ownership](migration-v2-to-v3.md#reassigning-entry-ownership).
+   The CLI binds both values as statement parameters, so it has no character-set limit. It rewrites the owner of every entry owned by `local` in one statement, bumps `updated_at`, and keeps every grant on those entries (see [Sharing Entries](#sharing-entries)). With `--dry-run` it prints the number of matching entries and changes nothing. See [Reassigning Entry Ownership](migration-v2-to-v3.md#reassigning-entry-ownership).
 
 ## Access Model
 

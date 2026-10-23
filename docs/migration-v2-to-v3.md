@@ -330,7 +330,7 @@ Steps:
 3. **Execute** by re-running without `--dry-run`. The CLI prints the number of entries reassigned; when no entry is owned by `FROM` it reports that and exits successfully.
 4. **Restart the server.**
 
-The statement sets `updated_at` on every reassigned entry and leaves `context_entry_grants` unchanged: a grant's `granted_by` records who created it, and grantee rows name principals, not owners. `FROM` and `TO` must both be non-empty and must differ; otherwise the CLI exits with status 1 and writes nothing. `--reassign-owner` is mutually exclusive with `--compress`, `--decompress` and `--re-embed`, and a co-passed `--embed-missing` does not run: run it separately.
+The statement sets `updated_at` on every reassigned entry and keeps the entry's grants: each grant keeps its grantee, its permission and its `granted_by`, which records who created it and can name the previous owner. On PostgreSQL each grant also records its entry's owner in `entry_owner_id`, and a foreign key carries the reassignment into that column. `FROM` and `TO` must both be non-empty and must differ; otherwise the CLI exits with status 1 and writes nothing. `--reassign-owner` is mutually exclusive with `--compress`, `--decompress` and `--re-embed`, and a co-passed `--embed-missing` does not run: run it separately.
 
 ## PostgreSQL Row-Level Security and the CLI
 
