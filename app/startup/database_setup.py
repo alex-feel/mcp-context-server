@@ -19,6 +19,7 @@ from app.migrations import apply_compression_migration
 from app.migrations import apply_content_hash_migration
 from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
+from app.migrations import apply_grant_owner_migration
 from app.migrations import apply_index_tree_migration
 from app.migrations import apply_ingest_index_migration
 from app.migrations import apply_jsonb_merge_patch_migration
@@ -30,7 +31,6 @@ from app.migrations import apply_tag_uniqueness_migration
 from app.migrations import apply_version_migration
 from app.migrations import guard_rls_disable_over_enabled
 from app.migrations import handle_metadata_indexes
-from app.migrations.grant_owner import apply_grant_owner_migration
 from app.settings import AppSettings
 from app.startup import init_database
 from app.startup.compression_validator import guard_compression_disable_over_populated
