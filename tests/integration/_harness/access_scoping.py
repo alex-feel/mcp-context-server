@@ -6,15 +6,21 @@ same database, so both processes share the rows, the embedding configuration and
 compression layout, and only the principal differs. The primary stores one private
 and one public entry; the checks then drive every tool as ``bob``:
 
-- the private entry is unreachable through all eighteen tools: it is never returned,
-  matched, listed or counted, an update reports it not found, a delete deletes
-  nothing, and a store of identical text inserts ``bob``'s own entry instead of
-  merging into it;
-- the public entry is readable, while an update reports ``Not authorized to modify``
-  and a delete that names it, through either delete tool, reports ``Not authorized to
-  delete context entries`` and deletes nothing; a thread delete skips it silently;
+- the private entry is unreachable through all twenty-one tools: it is never returned,
+  matched, listed or counted, an update and every sharing tool report it not found, a
+  delete deletes nothing, and a store of identical text inserts ``bob``'s own entry
+  instead of merging into it; the primary reads it as its owner;
+- the public entry is readable and reads as public and not owned, while an update
+  reports ``Not authorized to modify``, a delete that names it, through either delete
+  tool, reports ``Not authorized to delete context entries`` and deletes nothing, and
+  each sharing tool refuses it explicitly; a thread delete skips it silently;
 - a hidden entry and an absent one produce identical delete counts, not-found
   messages and prefix messages;
+- a private entry the primary shares with ``bob`` reads as private and not owned
+  while a read grant lasts, refuses his updates and every sharing tool, and accepts
+  his text edit but not a visibility change once the grant is a write grant; the
+  primary lists both grants as granted by itself, and once it unshares them ``bob``
+  reads the entry through the write grant alone and then not at all;
 - a corpus sync manages only the caller's own entries: the primary's private managed
   entry is absent from ``bob``'s plan and listing, exactly like a source no entry
   carries, and its public one is counted as foreign, never updated or deleted; a
@@ -29,6 +35,11 @@ from fastmcp import Client
 from mcp.types import TextContent
 
 from tests.integration._harness.core import HarnessCore
+from tests.integration._harness.sharing import NOT_OWNER_REFUSALS
+from tests.integration._harness.sharing import grant_calls
+from tests.integration._harness.sharing import grant_rows
+from tests.integration._harness.sharing import primary_principal
+from tests.integration._harness.sharing import read_back_problems
 from tests.integration._harness.sync import SYNC_TOOLS
 from tests.integration._harness.sync import listed_source_ids
 from tests.integration._harness.sync import managed_entry
@@ -38,8 +49,11 @@ from tests.integration._harness.sync import plan_shape
 from tests.integration._harness.sync import plan_with
 
 SECOND_PRINCIPAL = 'bob'
+# A grantee no server of the run serves, named by the shares the second principal attempts.
+THIRD_PRINCIPAL = 'carol'
 PRIVATE_TOKEN = 'zephyrquill'
 PUBLIC_TOKEN = 'auroraplume'
+SHARED_TOKEN = 'emberlattice'
 # A well-formed id no entry carries, and a prefix no UUIDv7 id begins with, so they
 # stand for an absent entry next to the hidden one.
 ABSENT_ID = '0190abcdef1234567890abcdef0fffff'
@@ -98,6 +112,7 @@ class AccessScopingMixin(HarnessCore):
                     ('access_scoping_hidden_matches_absent', await self._hidden_matches_absent_problems(bob, entries)),
                     ('access_scoping_store_never_merges_foreign', await self._store_problems(bob, entries, originals)),
                     ('access_scoping_sync_manages_own_entries', await self._sync_problems(bob)),
+                    ('access_scoping_grants_round_trip', await self._grants_round_trip_problems(bob)),
                 ]
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
@@ -281,6 +296,9 @@ class AccessScopingMixin(HarnessCore):
             if listed != bool(expected):
                 problems.append(f'list_threads for {who} listed the private thread: {listed}')
 
+        own = (await self._entries_by_id(self.client, [private_id])).get(private_id, {})
+        problems.extend(read_back_problems([('get_context_by_ids', own)], 'private', is_owner=True))
+
         not_found = f'Context entry not found: {private_id}'
         for tool, arguments in (
             ('navigate_context', {'context_id': private_id}),
@@ -290,9 +308,14 @@ class AccessScopingMixin(HarnessCore):
             if error != not_found:
                 problems.append(f'{tool} for {SECOND_PRINCIPAL} returned {error!r}, expected {not_found!r}')
 
-        _, error = await self._outcome(bob, 'update_context', {'context_id': private_id, 'text': 'Overwritten.'})
-        if error != f'Context entry with ID {private_id} not found':
-            problems.append(f'update_context returned {error!r}')
+        refused: list[ToolCall] = [
+            ('update_context', {'context_id': private_id, 'text': 'Overwritten.'}),
+            *grant_calls(private_id, THIRD_PRINCIPAL),
+        ]
+        for tool, arguments in refused:
+            _, error = await self._outcome(bob, tool, arguments)
+            if error != f'Context entry with ID {private_id} not found':
+                problems.append(f'{tool} returned {error!r}')
         _, error = await self._outcome(bob, 'update_context_batch', {
             'updates': [{'context_id': private_id, 'text': 'Overwritten.'}], 'atomic': True,
         })
@@ -332,6 +355,8 @@ class AccessScopingMixin(HarnessCore):
         fetched = await self._entries_by_id(bob, [public_id])
         if fetched.get(public_id, {}).get('text_content') != entries.public_text:
             problems.append(f'get_context_by_ids returned {sorted(fetched)} for the public entry')
+        problems.extend(read_back_problems([('get_context_by_ids', fetched.get(public_id, {}))], 'public', is_owner=False))
+        problems.extend(await self._grant_refusal_problems(bob, public_id, THIRD_PRINCIPAL))
         reads: list[ToolCall] = [
             ('search_context', {'thread_id': thread}),
             ('grep_context', {'pattern': PUBLIC_TOKEN, 'thread_id': thread}),
@@ -399,19 +424,18 @@ class AccessScopingMixin(HarnessCore):
             The problems found.
         """
         hidden_prefix = entries.private_id[:PREFIX_LENGTH]
+        templates: list[ToolCall] = [
+            ('get_context_by_ids', {'context_ids': ['{id}']}),
+            ('update_context', {'context_id': '{id}', 'text': 'Overwritten.'}),
+            ('navigate_context', {'context_id': '{id}'}),
+            ('read_context_range', {'context_id': '{id}', 'start_line': 1, 'end_line': 1}),
+            ('delete_context', {'context_ids': ['{id}']}),
+            ('delete_context_batch', {'context_ids': ['{id}']}),
+            *grant_calls('{id}', THIRD_PRINCIPAL),
+        ]
         calls: list[tuple[str, str, str, dict[str, Any]]] = []
         for hidden, absent in ((entries.private_id, ABSENT_ID), (hidden_prefix, ABSENT_PREFIX)):
-            calls.extend(
-                (hidden, absent, tool, arguments)
-                for tool, arguments in (
-                    ('get_context_by_ids', {'context_ids': ['{id}']}),
-                    ('update_context', {'context_id': '{id}', 'text': 'Overwritten.'}),
-                    ('navigate_context', {'context_id': '{id}'}),
-                    ('read_context_range', {'context_id': '{id}', 'start_line': 1, 'end_line': 1}),
-                    ('delete_context', {'context_ids': ['{id}']}),
-                    ('delete_context_batch', {'context_ids': ['{id}']}),
-                )
-            )
+            calls.extend((hidden, absent, tool, arguments) for tool, arguments in templates)
         problems: list[str] = []
         for hidden, absent, tool, template in calls:
             hidden_outcome = self._masked(await self._outcome(bob, tool, self._filled(template, hidden)), hidden)
@@ -571,4 +595,87 @@ class AccessScopingMixin(HarnessCore):
         fields = ('text_content', 'metadata', 'updated_at')
         if tuple(current.get(field) for field in fields) != tuple(original.get(field) for field in fields):
             problems.append(f'the public managed entry changed: {original} became {current}')
+        return problems
+
+    async def _grant_refusal_problems(self, bob: Client[Any], context_id: str, principal_id: str) -> list[str]:
+        """Check that every sharing tool refuses the second principal an entry it reads but does not own.
+
+        Args:
+            bob: The second principal's client.
+            context_id: The entry's id.
+            principal_id: The user the attempted share and unshare name.
+
+        Returns:
+            The problems found.
+        """
+        problems: list[str] = []
+        for tool, arguments in grant_calls(context_id, principal_id):
+            expected = NOT_OWNER_REFUSALS[tool].format(id=context_id)
+            _, error = await self._outcome(bob, tool, arguments)
+            if error != expected:
+                problems.append(f'{tool} by {SECOND_PRINCIPAL} returned {error!r}, expected {expected!r}')
+        return problems
+
+    async def _grants_round_trip_problems(self, bob: Client[Any]) -> list[str]:
+        """Share a private entry of the primary with the second principal, upgrade the grant and revoke it.
+
+        While ``bob`` holds read, he reads the entry as private and not owned and finds
+        it in a search, while an update and every sharing tool are refused; his own
+        grant included, he cannot unshare it. A write grant beside it lets him edit the
+        text but not change the visibility. The primary lists both grants as granted by
+        itself; removing read leaves him the write grant, which still lets him read,
+        and removing write hides the entry from him again.
+
+        Args:
+            bob: The second principal's client.
+
+        Returns:
+            The problems found.
+        """
+        assert self.client is not None
+        thread = f'{self.test_thread_id}_scoping_shared'
+        text = f'# Scoping shared\n\nPrivate entry of the primary principal shared with {SECOND_PRINCIPAL}: {SHARED_TOKEN}.'
+        stored = await self._content(self.client, 'store_context', {
+            'thread_id': thread, 'source': 'agent', 'text': text, 'visibility': 'private',
+        })
+        shared_id = str(stored['context_id'])
+        grant = {'context_id': shared_id, 'principal_type': 'user', 'principal_id': SECOND_PRINCIPAL}
+        problems: list[str] = []
+
+        await self._content(self.client, 'share_context', {**grant, 'permission': 'read'})
+        entry = (await self._entries_by_id(bob, [shared_id])).get(shared_id, {})
+        if entry.get('text_content') != text:
+            problems.append(f'{SECOND_PRINCIPAL} cannot read the entry shared with him: {entry}')
+        problems.extend(read_back_problems([('get_context_by_ids', entry)], 'private', is_owner=False))
+        if await self._matched_ids(bob, 'search_context', {'thread_id': thread}) != {shared_id}:
+            problems.append(f'search_context by {SECOND_PRINCIPAL} does not find the shared entry')
+        _, error = await self._outcome(bob, 'update_context', {'context_id': shared_id, 'text': 'Overwritten.'})
+        if error != f'Not authorized to modify context entry with ID {shared_id}':
+            problems.append(f'update_context under a read grant returned {error!r}')
+        problems.extend(await self._grant_refusal_problems(bob, shared_id, SECOND_PRINCIPAL))
+
+        await self._content(self.client, 'share_context', {**grant, 'permission': 'write'})
+        edited = f'{text}\n\nEdited by {SECOND_PRINCIPAL} through his write grant.'
+        _, error = await self._outcome(bob, 'update_context', {'context_id': shared_id, 'text': edited})
+        current = (await self._entries_by_id(self.client, [shared_id])).get(shared_id, {})
+        if error is not None or current.get('text_content') != edited:
+            problems.append(f'the edit under a write grant returned {error!r} and left {current.get("text_content")!r}')
+        _, error = await self._outcome(bob, 'update_context', {'context_id': shared_id, 'visibility': 'public'})
+        if error != f'Only the owner may change the visibility of context {shared_id}':
+            problems.append(f'a visibility change under a write grant returned {error!r}')
+
+        listed = await self._content(self.client, 'list_context_grants', {'context_id': shared_id})
+        grantor = primary_principal(self.server_env)
+        expected_grants = [('user', SECOND_PRINCIPAL, permission, grantor) for permission in ('read', 'write')]
+        if grant_rows(listed.get('grants', [])) != expected_grants:
+            problems.append(f'the primary lists {listed.get("grants")}, expected {expected_grants}')
+        for permission, remaining, readable in (('read', ['write'], True), ('write', [], False)):
+            removed = await self._content(self.client, 'unshare_context', {**grant, 'permission': permission})
+            if (removed.get('removed'), removed.get('remaining_permissions')) != (True, remaining):
+                problems.append(f'unshare of {permission} returned {removed}, expected the remaining {remaining}')
+            if (shared_id in await self._entries_by_id(bob, [shared_id])) != readable:
+                problems.append(f'after the unshare of {permission} {SECOND_PRINCIPAL} reads the entry: {not readable}')
+        _, error = await self._outcome(bob, 'navigate_context', {'context_id': shared_id})
+        if error != f'Context entry not found: {shared_id}':
+            problems.append(f'navigate_context after both unshares returned {error!r}')
         return problems
