@@ -1,4 +1,4 @@
-"""Tests for the ``grep_context`` pattern-size cap and off-loop regex compilation in ``app.tools.navigation``."""
+"""Tests for the ``grep_context`` pattern-size cap and off-loop regex compilation in ``app.tools.navigation.grep``."""
 
 from collections.abc import Callable
 from typing import Any
@@ -29,28 +29,28 @@ class TestGrepPatternCap:
 
     def test_pattern_declares_max_length_cap(self) -> None:
         """The pattern Field declares max_length=GREP_MAX_PATTERN_CHARS."""
-        import app.tools.navigation as navigation_mod
+        import app.tools.navigation.grep as grep_mod
 
         hints = get_type_hints(app.tools.grep_context, include_extras=True)
         field_info = next(
             meta for meta in get_args(hints['pattern'])[1:] if isinstance(meta, FieldInfo)
         )
         max_values = [constraint.max_length for constraint in field_info.metadata if isinstance(constraint, MaxLen)]
-        assert max_values == [navigation_mod.settings.grep_context.max_pattern_chars]
+        assert max_values == [grep_mod.settings.grep_context.max_pattern_chars]
 
     @pytest.mark.asyncio
     async def test_oversized_pattern_structured_error_before_compile(self) -> None:
         """A direct call with an oversized pattern returns a structured validation
         error before the pattern is compiled and before the scan query runs."""
-        import app.tools.navigation as navigation_mod
+        import app.tools.navigation.grep as grep_mod
 
-        cap = navigation_mod.settings.grep_context.max_pattern_chars
+        cap = grep_mod.settings.grep_context.max_pattern_chars
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock()
         compile_spy = MagicMock()
         with (
-            patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)),
-            patch('app.tools.navigation.compile_pattern', compile_spy),
+            patch('app.tools.navigation.grep.ensure_repositories', AsyncMock(return_value=repos)),
+            patch('app.tools.navigation.grep.compile_pattern', compile_spy),
         ):
             result = await app.tools.grep_context(pattern='x' * (cap + 1))
 
@@ -65,12 +65,12 @@ class TestGrepPatternCap:
     @pytest.mark.asyncio
     async def test_pattern_at_cap_accepted(self) -> None:
         """A pattern of exactly the cap length passes the boundary check (inclusive)."""
-        import app.tools.navigation as navigation_mod
+        import app.tools.navigation.grep as grep_mod
 
-        cap = navigation_mod.settings.grep_context.max_pattern_chars
+        cap = grep_mod.settings.grep_context.max_pattern_chars
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock(return_value=([], {}))
-        with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
+        with patch('app.tools.navigation.grep.ensure_repositories', AsyncMock(return_value=repos)):
             result = await app.tools.grep_context(pattern='x' * cap)
 
         payload = cast('dict[str, Any]', result)
@@ -94,8 +94,8 @@ class TestGrepPatternCap:
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock(return_value=([], {}))
         with (
-            patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)),
-            patch('app.tools.navigation.asyncio.to_thread', side_effect=spy_to_thread),
+            patch('app.tools.navigation.grep.ensure_repositories', AsyncMock(return_value=repos)),
+            patch('app.tools.navigation.grep.asyncio.to_thread', side_effect=spy_to_thread),
         ):
             result = await app.tools.grep_context(pattern='nee.dle', is_regex=True)
 

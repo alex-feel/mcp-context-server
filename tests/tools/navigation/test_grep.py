@@ -18,10 +18,10 @@ from app.backends.base import MAINTENANCE
 from app.repositories.context_repository.records import GrepScanRow
 from app.services.grep_service import GrepEntryResult
 from app.startup import ensure_repositories
-from app.tools.navigation import grep_context
+from app.tools.navigation.grep import grep_context
 from tests.helpers import as_principal
-from tests.tools._navigation import grep_as_dict
-from tests.tools._navigation import store_entry
+from tests.tools.navigation._navigation import grep_as_dict
+from tests.tools.navigation._navigation import store_entry
 
 if TYPE_CHECKING:
     from app.settings import AppSettings
@@ -147,7 +147,7 @@ class TestGrepContextMatching:
         async def _timeout(context_id: str, *_args: Any, **_kwargs: Any) -> GrepEntryResult:
             return GrepEntryResult(context_id=context_id, matches=(), match_count=0, timed_out=True)
 
-        monkeypatch.setattr('app.tools.navigation.match_entry', _timeout)
+        monkeypatch.setattr('app.tools.navigation.grep.match_entry', _timeout)
         result = await grep_as_dict(pattern='a+', thread_id='t', is_regex=True)
         assert result.get('timed_out_context_ids') == [cid]
 
@@ -180,7 +180,7 @@ class TestGrepRegexAggregateTimeout:
         # [deadline-calc, iter1 pre-check (under), iter2 pre-check (over)].
         for i in range(3):
             await store_entry(nav_backend, f'entry {i} HIT', thread_id='tdl', offset_seconds=i + 1)
-        monkeypatch.setattr('app.tools.navigation.time', _FakeClock([100.0, 100.0, 200.0]))
+        monkeypatch.setattr('app.tools.navigation.grep.time', _FakeClock([100.0, 100.0, 200.0]))
 
         result = await grep_as_dict(pattern='HIT', thread_id='tdl', is_regex=True, case_sensitive=True)
 
@@ -197,7 +197,7 @@ class TestGrepRegexAggregateTimeout:
         # scan: all three entries are scanned and truncated stays False.
         for i in range(3):
             await store_entry(nav_backend, f'entry {i} HIT', thread_id='tub', offset_seconds=i + 1)
-        monkeypatch.setattr('app.tools.navigation.time', _FakeClock([100.0]))
+        monkeypatch.setattr('app.tools.navigation.grep.time', _FakeClock([100.0]))
 
         result = await grep_as_dict(pattern='HIT', thread_id='tub', is_regex=True, case_sensitive=True)
 
@@ -257,7 +257,7 @@ class TestGrepServerSideClamps:
         self, nav_backend: StorageBackend,
     ) -> None:
         """max_matches and context_lines are clamped down to their configured caps."""
-        import app.tools.navigation as navigation_module
+        import app.tools.navigation.grep as grep_module
 
         # Five entries, each with five matching lines separated by filler lines.
         for _ in range(5):
@@ -274,8 +274,8 @@ class TestGrepServerSideClamps:
             return await real_match_entry(*args, **kwargs)
 
         with (
-            patch.object(navigation_module, 'settings', tightened),
-            patch.object(navigation_module, 'match_entry', spy_match_entry),
+            patch.object(grep_module, 'settings', tightened),
+            patch.object(grep_module, 'match_entry', spy_match_entry),
         ):
             result = await grep_context(
                 pattern='needle',
@@ -300,7 +300,7 @@ class TestGrepServerSideClamps:
     @pytest.mark.asyncio
     async def test_max_entries_scanned_is_clamped(self, nav_backend: StorageBackend) -> None:
         """The scan-width request is clamped before it reaches the repository."""
-        import app.tools.navigation as navigation_module
+        import app.tools.navigation.grep as grep_module
 
         for _ in range(5):
             await store_entry(nav_backend, 'needle here')
@@ -317,7 +317,7 @@ class TestGrepServerSideClamps:
             return await real_scan(**kwargs)
 
         with (
-            patch.object(navigation_module, 'settings', tightened),
+            patch.object(grep_module, 'settings', tightened),
             patch.object(repos.context, 'grep_scan_text_contents', spy_scan),
         ):
             await grep_context(pattern='needle', thread_id='t', max_entries_scanned=1000000)

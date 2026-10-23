@@ -19,8 +19,8 @@ from app.startup import ensure_repositories
 from app.tools.sharing import unshare_context
 from tests.helpers import as_principal
 from tests.helpers import insert_grant
-from tests.tools._navigation import navigate_as_dict
-from tests.tools._navigation import store_entry
+from tests.tools.navigation._navigation import navigate_as_dict
+from tests.tools.navigation._navigation import store_entry
 
 
 class TestNavigateContext:

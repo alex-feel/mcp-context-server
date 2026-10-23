@@ -199,7 +199,7 @@ class TestLargeEntryWritePathOffloadNonBlocking:
     offloaded to a worker thread so a multi-megabyte store cannot pin the single
     event loop and starve concurrent MCP requests; a small entry stays inline to
     avoid a per-call thread hop. This mirrors the read-path discipline
-    (test_navigation_offload.py::TestLargeEntryOffloadNonBlocking) and the grep
+    (navigation/test_offload.py::TestLargeEntryOffloadNonBlocking) and the grep
     matcher (test_grep_matcher.py::test_large_literal_scan_is_offloaded_correct_and_non_blocking).
     """
 

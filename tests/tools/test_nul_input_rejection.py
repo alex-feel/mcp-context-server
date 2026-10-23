@@ -101,7 +101,7 @@ class TestReadPathNulRejection:
     @pytest.mark.asyncio
     async def test_grep_context_thread_id_rejected(self) -> None:
         """grep_context rejects a NUL thread_id before it reaches the filter bind."""
-        from app.tools.navigation import grep_context
+        from app.tools.navigation.grep import grep_context
 
         with pytest.raises(ToolError):
             await grep_context(pattern='needle', thread_id=f'thread{NUL}')

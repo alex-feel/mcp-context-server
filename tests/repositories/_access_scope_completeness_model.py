@@ -213,7 +213,7 @@ REGISTRY: dict[str, Entry] = {
     _TAGS + 'get_tags_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, *_RESULT_HYDRATORS),
     _IMAGES + 'get_images_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, *_RESULT_HYDRATORS),
     _IMAGES + 'count_images_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, _UPDATE_TX),
-    _NODES + 'get_nodes_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, 'tools/navigation.py:navigate_context'),
+    _NODES + 'get_nodes_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, 'tools/navigation/navigate.py:navigate_context'),
     _INVENTORY + 'exists': _child(
         Seam.CHILD_BY_TRUSTED_ID,
         _STORE_TX, 'tools/batch/store.py:store_context_batch', 'tools/context/store.py:store_context',

@@ -9,11 +9,11 @@ from fastmcp.exceptions import ToolError
 
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
-from app.tools.navigation import read_context_range
+from app.tools.navigation.read_range import read_context_range
 from tests.helpers import as_principal
-from tests.tools._navigation import grep_as_dict
-from tests.tools._navigation import navigate_as_dict
-from tests.tools._navigation import store_entry
+from tests.tools.navigation._navigation import grep_as_dict
+from tests.tools.navigation._navigation import navigate_as_dict
+from tests.tools.navigation._navigation import store_entry
 
 
 class TestReadContextRange:

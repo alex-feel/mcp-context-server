@@ -9,10 +9,10 @@ import pytest
 
 from app.backends import StorageBackend
 from app.services.text_lines import _OFFLOAD_MIN_CHARS
-from app.tools.navigation import navigate_context
-from app.tools.navigation import read_context_range
-from tests.tools._navigation import navigate_as_dict
-from tests.tools._navigation import store_entry
+from app.tools.navigation.navigate import navigate_context
+from app.tools.navigation.read_range import read_context_range
+from tests.tools.navigation._navigation import navigate_as_dict
+from tests.tools.navigation._navigation import store_entry
 
 
 class TestLargeEntryOffloadNonBlocking:
@@ -35,7 +35,7 @@ class TestLargeEntryOffloadNonBlocking:
             seen['on_main'] = threading.current_thread() is threading.main_thread()
             return real_parse(text, max_depth=max_depth)
 
-        with patch('app.tools.navigation.parse_outline', spy):
+        with patch('app.tools.navigation.navigate.parse_outline', spy):
             result = await navigate_as_dict(context_id=cid)
         assert seen['on_main'] is False  # parsed on a worker thread, not the event loop
         assert result['total_chars'] == len(big)
@@ -51,7 +51,7 @@ class TestLargeEntryOffloadNonBlocking:
             seen['on_main'] = threading.current_thread() is threading.main_thread()
             return real_parse(text, max_depth=max_depth)
 
-        with patch('app.tools.navigation.parse_outline', spy):
+        with patch('app.tools.navigation.navigate.parse_outline', spy):
             await navigate_context(context_id=cid)
         assert seen['on_main'] is True  # small entry stays inline (no thread hop)
 
@@ -66,7 +66,7 @@ class TestLargeEntryOffloadNonBlocking:
             seen['on_main'] = threading.current_thread() is threading.main_thread()
             return real_split(text)
 
-        with patch('app.tools.navigation.split_lines_with_offsets', spy):
+        with patch('app.tools.navigation.read_range.split_lines_with_offsets', spy):
             result = await read_context_range(context_id=cid, start_char=0, end_char=5)
         assert seen['on_main'] is False  # line split offloaded to a worker thread
         assert result['text'] == 'aaaaa'
@@ -82,7 +82,7 @@ class TestLargeEntryOffloadNonBlocking:
             seen['on_main'] = threading.current_thread() is threading.main_thread()
             return real_resolve(text, node_id)
 
-        with patch('app.tools.navigation.resolve_node_span', spy):
+        with patch('app.tools.navigation.read_range.resolve_node_span', spy):
             result = await read_context_range(context_id=cid, node_id='root')
         assert seen['on_main'] is False  # node-span re-parse offloaded to a worker thread
         assert result['text']  # root span returned
@@ -137,7 +137,7 @@ class TestOutlineOffloadKeysOnLineDensity:
             seen['on_main'] = threading.current_thread() is threading.main_thread()
             return real_parse(text, max_depth=max_depth)
 
-        with patch('app.tools.navigation.parse_outline', spy):
+        with patch('app.tools.navigation.navigate.parse_outline', spy):
             await navigate_context(context_id=cid)
         assert seen['on_main'] is False
 
@@ -156,7 +156,7 @@ class TestOutlineOffloadKeysOnLineDensity:
             seen['on_main'] = threading.current_thread() is threading.main_thread()
             return real_resolve(text, node_id)
 
-        with patch('app.tools.navigation.resolve_node_span', spy):
+        with patch('app.tools.navigation.read_range.resolve_node_span', spy):
             result = await read_context_range(context_id=cid, node_id='root')
         assert seen['on_main'] is False
         assert result['text']
@@ -182,7 +182,7 @@ class TestOutlineOffloadKeysOnLineDensity:
             seen['on_main'] = threading.current_thread() is threading.main_thread()
             return real_split(text)
 
-        with patch('app.tools.navigation.split_lines_with_offsets', spy):
+        with patch('app.tools.navigation.read_range.split_lines_with_offsets', spy):
             result = await read_context_range(context_id=cid, start_char=0, end_char=4)
         assert seen['on_main'] is False
         assert result['text'] == '# h\n'
@@ -202,7 +202,7 @@ class TestOutlineOffloadKeysOnLineDensity:
             seen['on_main'] = threading.current_thread() is threading.main_thread()
             return real_split(text)
 
-        with patch('app.tools.navigation.split_lines_with_offsets', spy):
+        with patch('app.tools.navigation.read_range.split_lines_with_offsets', spy):
             result = await read_context_range(context_id=cid, start_char=0, end_char=5)
         assert seen['on_main'] is True
         assert result['text'] == 'aaaaa'

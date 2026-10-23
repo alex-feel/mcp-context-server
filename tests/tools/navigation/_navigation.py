@@ -10,8 +10,8 @@ from typing import cast
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.ids import generate_id_with_timestamp
-from app.tools.navigation import grep_context
-from app.tools.navigation import navigate_context
+from app.tools.navigation.grep import grep_context
+from app.tools.navigation.navigate import navigate_context
 
 _SEQ = datetime(2024, 1, 1, tzinfo=UTC)
 
