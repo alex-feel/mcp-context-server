@@ -402,14 +402,14 @@ async def insert_grant(
 ) -> None:
     """Insert one access grant row through raw SQL on either backend.
 
-    The application writes only the group read grants of
-    ``ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups``, so tests seed user
-    grants and write grants with this helper. The row is written as the role the
-    backend logs in as, so on PostgreSQL pass a backend of the table owner or of
-    a superuser (the oracle channel), never the request backend of a deployment
-    whose database policies filter the request role's writes. On PostgreSQL the
-    row also records the entry's owner, read from the entry, which every database
-    the server prepared requires.
+    Tests seed grants with this helper to arrange a case without going through
+    ``share_context`` or a store, including rows the sharing tools refuse, such as
+    a user grant naming the entry's owner or the anonymous principal. The row is
+    written as the role the backend logs in as, so on PostgreSQL pass a backend of
+    the table owner or of a superuser (the oracle channel), never the request
+    backend of a deployment whose database policies filter the request role's
+    writes. On PostgreSQL the row also records the entry's owner, read from the
+    entry, which every database the server prepared requires.
 
     Args:
         backend: The backend whose database receives the row.
