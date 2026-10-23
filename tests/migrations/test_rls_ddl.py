@@ -46,6 +46,9 @@ ROLE = '"mcp_context_request"'
 P = f'(SELECT {SCHEMA}.mcp_context_principal_id())'
 G = f'(SELECT {SCHEMA}.mcp_context_groups())::text[]'
 M = f'(SELECT {SCHEMA}.mcp_context_may_publish())'
+W = f'(SELECT {SCHEMA}.mcp_context_may_write())'
+# The principal helper called directly, as the grants policies call it.
+PRINCIPAL_CALL = f'{SCHEMA}.mcp_context_principal_id()'
 
 
 def _read(outer: str) -> str:
@@ -91,7 +94,7 @@ def test_managed_tables_are_the_context_table_the_grants_table_and_every_child_i
 
 
 def test_helper_functions_read_the_bound_identity_and_fail_closed() -> None:
-    """Unset and RESET values read as no principal, no groups and no publish right."""
+    """Unset and RESET values read as no principal, no groups, no publish right and no write right."""
     statements = {helper.name: helper.statement for helper in helper_functions(SCHEMA)}
 
     assert statements == {
@@ -110,6 +113,11 @@ def test_helper_functions_read_the_bound_identity_and_fail_closed() -> None:
             f'CREATE OR REPLACE FUNCTION {SCHEMA}.mcp_context_may_publish() RETURNS boolean '
             'LANGUAGE sql STABLE PARALLEL SAFE '
             "RETURN COALESCE(NULLIF(pg_catalog.current_setting('app.may_publish', true), '') = 'on', false)"
+        ),
+        'mcp_context_may_write': (
+            f'CREATE OR REPLACE FUNCTION {SCHEMA}.mcp_context_may_write() RETURNS boolean '
+            'LANGUAGE sql STABLE PARALLEL SAFE '
+            "RETURN COALESCE(NULLIF(pg_catalog.current_setting('app.may_write', true), '') = 'on', false)"
         ),
     }
     for helper in helper_functions(SCHEMA):
@@ -149,7 +157,8 @@ def test_the_search_path_is_restored_transaction_locally_as_a_string_literal(sea
 
 def test_helpers_read_exactly_the_settings_the_bind_statement_sets() -> None:
     """Each helper reads one transaction-local setting the request profile binds."""
-    for helper, setting in zip(helper_functions(SCHEMA), ('app.principal_id', 'app.groups', 'app.may_publish'), strict=True):
+    settings = ('app.principal_id', 'app.groups', 'app.may_publish', 'app.may_write')
+    for helper, setting in zip(helper_functions(SCHEMA), settings, strict=True):
         assert f"current_setting('{setting}', true)" in helper.statement
         assert f"set_config('{setting}', " in BIND_IDENTITY_STATEMENT
 
@@ -157,18 +166,19 @@ def test_helpers_read_exactly_the_settings_the_bind_statement_sets() -> None:
 def test_helpers_are_the_functions_the_policy_operands_call() -> None:
     """The predicate composer's operands call the functions this module creates."""
     operands = policy_operands(SCHEMA)
-    principal, groups, may_publish = helper_functions(SCHEMA)
+    principal, groups, may_publish, may_write = helper_functions(SCHEMA)
 
     assert operands.principal == f'(SELECT {principal.anchor})' == P
     assert operands.groups == f'(SELECT {groups.anchor})::text[]' == G
     assert operands.may_publish == f'(SELECT {may_publish.anchor})' == M
+    assert operands.may_write == f'(SELECT {may_write.anchor})' == W
 
 
 def test_helper_grant_gives_the_policy_role_execute_on_every_helper() -> None:
-    """One GRANT names the three helpers and the policy role."""
+    """One GRANT names the four helpers and the policy role."""
     assert helper_grant(SCHEMA, ROLE) == (
         f'GRANT EXECUTE ON FUNCTION {SCHEMA}.mcp_context_principal_id(), {SCHEMA}.mcp_context_groups(), '
-        f'{SCHEMA}.mcp_context_may_publish() TO {ROLE}'
+        f'{SCHEMA}.mcp_context_may_publish(), {SCHEMA}.mcp_context_may_write() TO {ROLE}'
     )
 
 
@@ -178,7 +188,7 @@ def test_helper_grant_gives_the_policy_role_execute_on_every_helper() -> None:
 
 
 def test_context_entries_policies_render_the_composer_predicates_per_command() -> None:
-    """SELECT is READ, INSERT stamps the caller and gates publishing, UPDATE is WRITE and DELETE is OWNER."""
+    """SELECT is READ, INSERT stamps the caller and needs the publish and write rights, UPDATE is WRITE, DELETE is OWNER."""
     head = f'ON {SCHEMA}.context_entries AS PERMISSIVE FOR'
 
     assert _statements('context_entries') == {
@@ -187,7 +197,7 @@ def test_context_entries_policies_render_the_composer_predicates_per_command() -
         ),
         'context_entries_insert': (
             f'CREATE POLICY context_entries_insert {head} INSERT TO {ROLE} WITH CHECK '
-            f"({_owner('context_entries')} AND (context_entries.visibility <> 'public' OR {M}))"
+            f"({_owner('context_entries')} AND (context_entries.visibility <> 'public' OR {M}) AND {W})"
         ),
         'context_entries_update': (
             f'CREATE POLICY context_entries_update {head} UPDATE TO {ROLE} '
@@ -204,37 +214,41 @@ def test_context_entries_policies_render_the_composer_predicates_per_command() -
 # ============================================================================
 
 
-def test_grants_policies_read_the_callers_own_grants_and_let_only_the_owner_grant() -> None:
-    """The SELECT policy calls the helpers directly, so it holds no subquery at all."""
+def test_grants_policies_let_grantees_read_their_grants_and_the_entry_owner_read_insert_and_delete() -> None:
+    """Every arm keys on the bound principal or groups, the owner arms on the grant's recorded entry owner."""
     head = f'ON {SCHEMA}.context_entry_grants AS PERMISSIVE FOR'
 
     assert _statements('context_entry_grants') == {
         'context_entry_grants_read': (
             f'CREATE POLICY context_entry_grants_read {head} SELECT TO {ROLE} USING '
-            f"((principal_type = 'user' AND principal_id = {SCHEMA}.mcp_context_principal_id()) "
-            f"OR (principal_type = 'group' AND principal_id = ANY({SCHEMA}.mcp_context_groups())))"
+            f"((principal_type = 'user' AND principal_id = {PRINCIPAL_CALL}) "
+            f"OR (principal_type = 'group' AND principal_id = ANY({SCHEMA}.mcp_context_groups())) "
+            f'OR entry_owner_id = {PRINCIPAL_CALL})'
         ),
         'context_entry_grants_insert': (
             f'CREATE POLICY context_entry_grants_insert {head} INSERT TO {ROLE} WITH CHECK '
-            f'(granted_by = {P} AND EXISTS (SELECT 1 FROM {SCHEMA}.context_entries ce '
-            f'WHERE ce.id = context_entry_grants.context_entry_id AND {_owner("ce")}))'
+            f'(granted_by = {PRINCIPAL_CALL} AND entry_owner_id = {PRINCIPAL_CALL})'
+        ),
+        'context_entry_grants_delete': (
+            f'CREATE POLICY context_entry_grants_delete {head} DELETE TO {ROLE} USING (entry_owner_id = {PRINCIPAL_CALL})'
         ),
     }
 
 
-def test_grants_read_policy_ends_the_policy_expansion() -> None:
-    """A subquery in the grants SELECT policy would recurse into it from the grants INSERT policy.
+def test_grants_policies_hold_no_subquery() -> None:
+    """No grants policy reads another relation, so the policy expansion ends at the grants table.
 
     PostgreSQL rejects as infinitely recursive any policy with a subquery that is reached
-    again while its own table's policies expand. The grants INSERT check reads
-    ``context_entries``, whose read policy reads the grants table, so the grants SELECT policy
-    must hold no subquery, not even the scalar subquery around a helper.
+    again while its own table's policies expand: every scoped read reads the grants table,
+    and a grants policy that read ``context_entries`` would reach that table's read policy,
+    which reads the grants table again. Each policy calls the helpers directly, not even
+    through the scalar subquery around a helper, and the foreign key from
+    ``(context_entry_id, entry_owner_id)`` keeps the recorded owner exact without one.
     """
-    read, insert = table_policies('context_entry_grants', schema=SCHEMA, role=ROLE)
-    using = read.statement.partition(' USING ')[2]
-
-    assert 'SELECT' not in using
-    assert 'SELECT 1 FROM' in insert.statement
+    for policy in table_policies('context_entry_grants', schema=SCHEMA, role=ROLE):
+        clause = policy.statement.partition(f' TO {ROLE} ')[2]
+        assert 'SELECT' not in clause, policy.name
+        assert 'context_entries' not in clause, policy.name
 
 
 # ============================================================================
@@ -268,7 +282,9 @@ def test_policy_names_are_the_table_name_and_the_command(table: str) -> None:
         'context_entries': (
             'context_entries_read', 'context_entries_insert', 'context_entries_update', 'context_entries_delete',
         ),
-        'context_entry_grants': ('context_entry_grants_read', 'context_entry_grants_insert'),
+        'context_entry_grants': (
+            'context_entry_grants_read', 'context_entry_grants_insert', 'context_entry_grants_delete',
+        ),
     }.get(table, (f'{table}_read', f'{table}_insert', f'{table}_delete'))
 
     assert policy_names(table) == expected

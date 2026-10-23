@@ -42,8 +42,9 @@ if TYPE_CHECKING:
 LOCAL_SCOPE = AccessScope('local', frozenset())
 
 # The scope the write tools build for that request: with ACCESS_CONTROL_PUBLISH_ROLE
-# unset any caller may publish, so resolve_write_scope sets may_publish.
-LOCAL_WRITE_SCOPE = AccessScope('local', frozenset(), may_publish=True)
+# unset any caller may publish, so resolve_write_scope sets may_publish, and 'local'
+# is not the read-only principal, so it sets may_write.
+LOCAL_WRITE_SCOPE = AccessScope('local', frozenset(), may_publish=True, may_write=True)
 
 
 @dataclass(frozen=True, slots=True)

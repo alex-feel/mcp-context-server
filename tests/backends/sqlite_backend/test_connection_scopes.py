@@ -14,7 +14,7 @@ from app.backends.base import ROUTABLE_TABLES
 from app.backends.base import BackendAccess
 from app.backends.sqlite_backend import SQLiteBackend
 
-ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True)
+ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True, may_write=True)
 
 
 @pytest_asyncio.fixture

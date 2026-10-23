@@ -276,7 +276,7 @@ class TestStoreScope:
         ):
             result = await store_context(thread_id='scope-thread', source='user', text='Re-sent text')
 
-        expected = AccessScope('bob', frozenset({'team-x'}), may_publish=True)
+        expected = AccessScope('bob', frozenset({'team-x'}), may_publish=True, may_write=True)
         precheck_call = precheck.await_args
         store_call = mock_store.await_args
         assert result['context_id'] == 'dup-id'

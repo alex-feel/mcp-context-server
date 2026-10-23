@@ -190,6 +190,7 @@ class TestApplyToAnEmptyDatabase:
         ddl = '\n'.join(recorded)
         assert 'context_entries_read' in ddl
         assert 'context_entry_grants_insert' in ddl
+        assert 'context_entry_grants_delete' in ddl
         for absent in ('tags', 'image_attachments', 'embedding_metadata', 'vec_context_embeddings', 'context_index_nodes'):
             assert f'{absent}_read' not in ddl
         assert 'ENABLE ROW LEVEL SECURITY' not in ddl

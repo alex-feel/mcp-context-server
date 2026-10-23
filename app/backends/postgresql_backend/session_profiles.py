@@ -39,6 +39,7 @@ BIND_IDENTITY_STATEMENT: Final = (
     "SELECT pg_catalog.set_config('app.principal_id', $1, true), "
     "pg_catalog.set_config('app.groups', $2::text[]::text, true), "
     "pg_catalog.set_config('app.may_publish', $3, true), "
+    "pg_catalog.set_config('app.may_write', $4, true), "
     "pg_catalog.set_config('jit', 'off', true)"
 )
 
@@ -176,7 +177,7 @@ class RlsRequestProfile:
         return []
 
     async def bind(self, conn: 'asyncpg.pool.PoolConnectionProxy[asyncpg.Record]', access: BackendAccess) -> None:
-        """Bind a request scope's principal, groups and publish right for the open transaction.
+        """Bind a request scope's principal, groups, publish right and write right for the open transaction.
 
         Args:
             conn: The connection whose transaction is open.
@@ -189,6 +190,7 @@ class RlsRequestProfile:
             access.principal_id,
             access.groups_list(),
             'on' if access.may_publish else 'off',
+            'on' if access.may_write else 'off',
         )
 
     def readable_relation(self, table: str, *, alias: str) -> str:

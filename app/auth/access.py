@@ -14,14 +14,15 @@ rules. It is the single place that applies ``AccessControlSettings`` policy:
   discarded, and only on a token that carries an expiry.
 - :func:`resolve_access_scope` returns that same identity as the
   :class:`~app.access_scope.AccessScope` that limits which context entries the
-  request may read and write. It asserts no publish permission, so it serves
-  every tool that never sets visibility.
+  request may read and write. It asserts neither the publish permission nor the
+  write permission, so it serves every tool that stores nothing.
 - :func:`may_publish` holds the ``ACCESS_CONTROL_PUBLISH_ROLE`` rule: when the
   setting names a role, only callers whose verified roles claim carries it may
   set visibility 'public'; the read-only principal never may.
   :func:`visibility_denied_reason` enforces it in the write tools, and
   :func:`resolve_write_scope` carries its answer in the scope the write tools
-  run under.
+  run under, together with the write permission every principal but the
+  read-only one holds, which the database checks under row-level security.
 - :func:`reject_read_only_principal` is the gate every write tool calls first,
   before any argument check, repository access or generation, refusing the
   read-only principal; :func:`log_read_only_principal` names that principal at
@@ -109,9 +110,12 @@ def resolve_write_scope(principal: RequestPrincipal) -> AccessScope:
 
     Returns:
         The principal's id and groups, with ``may_publish`` set to whether the
-        principal may set visibility 'public'.
+        principal may set visibility 'public' and ``may_write`` to whether it may
+        store entries at all, which only the read-only principal may not.
     """
-    return replace(principal.access_scope(), may_publish=may_publish(principal))
+    return replace(
+        principal.access_scope(), may_publish=may_publish(principal), may_write=not is_read_only(principal),
+    )
 
 
 def may_publish(principal: RequestPrincipal) -> bool:

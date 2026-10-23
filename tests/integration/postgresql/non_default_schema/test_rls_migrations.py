@@ -4,7 +4,8 @@ The migration names every object by the configured schema, so the helpers, the g
 trigger, the policies and the read view land in ``mcp_test`` and none in ``public``; a
 second run over the current objects changes nothing; a start with the flag off is
 refused while they exist; and removal takes every one of them out of ``mcp_test``
-again.
+again. The grants policies read the grant owner column, so the grant owner migration runs
+first, as it does at every start.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import pytest
 
 from app.backends import create_backend
 from app.errors import ConfigurationError
+from app.migrations import apply_grant_owner_migration
 from app.migrations import apply_rls
 from app.migrations import guard_rls_disable_over_enabled
 from app.migrations import remove_rls
@@ -65,6 +67,7 @@ def test_rls_objects_live_in_the_configured_schema_and_come_out_again(
         await backend.initialize()
         try:
             await init_database(backend=backend)
+            await apply_grant_owner_migration(backend)
             await apply_rls(backend, flag_on)
             first, public_objects, installed = await _snapshot(pg_non_default_schema_db)
 
@@ -73,7 +76,11 @@ def test_rls_objects_live_in_the_configured_schema_and_come_out_again(
                 policy_names('context_entry_grants'),
             )
             assert 'view context_entries_readable' in first
-            assert {'function mcp_context_principal_id', 'function mcp_context_guard_access_columns'} <= set(first)
+            assert {
+                'function mcp_context_principal_id',
+                'function mcp_context_may_write',
+                'function mcp_context_guard_access_columns',
+            } <= set(first)
             assert not any(key.startswith(('policy ', 'view ', 'function mcp_context_')) for key in public_objects)
 
             await apply_rls(backend, flag_on)

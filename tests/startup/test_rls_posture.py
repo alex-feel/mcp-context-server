@@ -374,10 +374,11 @@ class TestFlagOn:
 
         assert 'RESTRICTIVE' in problem
 
-    def test_our_own_policies_are_not_foreign(self) -> None:
+    @pytest.mark.parametrize('table', ['tags', 'context_entry_grants'])
+    def test_our_own_policies_are_not_foreign(self, table: str) -> None:
         ours = tuple(
-            ApplyingPolicy(table='tags', name=policy.name, permissive=True, roles=(ROLE_NAME,))
-            for policy in table_policies('tags', schema=SCHEMA, role=ROLE)
+            ApplyingPolicy(table=table, name=policy.name, permissive=True, roles=(ROLE_NAME,))
+            for policy in table_policies(table, schema=SCHEMA, role=ROLE)
         )
 
         assert _problems(_posture(applying_policies=ours), rls_settings()) == []
@@ -400,6 +401,16 @@ class TestFlagOn:
         problem = _single(_problems(_posture(rls=dataclasses.replace(state, objects=objects)), rls_settings()))
 
         assert trigger.target in problem
+
+    def test_a_missing_write_right_helper_is_named(self) -> None:
+        state = installed_state(dict.fromkeys(TABLES, True))
+        helper = helper_functions(SCHEMA)[-1]
+        objects = {key: value for key, value in state.objects.items() if key != helper.key}
+
+        problem = _single(_problems(_posture(rls=dataclasses.replace(state, objects=objects)), rls_settings()))
+
+        assert helper.name == 'mcp_context_may_write'
+        assert helper.target in problem
 
 
 class TestReadView:

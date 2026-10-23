@@ -100,6 +100,12 @@ _PREFIX_MATCHES: dict[str, PrefixMatches] = {
         (PREFIX_C, ()),
         (PREFIX_ABSENT, ()),
     ),
+    'anonymous': (
+        (PREFIX_A, ('prefix_a_alice_public',)),
+        (PREFIX_B, ()),
+        (PREFIX_C, ()),
+        (PREFIX_ABSENT, ()),
+    ),
     'system': (
         (PREFIX_A, ('prefix_a_alice_private_1', 'prefix_a_alice_private_2')),
         (PREFIX_B, ('prefix_b_alice_private', 'prefix_b_alice_bob_read')),

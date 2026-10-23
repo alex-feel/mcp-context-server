@@ -205,7 +205,13 @@ async def bind(conn: asyncpg.Connection, scope: AccessScope) -> None:
         conn: A raw connection of the request role inside a transaction.
         scope: The identity to bind.
     """
-    await conn.execute(BIND_IDENTITY_STATEMENT, scope.principal_id, scope.groups_list(), 'on' if scope.may_publish else 'off')
+    await conn.execute(
+        BIND_IDENTITY_STATEMENT,
+        scope.principal_id,
+        scope.groups_list(),
+        'on' if scope.may_publish else 'off',
+        'on' if scope.may_write else 'off',
+    )
 
 
 def entry_uuid(db: ScopedDb, label: str) -> uuid.UUID:

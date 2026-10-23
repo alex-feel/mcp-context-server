@@ -25,7 +25,7 @@ from app.backends.postgresql_backend.session_profiles import SessionProfile
 from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from tests.backends.postgresql_backend._builders import fast_retries
 
-ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True)
+ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True, may_write=True)
 # Group ids carrying every character an array literal must escape; the scope may not publish.
 CAROL = AccessScope('carol', frozenset({'team-x', 'a,b', 'q"x', '{brace}', 'back\\slash'}))
 ACCESSES = [ALICE, SYSTEM_SCOPE, MAINTENANCE]
@@ -314,17 +314,24 @@ def _statement_recording_connection(events: list[tuple[str, object]]) -> MagicMo
 
 def _bind_args(scope: AccessScope) -> tuple[object, ...]:
     """Return the arguments the bind statement of ``scope`` is executed with."""
-    return (BIND_IDENTITY_STATEMENT, scope.principal_id, scope.groups_list(), 'on' if scope.may_publish else 'off')
+    return (
+        BIND_IDENTITY_STATEMENT,
+        scope.principal_id,
+        scope.groups_list(),
+        'on' if scope.may_publish else 'off',
+        'on' if scope.may_write else 'off',
+    )
 
 
 class TestBindStatement:
     """The identity is bound by one transaction-local set_config statement."""
 
-    def test_statement_sets_the_three_identity_settings_and_jit_transaction_locally(self) -> None:
+    def test_statement_sets_the_four_identity_settings_and_jit_transaction_locally(self) -> None:
         expected = (
             "SELECT pg_catalog.set_config('app.principal_id', $1, true), "
             "pg_catalog.set_config('app.groups', $2::text[]::text, true), "
             "pg_catalog.set_config('app.may_publish', $3, true), "
+            "pg_catalog.set_config('app.may_write', $4, true), "
             "pg_catalog.set_config('jit', 'off', true)"
         )
 
@@ -351,15 +358,23 @@ class TestRlsRequestProfile:
         assert RLS_READ_VIEWS == {'context_entries': 'context_entries_readable'}
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize('scope', [ALICE, CAROL], ids=['may-publish', 'odd-groups'])
-    async def test_request_scope_binds_principal_sorted_groups_and_publish_flag(self, scope: AccessScope) -> None:
+    @pytest.mark.parametrize(
+        ('scope', 'expected'),
+        [
+            (ALICE, ('alice', ['team-x'], 'on', 'on')),
+            (CAROL, ('carol', ['a,b', 'back\\slash', 'q"x', 'team-x', '{brace}'], 'off', 'off')),
+            (AccessScope('dave', frozenset(), may_write=True), ('dave', [], 'off', 'on')),
+        ],
+        ids=['publisher-and-writer', 'odd-groups-read-only', 'writer-only'],
+    )
+    async def test_request_scope_binds_principal_sorted_groups_and_both_flags(
+        self, scope: AccessScope, expected: tuple[object, ...],
+    ) -> None:
         conn = _recording_connection([])
 
         await self._profile().bind(conn, scope)
 
-        conn.execute.assert_awaited_once_with(
-            BIND_IDENTITY_STATEMENT, scope.principal_id, sorted(scope.groups), 'on' if scope.may_publish else 'off',
-        )
+        conn.execute.assert_awaited_once_with(BIND_IDENTITY_STATEMENT, *expected)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('access', [SYSTEM_SCOPE, MAINTENANCE], ids=['system', 'maintenance'])

@@ -622,4 +622,4 @@ class TestWriteScopePublishPermission:
             get_settings.cache_clear()
 
         assert scopes
-        assert set(scopes) == {AccessScope('alice', frozenset({'team-x'}), may_publish=bool(roles))}
+        assert set(scopes) == {AccessScope('alice', frozenset({'team-x'}), may_publish=bool(roles), may_write=True)}

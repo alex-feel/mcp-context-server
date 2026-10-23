@@ -202,7 +202,7 @@ class TestAccessScopeDiscard:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         'access',
-        [AccessScope('alice', frozenset({'team-x'}), may_publish=True), SYSTEM_SCOPE, MAINTENANCE],
+        [AccessScope('alice', frozenset({'team-x'}), may_publish=True, may_write=True), SYSTEM_SCOPE, MAINTENANCE],
         ids=['request', 'system', 'maintenance'],
     )
     async def test_access_scope_never_reaches_the_operation(self, tmp_path: Path, access: BackendAccess) -> None:

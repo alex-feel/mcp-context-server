@@ -114,14 +114,16 @@ SEED_ANGLE_STEP = 0.1
 # A 1x1 PNG, the smallest image attachment the image repository stores.
 _PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
-# The scopes the cases run as. The cases set no publish role, so every request scope may
-# publish, exactly as the write tools resolve it; under row-level security the database
-# enforces that right, and the access predicates never read it.
+# The scopes the cases run as. The cases set no publish role, so every writing scope may
+# publish and write, exactly as the write tools resolve it; under row-level security the
+# database enforces both rights, and the access predicates never read them. The anonymous
+# scope is the read-only principal's: no groups, no publish right and no write right.
 SCOPES: dict[str, Scope] = {
-    'alice': AccessScope('alice', frozenset(), may_publish=True),
-    'bob': AccessScope('bob', frozenset(), may_publish=True),
-    'carol': AccessScope('carol', frozenset({TEAM_GROUP}), may_publish=True),
-    'dave': AccessScope('dave', frozenset(), may_publish=True),
+    'alice': AccessScope('alice', frozenset(), may_publish=True, may_write=True),
+    'bob': AccessScope('bob', frozenset(), may_publish=True, may_write=True),
+    'carol': AccessScope('carol', frozenset({TEAM_GROUP}), may_publish=True, may_write=True),
+    'dave': AccessScope('dave', frozenset(), may_publish=True, may_write=True),
+    'anonymous': AccessScope('anonymous', frozenset()),
     'system': SYSTEM_SCOPE,
 }
 
@@ -171,6 +173,7 @@ READABLE: dict[str, tuple[str, ...]] = {
     ),
     'carol': ('alice_public', 'alice_private_team_read', 'alice_public_carol_write', 'alice_public_dave_read'),
     'dave': ('alice_public', 'alice_public_carol_write', 'alice_public_dave_read'),
+    'anonymous': ('alice_public', 'alice_public_carol_write', 'alice_public_dave_read'),
     'system': SEED_LABELS,
 }
 
@@ -181,6 +184,7 @@ WRITABLE: dict[str, tuple[str, ...]] = {
     'bob': ('alice_private_bob_write', 'bob_private'),
     'carol': ('alice_public_carol_write',),
     'dave': (),
+    'anonymous': (),
     'system': SEED_LABELS,
 }
 
@@ -190,6 +194,7 @@ OWNED: dict[str, tuple[str, ...]] = {
     'bob': ('bob_private',),
     'carol': (),
     'dave': (),
+    'anonymous': (),
     'system': SEED_LABELS,
 }
 

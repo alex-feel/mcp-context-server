@@ -375,7 +375,7 @@ class TestAccessScopeDiscard:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         'access',
-        [AccessScope('alice', frozenset({'team-x'}), may_publish=True), SYSTEM_SCOPE, MAINTENANCE],
+        [AccessScope('alice', frozenset({'team-x'}), may_publish=True, may_write=True), SYSTEM_SCOPE, MAINTENANCE],
         ids=['request', 'system', 'maintenance'],
     )
     async def test_transaction_runs_for_every_identity(self, tmp_path: Path, access: BackendAccess) -> None:

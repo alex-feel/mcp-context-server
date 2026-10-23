@@ -6,7 +6,7 @@ identity, simple_token included), resolve_access_scope (the same identity as
 the scope every read runs under, roles excluded), may_publish and
 visibility_denied_reason (the ACCESS_CONTROL_PUBLISH_ROLE publish gate, one rule
 for both), resolve_write_scope (the write tools' scope, which carries the
-caller's publish permission) and the read-only principal named by
+caller's publish and write permissions) and the read-only principal named by
 ACCESS_CONTROL_ANONYMOUS_PRINCIPAL (is_read_only, the groups-and-roles discard,
 the refusal of its token without an expiry, reject_read_only_principal and the
 startup log line).
@@ -255,20 +255,21 @@ class TestPublishPermission:
     def test_write_scope_carries_the_publish_permission(
         self, publish_role: str | None, roles: frozenset[str], expected: bool,
     ) -> None:
-        """The write scope is the principal's id and groups plus whether it may publish."""
+        """The write scope is the principal's id and groups, whether it may publish, and the write permission."""
         principal = RequestPrincipal(principal_id='alice', groups=frozenset({'team-a'}), roles=roles)
         with patch.dict(os.environ, self._env(publish_role), clear=False):
             get_settings.cache_clear()
             scope = resolve_write_scope(principal)
-        assert scope == AccessScope('alice', frozenset({'team-a'}), may_publish=expected)
+        assert scope == AccessScope('alice', frozenset({'team-a'}), may_publish=expected, may_write=True)
 
-    def test_read_scope_never_asserts_the_publish_permission(self) -> None:
-        """resolve_access_scope serves reads, which publish nothing, so it leaves the permission unset."""
+    def test_read_scope_never_asserts_the_publish_or_write_permission(self) -> None:
+        """resolve_access_scope serves reads, which publish and write nothing, so it leaves both permissions unset."""
         with as_principal('alice', roles=['publisher']):
             scope = resolve_access_scope()
             principal = resolve_effective_principal()
         assert may_publish(principal)
         assert scope.may_publish is False
+        assert scope.may_write is False
 
     def test_write_scope_is_exported_from_auth_package(self) -> None:
         """The write tools import resolve_write_scope from app.auth."""
@@ -412,6 +413,21 @@ class TestReadOnlyPrincipal:
             assert may_publish(principal) is False
             assert resolve_write_scope(principal).may_publish is False
             assert may_publish(self._principal('alice')) is True
+
+    @pytest.mark.parametrize('anonymous_principal', [None, 'anonymous'])
+    def test_write_scope_asserts_the_write_permission_for_every_principal_but_the_read_only_one(
+        self, anonymous_principal: str | None,
+    ) -> None:
+        """The database refuses an INSERT bound without the write permission, so only the read-only principal lacks it."""
+        env = {} if anonymous_principal is None else {'ACCESS_CONTROL_ANONYMOUS_PRINCIPAL': anonymous_principal}
+        with patch.dict(os.environ, env, clear=False):
+            if anonymous_principal is None:
+                os.environ.pop('ACCESS_CONTROL_ANONYMOUS_PRINCIPAL', None)
+            get_settings.cache_clear()
+            anonymous_scope = resolve_write_scope(self._principal())
+            alice_scope = resolve_write_scope(self._principal('alice'))
+        assert anonymous_scope.may_write is (anonymous_principal is None)
+        assert alice_scope.may_write is True
 
     def test_read_only_token_without_expiry_is_refused(self) -> None:
         """The read-only principal's token must carry exp, on every tool, reads included."""
