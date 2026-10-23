@@ -199,9 +199,13 @@ REGISTRY: dict[str, Entry] = {
     _DEDUP + '_candidate_sql': _guarded(Seam.OWNER_KEYED, 'K1', 'K3', 'K4'),
     _DEDUP + '_interleave_sql': _guarded(Seam.OWNER_KEYED, 'K2', 'K3'),
     _DEDUP + '_dedup_update_sql': _guarded(Seam.OWNER_KEYED, 'K1'),
-    # Owner-keyed: the grant statements, which act only on an entry the caller owns and record the caller as grantor.
+    # Owner-keyed: the grant statements, which act only on an entry the caller owns; an insert records the
+    # caller as grantor.
     _GRANTS + 'store_group_read_grants': _guarded(Seam.OWNER_KEYED, 'G1'),
     _GRANTS + '_grant_insert_sql': _guarded(Seam.OWNER_KEYED, 'G1', 'G2'),
+    _GRANTS + 'store_grant': _guarded(Seam.OWNER_KEYED, 'G3'),
+    _GRANTS + 'delete_grant': _guarded(Seam.OWNER_KEYED, 'G4'),
+    _GRANTS + 'list_grants': _guarded(Seam.OWNER_KEYED, 'G5'),
     # Owner-stamped: a fresh insert owned by the scope's principal.
     _DEDUP + '_insert_entry_sql': _guarded(Seam.OWNER_STAMPED, 'K1', 'K5'),
     _DEDUP + 'ContextDedupMixin.insert_entry': _guarded(Seam.OWNER_STAMPED, 'K5'),
