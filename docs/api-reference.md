@@ -276,7 +276,7 @@ Note: This tool is available by default (`ENABLE_SEMANTIC_SEARCH=auto`) whenever
 
 **Returns:** Dictionary with:
 - Query string
-- List of semantically similar context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, and similarity scores
+- List of semantically similar context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), and similarity scores
 - Result count
 - Model name used for embeddings
 - Query execution statistics (only when `explain_query=True`)
@@ -334,7 +334,7 @@ Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=fal
 
 **Returns:** Dictionary with:
 - Query string and search mode
-- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, relevance scores, and highlighted snippets
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), relevance scores, and highlighted snippets
 - Result count
 - FTS availability status
 
@@ -384,7 +384,7 @@ Note: This tool is available by default (`ENABLE_HYBRID_SEARCH=auto`) when at le
 
 **Returns:** Dictionary with:
 - Query string and fusion method
-- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, combined RRF scores, and individual search rankings
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), combined RRF scores, and individual search rankings
 - Result count and counts from each search method
 - List of search modes actually used
 - Query execution statistics (only when `explain_query=True`)
@@ -470,8 +470,8 @@ All search tools return consistent response structures with common fields and to
 | `summary`                                      | Yes (string)          | Yes (string)               | Yes (string)               | Yes (string)               |
 | `is_text_content_truncated`                    | Yes                   | Yes                        | Yes                        | Yes                        |
 | `metadata`, `tags`, `created_at`, `updated_at` | Yes                   | Yes                        | Yes                        | Yes                        |
-| `visibility`                                   | Yes                   | No                         | No                         | No                         |
-| `is_owner`                                     | Yes                   | No                         | No                         | No                         |
+| `visibility`                                   | Yes                   | Yes                        | Yes                        | Yes                        |
+| `is_owner`                                     | Yes                   | Yes                        | Yes                        | Yes                        |
 | `images`                                       | include_images=True   | include_images=True        | include_images=True        | include_images=True        |
 | `scores`                                       | No                    | Yes                        | Yes                        | Yes                        |
 | `highlighted`                                  | No                    | No                         | highlight=True             | No                         |
@@ -496,6 +496,7 @@ All search tools (except `search_context`) return a unified `scores` object with
 **Notes:**
 - `stats` is only included when `explain_query=True` for all search tools
 - All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 chars) with `summary` and `is_text_content_truncated` flag; use `get_context_by_ids` for full content
+- Every result of every search tool reports the entry's `visibility` (`private` or `public`) and `is_owner` (a boolean, true when the caller owns the entry); the owner itself is never returned
 - For standalone FTS and semantic searches, rank fields are always `null` (no cross-method ranking)
 
 ## Navigation Tools (locate / navigate / extract)

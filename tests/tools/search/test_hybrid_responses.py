@@ -347,6 +347,7 @@ class TestHybridPartialDegradationResponse:
                 'id': 'a' * 32, 'thread_id': 't1', 'source': 'agent', 'content_type': 'text',
                 'text_content': 'python async guide', 'score': 9.0, 'metadata': None,
                 'created_at': '2025-01-01T00:00:00Z', 'updated_at': '2025-01-01T00:00:00Z',
+                'visibility': 'private', 'is_owner': 1,
             },
         ]
 
@@ -395,6 +396,7 @@ class TestHybridPartialDegradationResponse:
                 'id': 'b' * 32, 'thread_id': 't1', 'source': 'user', 'content_type': 'text',
                 'text_content': 'python async guide', 'distance': 0.2, 'metadata': None,
                 'created_at': '2025-01-01T00:00:00Z', 'updated_at': '2025-01-01T00:00:00Z',
+                'visibility': 'private', 'is_owner': 1,
             },
         ]
 

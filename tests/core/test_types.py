@@ -4,11 +4,14 @@ import pytest
 
 from app.types import ContextEntryDict
 from app.types import EntryAccessFields
+from app.types import FtsSearchResultDict
 from app.types import GrepContentMatchDict
 from app.types import GrepCountDict
 from app.types import GrepFileDict
+from app.types import HybridSearchResultDict
 from app.types import NavigateContextResultDict
 from app.types import ReadContextRangeDict
+from app.types import SemanticSearchResultDict
 
 ACCESS_FIELDS = frozenset({'visibility', 'is_owner'})
 
@@ -20,6 +23,9 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     'GrepContentMatchDict': GrepContentMatchDict.__required_keys__,
     'GrepCountDict': GrepCountDict.__required_keys__,
     'ReadContextRangeDict': ReadContextRangeDict.__required_keys__,
+    'FtsSearchResultDict': FtsSearchResultDict.__required_keys__,
+    'SemanticSearchResultDict': SemanticSearchResultDict.__required_keys__,
+    'HybridSearchResultDict': HybridSearchResultDict.__required_keys__,
 }
 
 

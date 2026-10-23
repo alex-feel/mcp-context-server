@@ -8,6 +8,25 @@ from typing import Any
 
 from app.fusion import count_unique_results
 from app.fusion import reciprocal_rank_fusion
+from app.types import HybridSearchResultDict
+
+
+def _fuse(
+    fts_results: list[dict[str, Any]], semantic_results: list[dict[str, Any]], *, k: int, limit: int,
+) -> list[HybridSearchResultDict]:
+    """Fuse leg rows that carry the access fields every ranked statement selects.
+
+    The scenarios vary ids, scores and text; each row gains the visibility and the
+    ownership flag that every row of both legs carries.
+
+    Returns:
+        The fused results.
+    """
+
+    def _with_access(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{'visibility': 'private', 'is_owner': 1, **row} for row in rows]
+
+    return reciprocal_rank_fusion(_with_access(fts_results), _with_access(semantic_results), k=k, limit=limit)
 
 
 class TestRRFIntegration:
@@ -31,7 +50,7 @@ class TestRRFIntegration:
             {'id': '5', 'distance': 0.4, 'text_content': 'AI fundamentals', 'thread_id': 't1'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         # Verify all unique documents are present
         result_ids = [r.get('id') for r in results]
@@ -77,7 +96,7 @@ class TestRRFIntegration:
             },
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         assert len(results) == 1
         result = results[0]
@@ -106,7 +125,7 @@ class TestRRFIntegration:
             for i in range(1, 101)
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=50)
+        results = _fuse(fts_results, semantic_results, k=60, limit=50)
 
         # Should return exactly 50 results
         assert len(results) == 50
@@ -128,9 +147,9 @@ class TestRRFIntegration:
         ]
 
         # With small k, top ranks matter more
-        results_small_k = reciprocal_rank_fusion(fts_results, semantic_results, k=1, limit=10)
+        results_small_k = _fuse(fts_results, semantic_results, k=1, limit=10)
         # With large k, ranks matter less (more uniform)
-        results_large_k = reciprocal_rank_fusion(fts_results, semantic_results, k=100, limit=10)
+        results_large_k = _fuse(fts_results, semantic_results, k=100, limit=10)
 
         # Document 2 appears in both - should be top in both cases
         assert results_small_k[0].get('id') == '2'
@@ -203,7 +222,7 @@ class TestHybridSearchToolIntegration:
             },
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        results = _fuse(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
         assert results[0].get('id') == '1'
@@ -227,7 +246,7 @@ class TestHybridSearchToolIntegration:
             },
         ]
 
-        results = reciprocal_rank_fusion([], semantic_results, k=60, limit=10)
+        results = _fuse([], semantic_results, k=60, limit=10)
 
         assert len(results) == 1
         assert results[0].get('id') == '1'
@@ -246,7 +265,7 @@ class TestHybridSearchToolIntegration:
             },
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        results = _fuse(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
         # Metadata should be preserved as-is
@@ -264,7 +283,7 @@ class TestRRFEdgeCases:
         ]
         fts_results: list[dict[str, Any]] = []
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         # Only the entry with valid ID should be in results
         assert len(results) == 1
@@ -277,7 +296,7 @@ class TestRRFEdgeCases:
             {'id': '2', 'score': 8.0, 'text_content': 'Valid'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        results = _fuse(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
         assert results[0].get('id') == '2'
@@ -293,7 +312,7 @@ class TestRRFEdgeCases:
             {'id': '2', 'distance': 0.2, 'text_content': 'Semantic valid'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         # Only entries with valid IDs should be in results
         result_ids = {r.get('id') for r in results}
@@ -310,7 +329,7 @@ class TestRRFEdgeCases:
             {'id': None, 'distance': 0.1, 'text_content': 'No ID 3'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         assert results == []
 
@@ -327,7 +346,7 @@ class TestHybridSearchPagination:
         ]
 
         # Request limit=3
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=3)
+        results = _fuse(fts_results, [], k=60, limit=3)
 
         assert len(results) == 3
         # Results should be top 3 by RRF score
@@ -342,7 +361,7 @@ class TestHybridSearchPagination:
         ]
 
         # Request limit=20 but only 5 exist
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=20)
+        results = _fuse(fts_results, [], k=60, limit=20)
 
         assert len(results) == 5
 
@@ -359,7 +378,7 @@ class TestHybridSearchPagination:
         ]
 
         # Get all results first
-        all_results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        all_results = _fuse(fts_results, [], k=60, limit=10)
 
         # Simulate offset=3, limit=3 (skip first 3, return next 3)
         paginated = all_results[3:6]
@@ -381,7 +400,7 @@ class TestHybridSearchResponseStructure:
             {'id': 1, 'score': 10.0, 'text_content': 'Test'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        results = _fuse(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
         result = results[0]
@@ -418,7 +437,7 @@ class TestHybridSearchResponseStructure:
             {'id': 1, 'distance': 0.5, 'text_content': 'Test'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         assert len(results) == 1
         scores = results[0].get('scores', {})

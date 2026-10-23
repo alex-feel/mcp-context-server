@@ -85,6 +85,7 @@ class TestSemanticEmbeddingGenerationStat:
             {
                 'id': 'a' * 32, 'thread_id': 't', 'source': 'user', 'content_type': 'text',
                 'text_content': 'hello world', 'distance': 0.1, 'metadata': None,
+                'visibility': 'private', 'is_owner': 1,
             },
         ]
         self._patch_provider_and_repo(monkeypatch, rows=rows, stats={'rows_returned': 1})

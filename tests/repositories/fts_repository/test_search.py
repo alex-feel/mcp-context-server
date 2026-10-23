@@ -1,7 +1,8 @@
 """Unit tests for the FTS search mixin in app.repositories.fts_repository.search.
 
-Covers the SQLite language warning, the PostgreSQL ts_headline subquery structure, and a
-pathological boolean query that must degrade without charging the circuit breaker.
+Covers the SQLite language warning, the PostgreSQL ts_headline subquery structure, a
+pathological boolean query that must degrade without charging the circuit breaker, and the
+visibility and ownership every match reports on both backends.
 """
 
 import sqlite3
@@ -111,6 +112,61 @@ class TestPostgresqlSubqueryStructure:
         """Create FtsRepository with mock PostgreSQL backend."""
         return FtsRepository(mock_backend)
 
+    async def _capture_statement(
+        self,
+        repo: FtsRepository,
+        mock_backend: MagicMock,
+        *,
+        highlight: bool = True,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'] = 'match',
+        query: str = 'test query',
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[str, tuple[object, ...]]:
+        """Execute _search_postgresql and capture the generated SQL with its arguments.
+
+        Returns:
+            The SQL query string passed to conn.fetch and the arguments bound to it.
+        """
+        from unittest.mock import AsyncMock
+
+        captured: list[tuple[str, tuple[object, ...]]] = []
+
+        async def mock_execute_read(func: Callable[[AsyncMock], Awaitable[object]], *, access_scope: BackendAccess) -> object:
+            _ = access_scope
+            mock_conn = AsyncMock()
+
+            async def capture_fetch(sql: str, *args: object) -> list[object]:
+                captured.append((sql, args))
+                return []
+
+            mock_conn.fetch = capture_fetch
+            return await func(mock_conn)
+
+        mock_backend.execute_read = mock_execute_read
+
+        await repo._search_postgresql(
+            query=query,
+            mode=mode,
+            limit=limit,
+            offset=offset,
+            thread_id=None,
+            source=None,
+            content_type=None,
+            tags=None,
+            start_date=None,
+            end_date=None,
+            metadata=None,
+            metadata_filters=None,
+            highlight=highlight,
+            language='english',
+            explain_query=False,
+            scope=LOCAL_SCOPE,
+        )
+
+        assert len(captured) == 1
+        return captured[0]
+
     async def _capture_sql(
         self,
         repo: FtsRepository,
@@ -126,44 +182,30 @@ class TestPostgresqlSubqueryStructure:
         Returns:
             The SQL query string passed to conn.fetch.
         """
-        from unittest.mock import AsyncMock
-
-        captured_sql: list[str] = []
-
-        async def mock_execute_read(func: Callable[[AsyncMock], Awaitable[object]], *, access_scope: BackendAccess) -> object:
-            _ = access_scope
-            mock_conn = AsyncMock()
-
-            async def capture_fetch(sql: str, *_args: object) -> list[object]:
-                captured_sql.append(sql)
-                return []
-
-            mock_conn.fetch = capture_fetch
-            return await func(mock_conn)
-
-        mock_backend.execute_read = mock_execute_read
-
-        await repo._search_postgresql(
-            query=query,
-            mode=mode,
-            limit=limit,
-            offset=0,
-            thread_id=None,
-            source=None,
-            content_type=None,
-            tags=None,
-            start_date=None,
-            end_date=None,
-            metadata=None,
-            metadata_filters=None,
-            highlight=highlight,
-            language='english',
-            explain_query=False,
-            scope=LOCAL_SCOPE,
+        sql, _args = await self._capture_statement(
+            repo, mock_backend, highlight=highlight, mode=mode, query=query, limit=limit,
         )
+        return sql
 
-        assert len(captured_sql) == 1
-        return captured_sql[0]
+    @pytest.mark.asyncio
+    async def test_rows_report_visibility_and_ownership(
+        self, repo: FtsRepository, mock_backend: MagicMock,
+    ) -> None:
+        """Both selects carry the visibility and the ownership flag, whose bind follows the query's.
+
+        The READ predicate binds $1-$3 and the query $4, so the ownership flag binds the
+        caller at $5 and LIMIT and OFFSET follow at $6 and $7.
+        """
+        sql, args = await self._capture_statement(repo, mock_backend, highlight=True, limit=5, offset=2)
+
+        outer_select = sql[sql.index('SELECT'):sql.index('FROM (')]
+        inner_sql = sql[sql.index('FROM (') + len('FROM ('):sql.index(') sub')]
+        assert 'sub.visibility' in outer_select
+        assert 'sub.is_owner' in outer_select
+        assert 'ce.visibility' in inner_sql
+        assert 'CASE WHEN ce.owner_id = $5 THEN 1 ELSE 0 END AS is_owner' in inner_sql
+        assert 'LIMIT $6 OFFSET $7' in inner_sql
+        assert args[4:] == ('local', 5, 2)
 
     @pytest.mark.asyncio
     async def test_highlight_true_uses_subquery(
@@ -340,3 +382,83 @@ class TestFtsBooleanPathologicalQueryKeepsBreakerClosed:
 
         assert backend.circuit_breaker.failures == 0
         assert backend.circuit_breaker.is_open() is False
+
+
+class TestFtsSQLiteReadBack:
+    """Each SQLite match reports its visibility and whether the caller owns it, on every page and both query builds.
+
+    The ownership flag binds the caller ahead of every filter in statement text order, so a
+    misplaced bind would shift the thread, source, query, LIMIT or OFFSET values.
+    """
+
+    _THREAD = 'fts-read-back'
+    # (label, owner, visibility, keyword repeats, thread): more repeats rank higher.
+    _ROWS: tuple[tuple[str, str, str, int, str], ...] = (
+        ('bob_private', 'bob', 'private', 4, _THREAD),
+        ('own_private', 'local', 'private', 3, _THREAD),
+        ('bob_public', 'bob', 'public', 2, _THREAD),
+        ('own_public', 'local', 'public', 1, _THREAD),
+        ('elsewhere', 'bob', 'public', 5, 'fts-read-back-elsewhere'),
+    )
+
+    @pytest_asyncio.fixture
+    async def seeded(self, tmp_path: Path) -> AsyncGenerator[tuple[RepositoryContainer, dict[str, str]], None]:
+        """SQLite backend with an FTS5 index and the rows of :attr:`_ROWS`.
+
+        Args:
+            tmp_path: Per-test temporary directory holding the database file.
+
+        Yields:
+            The repositories and the id of every row keyed by its label.
+        """
+        from app.schemas import load_schema
+
+        db_path = tmp_path / 'fts_read_back.db'
+        migration_path = Path(__file__).parents[3] / 'app' / 'migrations' / 'add_fts_sqlite.sql'
+        fts_sql = migration_path.read_text().replace('{TOKENIZER}', 'unicode61')
+        ids = {label: generate_id() for label, *_rest in self._ROWS}
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(load_schema('sqlite'))
+            conn.executescript(fts_sql)
+            for label, owner, visibility, repeats, thread_id in self._ROWS:
+                conn.execute(
+                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id, visibility) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    (ids[label], thread_id, 'agent', 'text', ' '.join(['lattice'] * repeats), owner, visibility),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        backend = create_backend(backend_type='sqlite', db_path=str(db_path))
+        await backend.initialize()
+        try:
+            yield RepositoryContainer(backend), ids
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('mode', 'query'),
+        [('match', 'lattice'), ('boolean', '(' * 100 + 'lattice' + ')' * 100)],
+        ids=['match', 'degraded-boolean'],
+    )
+    async def test_rows_report_visibility_and_ownership(
+        self,
+        seeded: tuple[RepositoryContainer, dict[str, str]],
+        mode: Literal['match', 'boolean'],
+        query: str,
+    ) -> None:
+        """A filtered page reads back its rows' visibility and the caller's ownership, the degraded boolean query too."""
+        repos, ids = seeded
+
+        rows, _stats = await repos.fts.search(
+            query=query, mode=mode, thread_id=self._THREAD, source='agent', limit=2, offset=1, scope=LOCAL_SCOPE,
+        )
+
+        assert [(row['id'], row['visibility'], row['is_owner']) for row in rows] == [
+            (ids['bob_public'], 'public', 0),
+            (ids['own_public'], 'public', 1),
+        ]

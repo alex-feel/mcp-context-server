@@ -15,7 +15,6 @@ from app.errors import format_exception_message
 from app.startup import ensure_repositories
 from app.startup.validation import validate_date_param
 from app.startup.validation import validate_date_range
-from app.tools._responses import entry_access_fields
 from app.tools._validation import reject_unstorable_input
 from app.tools.search.limits import MAX_FILTER_TAGS
 from app.tools.search.limits import MAX_METADATA_FILTERS
@@ -191,11 +190,8 @@ async def search_context(
             else:
                 entry['tags'] = []
 
-            # Apply unified search display formatting, then the entry's access fields
+            # Apply unified search display formatting, the entry's access fields included
             apply_search_display_format(cast(dict[str, Any], entry))
-            access = entry_access_fields(row)
-            entry['visibility'] = access['visibility']
-            entry['is_owner'] = access['is_owner']
 
             # Fetch images if requested and applicable
             if include_images and entry.get('content_type') == 'multimodal':

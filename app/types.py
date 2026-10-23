@@ -592,6 +592,8 @@ class FtsSearchResultDict(TypedDict, total=False):
     - fts_score: BM25/ts_rank relevance score (HIGHER = better)
     - fts_rank: Always null for standalone FTS (no ranking)
     - rerank_score: Present when reranking is enabled (HIGHER = better)
+
+    ``visibility`` and ``is_owner`` (see :class:`EntryAccessFields`) are required on every result.
     """
 
     id: str
@@ -608,6 +610,8 @@ class FtsSearchResultDict(TypedDict, total=False):
     scores: ScoresDict
     highlighted: str | None
     images: list[ImageDict] | None
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 class FtsSearchResponseDict(TypedDict, total=False):
@@ -636,6 +640,8 @@ class SemanticSearchResultDict(TypedDict, total=False):
     - semantic_distance: LOWER = more similar; L2 Euclidean for fp32/mse, negated inner product (~ -1..0) for the ip variant
     - semantic_rank: Always null for standalone semantic (no ranking)
     - rerank_score: Present when reranking is enabled (HIGHER = better)
+
+    ``visibility`` and ``is_owner`` (see :class:`EntryAccessFields`) are required on every result.
     """
 
     id: str
@@ -651,6 +657,8 @@ class SemanticSearchResultDict(TypedDict, total=False):
     tags: list[str]
     scores: ScoresDict
     images: list[ImageDict] | None
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 class SemanticSearchResponseDict(TypedDict, total=False):
@@ -710,7 +718,8 @@ class HybridSearchResultDict(TypedDict, total=False):
     """Type definition for hybrid search result entry.
 
     Combines fields from both FTS and semantic search results with
-    hybrid-specific scoring information.
+    hybrid-specific scoring information; ``visibility`` and ``is_owner``
+    (see :class:`EntryAccessFields`) are required on every result.
     """
 
     id: str
@@ -727,6 +736,8 @@ class HybridSearchResultDict(TypedDict, total=False):
     scores: HybridScoresDict  # Hybrid scoring breakdown
     rerank_text: str | None  # Internal: chunk text for reranking (removed before API response)
     images: list[ImageDict] | None
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 # Hybrid Search Stats TypedDicts (for explain_query parameter)

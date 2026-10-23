@@ -12,6 +12,7 @@ from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
+from app.repositories.context_repository.records import entry_columns
 from app.repositories.embedding_repository.compression_cache import get_cached_compression_metadata
 from app.repositories.embedding_repository.records import SQLITE_IN_CLAUSE_BATCH
 from app.repositories.embedding_repository.records import MetadataFilterValidationError
@@ -111,7 +112,8 @@ class CompressedSearchMixin(BaseRepository):
             Tuple of (search results list, statistics dictionary). Each
             result carries ``distance``, ``matched_chunk_start``,
             ``matched_chunk_end`` plus the standard ``context_entries``
-            columns.
+            columns, ``visibility`` among them, and ``is_owner``: 1 when the
+            scope owns the entry, else 0.
 
         Raises:
             RuntimeError: If the singleton compression provenance row is
@@ -610,10 +612,15 @@ class CompressedSearchMixin(BaseRepository):
 
         # Hydrate the result rows from context_entries under the read predicate again:
         # an entry whose access changed after its candidate was selected is not
-        # returned, and the skip-on-missing loop below drops it from the page.
+        # returned, and the skip-on-missing loop below drops it from the page. Each
+        # hydrated row reports whether the caller owns it, through the OWNER predicate
+        # in the select list.
         if self.backend.backend_type == 'sqlite':
             hydrate_read = build_access_predicate(
                 scope, mode=AccessMode.READ, backend_type='sqlite', outer='context_entries',
+            )
+            hydrate_owner = build_access_predicate(
+                scope, mode=AccessMode.OWNER, backend_type='sqlite', outer='context_entries',
             )
 
             def _hydrate_sqlite(
@@ -622,17 +629,18 @@ class CompressedSearchMixin(BaseRepository):
                 # page_ids is bounded by the overfetch limit, not by the final
                 # page size, so it can exceed SQLITE_MAX_VARIABLE_NUMBER; bind it
                 # in bounded batches like the compressed candidate read (a batch
-                # plus the predicate's binds stays below the variable limit).
+                # plus the two predicates' binds stays below the variable limit).
+                # The select list precedes the WHERE clause, so the OWNER bind
+                # comes first in statement text order.
                 out: dict[str, dict[str, Any]] = {}
                 entries = self._readable('context_entries', alias='context_entries')
                 for start in range(0, len(page_ids), SQLITE_IN_CLAUSE_BATCH):
                     batch = page_ids[start:start + SQLITE_IN_CLAUSE_BATCH]
                     placeholders = ','.join('?' for _ in batch)
                     cursor = conn.execute(
-                        'SELECT id, thread_id, source, content_type, text_content, '
-                        f'metadata, summary, created_at, updated_at FROM {entries} '
-                        f'WHERE id IN ({placeholders}){hydrate_read.and_clause()}',
-                        [*batch, *hydrate_read.params],
+                        f'SELECT {entry_columns()}, {hydrate_owner.admits_expression()} AS is_owner '
+                        f'FROM {entries} WHERE id IN ({placeholders}){hydrate_read.and_clause()}',
+                        [*hydrate_owner.params, *batch, *hydrate_read.params],
                     )
                     out.update({str(dict(r)['id']): dict(r) for r in cursor.fetchall()})
                 return out
@@ -642,17 +650,22 @@ class CompressedSearchMixin(BaseRepository):
             hydrate_read = build_access_predicate(
                 scope, mode=AccessMode.READ, backend_type='postgresql', outer='context_entries', start=2,
             )
+            # $1 binds the page ids and the READ predicate follows; the OWNER bind is numbered after it.
+            hydrate_owner = build_access_predicate(
+                scope, mode=AccessMode.OWNER, backend_type='postgresql', outer='context_entries',
+                start=2 + hydrate_read.bind_count,
+            )
 
             async def _hydrate_pg(
                 conn: 'asyncpg.Connection',
             ) -> dict[str, dict[str, Any]]:
                 entries = self._readable('context_entries', alias='context_entries')
                 rows = await conn.fetch(
-                    'SELECT id, thread_id, source, content_type, text_content, '
-                    f'metadata, summary, created_at, updated_at FROM {entries} '
-                    f'WHERE id = ANY($1::uuid[]){hydrate_read.and_clause()}',
+                    f'SELECT {entry_columns()}, {hydrate_owner.admits_expression()} AS is_owner '
+                    f'FROM {entries} WHERE id = ANY($1::uuid[]){hydrate_read.and_clause()}',
                     page_ids,
                     *hydrate_read.params,
+                    *hydrate_owner.params,
                 )
                 return {str(dict(r)['id']): dict(r) for r in rows}
 

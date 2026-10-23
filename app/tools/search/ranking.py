@@ -1,8 +1,8 @@
 """Post-retrieval shaping of search results.
 
 Cross-encoder reranking with an injected provider, and the display format (text
-truncation, summary normalization, canonical timestamps) applied to every result a
-search tool returns.
+truncation, summary normalization, canonical timestamps, the entry's access fields)
+applied to every result a search tool returns.
 """
 
 import logging
@@ -12,6 +12,7 @@ from app.repositories.base import canonical_timestamp
 from app.reranking.base import RerankingProvider
 from app.settings import get_settings
 from app.startup.validation import truncate_text
+from app.tools._responses import entry_access_fields
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -107,11 +108,14 @@ def apply_search_display_format(entry: dict[str, Any]) -> None:
     Truncates text_content based on SEARCH_TRUNCATION_LENGTH setting and
     normalizes the summary field. Both fields are always present in the output:
     text_content as a truncated preview, summary as a string (empty when absent).
+    Shapes the entry's access fields: ``visibility`` as stored and ``is_owner`` as
+    a bool, from the integer every search statement computes.
 
     Modifies the entry dict in-place.
 
     Args:
-        entry: A single search result dict to format.
+        entry: A single search result dict to format, carrying ``visibility`` and
+            ``is_owner`` as the search statement selected them.
     """
     # Normalize summary: always present as string, empty when absent
     summary = entry.get('summary')
@@ -132,3 +136,7 @@ def apply_search_display_format(entry: dict[str, Any]) -> None:
     for ts_key in ('created_at', 'updated_at'):
         if entry.get(ts_key) is not None:
             entry[ts_key] = canonical_timestamp(entry[ts_key])
+
+    access = entry_access_fields(entry)
+    entry['visibility'] = access['visibility']
+    entry['is_owner'] = access['is_owner']

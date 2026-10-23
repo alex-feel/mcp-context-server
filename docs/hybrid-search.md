@@ -264,6 +264,8 @@ When hybrid search is enabled and at least one underlying search method is avail
       "text_content": "Implemented JWT authentication...",
       "summary": "JWT authentication implementation with token validation, role-based access control, and session management for the project-alpha backend API.",
       "is_text_content_truncated": true,
+      "visibility": "private",
+      "is_owner": true,
       "metadata": {"status": "completed", "priority": 8},
       "created_at": "2025-12-01T10:00:00Z",
       "updated_at": "2025-12-01T10:00:00Z",

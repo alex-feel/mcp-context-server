@@ -28,6 +28,7 @@ async def test_both_legs_receive_the_same_scope_object() -> None:
             'id': 'a' * 32, 'thread_id': 't', 'source': 'agent', 'content_type': 'text',
             'text_content': 'lattice', 'score': 1.0, 'metadata': None,
             'created_at': '2026-01-01T00:00:00Z', 'updated_at': '2026-01-01T00:00:00Z',
+            'visibility': 'private', 'is_owner': 1,
         },
     ]
     fts_leg = AsyncMock(return_value=(fts_rows, {}))
