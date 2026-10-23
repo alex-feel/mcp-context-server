@@ -19,7 +19,6 @@ from operator import itemgetter
 from typing import Any
 
 from fastmcp import Client
-from mcp.types import TextContent
 
 from app.digests import canonical_json_digest
 from app.digests import content_hash
@@ -35,9 +34,6 @@ SYNCED_AT = '2026-10-18T12:00:00Z'
 ASTRAL_FILL = '\U0001f600'
 INGEST_SHAPE_ERROR = 'an object with exactly the keys meta_digest, scope, source_id, synced_at'
 SOURCES = ('a.md', 'b.md', 'c.md', 'd.md')
-
-# A tool call's structured content, or its error text when the tool refused the call.
-type SyncOutcome = tuple[dict[str, Any] | None, str | None]
 
 
 def meta_digest(label: str) -> str:
@@ -179,22 +175,6 @@ def maximal_source_id(number: int) -> str:
 class SyncMixin(HarnessCore):
     """Checks for the corpus sync tools on a real server."""
 
-    async def _sync_outcome(self, tool: str, arguments: dict[str, Any]) -> SyncOutcome:
-        """Call a tool through the primary client without raising on a tool error.
-
-        Args:
-            tool: The tool name.
-            arguments: The tool arguments.
-
-        Returns:
-            The extracted content and None, or None and the error text.
-        """
-        assert self.client is not None
-        result = await self.client.call_tool(tool, arguments, raise_on_error=False)
-        if result.is_error:
-            return None, ' '.join(block.text for block in result.content if isinstance(block, TextContent))
-        return self._extract_content(result), None
-
     async def _sync_content(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call a tool through the primary client that must succeed.
 
@@ -208,7 +188,7 @@ class SyncMixin(HarnessCore):
         Raises:
             AssertionError: If the tool reported an error.
         """
-        data, error = await self._sync_outcome(tool, arguments)
+        data, error = await self._outcome(tool, arguments)
         if data is None:
             raise AssertionError(f'{tool} failed: {error}')
         return data
@@ -285,20 +265,6 @@ class SyncMixin(HarnessCore):
             return False
         self.test_results.append((test_name, True, 'Skipped (corpus sync tools not registered)'))
         return True
-
-    def _record(self, test_name: str, problems: list[str], passed: str) -> bool:
-        """Record a check's outcome.
-
-        Args:
-            test_name: The check's name.
-            problems: The problems found.
-            passed: The detail recorded when there are none.
-
-        Returns:
-            bool: True when there are no problems.
-        """
-        self.test_results.append((test_name, not problems, '; '.join(problems) or passed))
-        return not problems
 
     async def test_sync_tools_registered(self) -> bool:
         """Verify the server registers every annotated tool, the two sync tools included.
@@ -551,7 +517,7 @@ class SyncMixin(HarnessCore):
             ]
             problems: list[str] = []
             for arguments, message in cases:
-                data, error = await self._sync_outcome('plan_context_sync', {'thread_id': thread, **arguments})
+                data, error = await self._outcome('plan_context_sync', {'thread_id': thread, **arguments})
                 if error is None or message not in error:
                     problems.append(f'{message!r} not reported: {data or error!r}')
             return self._record(test_name, problems, f'{len(cases)} invalid manifests refused with their reasons')
@@ -613,7 +579,7 @@ class SyncMixin(HarnessCore):
                  f'metadata_patch.ingest must be null or {INGEST_SHAPE_ERROR}'),
             ]
             for tool, arguments, expected in refused_calls:
-                data, error = await self._sync_outcome(tool, arguments)
+                data, error = await self._outcome(tool, arguments)
                 if error != expected:
                     problems.append(f'{tool}({arguments}) returned {data or error!r}, expected {expected!r}')
             batch_calls: list[tuple[str, dict[str, Any]]] = [

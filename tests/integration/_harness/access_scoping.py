@@ -32,9 +32,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastmcp import Client
-from mcp.types import TextContent
 
 from tests.integration._harness.core import HarnessCore
+from tests.integration._harness.core import ToolOutcome
 from tests.integration._harness.sharing import NOT_OWNER_REFUSALS
 from tests.integration._harness.sharing import grant_calls
 from tests.integration._harness.sharing import grant_rows
@@ -63,8 +63,6 @@ ABSENT_PREFIX = 'f' * 24
 PREFIX_LENGTH = 24
 RANKED_SEARCH_TOOLS = ('semantic_search_context', 'fts_search_context', 'hybrid_search_context')
 
-# A tool call's structured content, or its error text when the tool refused the call.
-type ToolOutcome = tuple[dict[str, Any] | None, str | None]
 # A tool name and its arguments.
 type ToolCall = tuple[str, dict[str, Any]]
 # (total_entries, total_threads) shown to the primary and to the second principal.
@@ -119,24 +117,8 @@ class AccessScopingMixin(HarnessCore):
             return False
 
         for aspect, problems in aspects:
-            self.test_results.append((aspect, not problems, '; '.join(problems) or f'{SECOND_PRINCIPAL} scoped as expected'))
+            self._record(aspect, problems, f'{SECOND_PRINCIPAL} scoped as expected')
         return all(not problems for _, problems in aspects)
-
-    async def _outcome(self, client: Client[Any], tool: str, arguments: dict[str, Any]) -> ToolOutcome:
-        """Call a tool without raising on a tool error.
-
-        Args:
-            client: The client to call through.
-            tool: The tool name.
-            arguments: The tool arguments.
-
-        Returns:
-            The extracted content and None, or None and the error text.
-        """
-        result = await client.call_tool(tool, arguments, raise_on_error=False)
-        if result.is_error:
-            return None, ' '.join(block.text for block in result.content if isinstance(block, TextContent))
-        return self._extract_content(result), None
 
     async def _content(self, client: Client[Any], tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call a tool that must succeed.
@@ -152,7 +134,7 @@ class AccessScopingMixin(HarnessCore):
         Raises:
             AssertionError: If the tool reported an error.
         """
-        data, error = await self._outcome(client, tool, arguments)
+        data, error = await self._outcome(tool, arguments, client=client)
         if data is None:
             raise AssertionError(f'{tool} failed: {error}')
         return data
@@ -304,7 +286,7 @@ class AccessScopingMixin(HarnessCore):
             ('navigate_context', {'context_id': private_id}),
             ('read_context_range', {'context_id': private_id, 'start_line': 1, 'end_line': 1}),
         ):
-            _, error = await self._outcome(bob, tool, arguments)
+            _, error = await self._outcome(tool, arguments, client=bob)
             if error != not_found:
                 problems.append(f'{tool} for {SECOND_PRINCIPAL} returned {error!r}, expected {not_found!r}')
 
@@ -313,12 +295,14 @@ class AccessScopingMixin(HarnessCore):
             *grant_calls(private_id, THIRD_PRINCIPAL),
         ]
         for tool, arguments in refused:
-            _, error = await self._outcome(bob, tool, arguments)
+            _, error = await self._outcome(tool, arguments, client=bob)
             if error != f'Context entry with ID {private_id} not found':
                 problems.append(f'{tool} returned {error!r}')
-        _, error = await self._outcome(bob, 'update_context_batch', {
-            'updates': [{'context_id': private_id, 'text': 'Overwritten.'}], 'atomic': True,
-        })
+        _, error = await self._outcome(
+            'update_context_batch',
+            {'updates': [{'context_id': private_id, 'text': 'Overwritten.'}], 'atomic': True},
+            client=bob,
+        )
         if error is None or f'Context entry {private_id} not found at index 0' not in error:
             problems.append(f'update_context_batch returned {error!r}')
 
@@ -329,7 +313,7 @@ class AccessScopingMixin(HarnessCore):
             ('delete_context_batch', {'thread_ids': [thread]}),
         )
         for tool, arguments in deletes:
-            data, error = await self._outcome(bob, tool, arguments)
+            data, error = await self._outcome(tool, arguments, client=bob)
             if data is None or data.get('deleted_count') != 0:
                 problems.append(f'{tool}({arguments}) returned {data or error!r}, expected deleted_count 0')
 
@@ -375,24 +359,26 @@ class AccessScopingMixin(HarnessCore):
             ('navigate_context', {'context_id': public_id}),
             ('read_context_range', {'context_id': public_id, 'start_line': 1, 'end_line': 1}),
         ):
-            data, error = await self._outcome(bob, tool, arguments)
+            data, error = await self._outcome(tool, arguments, client=bob)
             if data is None or data.get('context_id') != public_id:
                 problems.append(f'{tool} on the public entry returned {data or error!r}')
 
         not_modifiable = f'Not authorized to modify context entry with ID {public_id}'
         for arguments in ({'text': 'Overwritten.'}, {'visibility': 'private'}):
-            _, error = await self._outcome(bob, 'update_context', {'context_id': public_id, **arguments})
+            _, error = await self._outcome('update_context', {'context_id': public_id, **arguments}, client=bob)
             if error != not_modifiable:
                 problems.append(f'update_context({arguments}) returned {error!r}, expected {not_modifiable!r}')
-        _, error = await self._outcome(bob, 'update_context_batch', {
-            'updates': [{'context_id': public_id, 'text': 'Overwritten.'}], 'atomic': True,
-        })
+        _, error = await self._outcome(
+            'update_context_batch',
+            {'updates': [{'context_id': public_id, 'text': 'Overwritten.'}], 'atomic': True},
+            client=bob,
+        )
         if error is None or f'Not authorized to modify context entry {public_id} at index 0' not in error:
             problems.append(f'update_context_batch returned {error!r}')
 
         not_deletable = f'Not authorized to delete context entries: {public_id}'
         for tool in ('delete_context', 'delete_context_batch'):
-            _, error = await self._outcome(bob, tool, {'context_ids': [public_id]})
+            _, error = await self._outcome(tool, {'context_ids': [public_id]}, client=bob)
             if error != not_deletable:
                 problems.append(f'{tool} by id returned {error!r}, expected {not_deletable!r}')
         thread_deletes: tuple[ToolCall, ...] = (
@@ -400,7 +386,7 @@ class AccessScopingMixin(HarnessCore):
             ('delete_context_batch', {'thread_ids': [thread]}),
         )
         for tool, arguments in thread_deletes:
-            data, error = await self._outcome(bob, tool, arguments)
+            data, error = await self._outcome(tool, arguments, client=bob)
             if data is None or data.get('deleted_count') != 0:
                 problems.append(f'{tool} by thread returned {data or error!r}, expected deleted_count 0')
 
@@ -438,8 +424,8 @@ class AccessScopingMixin(HarnessCore):
             calls.extend((hidden, absent, tool, arguments) for tool, arguments in templates)
         problems: list[str] = []
         for hidden, absent, tool, template in calls:
-            hidden_outcome = self._masked(await self._outcome(bob, tool, self._filled(template, hidden)), hidden)
-            absent_outcome = self._masked(await self._outcome(bob, tool, self._filled(template, absent)), absent)
+            hidden_outcome = self._masked(await self._outcome(tool, self._filled(template, hidden), client=bob), hidden)
+            absent_outcome = self._masked(await self._outcome(tool, self._filled(template, absent), client=bob), absent)
             if hidden_outcome != absent_outcome:
                 problems.append(f'{tool} with {hidden!r} gave {hidden_outcome!r}, with an absent id {absent_outcome!r}')
         return problems
@@ -611,7 +597,7 @@ class AccessScopingMixin(HarnessCore):
         problems: list[str] = []
         for tool, arguments in grant_calls(context_id, principal_id):
             expected = NOT_OWNER_REFUSALS[tool].format(id=context_id)
-            _, error = await self._outcome(bob, tool, arguments)
+            _, error = await self._outcome(tool, arguments, client=bob)
             if error != expected:
                 problems.append(f'{tool} by {SECOND_PRINCIPAL} returned {error!r}, expected {expected!r}')
         return problems
@@ -649,18 +635,18 @@ class AccessScopingMixin(HarnessCore):
         problems.extend(read_back_problems([('get_context_by_ids', entry)], 'private', is_owner=False))
         if await self._matched_ids(bob, 'search_context', {'thread_id': thread}) != {shared_id}:
             problems.append(f'search_context by {SECOND_PRINCIPAL} does not find the shared entry')
-        _, error = await self._outcome(bob, 'update_context', {'context_id': shared_id, 'text': 'Overwritten.'})
+        _, error = await self._outcome('update_context', {'context_id': shared_id, 'text': 'Overwritten.'}, client=bob)
         if error != f'Not authorized to modify context entry with ID {shared_id}':
             problems.append(f'update_context under a read grant returned {error!r}')
         problems.extend(await self._grant_refusal_problems(bob, shared_id, SECOND_PRINCIPAL))
 
         await self._content(self.client, 'share_context', {**grant, 'permission': 'write'})
         edited = f'{text}\n\nEdited by {SECOND_PRINCIPAL} through his write grant.'
-        _, error = await self._outcome(bob, 'update_context', {'context_id': shared_id, 'text': edited})
+        _, error = await self._outcome('update_context', {'context_id': shared_id, 'text': edited}, client=bob)
         current = (await self._entries_by_id(self.client, [shared_id])).get(shared_id, {})
         if error is not None or current.get('text_content') != edited:
             problems.append(f'the edit under a write grant returned {error!r} and left {current.get("text_content")!r}')
-        _, error = await self._outcome(bob, 'update_context', {'context_id': shared_id, 'visibility': 'public'})
+        _, error = await self._outcome('update_context', {'context_id': shared_id, 'visibility': 'public'}, client=bob)
         if error != f'Only the owner may change the visibility of context {shared_id}':
             problems.append(f'a visibility change under a write grant returned {error!r}')
 
@@ -675,7 +661,7 @@ class AccessScopingMixin(HarnessCore):
                 problems.append(f'unshare of {permission} returned {removed}, expected the remaining {remaining}')
             if (shared_id in await self._entries_by_id(bob, [shared_id])) != readable:
                 problems.append(f'after the unshare of {permission} {SECOND_PRINCIPAL} reads the entry: {not readable}')
-        _, error = await self._outcome(bob, 'navigate_context', {'context_id': shared_id})
+        _, error = await self._outcome('navigate_context', {'context_id': shared_id}, client=bob)
         if error != f'Context entry not found: {shared_id}':
             problems.append(f'navigate_context after both unshares returned {error!r}')
         return problems

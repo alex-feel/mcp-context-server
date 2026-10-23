@@ -2,7 +2,8 @@
 
 ``HarnessCore`` owns the per-run state: the server environment for each
 backend, the FastMCP client and the second-server helper, image and result
-extraction, and the result list every check reports into. ``ClientMode``,
+extraction, the tool call that reports a tool error instead of raising it, and
+the result list every check reports into. ``ClientMode``,
 ``CLIENT_MODES`` and ``ERA_PROTOCOL_VERSIONS`` name the protocol eras a
 harness client negotiates.
 
@@ -28,6 +29,7 @@ from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
 from fastmcp.client.transports import PythonStdioTransport
 from mcp.client.stdio import get_default_environment
+from mcp.types import TextContent
 from mcp.types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 
@@ -45,6 +47,10 @@ ERA_PROTOCOL_VERSIONS: dict[ClientMode, tuple[str, ...]] = {
     'auto': MODERN_PROTOCOL_VERSIONS,
     'legacy': HANDSHAKE_PROTOCOL_VERSIONS,
 }
+
+# The result of a tool call made without raising: the extracted content and None,
+# or None and the text of the tool error.
+type ToolOutcome = tuple[dict[str, Any] | None, str | None]
 
 # Feature settings of the PostgreSQL primary server and of every second server that
 # does not share the primary's environment: the full search surface, low-effort
@@ -280,6 +286,38 @@ class HarnessCore:
 
         # Should not reach here with current FastMCP, but return error for safety
         return {'success': False, 'error': 'Unable to extract content from result'}
+
+    async def _outcome(self, tool: str, arguments: dict[str, Any], *, client: Client[Any] | None = None) -> ToolOutcome:
+        """Call a tool without raising on a tool error.
+
+        Args:
+            tool: The tool name.
+            arguments: The tool arguments.
+            client: The client to call through; the primary client when omitted.
+
+        Returns:
+            The extracted content and None, or None and the error text.
+        """
+        caller = client if client is not None else self.client
+        assert caller is not None
+        result = await caller.call_tool(tool, arguments, raise_on_error=False)
+        if result.is_error:
+            return None, ' '.join(block.text for block in result.content if isinstance(block, TextContent))
+        return self._extract_content(result), None
+
+    def _record(self, test_name: str, problems: list[str], passed: str) -> bool:
+        """Record a check's outcome.
+
+        Args:
+            test_name: The check's name.
+            problems: The problems found.
+            passed: The detail recorded when there are none.
+
+        Returns:
+            bool: True when there are no problems.
+        """
+        self.test_results.append((test_name, not problems, '; '.join(problems) or passed))
+        return not problems
 
     @contextlib.asynccontextmanager
     async def _second_server(

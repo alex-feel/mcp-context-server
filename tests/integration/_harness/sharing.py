@@ -21,8 +21,6 @@ import sqlite3
 from collections.abc import Mapping
 from typing import Any
 
-from mcp.types import TextContent
-
 from app.settings.auth import AccessControlSettings
 from tests.integration._harness.core import HarnessCore
 
@@ -39,8 +37,6 @@ NOT_OWNER_REFUSALS = {
     'list_context_grants': 'Not authorized to list the grants of context entry with ID {id}',
 }
 
-# A tool call's structured content, or its error text when the tool refused the call.
-type SharingOutcome = tuple[dict[str, Any] | None, str | None]
 # A tool name and its arguments.
 type SharingCall = tuple[str, dict[str, Any]]
 # The rows one read tool returned for one entry.
@@ -135,22 +131,6 @@ def outline_access_field_problems(root: dict[str, Any] | None) -> list[str]:
 class SharingMixin(HarnessCore):
     """Checks for the sharing tools and the read-back on a real server."""
 
-    async def _sharing_outcome(self, tool: str, arguments: dict[str, Any]) -> SharingOutcome:
-        """Call a tool through the primary client without raising on a tool error.
-
-        Args:
-            tool: The tool name.
-            arguments: The tool arguments.
-
-        Returns:
-            The extracted content and None, or None and the error text.
-        """
-        assert self.client is not None
-        result = await self.client.call_tool(tool, arguments, raise_on_error=False)
-        if result.is_error:
-            return None, ' '.join(block.text for block in result.content if isinstance(block, TextContent))
-        return self._extract_content(result), None
-
     async def _sharing_content(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call a tool through the primary client that must succeed.
 
@@ -164,7 +144,7 @@ class SharingMixin(HarnessCore):
         Raises:
             AssertionError: If the tool reported an error.
         """
-        data, error = await self._sharing_outcome(tool, arguments)
+        data, error = await self._outcome(tool, arguments)
         if data is None:
             raise AssertionError(f'{tool} failed: {error}')
         return data
@@ -234,20 +214,6 @@ class SharingMixin(HarnessCore):
         rows = [row for row in data.get('results', []) if row.get('id') == context_id]
         return rows[0].get('updated_at') if rows else None
 
-    def _sharing_record(self, test_name: str, problems: list[str], passed: str) -> bool:
-        """Record a check's outcome.
-
-        Args:
-            test_name: The check's name.
-            problems: The problems found.
-            passed: The detail recorded when there are none.
-
-        Returns:
-            bool: True when there are no problems.
-        """
-        self.test_results.append((test_name, not problems, '; '.join(problems) or passed))
-        return not problems
-
     async def test_sharing_tools_registered(self) -> bool:
         """Verify the server registers the three sharing tools.
 
@@ -263,7 +229,7 @@ class SharingMixin(HarnessCore):
             registered = {tool.name for tool in await self.client.list_tools()}
             missing = sorted(SHARING_TOOLS - registered)
             problems = [f'the sharing tools {missing} are not registered'] if missing else []
-            return self._sharing_record(test_name, problems, 'share, unshare and list tools registered')
+            return self._record(test_name, problems, 'share, unshare and list tools registered')
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
@@ -306,7 +272,7 @@ class SharingMixin(HarnessCore):
                 problems.append(f'the grants are {listed.get("grants")}, expected {expected}')
             if (await self._stored_state(context_id))[1] != 2:
                 problems.append('the database does not hold exactly the two listed grant rows')
-            return self._sharing_record(test_name, problems, 'one row per grant; repeats change nothing')
+            return self._record(test_name, problems, 'one row per grant; repeats change nothing')
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
@@ -340,7 +306,7 @@ class SharingMixin(HarnessCore):
                 problems.append(f'grants remain after both unshares: {listed}')
             if (await self._stored_state(context_id))[1] != 0:
                 problems.append('grant rows remain in the database after both unshares')
-            return self._sharing_record(test_name, problems, 'each unshare removed exactly the named grant')
+            return self._record(test_name, problems, 'each unshare removed exactly the named grant')
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
@@ -370,7 +336,7 @@ class SharingMixin(HarnessCore):
                 after = [(await self._stored_state(context_id))[0], await self._updated_at(context_id)]
                 if after != states:
                     problems.append(f'{tool} moved (version, updated_at) from {states} to {after}')
-            return self._sharing_record(test_name, problems, 'version and updated_at unchanged by share and unshare')
+            return self._record(test_name, problems, 'version and updated_at unchanged by share and unshare')
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
@@ -400,7 +366,7 @@ class SharingMixin(HarnessCore):
             self_share = f'Cannot share context entry with ID {context_id} with its owner'
             refusals.append(('share_context', 'user', owner, self_share))
             for tool, principal_type, principal_id, expected in refusals:
-                _, error = await self._sharing_outcome(tool, {
+                _, error = await self._outcome(tool, {
                     'context_id': context_id, 'principal_type': principal_type, 'principal_id': principal_id,
                     'permission': 'read',
                 })
@@ -409,19 +375,19 @@ class SharingMixin(HarnessCore):
 
             not_found = f'Context entry with ID {ABSENT_ID} not found'
             for tool, arguments in grant_calls(ABSENT_ID, GRANTEE):
-                _, error = await self._sharing_outcome(tool, arguments)
+                _, error = await self._outcome(tool, arguments)
                 if error != not_found:
                     problems.append(f'{tool} on an absent entry returned {error!r}, expected {not_found!r}')
             grant = {'principal_type': 'user', 'principal_id': GRANTEE, 'permission': 'read'}
             for arguments in ({**grant, 'context_id': context_id, 'permission': 'admin'}, {**grant, 'context_id': 'abc'}):
-                data, error = await self._sharing_outcome('share_context', arguments)
+                data, error = await self._outcome('share_context', arguments)
                 if error is None:
                     problems.append(f'share_context accepted {arguments}: {data}')
 
             listed = await self._sharing_content('list_context_grants', {'context_id': context_id})
             if listed.get('count') != 0:
                 problems.append(f'a refused call stored a grant: {listed}')
-            return self._sharing_record(test_name, problems, 'invalid arguments refused, nothing stored')
+            return self._record(test_name, problems, 'invalid arguments refused, nothing stored')
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
@@ -486,7 +452,7 @@ class SharingMixin(HarnessCore):
 
             for context_id, visibility in entries.items():
                 problems.extend(read_back_problems(rows_by_entry[context_id], visibility, is_owner=True))
-            return self._sharing_record(test_name, problems, f'{len(reads) + 2} read tools report the access fields')
+            return self._record(test_name, problems, f'{len(reads) + 2} read tools report the access fields')
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
@@ -515,13 +481,13 @@ class SharingMixin(HarnessCore):
             deleted = await self._sharing_content('delete_context', {'context_ids': [context_id]})
             if deleted.get('deleted_count') != 1:
                 problems.append(f'delete_context returned {deleted}')
-            _, error = await self._sharing_outcome('list_context_grants', {'context_id': context_id})
+            _, error = await self._outcome('list_context_grants', {'context_id': context_id})
             if error != f'Context entry with ID {context_id} not found':
                 problems.append(f'list_context_grants on the deleted entry returned {error!r}')
             after = await self._stored_state(context_id)
             if after != (None, 0):
                 problems.append(f'after the delete the database holds version {after[0]} and {after[1]} grant rows')
-            return self._sharing_record(test_name, problems, 'the delete removed the entry and its grants')
+            return self._record(test_name, problems, 'the delete removed the entry and its grants')
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
