@@ -502,6 +502,13 @@ class TestGrantsOutsideTheVersionCheck:
     async def test_share_and_unshare_leave_version_and_updated_at_unchanged(self) -> None:
         cid = await _store('alice', 'version stays put')
 
+        # The stamps have whole-second precision, so the entry is backdated: a grant change that
+        # stamped updated_at would then show even when it runs within the second of the store.
+        def _backdate(conn: sqlite3.Connection) -> None:
+            conn.execute("UPDATE context_entries SET updated_at = '2000-01-01 00:00:00' WHERE id = ?", (cid,))
+
+        await _backend().execute_write(_backdate, access_scope=MAINTENANCE)
+
         async def observed() -> tuple[int, str, str]:
             version, raw_updated_at = await _version_and_updated_at(cid)
             with as_principal('alice'):
@@ -509,6 +516,8 @@ class TestGrantsOutsideTheVersionCheck:
             return version, raw_updated_at, cast(dict[str, Any], entries[0])['updated_at']
 
         before = await observed()
+        assert before[1] == '2000-01-01 00:00:00'
+        assert before[2] == '2000-01-01T00:00:00Z'
         with as_principal('alice'):
             await share_context(context_id=cid, principal_type='user', principal_id='bob', permission='write')
         after_share = await observed()
