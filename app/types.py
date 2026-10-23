@@ -4,7 +4,9 @@ This module provides type definitions to replace explicit Any usage
 and ensure strict type safety throughout the codebase.
 """
 
+from typing import Literal
 from typing import NotRequired
+from typing import Required
 from typing import TypedDict
 
 # JSON value types - recursive union for JSON-like data structures
@@ -15,6 +17,22 @@ type MetadataValue = str | int | float | bool | None
 
 # Metadata dictionary type for use in models - supports nested JSON structures
 type MetadataDict = dict[str, JsonValue]
+
+# The stored visibility of an entry, as every entry read reports it.
+type EntryVisibility = Literal['private', 'public']
+
+
+class EntryAccessFields(TypedDict):
+    """The access fields every entry-carrying read response reports for one entry.
+
+    ``visibility`` is the entry's stored visibility. ``is_owner`` says whether the
+    caller owns the entry, the only role that may change its visibility or delete
+    it; a principal reading through a grant or a ``public`` visibility sees false.
+    The owner itself is never reported.
+    """
+
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 # API Response TypedDicts for proper return type annotations
@@ -43,7 +61,8 @@ class ImageDict(TypedDict):
 class ContextEntryDict(TypedDict, total=False):
     """Type definition for context entry responses.
 
-    Uses total=False to handle optional fields properly.
+    Uses total=False to handle optional fields properly; ``visibility`` and
+    ``is_owner`` (see :class:`EntryAccessFields`) are required on every entry.
     """
 
     id: str
@@ -58,6 +77,8 @@ class ContextEntryDict(TypedDict, total=False):
     tags: list[str]
     images: list[ImageDict] | None
     is_text_content_truncated: bool | None
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 class ClampedLimitDict(TypedDict):
@@ -99,14 +120,16 @@ class SearchContextResponseDict(TypedDict, total=False):
 
 
 class GrepFileDict(TypedDict):
-    """A grep result row in ``files_with_matches`` mode (locator only)."""
+    """A grep result row in ``files_with_matches`` mode (locator only), with the entry's access fields."""
 
     context_id: str
     match_count: int
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 class GrepContentMatchDict(TypedDict):
-    """A grep result row in ``content`` mode (one per match).
+    """A grep result row in ``content`` mode (one per match), with the access fields of the matched entry.
 
     Offsets are Unicode code-point indices into the entry's ``text_content`` and
     compose directly with ``read_context_range`` (start_char/end_char).
@@ -119,13 +142,17 @@ class GrepContentMatchDict(TypedDict):
     match_end: int
     before: list[str]
     after: list[str]
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 class GrepCountDict(TypedDict):
-    """A grep result row in ``count`` mode (per-entry match tally)."""
+    """A grep result row in ``count`` mode (per-entry match tally), with the entry's access fields."""
 
     context_id: str
     count: int
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 class GrepContextResultDict(TypedDict, total=False):
@@ -153,7 +180,8 @@ class ReadContextRangeDict(TypedDict):
 
     Echoes the RESOLVED span actually returned (after clamping out-of-range
     offsets to ``[0, len]``) so a caller always knows exactly what it received.
-    Offsets are Unicode code-point indices.
+    Offsets are Unicode code-point indices. ``visibility`` and ``is_owner`` are the
+    entry's access fields.
     """
 
     context_id: str
@@ -162,6 +190,8 @@ class ReadContextRangeDict(TypedDict):
     start_line: int
     end_line: int
     text: str
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 class OutlineNodeDict(TypedDict, total=False):
@@ -183,12 +213,18 @@ class OutlineNodeDict(TypedDict, total=False):
 
 
 class NavigateContextResultDict(TypedDict, total=False):
-    """Type definition for the navigate_context response."""
+    """Type definition for the navigate_context response.
+
+    ``visibility`` and ``is_owner`` are the entry's access fields, reported at the
+    top level only, never on an outline node.
+    """
 
     context_id: str
     total_chars: int
     node_count: int
     root: OutlineNodeDict
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 class StoreContextSuccessDict(TypedDict):

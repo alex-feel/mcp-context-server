@@ -127,7 +127,7 @@ Search context entries with powerful filtering including metadata queries and da
 
 **Date Filtering:** Supports ISO 8601 date filtering. See [Date Filtering](#date-filtering) section below.
 
-**Returns:** List of matching context entries with truncated `text_content`, `summary`, and `is_text_content_truncated` flag, plus optional query statistics
+**Returns:** List of matching context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, and `is_owner` (true when the caller owns the entry), plus optional query statistics
 
 ### get_context_by_ids
 
@@ -137,7 +137,7 @@ Fetch specific context entries by their IDs.
 - `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form (at most 100 IDs per call). Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
 - `include_images` (bool, optional): Include image data (default: True)
 
-**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, and `updated_at`. The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
+**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, `updated_at`, `visibility` (`private` or `public`), and `is_owner` (true when the caller owns the entry; the owner itself is never returned). The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
 
 - When disabled (the default), the `summary` key is omitted entirely; consumers reading `entry.get('summary')` will receive `None`, which is the conventional Python signal for "feature disabled, no value to surface".
 - When enabled and the stored summary is a non-empty string, the value is returned verbatim.
@@ -470,6 +470,8 @@ All search tools return consistent response structures with common fields and to
 | `summary`                                      | Yes (string)          | Yes (string)               | Yes (string)               | Yes (string)               |
 | `is_text_content_truncated`                    | Yes                   | Yes                        | Yes                        | Yes                        |
 | `metadata`, `tags`, `created_at`, `updated_at` | Yes                   | Yes                        | Yes                        | Yes                        |
+| `visibility`                                   | Yes                   | No                         | No                         | No                         |
+| `is_owner`                                     | Yes                   | No                         | No                         | No                         |
 | `images`                                       | include_images=True   | include_images=True        | include_images=True        | include_images=True        |
 | `scores`                                       | No                    | Yes                        | Yes                        | Yes                        |
 | `highlighted`                                  | No                    | No                         | highlight=True             | No                         |
@@ -514,7 +516,7 @@ Server-side grep: literal or regular-expression, line-oriented, UNRANKED pattern
 - `max_entries_scanned` (int, optional): Maximum entries the scan visits (clamped to the server cap)
 - `thread_id` / `source` / `tags` / `metadata_filters` / `content_type` (optional): Reuse the store's filters to scope the scan (the ripgrep glob/type analog); scoping with `thread_id` is recommended; `tags` accepts at most 100 tags and `metadata_filters` at most 100 filters per request
 
-**Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. `truncated` is True when matches or the scan were capped.
+**Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. Every result also carries its entry's `visibility` (`private` or `public`) and `is_owner` (true when the caller owns the entry). `truncated` is True when matches or the scan were capped.
 
 ### navigate_context
 
@@ -525,7 +527,7 @@ Build a navigable Markdown-heading outline (index_tree) for one record, computed
 - `max_depth` (int, optional): Deepest Markdown heading level to include (1-6, default 6; deeper headings fold into their section)
 - `include_node_summaries` (bool, optional): Attach stored per-node LLM summaries to descendant nodes when that layer is enabled (default: False)
 
-**Returns:** `{context_id, total_chars, node_count, root}` where `root` is a recursive node `{node_id, level, ordinal, title, char_start, char_end, summary, children}`. `node_id` is a heading-path slug with a sibling ordinal (e.g. `setup/install`, `notes-2`); the root's `summary` mirrors the entry summary by reference.
+**Returns:** `{context_id, total_chars, node_count, root, visibility, is_owner}` where `root` is a recursive node `{node_id, level, ordinal, title, char_start, char_end, summary, children}`. `node_id` is a heading-path slug with a sibling ordinal (e.g. `setup/install`, `notes-2`); the root's `summary` mirrors the entry summary by reference. `visibility` and `is_owner` describe the entry (its visibility, and whether the caller owns it) and appear at the top level only, never on a node.
 
 ### read_context_range
 
@@ -539,7 +541,7 @@ Read part of one record by character range, line range, or outline `node_id`. Sl
 
 Provide exactly ONE addressing mode. Pair with `grep_context` (content mode) by feeding `match_start`/`match_end` into `start_char`/`end_char`, or with `navigate_context` by passing a section's `node_id`.
 
-**Returns:** `{context_id, start_char, end_char, start_line, end_line, text}` echoing the RESOLVED span. Out-of-range offsets are clamped to `[0, len(text)]`, so a stale offset or node_id from a prior turn degrades gracefully.
+**Returns:** `{context_id, start_char, end_char, start_line, end_line, text, visibility, is_owner}` echoing the RESOLVED span, with the entry's visibility and whether the caller owns it. Out-of-range offsets are clamped to `[0, len(text)]`, so a stale offset or node_id from a prior turn degrades gracefully.
 
 ## Sync Tools
 

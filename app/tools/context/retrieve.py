@@ -14,6 +14,7 @@ from app.ids import resolve_or_normalize_ids
 from app.repositories.base import canonical_timestamp
 from app.settings import get_settings
 from app.startup import ensure_repositories
+from app.tools._responses import entry_access_fields
 from app.types import ContextEntryDict
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ async def get_context_by_ids(
 
     Returns:
         List of ContextEntryDict with id, thread_id, source, text_content, metadata,
-        tags, images, created_at, updated_at fields. The summary field follows a
+        tags, images, created_at, updated_at, visibility and is_owner fields;
+        is_owner says whether the caller owns the entry. The summary field follows a
         tri-state contract controlled by GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY:
 
         - When disabled (the default), the summary key is omitted entirely; consumers
@@ -80,6 +82,9 @@ async def get_context_by_ids(
         for row in rows:
             # Create entry dict with proper typing for dynamic fields
             entry = cast(ContextEntryDict, dict(row))
+            access = entry_access_fields(row)
+            entry['visibility'] = access['visibility']
+            entry['is_owner'] = access['is_owner']
 
             # Canonical timestamp wire format: identical across SQLite and PostgreSQL
             # and to the search tools (text_content stays FULL here -- get_context_by_ids

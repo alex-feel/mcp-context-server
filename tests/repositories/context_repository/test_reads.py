@@ -1,5 +1,6 @@
 """Tests for ContextRepository by-id reads and the existence and content-type probes."""
 
+import re
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import cast
@@ -8,9 +9,12 @@ from unittest.mock import Mock
 
 import pytest
 
+from app.access_scope import SYSTEM_SCOPE
+from app.access_scope import AccessScope
 from app.backends.base import BackendAccess
 from app.backends.base import StorageBackend
 from app.backends.base import TransactionContext
+from app.backends.base import base_relation
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -152,6 +156,70 @@ class TestContextRepositoryGetById:
         assert [row['id'] for row in rows] == expected_ids
 
 
+class TestGetByIdsReadBack:
+    """get_by_ids reports each row's visibility and whether the caller owns it, never the owner itself."""
+
+    @pytest.mark.asyncio
+    async def test_rows_carry_visibility_and_ownership(self, repos: RepositoryContainer) -> None:
+        """The caller's own private row reads back as owned, another principal's public row as not owned."""
+        own_id, _ = await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE, visibility='private', thread_id='read_back', source='user',
+            content_type='text', text_content='own private entry',
+        )
+        foreign_id, _ = await repos.context.store_with_deduplication(
+            scope=AccessScope('alice', frozenset()), visibility='public', thread_id='read_back', source='agent',
+            content_type='text', text_content='alice public entry',
+        )
+
+        rows = [dict(row) for row in await repos.context.get_by_ids([own_id, foreign_id], scope=LOCAL_SCOPE)]
+
+        assert {row['id']: (row['visibility'], row['is_owner']) for row in rows} == {
+            own_id: ('private', 1), foreign_id: ('public', 0),
+        }
+        assert all('owner_id' not in row for row in rows)
+
+    @pytest.mark.asyncio
+    async def test_system_scope_owns_every_row(self, repos: RepositoryContainer) -> None:
+        """The system scope's empty predicate admits every row as owned."""
+        foreign_id, _ = await repos.context.store_with_deduplication(
+            scope=AccessScope('alice', frozenset()), visibility='private', thread_id='read_back', source='agent',
+            content_type='text', text_content='alice private entry',
+        )
+
+        [row] = await repos.context.get_by_ids([foreign_id], scope=SYSTEM_SCOPE)
+
+        assert (row['visibility'], row['is_owner']) == ('private', 1)
+
+    @pytest.mark.asyncio
+    async def test_postgresql_binds_the_owner_first(self) -> None:
+        """On PostgreSQL the ownership bind of the select list is $1, the ids follow and the read predicate comes last."""
+        statements: list[tuple[str, tuple[object, ...]]] = []
+
+        class _RecordingConnection:
+            async def fetch(self, query: str, *args: object) -> list[object]:
+                statements.append((query, args))
+                return []
+
+        async def _execute_read(closure: Callable[[object], Awaitable[object]], *, access_scope: BackendAccess) -> object:
+            _ = access_scope
+            return await closure(_RecordingConnection())
+
+        pg_backend = Mock()
+        pg_backend.backend_type = 'postgresql'
+        pg_backend.readable_relation = base_relation
+        pg_backend.execute_read = _execute_read
+        repo = ContextRepository(cast(StorageBackend, pg_backend))
+
+        await repo.get_by_ids(['a' * 32, 'b' * 32], scope=AccessScope('bob', frozenset({'team-x'})))
+
+        [(query, args)] = statements
+        flat = ' '.join(query.split())
+        assert sorted({int(number) for number in re.findall(r'\$(\d+)', query)}) == list(range(1, len(args) + 1))
+        assert 'summary, created_at, updated_at, visibility, CASE WHEN context_entries.owner_id = $1 THEN 1' in flat
+        assert ' AS is_owner FROM context_entries WHERE id IN ($2,$3) AND (context_entries.owner_id = $4 ' in flat
+        assert args == ('bob', 'a' * 32, 'b' * 32, 'bob', 'bob', ['team-x'])
+
+
 async def _store_local_entries(repos: RepositoryContainer, count: int, thread_id: str) -> list[str]:
     """Store ``count`` entries owned by the default principal and return their ids."""
     stored: list[str] = []
@@ -187,7 +255,7 @@ class TestScopedReadsUnderVariableCap:
 
         rows = await repos.context.get_by_ids(_pad_to_1000_ids(real_ids), scope=LOCAL_SCOPE)
 
-        assert {row['id'] for row in rows} == set(real_ids)
+        assert {row['id']: (row['visibility'], row['is_owner']) for row in rows} == dict.fromkeys(real_ids, ('private', 1))
 
     @pytest.mark.asyncio
     async def test_probe_ids_binds_1000_ids_with_scope(self, repos: RepositoryContainer) -> None:

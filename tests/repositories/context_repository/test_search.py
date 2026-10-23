@@ -454,6 +454,26 @@ class TestSearchContextsScope:
     """search_contexts applies the caller's read scope after every client filter."""
 
     @pytest.mark.asyncio
+    async def test_rows_carry_visibility_and_ownership(self, repos: RepositoryContainer) -> None:
+        """Each row reports its visibility and whether the caller owns it, also under client filters, never the owner."""
+        own_id, _ = await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE, visibility='private', thread_id='read_back', source='user',
+            content_type='text', text_content='own private entry', metadata=json.dumps({'project': 'p'}),
+        )
+        foreign_id, _ = await repos.context.store_with_deduplication(
+            scope=AccessScope('alice', frozenset()), visibility='public', thread_id='read_back', source='agent',
+            content_type='text', text_content='alice public entry', metadata=json.dumps({'project': 'p'}),
+        )
+
+        rows, _stats = await repos.context.search_contexts(thread_id='read_back', metadata={'project': 'p'}, scope=LOCAL_SCOPE)
+        observed = [dict(row) for row in rows]
+
+        assert {row['id']: (row['visibility'], row['is_owner']) for row in observed} == {
+            foreign_id: ('public', 0), own_id: ('private', 1),
+        }
+        assert all('owner_id' not in row for row in observed)
+
+    @pytest.mark.asyncio
     async def test_filters_applied_does_not_count_the_scope(self, repos: RepositoryContainer) -> None:
         """The same client filters report the same count whatever scope runs them."""
         await repos.context.store_with_deduplication(
@@ -471,7 +491,8 @@ class TestSearchContextsScope:
 
     @pytest.mark.asyncio
     async def test_postgresql_placeholders_continue_after_every_filter(self) -> None:
-        """On PostgreSQL the predicate binds after the filters and before LIMIT and OFFSET, numbered contiguously."""
+        """On PostgreSQL the ownership bind of the select list is $1, the filters follow it, and the read
+        predicate binds after the filters and before LIMIT and OFFSET, numbered contiguously."""
         repo, statements = _recording_postgresql_repo([])
 
         await repo.search_contexts(
@@ -481,9 +502,15 @@ class TestSearchContextsScope:
         )
 
         [(query, args)] = statements
+        read_arm = r'AND \(context_entries\.owner_id = \$(\d+) OR'
         assert sorted({int(number) for number in re.findall(r'\$(\d+)', query)}) == list(range(1, len(args) + 1))
-        assert query.index('FROM tags') < query.index('context_entries.owner_id')
-        assert _bound(query, args, r'context_entries\.owner_id = \$(\d+)') == 'bob'
+        assert 'visibility, CASE WHEN context_entries.owner_id = $1 THEN 1 ELSE 0 END AS is_owner FROM' in query
+        assert args[0] == 'bob'
+        assert _bound(query, args, r'thread_id = \$(\d+)') == 't'
+        match = re.search(read_arm, query)
+        assert match is not None
+        assert query.index('FROM tags') < match.start()
+        assert _bound(query, args, read_arm) == 'bob'
         assert _bound(query, args, r"principal_type = 'user' AND g\.principal_id = \$(\d+)") == 'bob'
         assert _bound(query, args, r'= ANY\(\$(\d+)::text\[\]\)') == ['team-x']
         assert _bound(query, args, r'LIMIT \$(\d+)') == 5
@@ -498,6 +525,7 @@ class TestSearchContextsScope:
 
         [(query, args)] = statements
         assert 'owner_id' not in query
+        assert ', 1 AS is_owner FROM' in query
         assert args == ('t', 5, 0)
 
     @pytest.mark.asyncio

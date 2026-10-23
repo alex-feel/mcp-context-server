@@ -4,7 +4,8 @@ The headline guarantee: the scan is EXHAUSTIVE. It must NOT be built on
 search_contexts (which hard-caps at LIMIT 50), so a grep over more than 50
 matching entries returns every one. Also covers the optional ASCII substring
 pre-narrow, newest-first keyset ordering, the max_entries_scanned cap with a
-truncated flag, canonical id output, and metadata-filter validation.
+truncated flag, canonical id output, each row's visibility and ownership, and
+metadata-filter validation.
 """
 
 import re
@@ -31,6 +32,7 @@ from app.backends.base import base_relation
 from app.ids import generate_id_with_timestamp
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
+from app.repositories.context_repository.records import GrepScanRow
 from tests.helpers import LOCAL_SCOPE
 
 
@@ -139,7 +141,7 @@ class TestGrepScanPreNarrow:
         await _insert_entries(backend, count=40, text_fn=lambda i: 'needle' if i % 2 == 0 else 'haystack')
         rows, _stats = await repos.context.grep_scan_text_contents(ascii_literal='needle', thread_id='t', scope=LOCAL_SCOPE)
         assert len(rows) == 20
-        assert all('needle' in text for _cid, text in rows)
+        assert all('needle' in row.text_content for row in rows)
 
     @pytest.mark.asyncio
     async def test_no_literal_scans_all_in_thread(
@@ -264,7 +266,7 @@ class TestGrepScanBounds:
             scope=LOCAL_SCOPE,
         )
         # id DESC -> newest first: item4, item3, item2
-        assert [text for _cid, text in rows] == ['item4', 'item3', 'item2']
+        assert [row.text_content for row in rows] == ['item4', 'item3', 'item2']
 
     @pytest.mark.asyncio
     async def test_returned_ids_are_canonical_hex(
@@ -274,9 +276,9 @@ class TestGrepScanBounds:
         backend, repos = backend_and_repos
         await _insert_entries(backend, count=3, text_fn=lambda _i: 'needle')
         rows, _stats = await repos.context.grep_scan_text_contents(ascii_literal='needle', thread_id='t', scope=LOCAL_SCOPE)
-        for cid, _text in rows:
-            assert len(cid) == 32
-            assert all(c in '0123456789abcdef' for c in cid)
+        for row in rows:
+            assert len(row.id) == 32
+            assert all(c in '0123456789abcdef' for c in row.id)
 
 
 class TestGrepScanValidation:
@@ -306,9 +308,9 @@ class _RecordingConnection:
         self.row_id = row_id
         self.statements: list[tuple[str, tuple[object, ...]]] = []
 
-    async def fetch(self, query: str, *args: object) -> list[dict[str, str]]:
+    async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
         self.statements.append((query, args))
-        return [{'id': self.row_id, 'text_content': 'needle'}]
+        return [{'id': self.row_id, 'text_content': 'needle', 'visibility': 'private', 'is_owner': 1}]
 
     async def fetchval(self, query: str, *args: object) -> None:
         self.statements.append((query, args))
@@ -338,17 +340,43 @@ class TestGrepScanScope:
             ascii_literal='needle', thread_id='t', max_entries_scanned=2, page_size=1, scope=LOCAL_SCOPE,
         )
 
-        assert [cid for cid, _text in rows] == own_ids[::-1]
+        assert [row.id for row in rows] == own_ids[::-1]
         assert stats['scanned'] == 2
         assert stats['truncated'] is False
         owner_rows, _ = await repos.context.grep_scan_text_contents(
             ascii_literal='needle', thread_id='t', scope=AccessScope('alice', frozenset()),
         )
-        assert sorted(cid for cid, _text in owner_rows) == sorted(hidden_ids)
+        assert sorted(row.id for row in owner_rows) == sorted(hidden_ids)
+
+    @pytest.mark.asyncio
+    async def test_rows_carry_visibility_and_ownership(
+        self,
+        backend_and_repos: tuple[StorageBackend, RepositoryContainer],
+    ) -> None:
+        """Each scanned row reports its visibility and whether the caller owns it, across keyset pages."""
+        backend, repos = backend_and_repos
+        own_ids = await _insert_entries(backend, count=3, text_fn=lambda _i: 'needle')
+        foreign_id = await _insert_foreign_private(backend, 10)
+
+        def _publish(conn: sqlite3.Connection) -> None:
+            conn.execute("UPDATE context_entries SET visibility = 'public' WHERE id = ?", (foreign_id,))
+
+        await backend.execute_write(_publish, access_scope=MAINTENANCE)
+
+        rows, stats = await repos.context.grep_scan_text_contents(
+            ascii_literal='needle', thread_id='t', page_size=2, scope=LOCAL_SCOPE,
+        )
+
+        assert [(row.id, row.visibility, row.is_owner) for row in rows] == [
+            (foreign_id, 'public', False), *((context_id, 'private', True) for context_id in own_ids[::-1]),
+        ]
+        assert all(type(row.is_owner) is bool for row in rows)
+        assert stats['scanned'] == 4
 
     @pytest.mark.asyncio
     async def test_postgresql_page_and_lookahead_bind_the_scope_in_order(self) -> None:
-        """Every PostgreSQL statement numbers its placeholders contiguously with the scope after the filters."""
+        """Every PostgreSQL statement numbers its placeholders contiguously with the read scope after the filters;
+        the page binds the ownership of its select list first, the lookahead selects no ownership."""
         row_id = 'a' * 32
         connection = _RecordingConnection(row_id)
         pg_backend = Mock()
@@ -375,14 +403,24 @@ class TestGrepScanScope:
         )
 
         assert handed == [bob]
-        assert rows == [(row_id, 'needle')]
+        assert rows == [GrepScanRow(row_id, 'needle', 'private', True)]
         assert stats == {'scanned': 1, 'truncated': False, 'backend': 'postgresql'}
         (page, page_args), (lookahead, lookahead_args) = connection.statements
+        read_arm = r'AND \(context_entries\.owner_id = \$(\d+) OR'
         for query, args in connection.statements:
             assert sorted({int(number) for number in re.findall(r'\$(\d+)', query)}) == list(range(1, len(args) + 1))
-            assert query.index('FROM tags') < query.index('context_entries.owner_id') < query.index('ILIKE')
-            assert _bound(query, args, r'context_entries\.owner_id = \$(\d+)') == 'bob'
+            match = re.search(read_arm, query)
+            assert match is not None
+            assert query.index('FROM tags') < match.start() < query.index('ILIKE')
+            assert _bound(query, args, read_arm) == 'bob'
             assert _bound(query, args, r'= ANY\(\$(\d+)::text\[\]\)') == ['team-x']
             assert _bound(query, args, r'ILIKE \$(\d+)') == '%needle%'
+            assert _bound(query, args, r'thread_id = \$(\d+)') == 't'
+        assert page.startswith(
+            'SELECT id, text_content, visibility, CASE WHEN context_entries.owner_id = $1 THEN 1 ELSE 0 END AS is_owner FROM',
+        )
+        assert page_args[0] == 'bob'
         assert _bound(page, page_args, r'LIMIT \$(\d+)') == 1
+        assert lookahead.startswith('SELECT 1 FROM')
+        assert 'is_owner' not in lookahead
         assert _bound(lookahead, lookahead_args, r'id < \$(\d+)') == row_id

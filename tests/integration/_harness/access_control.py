@@ -1,8 +1,8 @@
 """Real-server checks for entry visibility.
 
 The ``visibility`` parameter on store and update, rejection of an invalid
-value, and the internal access-control columns staying out of read
-responses.
+value, and the read-back of an entry's visibility and the caller's ownership,
+with the owner itself staying out of read responses.
 """
 
 from tests.integration._harness.core import HarnessCore
@@ -17,8 +17,8 @@ class AccessControlMixin(HarnessCore):
         Stores an entry with an explicit visibility, changes it via
         update_context (the connected client IS the owner: without a verified
         token every request maps to the configured default principal), rejects
-        an invalid visibility value, and confirms the internal access-control
-        columns never appear in read responses.
+        an invalid visibility value, and confirms a read reports the updated
+        visibility and ``is_owner`` true while ``owner_id`` never appears.
 
         Returns:
             bool: True if test passed.
@@ -74,7 +74,7 @@ class AccessControlMixin(HarnessCore):
             except Exception:
                 pass  # Expected rejection
 
-            # The internal access-control columns never leak into read responses.
+            # A read reports the stored visibility and the caller's ownership, never the owner itself.
             fetch_result = await self.client.call_tool(
                 'get_context_by_ids',
                 {'context_ids': [context_id]},
@@ -84,12 +84,18 @@ class AccessControlMixin(HarnessCore):
             if not fetch_data.get('success') or not entries:
                 self.test_results.append((test_name, False, f'Stored entry not retrievable: {fetch_data}'))
                 return False
-            leaked = {'owner_id', 'visibility'} & set(entries[0].keys())
-            if leaked:
-                self.test_results.append((test_name, False, f'Internal columns leaked: {leaked}'))
+            entry = entries[0]
+            if entry.get('visibility') != 'public':
+                self.test_results.append((test_name, False, f'visibility read back as {entry.get("visibility")!r}'))
+                return False
+            if entry.get('is_owner') is not True:
+                self.test_results.append((test_name, False, f'is_owner read back as {entry.get("is_owner")!r}'))
+                return False
+            if 'owner_id' in entry:
+                self.test_results.append((test_name, False, 'owner_id leaked into the read response'))
                 return False
 
-            self.test_results.append((test_name, True, 'Visibility store/update/reject/privacy passed'))
+            self.test_results.append((test_name, True, 'Visibility store/update/reject/read-back passed'))
             return True
 
         except Exception as e:

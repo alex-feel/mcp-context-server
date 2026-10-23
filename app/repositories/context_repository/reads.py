@@ -12,9 +12,9 @@ from app.access_scope import build_access_predicate
 from app.ids import normalize_id
 from app.repositories.base import BaseRepository
 from app.repositories.context_repository.helpers import chunk_ids
-from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.context_repository.records import IdAccess
+from app.repositories.context_repository.records import entry_columns
 
 if TYPE_CHECKING:
     import asyncpg
@@ -48,6 +48,8 @@ class ContextReadMixin(BaseRepository):
         Returns:
             List of context entry rows (sqlite3.Row or asyncpg.Record depending on
             backend), ordered by ``created_at DESC, id DESC`` across the whole result.
+            Each row carries the entry columns, ``visibility`` among them, and
+            ``is_owner``: 1 when the scope owns the entry, else 0.
         """
         # Defensive check: return empty list if no IDs provided
         # Prevents SQL syntax errors when constructing IN clauses
@@ -55,29 +57,34 @@ class ContextReadMixin(BaseRepository):
             return []
 
         # Fetch in bounded chunks (mirroring delete_by_ids) so an arbitrarily long id
-        # list never exceeds a backend's per-statement bound-parameter limit. Each
-        # chunk binds its ids from placeholder 1 and the access predicate right after
-        # them; when more than one statement ran, the accumulated rows are re-sorted in
-        # Python so the single-statement ORDER BY created_at DESC, id DESC contract
-        # holds across chunk boundaries (the Python tuple sort compares the same
-        # TEXT/TIMESTAMPTZ created_at and unique lowercase-hex id values the SQL
-        # ORDER BY compares).
+        # list never exceeds a backend's per-statement bound-parameter limit. When more
+        # than one statement ran, the accumulated rows are re-sorted in Python so the
+        # single-statement ORDER BY created_at DESC, id DESC contract holds across chunk
+        # boundaries (the Python tuple sort compares the same TEXT/TIMESTAMPTZ created_at
+        # and unique lowercase-hex id values the SQL ORDER BY compares).
         chunks = chunk_ids(context_ids)
         backend_type = self.backend.backend_type
         entries = self._readable('context_entries', alias='context_entries')
 
         def _chunk_statement(chunk: list[str]) -> tuple[str, list[object]]:
-            placeholders = ','.join([self._placeholder(i + 1) for i in range(len(chunk))])
+            # Placeholder order follows the text: the OWNER bind of the select list,
+            # then the chunk's ids, then the READ binds of the WHERE clause.
+            owner = build_access_predicate(
+                scope, mode=AccessMode.OWNER, backend_type=backend_type, outer='context_entries', start=1,
+            )
+            first_id = 1 + owner.bind_count
+            placeholders = ','.join([self._placeholder(first_id + i) for i in range(len(chunk))])
             read = build_access_predicate(
-                scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=len(chunk) + 1,
+                scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries',
+                start=first_id + len(chunk),
             )
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'''
-                SELECT {CONTEXT_ENTRY_COLUMNS} FROM {entries}
+                SELECT {entry_columns()}, {owner.admits_expression()} AS is_owner FROM {entries}
                 WHERE id IN ({placeholders}){read.and_clause()}
                 ORDER BY created_at DESC, id DESC
             '''
-            return query, [*chunk, *read.params]
+            return query, [*owner.params, *chunk, *read.params]
 
         if backend_type == 'sqlite':
 

@@ -3,6 +3,7 @@ thread scoping, bounded output, regex handling and its aggregate timeout, and se
 client-requested bounds.
 """
 
+import sqlite3
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
@@ -13,6 +14,8 @@ from fastmcp.exceptions import ToolError
 
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
+from app.repositories.context_repository.records import GrepScanRow
 from app.services.grep_service import GrepEntryResult
 from app.startup import ensure_repositories
 from app.tools.navigation import grep_context
@@ -309,7 +312,7 @@ class TestGrepServerSideClamps:
         repos = await ensure_repositories()
         real_scan = repos.context.grep_scan_text_contents
 
-        async def spy_scan(**kwargs: Any) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+        async def spy_scan(**kwargs: Any) -> tuple[list[GrepScanRow], dict[str, Any]]:
             captured['max_entries_scanned'] = kwargs['max_entries_scanned']
             return await real_scan(**kwargs)
 
@@ -320,6 +323,37 @@ class TestGrepServerSideClamps:
             await grep_context(pattern='needle', thread_id='t', max_entries_scanned=1000000)
 
         assert captured['max_entries_scanned'] == 2
+
+
+async def _publish(backend: StorageBackend, context_id: str) -> None:
+    """Make one stored entry public."""
+
+    def _write(conn: sqlite3.Connection) -> None:
+        conn.execute("UPDATE context_entries SET visibility = 'public' WHERE id = ?", (context_id,))
+
+    await backend.execute_write(_write, access_scope=MAINTENANCE)
+
+
+class TestGrepContextReadBack:
+    """Every result row reports its entry's visibility and whether the caller owns the entry, never the owner."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('output_mode', ['files_with_matches', 'count', 'content'])
+    async def test_rows_carry_visibility_and_ownership(self, nav_backend: StorageBackend, output_mode: str) -> None:
+        """The caller's private entry reads back as owned and alice's public entry as not owned, in every mode."""
+        own = await store_entry(nav_backend, 'own needle\nanother needle', offset_seconds=1)
+        foreign = await store_entry(nav_backend, 'public needle', offset_seconds=2, owner='alice')
+        await _publish(nav_backend, foreign)
+
+        payload = await grep_as_dict(pattern='needle', thread_id='t', output_mode=output_mode)
+
+        expected = {own: ('private', True), foreign: ('public', False)}
+        rows = payload['results']
+        assert len(rows) == (3 if output_mode == 'content' else 2)
+        for row in rows:
+            assert (row['visibility'], row['is_owner']) == expected[row['context_id']]
+            assert type(row['is_owner']) is bool
+            assert 'owner_id' not in row
 
 
 class TestGrepContextScoping:
@@ -367,7 +401,7 @@ class TestGrepContextScoping:
         repos = await ensure_repositories()
         real_scan = repos.context.grep_scan_text_contents
 
-        async def spy_scan(**kwargs: Any) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+        async def spy_scan(**kwargs: Any) -> tuple[list[GrepScanRow], dict[str, Any]]:
             captured['scope'] = kwargs['scope']
             return await real_scan(**kwargs)
 

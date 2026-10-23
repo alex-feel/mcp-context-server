@@ -390,6 +390,8 @@ class TestGetContextByIdsValidation:
                         'text_content': 'Test',
                         'created_at': '2025-01-01',
                         'updated_at': '2025-01-01',
+                        'visibility': 'private',
+                        'is_owner': 1,
                     },
                 ],
             )

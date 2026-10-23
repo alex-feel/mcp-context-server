@@ -2,10 +2,13 @@
 clamp and echo, and the locate-then-extract composition with grep_context offsets.
 """
 
+import sqlite3
+
 import pytest
 from fastmcp.exceptions import ToolError
 
 from app.backends import StorageBackend
+from app.backends.base import MAINTENANCE
 from app.tools.navigation import read_context_range
 from tests.helpers import as_principal
 from tests.tools._navigation import grep_as_dict
@@ -92,6 +95,30 @@ class TestReadContextRangeScoping:
 
         with pytest.raises(ToolError, match=f"No context entry matches prefix '{hidden_id[:12]}'"):
             await read_context_range(context_id=hidden_id[:12], start_char=0, end_char=5)
+
+
+class TestReadContextRangeReadBack:
+    """The response reports the entry's visibility and whether the caller owns it."""
+
+    @pytest.mark.asyncio
+    async def test_response_carries_visibility_and_ownership(self, nav_backend: StorageBackend) -> None:
+        """The owner reads its private entry as owned; another principal's public entry reads as not owned."""
+        own = await store_entry(nav_backend, 'own private text')
+        foreign = await store_entry(nav_backend, 'alice public text', owner='alice')
+
+        def _publish(conn: sqlite3.Connection) -> None:
+            conn.execute("UPDATE context_entries SET visibility = 'public' WHERE id = ?", (foreign,))
+
+        await nav_backend.execute_write(_publish, access_scope=MAINTENANCE)
+
+        owned = dict(await read_context_range(context_id=own, start_char=0, end_char=3))
+        read = dict(await read_context_range(context_id=foreign, start_line=1, end_line=1))
+
+        assert (owned['visibility'], owned['is_owner']) == ('private', True)
+        assert (read['visibility'], read['is_owner']) == ('public', False)
+        for result in (owned, read):
+            assert type(result['is_owner']) is bool
+            assert 'owner_id' not in result
 
 
 class TestLocateThenExtract:

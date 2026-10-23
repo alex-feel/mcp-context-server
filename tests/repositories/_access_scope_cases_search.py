@@ -15,6 +15,11 @@ the readable rows alone, and ``filters_applied`` counts the client filters only.
   filters plus the ASCII pre-narrow, with a decoy lacking the keyword); adversarial; and
   page-fill, where hidden rows newer than every readable row never take a slot under the
   entry cap and hidden rows beyond the cap never flag the scan as truncated.
+
+Both seams also report, per row, its stored visibility and whether the caller owns it; the
+read-back variants pin that pair for every row returned, unfiltered, filtered and across
+the pages of the page-fill setups, so the owner bind in the select list never shifts a
+filter, keyset or pagination placeholder.
 """
 
 from collections.abc import Mapping
@@ -28,12 +33,14 @@ from tests.repositories._access_scope_cases import SEED_SOURCE
 from tests.repositories._access_scope_cases import SEED_THREAD
 from tests.repositories._access_scope_cases import AccessCase
 from tests.repositories._access_scope_cases import ScopedDb
+from tests.repositories._access_scope_cases import expected_read_back
 from tests.repositories._access_scope_cases import per_scope
 
 type BrowseObservable = tuple[tuple[str, ...], int]
 type BrowsePages = tuple[tuple[str, ...], tuple[str, ...], int]
 type ExplainObservable = tuple[tuple[str, ...], bool]
 type ScanObservable = tuple[tuple[str, ...], int, bool]
+type ReadBackRows = tuple[tuple[str, object, object], ...]
 
 # Private alice rows newer than every seed row: hidden from every scope but alice and the
 # system scope, and more of them than one page or the scan's entry cap holds.
@@ -186,7 +193,7 @@ async def _scan(db: ScopedDb, scope: Scope, **arguments: Any) -> ScanObservable:
     """Run ``grep_scan_text_contents`` as the scope and return the labels in scan order, ``scanned`` and ``truncated``."""
     rows, stats = await db.repos.context.grep_scan_text_contents(scope=scope, **arguments)
     assert 'validation_errors' not in stats, stats
-    return tuple(db.labels_of(context_id for context_id, _text in rows)), stats['scanned'], stats['truncated']
+    return tuple(db.labels_of(row.id for row in rows)), stats['scanned'], stats['truncated']
 
 
 async def _scan_unfiltered(db: ScopedDb, scope: Scope) -> ScanObservable:
@@ -228,6 +235,74 @@ def _expected_capped_scan(scope_name: str) -> ScanObservable:
     return kept, len(kept), len(ordered) > SCAN_CAP
 
 
+async def _browse_read_back(db: ScopedDb, scope: Scope, **arguments: Any) -> ReadBackRows:
+    """Run ``search_contexts`` as the scope and return ``(label, visibility, is_owner)`` per row in result order."""
+    rows, stats = await db.repos.context.search_contexts(scope=scope, **arguments)
+    assert 'error' not in stats, stats
+    labels = db.labels_of(str(row['id']) for row in rows)
+    return tuple((label, row['visibility'], row['is_owner']) for label, row in zip(labels, rows, strict=True))
+
+
+async def _browse_read_back_unfiltered(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back every row as the scope."""
+    return await _browse_read_back(db, scope, limit=50)
+
+
+async def _browse_read_back_filtered(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back the rows passing the five client filters as the scope."""
+    return await _browse_read_back(db, scope, limit=50, **_FILTERS)
+
+
+async def _browse_read_back_pages(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back the first two filtered pages of :data:`PAGE_SIZE` rows as the scope."""
+    first = await _browse_read_back(db, scope, limit=PAGE_SIZE, offset=0, **_FILTERS)
+    second = await _browse_read_back(db, scope, limit=PAGE_SIZE, offset=PAGE_SIZE, **_FILTERS)
+    return first + second
+
+
+async def _scan_read_back(db: ScopedDb, scope: Scope, **arguments: Any) -> ReadBackRows:
+    """Run ``grep_scan_text_contents`` as the scope and return ``(label, visibility, is_owner)`` per row in scan order."""
+    rows, stats = await db.repos.context.grep_scan_text_contents(scope=scope, **arguments)
+    assert 'validation_errors' not in stats, stats
+    labels = db.labels_of(row.id for row in rows)
+    return tuple((label, row.visibility, row.is_owner) for label, row in zip(labels, rows, strict=True))
+
+
+async def _scan_read_back_unfiltered(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back every scanned row as the scope."""
+    return await _scan_read_back(db, scope)
+
+
+async def _scan_read_back_filtered(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back the rows the filters and the keyword pre-narrow pass as the scope."""
+    return await _scan_read_back(db, scope, ascii_literal=SEED_KEYWORD, **_FILTERS)
+
+
+async def _scan_read_back_capped(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back the filtered, pre-narrowed rows under the entry cap in pages of :data:`SCAN_PAGE_SIZE` as the scope."""
+    return await _scan_read_back(
+        db, scope, ascii_literal=SEED_KEYWORD, max_entries_scanned=SCAN_CAP, page_size=SCAN_PAGE_SIZE, **_FILTERS,
+    )
+
+
+def _expected_read_back_rows(scope_name: str, labels: tuple[str, ...]) -> ReadBackRows:
+    """Pair each label with the visibility and ownership the scope reads back from it.
+
+    Seed rows read back as :func:`expected_read_back` says; every fill row is a private row
+    that only alice, its owner, and the system scope read, and both own it.
+
+    Args:
+        scope_name: The scope, a key of :data:`READABLE`.
+        labels: The rows the seam returns, in result order.
+
+    Returns:
+        ``(label, visibility, is_owner)`` per label.
+    """
+    read_back = expected_read_back(scope_name)
+    read_back.update(dict.fromkeys(FILL_LABELS, ('private', True)))
+    return tuple((label, read_back[label][0], read_back[label][1]) for label in labels)
+
+
 SEARCH_CASES: tuple[AccessCase, ...] = (
     AccessCase('S1', _browse_unfiltered, per_scope(lambda name: (_newest_first(name), 0))),
     AccessCase(
@@ -247,6 +322,19 @@ SEARCH_CASES: tuple[AccessCase, ...] = (
         'S1', _browse_pages_filtered, per_scope(lambda name: _expected_pages(name, _FILTER_COUNT)),
         filtered=True, variant='page-fill', setup=_add_fill_and_filter_decoys,
     ),
+    AccessCase(
+        'S1', _browse_read_back_unfiltered, per_scope(lambda name: _expected_read_back_rows(name, _newest_first(name))),
+        variant='read-back', reports_write_access=True,
+    ),
+    AccessCase(
+        'S1', _browse_read_back_filtered, per_scope(lambda name: _expected_read_back_rows(name, _newest_first(name))),
+        filtered=True, variant='read-back', setup=_add_filter_decoys, reports_write_access=True,
+    ),
+    AccessCase(
+        'S1', _browse_read_back_pages,
+        per_scope(lambda name: _expected_read_back_rows(name, _newest_first(name, with_fill=True)[:2 * PAGE_SIZE])),
+        filtered=True, variant='read-back-page-fill', setup=_add_fill_and_filter_decoys, reports_write_access=True,
+    ),
     AccessCase('S2', _scan_unfiltered, per_scope(lambda name: _expected_scan(_newest_first(name)))),
     AccessCase(
         'S2', _scan_filtered, per_scope(lambda name: _expected_scan(_newest_first(name))),
@@ -260,5 +348,18 @@ SEARCH_CASES: tuple[AccessCase, ...] = (
     AccessCase(
         'S2', _scan_capped_filtered, per_scope(_expected_capped_scan),
         filtered=True, variant='page-fill', setup=_add_fill_and_scan_decoys,
+    ),
+    AccessCase(
+        'S2', _scan_read_back_unfiltered, per_scope(lambda name: _expected_read_back_rows(name, _newest_first(name))),
+        variant='read-back', reports_write_access=True,
+    ),
+    AccessCase(
+        'S2', _scan_read_back_filtered, per_scope(lambda name: _expected_read_back_rows(name, _newest_first(name))),
+        filtered=True, variant='read-back', setup=_add_scan_decoys, reports_write_access=True,
+    ),
+    AccessCase(
+        'S2', _scan_read_back_capped,
+        per_scope(lambda name: _expected_read_back_rows(name, _newest_first(name, with_fill=True)[:SCAN_CAP])),
+        filtered=True, variant='read-back-page-fill', setup=_add_fill_and_scan_decoys, reports_write_access=True,
     ),
 )

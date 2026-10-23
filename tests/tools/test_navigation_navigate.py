@@ -95,6 +95,44 @@ class TestNavigateContextScoping:
         assert result['root']['children'][0]['title'] == 'Alice'
 
 
+async def _publish(backend: StorageBackend, context_id: str) -> None:
+    """Make one stored entry public."""
+
+    def _write(conn: sqlite3.Connection) -> None:
+        conn.execute("UPDATE context_entries SET visibility = 'public' WHERE id = ?", (context_id,))
+
+    await backend.execute_write(_write, access_scope=MAINTENANCE)
+
+
+class TestNavigateContextReadBack:
+    """The response reports the entry's visibility and whether the caller owns it at its top level only."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('include_node_summaries', [False, True])
+    async def test_top_level_carries_visibility_and_ownership(
+        self, nav_backend: StorageBackend, include_node_summaries: bool,
+    ) -> None:
+        """Alice owns her public entry, the default principal reads it as not owned; no node carries the fields."""
+        await apply_index_tree_migration(nav_backend, force=True)
+        cid = await store_entry(nav_backend, '# Alice\npublic\n## Part\nmore\n', owner='alice')
+        await _publish(nav_backend, cid)
+
+        with as_principal('alice'):
+            owned = await navigate_as_dict(context_id=cid, include_node_summaries=include_node_summaries)
+        read = await navigate_as_dict(context_id=cid, include_node_summaries=include_node_summaries)
+
+        assert (owned['visibility'], owned['is_owner']) == ('public', True)
+        assert (read['visibility'], read['is_owner']) == ('public', False)
+        for result in (owned, read):
+            assert type(result['is_owner']) is bool
+            assert 'owner_id' not in result
+            nodes = [result['root']]
+            while nodes:
+                node = nodes.pop()
+                assert {'visibility', 'is_owner', 'owner_id'}.isdisjoint(node)
+                nodes.extend(node['children'])
+
+
 class TestNavigateNodeSummaries:
     """include_node_summaries surfaces stored per-node summaries onto descendants."""
 

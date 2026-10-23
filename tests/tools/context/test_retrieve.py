@@ -203,3 +203,29 @@ class TestGetContextByIdsScoping:
 
         assert str(hidden.value) == f"Invalid context ID: No context entry matches prefix '{private_id[:12]}'"
         assert str(absent.value) == f"Invalid context ID: No context entry matches prefix '{absent_prefix}'"
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestGetContextByIdsReadBack:
+    """Every returned entry reports its visibility and whether the caller owns it, never the owner itself."""
+
+    @pytest.mark.asyncio
+    async def test_owner_and_reader_see_visibility_and_ownership(self) -> None:
+        """Alice owns both of her entries; bob reads her public entry as not his."""
+        with as_principal('alice'):
+            private = await store_context(thread_id='read-back', source='agent', text='alice private', visibility='private')
+            public = await store_context(thread_id='read-back', source='agent', text='alice public', visibility='public')
+            ids = [private['context_id'], public['context_id']]
+            owned = [dict(entry) for entry in await get_context_by_ids(context_ids=ids)]
+        with as_principal('bob'):
+            read = [dict(entry) for entry in await get_context_by_ids(context_ids=ids)]
+
+        assert {entry['id']: (entry['visibility'], entry['is_owner']) for entry in owned} == {
+            private['context_id']: ('private', True), public['context_id']: ('public', True),
+        }
+        assert [(entry['id'], entry['visibility'], entry['is_owner']) for entry in read] == [
+            (public['context_id'], 'public', False),
+        ]
+        for entry in (*owned, *read):
+            assert type(entry['is_owner']) is bool
+            assert 'owner_id' not in entry

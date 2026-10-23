@@ -93,6 +93,8 @@ class TestSearchContextDateFiltering:
             'metadata': None,
             'created_at': '2025-11-29 10:00:00',
             'updated_at': '2025-11-29 10:00:00',
+            'visibility': 'private',
+            'is_owner': 1,
         }
         self.mock_repos.context.search_contexts = AsyncMock(return_value=([mock_entry], {}))
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])

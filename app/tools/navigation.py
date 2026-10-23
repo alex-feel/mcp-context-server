@@ -17,12 +17,17 @@ only the relevant span.
 The two tools share ONE Unicode code-point offset contract: ``grep_context``
 ``content`` rows carry ``match_start``/``match_end`` that feed straight into
 ``read_context_range`` ``start_char``/``end_char`` -- locate, then extract.
+
+Every grep row, and the top level of the ``navigate_context`` and
+``read_context_range`` responses, reports the entry's ``visibility`` and whether
+the caller owns it (``is_owner``).
 """
 
 import asyncio
 import logging
 import re
 import time
+from collections.abc import Mapping
 from typing import Annotated
 from typing import Any
 from typing import Literal
@@ -50,10 +55,12 @@ from app.services.text_lines import should_offload_line_scan
 from app.services.text_lines import split_lines_with_offsets
 from app.settings import get_settings
 from app.startup import ensure_repositories
+from app.tools._responses import entry_access_fields
 from app.tools._validation import reject_unstorable_input
 from app.tools.search.limits import MAX_FILTER_TAGS
 from app.tools.search.limits import MAX_METADATA_FILTERS
 from app.tools.search.limits import filter_caps_error
+from app.types import EntryAccessFields
 from app.types import GrepContentMatchDict
 from app.types import GrepContextResultDict
 from app.types import GrepCountDict
@@ -77,11 +84,17 @@ settings = get_settings()
 def _shape_grep_output(
     output_mode: str,
     entry_results: list[GrepEntryResult],
+    access: Mapping[str, EntryAccessFields],
     total_matches: int,
     truncated: bool,
     timed_out_ids: list[str] | None = None,
 ) -> GrepContextResultDict:
-    """Build the grep response dict for the requested output mode."""
+    """Build the grep response dict for the requested output mode.
+
+    Returns:
+        The response, every row of it carrying the access fields of its entry, taken
+        from ``access`` by entry id.
+    """
     if output_mode == 'content':
         content_rows: list[GrepContentMatchDict] = [
             {
@@ -92,6 +105,8 @@ def _shape_grep_output(
                 'match_end': match.char_end,
                 'before': list(match.before),
                 'after': list(match.after),
+                'visibility': access[entry.context_id]['visibility'],
+                'is_owner': access[entry.context_id]['is_owner'],
             }
             for entry in entry_results
             for match in entry.matches
@@ -99,12 +114,24 @@ def _shape_grep_output(
         results: list[Any] = content_rows
     elif output_mode == 'count':
         count_rows: list[GrepCountDict] = [
-            {'context_id': entry.context_id, 'count': entry.match_count} for entry in entry_results
+            {
+                'context_id': entry.context_id,
+                'count': entry.match_count,
+                'visibility': access[entry.context_id]['visibility'],
+                'is_owner': access[entry.context_id]['is_owner'],
+            }
+            for entry in entry_results
         ]
         results = count_rows
     else:  # files_with_matches (default)
         file_rows: list[GrepFileDict] = [
-            {'context_id': entry.context_id, 'match_count': entry.match_count} for entry in entry_results
+            {
+                'context_id': entry.context_id,
+                'match_count': entry.match_count,
+                'visibility': access[entry.context_id]['visibility'],
+                'is_owner': access[entry.context_id]['is_owner'],
+            }
+            for entry in entry_results
         ]
         results = file_rows
 
@@ -373,7 +400,11 @@ async def grep_context(
             time.monotonic() + grep_settings.regex_total_timeout_s if is_regex else None
         )
         scan_deadline_exceeded = False
-        for context_id, text in rows:
+        access = {
+            row.id: entry_access_fields({'visibility': row.visibility, 'is_owner': row.is_owner}) for row in rows
+        }
+        for row in rows:
+            context_id, text = row.id, row.text_content
             if collected >= overflow_cap:
                 break
             if regex_deadline is not None and time.monotonic() >= regex_deadline:
@@ -404,7 +435,7 @@ async def grep_context(
             entry_results, collected = _trim_entry_results(entry_results, max_matches)
 
         truncated = bool(scan_stats.get('truncated')) or match_truncated or scan_deadline_exceeded
-        return _shape_grep_output(output_mode, entry_results, collected, truncated, timed_out_ids)
+        return _shape_grep_output(output_mode, entry_results, access, collected, truncated, timed_out_ids)
     except ToolError:
         raise
     except Exception as exc:
@@ -486,9 +517,10 @@ async def navigate_context(
 
     Returns:
         NavigateContextResultDict with ``context_id``, ``total_chars``,
-        ``node_count`` (headings, excluding the root), and ``root`` -- a recursive
+        ``node_count`` (headings, excluding the root), ``root`` -- a recursive
         node carrying ``node_id``, ``level``, ``ordinal``, ``title``, ``char_start``,
-        ``char_end``, ``summary`` and ``children``.
+        ``char_end``, ``summary`` and ``children`` -- and the entry's ``visibility``
+        and ``is_owner`` (whether the caller owns it).
 
     Raises:
         ToolError: If the id is invalid or the entry is not found.
@@ -518,6 +550,7 @@ async def navigate_context(
         # accepted.
         text = ''
         root_summary: str | None = None
+        access: EntryAccessFields = {'visibility': 'private', 'is_owner': False}
         stored_nodes = StoredNodeSummaries({}, {})
         want_node_summaries = include_node_summaries and settings.index_tree.node_summaries_enabled
         for _snapshot_attempt in range(3):
@@ -530,6 +563,7 @@ async def navigate_context(
             row = rows[0]
             text_value = row['text_content']
             text = text_value if text_value is not None else ''
+            access = entry_access_fields(row)
 
             # Root summary mirrors the live summary column by reference; an empty or
             # whitespace-only stored summary normalizes to None per the optional-field
@@ -582,6 +616,8 @@ async def navigate_context(
             'total_chars': len(text),
             'node_count': node_count,
             'root': root_dict,
+            'visibility': access['visibility'],
+            'is_owner': access['is_owner'],
         }
     except ToolError:
         raise
@@ -632,8 +668,9 @@ async def read_context_range(
 
     Returns:
         ReadContextRangeDict with ``context_id``, the resolved
-        ``start_char``/``end_char`` and ``start_line``/``end_line`` (1-based), and
-        the ``text`` of the slice. Offsets are Unicode code-point indices.
+        ``start_char``/``end_char`` and ``start_line``/``end_line`` (1-based), the
+        ``text`` of the slice, and the entry's ``visibility`` and ``is_owner``
+        (whether the caller owns it). Offsets are Unicode code-point indices.
 
     Raises:
         ToolError: If the id is invalid, not exactly one addressing mode is
@@ -662,6 +699,7 @@ async def read_context_range(
             raise ToolError(f'Context entry not found: {context_id}')
         text_value = rows[0]['text_content']
         text = text_value if text_value is not None else ''
+        access = entry_access_fields(rows[0])
         length = len(text)
         # Line splitting costs one slice and one list append PER LINE, so like the
         # outline parse its cost tracks LINE count rather than text size: a
@@ -733,6 +771,8 @@ async def read_context_range(
             'start_line': start_line_out,
             'end_line': end_line_out,
             'text': snippet,
+            'visibility': access['visibility'],
+            'is_owner': access['is_owner'],
         }
     except ToolError:
         raise

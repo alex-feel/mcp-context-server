@@ -251,6 +251,8 @@ class TestUTF8Encoding:
                 'metadata': json.dumps({'language': 'русский'}),
                 'created_at': '2025-01-01 00:00:00',
                 'updated_at': '2025-01-01 00:00:00',
+                'visibility': 'private',
+                'is_owner': 1,
                 'tags': ['тест', 'юникод'],
             },
         ]

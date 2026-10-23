@@ -12,7 +12,7 @@ share everything here:
 - The seed: :data:`SEED_ROWS`, eight entries owned by alice and bob covering every
   visibility and grant arrangement the access model distinguishes, written by
   :func:`seed_access_rows` through the repositories, with grants through the raw-SQL
-  ``insert_grant`` helper because no production path writes user or write grants.
+  ``insert_grant`` helper because the seed channel never passes through the seams under test.
 - The two channels of a :class:`ScopedDb`. Cases call the seam under test through the
   request channel (``backend`` and ``repos``). Every row a case does not create through
   that seam (the seed, the rows of a case's ``setup`` and every child row), every raw
@@ -21,7 +21,8 @@ share everything here:
   a request transaction that a database policy would filter. On a single-role database the
   seed channel is a second repository container over the request backend.
 - The scopes the cases run as (:data:`SCOPES`) and the seed rows each scope reads, writes
-  and owns (:data:`READABLE`, :data:`WRITABLE`, :data:`OWNED`, in seed order).
+  and owns (:data:`READABLE`, :data:`WRITABLE`, :data:`OWNED`, in seed order), with the
+  visibility and ownership each scope reads back from them (:func:`expected_read_back`).
 
 Adding a case: write an invoker that calls the seam as the given scope on the seeded
 database and returns a comparable observable, translating entry ids to labels with
@@ -621,6 +622,20 @@ def expected_visibility() -> dict[tuple[AccessMode, str], tuple[str, ...]]:
         The seed labels each scope is expected to read, write and own.
     """
     return {(mode, scope_name): table[scope_name] for mode, table in VISIBILITY_TABLES.items() for scope_name in SCOPES}
+
+
+def expected_read_back(scope_name: str) -> dict[str, tuple[str, bool]]:
+    """Return the visibility and ownership a scope reads back from each seed row it may read.
+
+    Args:
+        scope_name: The scope, a key of :data:`SCOPES`.
+
+    Returns:
+        ``(visibility, is_owner)`` keyed by the label of every row in :data:`READABLE` for
+        the scope: the row's stored visibility, and whether the scope owns it.
+    """
+    visibility = {row.label: row.visibility for row in SEED_ROWS}
+    return {label: (visibility[label], label in OWNED[scope_name]) for label in READABLE[scope_name]}
 
 
 async def observe_predicate_visibility(db: ScopedDb) -> dict[tuple[AccessMode, str], tuple[str, ...]]:
