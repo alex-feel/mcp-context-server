@@ -45,6 +45,8 @@ def _corpus() -> list[dict[str, Any]]:
             'metadata': None,
             'score': float(CORPUS_SIZE - index),
             'distance': float(index) / 100,
+            'visibility': 'private',
+            'is_owner': 1,
         }
         for index in range(CORPUS_SIZE)
     ]

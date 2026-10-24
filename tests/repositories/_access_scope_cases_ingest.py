@@ -94,6 +94,7 @@ _ADVERSARIAL_READABLE: dict[str, frozenset[str]] = {
     'bob': frozenset({'adversarial_alice_public_claims_bob', 'adversarial_bob_private_claims_alice'}),
     'carol': frozenset({'adversarial_alice_public_claims_bob'}),
     'dave': frozenset({'adversarial_alice_public_claims_bob'}),
+    'anonymous': frozenset({'adversarial_alice_public_claims_bob'}),
     'system': frozenset(row[0] for row in _ADVERSARIAL),
 }
 

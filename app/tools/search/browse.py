@@ -82,7 +82,8 @@ async def search_context(
 
     Returns:
         Dict with results (list of ContextEntryDict with truncated text_content,
-        summary always present as string, is_text_content_truncated flag), count (int), and
+        summary always present as string, is_text_content_truncated flag, visibility,
+        and is_owner telling whether the caller owns the entry), count (int), and
         stats (dict, only when explain_query=True).
 
     Raises:
@@ -189,7 +190,7 @@ async def search_context(
             else:
                 entry['tags'] = []
 
-            # Apply unified search display formatting
+            # Apply unified search display formatting, the entry's access fields included
             apply_search_display_format(cast(dict[str, Any], entry))
 
             # Fetch images if requested and applicable

@@ -27,6 +27,9 @@ def reciprocal_rank_fusion(
     nature of the formula. The k parameter (default 60) controls how much
     emphasis is placed on top-ranked documents vs. lower-ranked ones.
 
+    Every row of either list carries the entry's 'visibility' and 'is_owner', as every
+    ranked search statement selects them; a row without them raises KeyError.
+
     Args:
         fts_results: Results from full-text search with 'id' and 'score' fields.
         semantic_results: Results from semantic search with 'id' and 'distance' fields.
@@ -40,8 +43,9 @@ def reciprocal_rank_fusion(
         breakdown.
 
     Example:
-        >>> fts = [{'id': '0190abcdef1234567890abcdef123401', 'score': 2.5}]
-        >>> semantic = [{'id': '0190abcdef1234567890abcdef123401', 'distance': 0.3}]
+        >>> access = {'visibility': 'private', 'is_owner': 1}
+        >>> fts = [{'id': '0190abcdef1234567890abcdef123401', 'score': 2.5, **access}]
+        >>> semantic = [{'id': '0190abcdef1234567890abcdef123401', 'distance': 0.3, **access}]
         >>> results = reciprocal_rank_fusion(fts, semantic, k=60)
         >>> # The document appears in both sources, so it ranks higher
     """
@@ -141,6 +145,9 @@ def reciprocal_rank_fusion(
             'scores': scores,
             'summary': data.get('summary'),  # Preserve for search display formatting
             'rerank_text': data.get('rerank_text'),  # Preserve for chunk-aware reranking
+            # Every leg row carries the entry's access fields; search display formatting shapes them
+            'visibility': data['visibility'],
+            'is_owner': data['is_owner'],
         }
         results.append(result_entry)
 

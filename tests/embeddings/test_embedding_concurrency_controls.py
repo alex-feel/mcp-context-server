@@ -273,12 +273,13 @@ async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) 
         # FTS fails, semantic succeeds
         mock_fts.side_effect = Exception('FTS index corrupted')
         mock_semantic.return_value = (
-            [{'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text'}],
+            [{'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text',
+              'visibility': 'private', 'is_owner': 1}],
             None,
         )
         mock_rerank.return_value = [
             {'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text',
-             'scores': {'rrf': 0.5}},
+             'scores': {'rrf': 0.5}, 'visibility': 'private', 'is_owner': 1},
         ]
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])
@@ -318,13 +319,13 @@ async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixt
         # FTS succeeds, semantic fails
         mock_fts.return_value = (
             [{'id': 1, 'text_content': 'test', 'metadata': '{"key": "val"}', 'source': 'agent',
-              'content_type': 'text'}],
+              'content_type': 'text', 'visibility': 'private', 'is_owner': 1}],
             None,
         )
         mock_semantic.side_effect = Exception('Ollama unreachable')
         mock_rerank.return_value = [
             {'id': 1, 'text_content': 'test', 'metadata': {'key': 'val'}, 'source': 'agent', 'content_type': 'text',
-             'scores': {'rrf': 0.5}},
+             'scores': {'rrf': 0.5}, 'visibility': 'private', 'is_owner': 1},
         ]
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])
@@ -362,16 +363,18 @@ async def test_hybrid_search_no_warning_on_success(caplog: pytest.LogCaptureFixt
         mock_settings.search.truncation_length = 150
 
         mock_fts.return_value = (
-            [{'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text'}],
+            [{'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text',
+              'visibility': 'private', 'is_owner': 1}],
             None,
         )
         mock_semantic.return_value = (
-            [{'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text'}],
+            [{'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text',
+              'visibility': 'private', 'is_owner': 1}],
             None,
         )
         mock_rerank.return_value = [
             {'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text',
-             'scores': {'rrf': 0.5}},
+             'scores': {'rrf': 0.5}, 'visibility': 'private', 'is_owner': 1},
         ]
         mock_repos.return_value.tags.get_tags_for_context = AsyncMock(return_value=[])
         mock_repos.return_value.images.get_images_for_context = AsyncMock(return_value=[])

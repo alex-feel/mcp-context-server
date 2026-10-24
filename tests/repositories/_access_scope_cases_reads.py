@@ -5,7 +5,8 @@ indistinguishable from an absent one: it is omitted from a read, probes like a m
 and never matches a prefix.
 
 - S3: ``get_by_ids`` returns exactly the readable rows of the requested ids, also when
-  the id list spans several statement chunks.
+  the id list spans several statement chunks, each with its stored visibility and whether
+  the caller owns it.
 - S4: ``find_ids_by_prefix`` matches readable rows only, before its LIMIT, so hidden rows
   ordered first never crowd out a readable match; prefix resolution through
   :func:`app.ids.resolve_or_normalize_id` turns that into a unique match, a no-match or an
@@ -33,11 +34,13 @@ from tests.repositories._access_scope_cases import AccessCase
 from tests.repositories._access_scope_cases import Grant
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_cases import Visibility
+from tests.repositories._access_scope_cases import expected_read_back
 from tests.repositories._access_scope_cases import in_seed_order
 from tests.repositories._access_scope_cases import per_scope
 
 type ProbeRow = tuple[str, bool, str | None, int | None, str | None, bool]
 type AccessRow = tuple[str, bool, bool]
+type ReadBack = dict[str, tuple[object, object]]
 type PrefixMatches = tuple[tuple[str, tuple[str, ...]], ...]
 type PrefixResolution = tuple[tuple[str, str], ...]
 
@@ -97,6 +100,12 @@ _PREFIX_MATCHES: dict[str, PrefixMatches] = {
         (PREFIX_C, ()),
         (PREFIX_ABSENT, ()),
     ),
+    'anonymous': (
+        (PREFIX_A, ('prefix_a_alice_public',)),
+        (PREFIX_B, ()),
+        (PREFIX_C, ()),
+        (PREFIX_ABSENT, ()),
+    ),
     'system': (
         (PREFIX_A, ('prefix_a_alice_private_1', 'prefix_a_alice_private_2')),
         (PREFIX_B, ('prefix_b_alice_private', 'prefix_b_alice_bob_read')),
@@ -133,6 +142,23 @@ async def _get_seed_and_absent(db: ScopedDb, scope: Scope) -> tuple[str, ...]:
 async def _get_chunked(db: ScopedDb, scope: Scope) -> tuple[str, ...]:
     """Read the seed rows through an id list that spans two statement chunks."""
     return await _read_labels(db, scope, _chunked_ids(db))
+
+
+async def _read_back(db: ScopedDb, scope: Scope, context_ids: Sequence[str]) -> ReadBack:
+    """Return the ``(visibility, is_owner)`` pair ``get_by_ids`` reports for each row it returns, keyed by label."""
+    rows = await db.repos.context.get_by_ids(list(context_ids), scope=scope)
+    labels = db.labels_of(str(row['id']) for row in rows)
+    return {label: (row['visibility'], row['is_owner']) for label, row in zip(labels, rows, strict=True)}
+
+
+async def _read_back_seed_and_absent(db: ScopedDb, scope: Scope) -> ReadBack:
+    """Read back every seed row and the absent id as the scope."""
+    return await _read_back(db, scope, _seed_ids_with_absent(db))
+
+
+async def _read_back_chunked(db: ScopedDb, scope: Scope) -> ReadBack:
+    """Read back the seed rows through an id list that spans two statement chunks."""
+    return await _read_back(db, scope, _chunked_ids(db))
 
 
 async def _add_prefixed_rows(db: ScopedDb) -> None:
@@ -243,6 +269,12 @@ def _expected_access(scope_name: str) -> tuple[AccessRow, ...]:
 READ_CASES: tuple[AccessCase, ...] = (
     AccessCase('S3', _get_seed_and_absent, per_scope(READABLE.__getitem__)),
     AccessCase('S3', _get_chunked, per_scope(READABLE.__getitem__), variant='chunked'),
+    AccessCase(
+        'S3', _read_back_seed_and_absent, per_scope(expected_read_back), variant='read-back', reports_write_access=True,
+    ),
+    AccessCase(
+        'S3', _read_back_chunked, per_scope(expected_read_back), variant='read-back-chunked', reports_write_access=True,
+    ),
     AccessCase('S4', _find_by_prefix, per_scope(_PREFIX_MATCHES.__getitem__), setup=_add_prefixed_rows),
     AccessCase('S4', _resolve_prefixes, per_scope(_expected_resolution), variant='resolve', setup=_add_prefixed_rows),
     AccessCase('S5', _probe_each, per_scope(_expected_probes), reports_write_access=True),

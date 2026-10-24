@@ -174,11 +174,23 @@ class TestInternalColumnsNotExposed:
             'summary',
             'created_at',
             'updated_at',
+            'visibility',
         }
 
         assert columns == expected_columns, f'Column mismatch: expected {expected_columns}, got {columns}'
 
-        # Verify internal columns are NOT in the constant
-        internal_columns = {'text_search_vector', 'fts_vector', 'tsvector'}
+        # Verify internal columns are NOT in the constant; the owner never leaves the server.
+        internal_columns = {'text_search_vector', 'fts_vector', 'tsvector', 'owner_id', 'version', 'content_hash'}
         for col in internal_columns:
             assert col not in columns, f'Internal column {col} should not be in CONTEXT_ENTRY_COLUMNS'
+
+    def test_entry_columns_renders_the_list_bare_or_qualified(self) -> None:
+        """entry_columns renders CONTEXT_ENTRY_COLUMNS as is, or with every column qualified by the alias."""
+        from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
+        from app.repositories.context_repository.records import entry_columns
+
+        columns = [col.strip() for col in CONTEXT_ENTRY_COLUMNS.split(',')]
+
+        assert entry_columns() == CONTEXT_ENTRY_COLUMNS
+        assert entry_columns('ce') == ', '.join(f'ce.{col}' for col in columns)
+        assert entry_columns('ce').startswith('ce.id, ce.thread_id, ')

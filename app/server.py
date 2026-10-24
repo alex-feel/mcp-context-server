@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 # Import auth factory for explicit auth configuration
 from app.auth import create_auth_provider
+from app.auth.access import log_read_only_principal
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.backends import create_maintenance_backend
@@ -170,6 +171,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_backend(backend)
             await prepare_database(backend, settings, request_role=None)
         warn_jwt_without_rls(settings)
+        log_read_only_principal(settings.access_control)
         # Initialize repositories with the backend
         repos = RepositoryContainer(backend)
         set_repositories(repos)

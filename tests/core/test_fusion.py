@@ -6,6 +6,53 @@ import pytest
 
 from app.fusion import count_unique_results
 from app.fusion import reciprocal_rank_fusion
+from app.types import HybridSearchResultDict
+
+
+def _fuse(
+    fts_results: list[dict[str, Any]], semantic_results: list[dict[str, Any]], *, k: int, limit: int,
+) -> list[HybridSearchResultDict]:
+    """Fuse leg rows that carry the access fields every ranked statement selects.
+
+    The rankings here vary ids, scores and text; each row gains the visibility and the
+    ownership flag that every row of both legs carries.
+
+    Returns:
+        The fused results.
+    """
+
+    def _with_access(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{'visibility': 'private', 'is_owner': 1, **row} for row in rows]
+
+    return reciprocal_rank_fusion(_with_access(fts_results), _with_access(semantic_results), k=k, limit=limit)
+
+
+class TestAccessFieldsSurviveFusion:
+    """Each fused result keeps the visibility and the ownership flag its leg row reported."""
+
+    def test_both_keys_survive_the_whitelist(self) -> None:
+        """A row from either leg, or from both, keeps its access fields as the leg selected them."""
+        fts_results: list[dict[str, Any]] = [
+            {'id': 'fts-only', 'score': 2.0, 'visibility': 'public', 'is_owner': 0},
+            {'id': 'both', 'score': 1.0, 'visibility': 'private', 'is_owner': 1},
+        ]
+        semantic_results: list[dict[str, Any]] = [
+            {'id': 'both', 'distance': 0.1, 'visibility': 'private', 'is_owner': 1},
+            {'id': 'semantic-only', 'distance': 0.2, 'visibility': 'public', 'is_owner': 1},
+        ]
+
+        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+
+        assert {r.get('id'): (r['visibility'], r['is_owner']) for r in results} == {
+            'fts-only': ('public', 0),
+            'both': ('private', 1),
+            'semantic-only': ('public', 1),
+        }
+
+    def test_a_leg_row_without_access_fields_is_refused(self) -> None:
+        """Every leg statement selects both fields, so a row lacking them is a defect, never a default."""
+        with pytest.raises(KeyError):
+            reciprocal_rank_fusion([{'id': '1', 'score': 1.0}], [], k=60, limit=10)
 
 
 class TestReciprocalRankFusion:
@@ -13,7 +60,7 @@ class TestReciprocalRankFusion:
 
     def test_empty_inputs(self) -> None:
         """Test RRF with empty result lists."""
-        results = reciprocal_rank_fusion([], [], k=60, limit=10)
+        results = _fuse([], [], k=60, limit=10)
         assert results == []
 
     def test_fts_only(self) -> None:
@@ -23,7 +70,7 @@ class TestReciprocalRankFusion:
             {'id': '2', 'score': 1.8, 'text_content': 'doc2'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        results = _fuse(fts_results, [], k=60, limit=10)
 
         assert len(results) == 2
         # Doc 1 should be first (higher FTS rank)
@@ -45,7 +92,7 @@ class TestReciprocalRankFusion:
             {'id': '4', 'distance': 0.5, 'text_content': 'doc4'},
         ]
 
-        results = reciprocal_rank_fusion([], semantic_results, k=60, limit=10)
+        results = _fuse([], semantic_results, k=60, limit=10)
 
         assert len(results) == 2
         # Doc 3 should be first (lower distance = rank 1)
@@ -70,7 +117,7 @@ class TestReciprocalRankFusion:
             {'id': '3', 'distance': 0.5, 'text_content': 'doc3'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         assert len(results) == 3
 
@@ -99,7 +146,7 @@ class TestReciprocalRankFusion:
             {'id': '1', 'distance': 0.3, 'text_content': 'doc1'},  # Same doc
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=k, limit=10)
+        results = _fuse(fts_results, semantic_results, k=k, limit=10)
 
         assert len(results) == 1
         # RRF score = 1/(60+1) + 1/(60+1) = 2/(61)
@@ -113,7 +160,7 @@ class TestReciprocalRankFusion:
             for i in range(1, 6)
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=3)
+        results = _fuse(fts_results, [], k=60, limit=3)
 
         assert len(results) == 3
         # Should keep top 3 by RRF score
@@ -127,9 +174,9 @@ class TestReciprocalRankFusion:
         ]
 
         # With small k, rank difference matters more
-        results_small_k = reciprocal_rank_fusion(fts_results, [], k=1, limit=10)
+        results_small_k = _fuse(fts_results, [], k=1, limit=10)
         # With large k, rank difference matters less
-        results_large_k = reciprocal_rank_fusion(fts_results, [], k=100, limit=10)
+        results_large_k = _fuse(fts_results, [], k=100, limit=10)
 
         # Score ratio between rank 1 and rank 2 with k=1: (1/2) / (1/3) = 1.5
         rrf_0_small = results_small_k[0].get('scores', {}).get('rrf', 0)
@@ -164,7 +211,7 @@ class TestReciprocalRankFusion:
             },
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         assert len(results) == 1
         # Should have data from FTS
@@ -185,7 +232,7 @@ class TestReciprocalRankFusion:
             {'id': '3', 'distance': 0.2, 'text_content': 'doc3'},  # Semantic rank 2
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         # Doc 2 should be first (appears in both)
         assert results[0].get('id') == '2'
@@ -203,7 +250,7 @@ class TestReciprocalRankFusion:
             {'score': 0.5, 'text_content': 'missing_id'},  # No id field
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        results = _fuse(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
         assert results[0].get('id') == '1'
@@ -214,7 +261,7 @@ class TestReciprocalRankFusion:
             {'id': '1', 'score': 2.5},  # Minimal data
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        results = _fuse(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
         # Check defaults
@@ -243,9 +290,9 @@ class TestRRFTieOrderingIsDeterministic:
         doc_high = {'id': 'ffff0000', 'score': 1.0, 'text_content': 'high id'}
         doc_low = {'id': '00001111', 'distance': 0.2, 'text_content': 'low id'}
 
-        forward = reciprocal_rank_fusion([doc_high], [doc_low], k=60, limit=10)
+        forward = _fuse([doc_high], [doc_low], k=60, limit=10)
         # Same documents, legs swapped: the tie is identical, only insertion order differs.
-        reversed_order = reciprocal_rank_fusion(
+        reversed_order = _fuse(
             [{'id': '00001111', 'score': 1.0, 'text_content': 'low id'}],
             [{'id': 'ffff0000', 'distance': 0.2, 'text_content': 'high id'}],
             k=60,
@@ -264,7 +311,7 @@ class TestRRFTieOrderingIsDeterministic:
             {'id': 'cccc3333', 'distance': 0.4},
         ]
 
-        full = [str(r.get('id')) for r in reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)]
+        full = [str(r.get('id')) for r in _fuse(fts_results, semantic_results, k=60, limit=10)]
         # The two rank-1 documents tie at 1/(k+1); the rank-2 semantic document scores lower,
         # so the deterministic order is the tied pair id-ascending followed by the lower score.
         assert full == ['aaaa1111', 'bbbb2222', 'cccc3333']
@@ -339,7 +386,7 @@ class TestRRFPreservesRerankText:
             {'id': '2', 'score': 1.8, 'text_content': 'full doc 2', 'rerank_text': 'passage 2'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+        results = _fuse(fts_results, [], k=60, limit=10)
 
         assert len(results) == 2
         # Verify rerank_text is preserved for FTS-only results
@@ -354,7 +401,7 @@ class TestRRFPreservesRerankText:
             {'id': '4', 'distance': 0.5, 'text_content': 'full doc 4', 'rerank_text': 'chunk 4'},
         ]
 
-        results = reciprocal_rank_fusion([], semantic_results, k=60, limit=10)
+        results = _fuse([], semantic_results, k=60, limit=10)
 
         assert len(results) == 2
         # Verify rerank_text is preserved for semantic-only results
@@ -373,7 +420,7 @@ class TestRRFPreservesRerankText:
             {'id': '3', 'distance': 0.5, 'text_content': 'full doc 3', 'rerank_text': 'semantic chunk 3'},
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         assert len(results) == 3
         result_by_id = {r.get('id'): r for r in results}
@@ -396,7 +443,7 @@ class TestRRFPreservesRerankText:
             {'id': '2', 'distance': 0.3, 'text_content': 'full doc 2'},  # No rerank_text
         ]
 
-        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+        results = _fuse(fts_results, semantic_results, k=60, limit=10)
 
         assert len(results) == 2
         # Verify rerank_text is None when not provided

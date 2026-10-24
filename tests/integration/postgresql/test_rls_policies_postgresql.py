@@ -6,11 +6,14 @@ rolled back, and issues SQL without any application predicate, so the rows it re
 the policies' answer alone. The matrix of :mod:`tests.integration.postgresql._rls_matrix`
 covers the access-scope principals, a principal with only an unrelated group, no bind at
 all, the empty principal and group ids holding a comma, a quote, braces and a backslash.
-Every refusal is asserted as SQLSTATE 42501, so a recursive policy (42P17) fails the test.
+Every refusal is asserted as SQLSTATE 42501, so a recursive policy (42P17) fails the test;
+the one exception is a grant recording a forged entry owner, which the foreign key onto the
+entry's real owner may refuse first (23503).
 """
 
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 
 import asyncpg
 import pytest
@@ -29,6 +32,7 @@ from app.migrations.rls_ddl import guard_trigger
 from app.migrations.rls_ddl import helper_functions
 from app.migrations.rls_ddl import records_preenabled
 from app.migrations.rls_ddl import table_policies
+from tests.integration.postgresql._rls_matrix import MATRIX_ROWS
 from tests.integration.postgresql._rls_matrix import MATRIX_SCOPES
 from tests.integration.postgresql._rls_matrix import MATRIX_VISIBILITY
 from tests.integration.postgresql._rls_matrix import ODD_GROUPS
@@ -41,31 +45,53 @@ from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_matrix import scoped_transaction
 from tests.integration.postgresql.conftest import RlsUrls
 from tests.repositories._access_scope_cases import SCOPES
+from tests.repositories._access_scope_cases import SEED_ROWS
+from tests.repositories._access_scope_cases import Grant
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_cases import in_seed_order
 from tests.repositories._access_scope_cases import observe_predicate_visibility
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
-ALICE = AccessScope('alice', frozenset())
-ALICE_PUBLISHER = AccessScope('alice', frozenset(), may_publish=True)
-BOB = AccessScope('bob', frozenset())
-CAROL = AccessScope('carol', frozenset({'team-x'}))
+# Every scope that inserts an entry carries the write right, as the write tools bind it, so each
+# refusal below comes from the rule it names; DAVE only reads.
+ALICE = AccessScope('alice', frozenset(), may_write=True)
+ALICE_PUBLISHER = AccessScope('alice', frozenset(), may_publish=True, may_write=True)
+BOB = AccessScope('bob', frozenset(), may_write=True)
+CAROL = AccessScope('carol', frozenset({'team-x'}), may_write=True)
 DAVE = AccessScope('dave', frozenset())
+# The read-only principal's scope, and the owner a reassignment hands alice's entry to.
+ANONYMOUS = AccessScope('anonymous', frozenset())
+ERIN = AccessScope('erin', frozenset(), may_write=True)
 REFUSED = asyncpg.exceptions.InsufficientPrivilegeError
+MISSING_PARENT = asyncpg.exceptions.ForeignKeyViolationError
 
 INSERT_ENTRY = (
     'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id, visibility) '
     "VALUES ($1, 'rls-policies', 'agent', 'text', 'policy probe', $2, $3) RETURNING id"
 )
 INSERT_GRANT = (
-    'INSERT INTO context_entry_grants (context_entry_id, principal_type, principal_id, permission, granted_by) '
-    'VALUES ($1, $2, $3, $4, $5)'
+    'INSERT INTO context_entry_grants '
+    '(context_entry_id, principal_type, principal_id, permission, granted_by, entry_owner_id) '
+    'VALUES ($1, $2, $3, $4, $5, $6)'
 )
 # The grant repository's idempotent form; the conflict target and RETURNING also apply the read policy to the new row.
 UPSERT_GRANT = (
     f'{INSERT_GRANT} ON CONFLICT (context_entry_id, principal_type, principal_id, permission) DO NOTHING RETURNING id'
 )
+# The grants of one entry ($1), as a grant listing reads them.
+SELECT_GRANTS = (
+    'SELECT principal_type, principal_id, permission, granted_by FROM context_entry_grants '
+    'WHERE context_entry_id = $1 ORDER BY principal_type, principal_id, permission'
+)
+# The removal of dave's read grant on one entry ($1), as an unshare names it.
+DELETE_DAVE_GRANT = (
+    "DELETE FROM context_entry_grants WHERE context_entry_id = $1 AND principal_type = 'user' "
+    "AND principal_id = 'dave' AND permission = 'read'"
+)
+SHARED_LABEL = 'alice_private_shared'
+# The grants of alice's shared entry: a read grant to dave, a write grant to bob and a read grant to carol's group.
+SHARED_GRANTS = (Grant('user', 'dave', 'read'), Grant('user', 'bob', 'write'), Grant('group', 'team-x', 'read'))
 
 # The comment on one installed object, by its anchor ($1) and name ($2).
 _COMMENT_SQL = {
@@ -184,6 +210,22 @@ class TestContextEntries:
             async with scoped_transaction(app_conn, scope):
                 with pytest.raises(REFUSED, match='row-level security'):
                     await app_conn.fetchval(INSERT_ENTRY, uuid.uuid4(), owner, 'private')
+
+    @pytest.mark.asyncio
+    async def test_inserting_an_entry_needs_the_write_right(
+        self, app_conn: asyncpg.Connection, matrix_db: ScopedDb,
+    ) -> None:
+        """The owner inserts with the write right and is refused without it; the read-only principal inserts nothing."""
+        async with scoped_transaction(app_conn, ALICE):
+            assert await app_conn.fetchval(INSERT_ENTRY, uuid.uuid4(), 'alice', 'private') is not None
+
+        for scope, owner in [(replace(ALICE, may_write=False), 'alice'), (ANONYMOUS, 'anonymous')]:
+            entry = uuid.uuid4()
+            async with scoped_transaction(app_conn, scope):
+                with pytest.raises(REFUSED, match='row-level security'):
+                    await app_conn.fetchval(INSERT_ENTRY, entry, owner, 'private')
+            rows = await matrix_db.fetch_all('SELECT count(*) FROM context_entries WHERE id = ?', (entry.hex,))
+            assert rows == [(0,)], owner
 
     @pytest.mark.asyncio
     async def test_access_column_changes_are_refused_while_content_edits_pass(
@@ -352,37 +394,56 @@ class TestChildTables:
         assert after == dict.fromkeys(before, 0)
 
 
+async def _add_shared_entry(db: ScopedDb) -> uuid.UUID:
+    """Add alice's private entry carrying :data:`SHARED_GRANTS`, through the owner channel.
+
+    Returns:
+        The entry's id.
+    """
+    await db.add_entry(SHARED_LABEL, owner='alice', visibility='private', grants=SHARED_GRANTS)
+    return entry_uuid(db, SHARED_LABEL)
+
+
 class TestGrants:
-    """Grant rows are visible to their grantees and written only by the entry's owner as the grantor."""
+    """Grant rows are visible to their grantees and the entry's owner, and written and removed by the owner alone."""
 
     @pytest.mark.asyncio
     async def test_only_the_owner_grants_and_only_as_the_grantor(
         self, app_conn: asyncpg.Connection, matrix_db: ScopedDb,
     ) -> None:
-        """The owner inserts a grant under its own name; a write grantee, a forged grantor and no bind are refused.
+        """The owner grants any principal under its own name; a write grantee, a forged grantor and no bind are refused.
 
-        A grant to another principal is a row its grantor cannot read, so the idempotent form,
-        whose conflict target and RETURNING apply the read policy to the new row, is refused
-        for it; the only grants the server writes name the author's own groups.
+        The idempotent form's conflict target and RETURNING apply the read policy to the new
+        row, which the owner reads through the owner arm. A write grantee that records itself
+        as the entry's owner passes the insert check and is refused by the foreign key onto the
+        entry's real owner.
         """
         owned = entry_uuid(matrix_db, 'alice_private')
         granted = entry_uuid(matrix_db, 'alice_private_bob_write')
 
         async with scoped_transaction(app_conn, ALICE):
-            assert await app_conn.execute(INSERT_GRANT, owned, 'user', 'dave', 'read', 'alice') == 'INSERT 0 1'
+            assert await app_conn.execute(INSERT_GRANT, owned, 'user', 'dave', 'read', 'alice', 'alice') == 'INSERT 0 1'
+        async with scoped_transaction(app_conn, ALICE):
+            assert await app_conn.fetchval(UPSERT_GRANT, owned, 'user', 'dave', 'read', 'alice', 'alice') is not None
+            assert await app_conn.fetchval(UPSERT_GRANT, owned, 'user', 'dave', 'read', 'alice', 'alice') is None
         for scope, entry, grantor in [(BOB, granted, 'bob'), (ALICE, owned, 'bob'), (None, owned, 'alice')]:
             async with scoped_transaction(app_conn, scope):
                 with pytest.raises(REFUSED, match='context_entry_grants'):
-                    await app_conn.execute(INSERT_GRANT, entry, 'user', 'dave', 'read', grantor)
-        async with scoped_transaction(app_conn, ALICE):
-            with pytest.raises(REFUSED, match='context_entry_grants'):
-                await app_conn.fetchval(UPSERT_GRANT, owned, 'user', 'dave', 'read', 'alice')
+                    await app_conn.execute(INSERT_GRANT, entry, 'user', 'dave', 'read', grantor, 'alice')
+        async with scoped_transaction(app_conn, BOB):
+            with pytest.raises((REFUSED, MISSING_PARENT), match='context_entry_grants'):
+                await app_conn.execute(INSERT_GRANT, granted, 'user', 'dave', 'read', 'bob', 'bob')
 
     @pytest.mark.asyncio
-    async def test_grant_rows_are_visible_to_their_grantees_only(self, app_conn: asyncpg.Connection) -> None:
-        """A grant names the caller or one of its groups exactly; the empty principal and group match nothing."""
+    async def test_grant_rows_are_visible_to_their_grantees_and_the_entry_owner(self, app_conn: asyncpg.Connection) -> None:
+        """A grant names the caller or one of its groups exactly, or sits on the caller's entry; blank ids match nothing."""
+        alice_grants = sorted(
+            (grant.principal_type, grant.principal_id)
+            for row in (*SEED_ROWS, *MATRIX_ROWS) if row.owner == 'alice'
+            for grant in row.grants
+        )
         expected = {
-            'alice': [],
+            'alice': alice_grants,
             'bob': [('user', 'bob'), ('user', 'bob')],
             'carol': [('group', 'team-x'), ('user', 'carol')],
             'dave': [('user', 'dave')],
@@ -399,6 +460,55 @@ class TestGrants:
         assert observed == expected
 
     @pytest.mark.asyncio
+    async def test_only_the_entry_owner_removes_a_grant(self, app_conn: asyncpg.Connection, matrix_db: ScopedDb) -> None:
+        """The owner deletes the row; grantees, an outsider and no bind delete nothing, silently."""
+        entry = await _add_shared_entry(matrix_db)
+        cases = [
+            (ALICE, 'DELETE 1'),
+            (CAROL, 'DELETE 0'),
+            (BOB, 'DELETE 0'),
+            (DAVE, 'DELETE 0'),
+            (MATRIX_SCOPES['mallory'], 'DELETE 0'),
+            (None, 'DELETE 0'),
+        ]
+        for scope, status in cases:
+            async with scoped_transaction(app_conn, scope):
+                assert await app_conn.execute(DELETE_DAVE_GRANT, entry) == status, scope
+
+        remaining = await matrix_db.fetch_all(
+            'SELECT count(*) FROM context_entry_grants WHERE context_entry_id = ?', (entry.hex,),
+        )
+        assert remaining == [(len(SHARED_GRANTS),)]
+
+    @pytest.mark.asyncio
+    async def test_a_reassigned_entry_moves_its_grants_to_the_new_owner(
+        self, app_conn: asyncpg.Connection, matrix_db: ScopedDb,
+    ) -> None:
+        """After the owner reassignment the new owner lists and removes the grants, the previous owner neither.
+
+        The table owner rewrites ``owner_id`` as the command-line reassignment does; the
+        foreign key carries the new owner into every grant of the entry, and the grantor the
+        grants recorded stays the previous owner.
+        """
+        entry = await _add_shared_entry(matrix_db)
+        await matrix_db.execute("UPDATE context_entries SET owner_id = 'erin' WHERE id = ?", (entry.hex,))
+        every_grant = sorted(
+            (grant.principal_type, grant.principal_id, grant.permission, 'alice') for grant in SHARED_GRANTS
+        )
+
+        async with scoped_transaction(app_conn, ERIN):
+            assert [tuple(row) for row in await app_conn.fetch(SELECT_GRANTS, entry)] == every_grant
+            assert await app_conn.execute(DELETE_DAVE_GRANT, entry) == 'DELETE 1'
+        async with scoped_transaction(app_conn, ALICE):
+            assert await app_conn.fetch(SELECT_GRANTS, entry) == []
+            assert await app_conn.execute(DELETE_DAVE_GRANT, entry) == 'DELETE 0'
+
+        owners = await matrix_db.fetch_all(
+            'SELECT DISTINCT entry_owner_id, granted_by FROM context_entry_grants WHERE context_entry_id = ?', (entry.hex,),
+        )
+        assert owners == [('erin', 'alice')]
+
+    @pytest.mark.asyncio
     async def test_author_group_grants_are_stored_with_the_entry_in_one_transaction(
         self, app_conn: asyncpg.Connection,
     ) -> None:
@@ -406,8 +516,8 @@ class TestGrants:
         entry = uuid.uuid4()
         async with scoped_transaction(app_conn, CAROL):
             assert await app_conn.fetchval(INSERT_ENTRY, entry, 'carol', 'private') == entry
-            assert await app_conn.fetchval(UPSERT_GRANT, entry, 'group', 'team-x', 'read', 'carol') is not None
-            assert await app_conn.fetchval(UPSERT_GRANT, entry, 'group', 'team-x', 'read', 'carol') is None
+            assert await app_conn.fetchval(UPSERT_GRANT, entry, 'group', 'team-x', 'read', 'carol', 'carol') is not None
+            assert await app_conn.fetchval(UPSERT_GRANT, entry, 'group', 'team-x', 'read', 'carol', 'carol') is None
             rows = await app_conn.fetch(
                 'SELECT principal_type, principal_id, permission FROM context_entry_grants WHERE context_entry_id = $1',
                 entry,
@@ -428,6 +538,7 @@ class TestInstalledObjects:
         objects: list[RlsObject] = [*helper_functions(schema), guard_function(schema), guard_trigger(schema)]
         for table, _ in [('context_entries', ''), ('context_entry_grants', ''), *await _child_tables(matrix_db)]:
             objects.extend(table_policies(table, schema=schema, role=role))
+        assert {obj.name for obj in objects} >= {'context_entry_grants_delete', 'mcp_context_may_write'}
         conn = await asyncpg.connect(pg_rls_db.admin)
         try:
             for obj in objects:

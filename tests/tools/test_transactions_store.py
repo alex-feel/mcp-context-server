@@ -390,7 +390,7 @@ class TestExecuteStoreInTransaction:
     async def test_author_group_grants_are_granted_by_the_scope_principal(
         self, mock_repos: MagicMock, mock_txn: MagicMock, was_updated: bool, expected_grants: int,
     ) -> None:
-        """A fresh INSERT records the scope's principal as the grantor; a dedup UPDATE writes no grants."""
+        """A fresh INSERT grants through the caller's scope, which names the grantor; a dedup UPDATE writes no grants."""
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', was_updated))
         mock_repos.grants.store_group_read_grants = AsyncMock()
         bob = AccessScope('bob', frozenset({'team-x'}))
@@ -406,7 +406,7 @@ class TestExecuteStoreInTransaction:
         assert mock_repos.grants.store_group_read_grants.await_count == expected_grants
         if expected_grants:
             mock_repos.grants.store_group_read_grants.assert_awaited_once_with(
-                '42', frozenset({'team-x'}), granted_by='bob', txn=mock_txn, scope=bob,
+                '42', frozenset({'team-x'}), scope=bob, txn=mock_txn,
             )
 
 
@@ -475,7 +475,7 @@ class TestExecuteStoreWithoutDeduplication:
 
         assert (was_updated, embedding_stored) == (False, True)
         mock_repos.grants.store_group_read_grants.assert_awaited_once_with(
-            '43', frozenset({'team-x'}), granted_by=LOCAL_SCOPE.principal_id, txn=mock_txn, scope=LOCAL_SCOPE,
+            '43', frozenset({'team-x'}), scope=LOCAL_SCOPE, txn=mock_txn,
         )
         mock_repos.tags.store_tags.assert_awaited_once_with('43', ['guide'], txn=mock_txn, scope=LOCAL_SCOPE)
         mock_repos.tags.replace_tags_for_context.assert_not_awaited()

@@ -133,8 +133,9 @@ auth:
   clientId: ""
   # MCP_AUTH_TOKEN, the simple_token bearer token, stored in the chart secret
   token: ""
-  # Existing secret holding the bearer token (simple_token) or the JWT public key
-  # (jwt without jwksUri); it replaces token and jwt.publicKey
+  # Existing secret holding the bearer token (simple_token), the JWT public key
+  # (jwt without jwksUri) or the anonymous verifier key (jwt with jwksUri); it
+  # replaces token, jwt.publicKey and jwt.anonymousPublicKey
   existingSecret: ""
   tokenSecretKey: "mcp-auth-token"
   jwt:
@@ -150,6 +151,15 @@ auth:
     audience: ""
     # MCP_AUTH_JWT_ALGORITHM
     algorithm: ""
+    # MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY: PEM public key, or the shared secret of an
+    # HS* algorithm, of the operator-held verifier that accepts only
+    # accessControl.anonymousPrincipal beside the JWKS verifier. Rendered only with
+    # provider jwt and jwksUri set, from the chart secret, or from existingSecret
+    # under anonymousPublicKeySecretKey when that secret carries the key.
+    anonymousPublicKey: ""
+    anonymousPublicKeySecretKey: "mcp-auth-anonymous-jwt-public-key"
+    # MCP_AUTH_ANONYMOUS_JWT_ALGORITHM
+    anonymousAlgorithm: ""
   # MCP_AUTH_GROUPS_CLAIM
   groupsClaim: ""
   # MCP_AUTH_ROLES_CLAIM
@@ -166,6 +176,10 @@ accessControl:
   defaultGroupGrants: ""
   # ACCESS_CONTROL_PUBLISH_ROLE
   publishRole: ""
+  # ACCESS_CONTROL_ANONYMOUS_PRINCIPAL: the jwt subject every write tool refuses.
+  # Empty makes no principal read-only; a value that differs from the minted sub
+  # leaves that token writable.
+  anonymousPrincipal: ""
 
 # Search features. The fts/semantic/hybrid `enabled` flags map to the server's
 # tri-state search toggles: true renders ENABLE_*="auto" (register the tool when

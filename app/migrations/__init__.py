@@ -12,6 +12,7 @@ This package contains migration orchestration and all migration implementations:
 - version.py: Optimistic-concurrency version column migration
 - access_control.py: Access-control columns, the grants table and the access lookup indexes
 - ingest.py: The partial index serving the reads of ingest-managed entries
+- grant_owner.py: Each PostgreSQL grant's entry owner column, kept exact by a composite foreign key onto the entry
 - tag_uniqueness.py: Duplicate tag repair and the unique tag index
 - index_tree.py: The per-node summary table of the index tree
 - compression.py: Embedding compression migration (vec_context_embeddings_compressed + compression_metadata)
@@ -55,6 +56,7 @@ from app.migrations.fts import apply_fts_migration
 from app.migrations.fts import estimate_migration_time
 from app.migrations.fts import get_fts_migration_status
 from app.migrations.fts import reset_fts_migration_status
+from app.migrations.grant_owner import apply_grant_owner_migration
 from app.migrations.index_tree import apply_index_tree_migration
 from app.migrations.ingest import apply_ingest_index_migration
 from app.migrations.metadata import handle_metadata_indexes
@@ -105,6 +107,8 @@ __all__ = [
     'apply_access_control_migration',
     # Ingest index
     'apply_ingest_index_migration',
+    # Grant owner
+    'apply_grant_owner_migration',
     # Tag uniqueness
     'apply_tag_uniqueness_migration',
     # Compression

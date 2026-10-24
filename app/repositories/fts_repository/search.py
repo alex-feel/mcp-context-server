@@ -11,6 +11,7 @@ from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
+from app.repositories.context_repository.records import entry_columns
 from app.repositories.entry_filters import count_applied_filters
 from app.repositories.fts_repository.faults import FTS_UNPARSEABLE_QUERY_DETAIL
 from app.repositories.fts_repository.faults import FtsValidationError
@@ -38,7 +39,8 @@ class FtsSearchMixin(BaseRepository):
     predicate sits before the LIMIT and OFFSET on both, so an unreadable entry
     never takes a rank position. BM25 draws on statistics of the whole FTS5 index,
     so on SQLite the scores of readable entries also reflect entries the caller
-    cannot read, while ``ts_rank_cd`` scores each document on its own. Each branch
+    cannot read, while ``ts_rank_cd`` scores each document on its own. Every row
+    reports the entry's visibility and whether the caller owns it. Each branch
     classifies execution failures into client-query errors and genuine database
     faults, so a malformed query never counts against the circuit breaker.
     """
@@ -92,7 +94,9 @@ class FtsSearchMixin(BaseRepository):
                 entries it may read match.
 
         Returns:
-            Tuple of (search results list, statistics dictionary)
+            Tuple of (search results list, statistics dictionary). Each result carries
+            the entry columns, ``visibility`` among them, ``is_owner`` (1 when the scope
+            owns the entry, else 0), ``score`` and ``highlighted``.
 
         Raises:
             FtsValidationError: If the query contains an embedded NUL (U+0000) or an
@@ -373,17 +377,13 @@ class FtsSearchMixin(BaseRepository):
             # path's ``created_at DESC, id DESC`` contract (newest-first on ties); the id is
             # lowercase hex on SQLite and a UUID on PostgreSQL, which order identically.
             entries = self._readable('context_entries', alias='ce')
+            # The select list reports ownership, so its OWNER bind precedes every filter
+            # bind in statement text order.
+            owner = build_access_predicate(scope, mode=AccessMode.OWNER, backend_type='sqlite', outer='ce')
             sql_query = f'''
                 SELECT
-                    ce.id,
-                    ce.thread_id,
-                    ce.source,
-                    ce.content_type,
-                    ce.text_content,
-                    ce.metadata,
-                    ce.summary,
-                    ce.created_at,
-                    ce.updated_at,
+                    {entry_columns('ce')},
+                    {owner.admits_expression()} AS is_owner,
                     -bm25(context_entries_fts) as score,
                     {highlight_expr}
                 FROM {entries}
@@ -394,8 +394,9 @@ class FtsSearchMixin(BaseRepository):
                 LIMIT ? OFFSET ?
             '''
 
-            # Combine params: filter_params (the read predicate's binds last), then fts_query, limit, offset
-            params = [*filter_params, fts_query, limit, offset]
+            # Combine params in statement text order: the owner bind of the select list, the
+            # filter params (the read predicate's binds last), then fts_query, limit, offset
+            params = [*owner.params, *filter_params, fts_query, limit, offset]
 
             try:
                 cursor = conn.execute(sql_query, params)
@@ -447,7 +448,7 @@ class FtsSearchMixin(BaseRepository):
                         'Query short-circuited: malformed boolean query reduced to no '
                         'searchable terms; 0 rows.',
                     )
-                params = [*filter_params, safe_query, limit, offset]
+                params = [*owner.params, *filter_params, safe_query, limit, offset]
                 try:
                     cursor = conn.execute(sql_query, params)
                     rows = cursor.fetchall()
@@ -682,6 +683,13 @@ class FtsSearchMixin(BaseRepository):
             query_param_pos = param_position
             param_position += 1
 
+            # The inner select reports ownership; its OWNER bind is numbered after the
+            # query's, and LIMIT and OFFSET after it.
+            owner = build_access_predicate(
+                scope, mode=AccessMode.OWNER, backend_type='postgresql', outer='ce', start=param_position,
+            )
+            param_position += owner.bind_count
+
             # Build highlight expression for the outer query.
             # ts_headline is applied ONLY to the LIMIT'd result set (inner subquery)
             # to avoid O(N_matched) invocations on large result sets.
@@ -708,28 +716,14 @@ class FtsSearchMixin(BaseRepository):
             entries = self._readable('context_entries', alias='ce')
             sql_query = f'''
                 SELECT
-                    sub.id,
-                    sub.thread_id,
-                    sub.source,
-                    sub.content_type,
-                    sub.text_content,
-                    sub.metadata,
-                    sub.summary,
-                    sub.created_at,
-                    sub.updated_at,
+                    {entry_columns('sub')},
+                    sub.is_owner,
                     sub.score,
                     {outer_highlight_expr}
                 FROM (
                     SELECT
-                        ce.id,
-                        ce.thread_id,
-                        ce.source,
-                        ce.content_type,
-                        ce.text_content,
-                        ce.metadata,
-                        ce.summary,
-                        ce.created_at,
-                        ce.updated_at,
+                        {entry_columns('ce')},
+                        {owner.admits_expression()} AS is_owner,
                         ts_rank_cd(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score
                     FROM {entries}
                     WHERE {where_clause}
@@ -743,8 +737,8 @@ class FtsSearchMixin(BaseRepository):
             # Transform query based on mode (for prefix mode, adds :* suffix)
             transformed_query = transform_query_postgresql(query, mode)
 
-            # Add transformed query, limit, offset to params
-            filter_params.extend([transformed_query, limit, offset])
+            # Add the transformed query, the owner bind, limit and offset to params
+            filter_params.extend([transformed_query, *owner.params, limit, offset])
 
             try:
                 rows = await conn.fetch(sql_query, *filter_params)

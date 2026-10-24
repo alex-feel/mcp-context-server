@@ -12,6 +12,7 @@ from pydantic import Field
 from app.auth import resolve_effective_principal
 from app.auth import resolve_write_scope
 from app.auth import visibility_denied_reason
+from app.auth.access import reject_read_only_principal
 from app.digests import normalize_stored_text
 from app.errors import format_exception_message
 from app.metadata_types import non_finite_metadata_error
@@ -135,6 +136,12 @@ async def store_context(
         ToolError: If validation fails, embedding generation fails, or storage operation fails.
     """
     try:
+        # The effective principal comes first (the verified jwt principal, or the
+        # configured default principal): the read-only principal is refused before
+        # any argument check, repository access or generation.
+        principal = resolve_effective_principal()
+        reject_read_only_principal(principal, tool='store_context')
+
         # === PHASE 1: Input Validation (no DB operations) ===
 
         # Clean input strings - defensive try/except handles edge cases where Pydantic validation bypassed
@@ -153,12 +160,10 @@ async def store_context(
         if not text:
             raise ToolError('text cannot be empty or whitespace')
 
-        # Resolve the effective principal (the verified jwt principal, or the
-        # configured default principal), the scope deduplication reads, merges
-        # and stamps under, and the visibility to stamp, then enforce the
-        # publish gate on the EFFECTIVE value: a caller-omitted visibility that
-        # defaults to 'public' is still a publish and still needs the role.
-        principal = resolve_effective_principal()
+        # Resolve the scope deduplication reads, merges and stamps under, and the
+        # visibility to stamp, then enforce the publish gate on the EFFECTIVE
+        # value: a caller-omitted visibility that defaults to 'public' is still a
+        # publish and still needs the role.
         scope = resolve_write_scope(principal)
         effective_visibility: str = (
             visibility if visibility is not None else settings.access_control.default_visibility

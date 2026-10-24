@@ -11,6 +11,7 @@ from pydantic import Field
 from app.auth import resolve_effective_principal
 from app.auth import resolve_write_scope
 from app.auth import visibility_denied_reason
+from app.auth.access import reject_read_only_principal
 from app.digests import normalize_stored_text
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
@@ -118,6 +119,11 @@ async def update_context(
             the caller may not modify the entry, or update fails.
     """
     try:
+        # The caller's identity comes first: the read-only principal is refused
+        # before any argument check, repository access, id resolution or generation.
+        principal = resolve_effective_principal()
+        reject_read_only_principal(principal, tool='update_context')
+
         # === PHASE 1: Input Validation (no DB operations) ===
 
         # Clean text input if provided
@@ -173,10 +179,9 @@ async def update_context(
 
         # Get repositories
         repos = await ensure_repositories()
-        # The caller's identity, resolved before anything that can reveal whether an
-        # entry exists: prefix resolution and the probe below see only the entries
-        # the caller may read, and the publish gate needs the caller's roles.
-        principal = resolve_effective_principal()
+        # The caller's scope, built before anything that can reveal whether an entry
+        # exists: prefix resolution and the probe below see only the entries the
+        # caller may read.
         scope = resolve_write_scope(principal)
 
         # Boundary normalization: accept full hex (32 or 36 chars) or 8-31 char hex prefix

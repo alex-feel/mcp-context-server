@@ -4,7 +4,10 @@ Tests verify that generate_fts_description produces correct output
 for both SQLite and PostgreSQL backends across various FTS language
 configurations, and that structural invariants of the description
 template are maintained. The access-scoping tests also pin the
-SQLite score note in the description hybrid_search_context serves.
+SQLite score note in the description hybrid_search_context serves,
+and the read-back tests pin that the full-text description and the
+return description of every other entry-carrying search and read tool
+name the visibility and is_owner their results report.
 The sync tests pin what the corpus sync tools' served schemas tell a
 client: how to compute a manifest item's text digest, and no name of
 the server's own modules or constants.
@@ -14,15 +17,18 @@ import json
 import re
 from collections.abc import Awaitable
 from collections.abc import Callable
+from typing import Literal
 
 import pytest
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
 
 from app.ingest import MAX_PLAN_DELETES
+from app.tools import get_context_by_ids
 from app.tools import list_ingest_state
 from app.tools import plan_context_sync
 from app.tools import register_tool
+from app.tools import search_context
 from app.tools.descriptions import _FTS_DESCRIPTION_TEMPLATE
 from app.tools.descriptions import _POSTGRESQL_MODE_DESCRIPTIONS
 from app.tools.descriptions import _SQLITE_MODE_DESCRIPTIONS
@@ -183,6 +189,40 @@ class TestDescriptionAccessScoping:
             description
         )
         assert "PostgreSQL's ts_rank_cd scores each entry on its own" in description
+
+
+class TestDescriptionReadBack:
+    """Every entry-carrying search and read tool names the visibility and ownership its results report."""
+
+    @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
+    def test_fts_description_names_the_access_fields(self, backend: Literal['sqlite', 'postgresql']) -> None:
+        """The served full-text description carries its own return description, which names both fields."""
+        description = ' '.join(generate_fts_description(backend, 'english').split())
+        assert 'visibility' in description
+        assert 'is_owner (whether the caller owns the entry)' in description
+
+    @pytest.mark.parametrize(
+        'tool_name',
+        ['semantic_search_context', 'hybrid_search_context', 'search_context', 'get_context_by_ids'],
+    )
+    def test_docstring_return_description_names_the_access_fields(self, tool_name: str) -> None:
+        """The return description of each docstring-described tool names both fields and never the owner."""
+        from app.tools.search.hybrid import hybrid_search_context
+        from app.tools.search.semantic import semantic_search_context
+
+        functions: dict[str, Callable[..., Awaitable[object]]] = {
+            'semantic_search_context': semantic_search_context,
+            'hybrid_search_context': hybrid_search_context,
+            'search_context': search_context,
+            'get_context_by_ids': get_context_by_ids,
+        }
+        docstring = functions[tool_name].__doc__
+        assert docstring is not None
+        returns = ' '.join(docstring[docstring.index('Returns:'):docstring.index('Raises:')].split())
+        assert 'visibility' in returns
+        assert 'is_owner' in returns
+        assert 'whether the caller owns the entry' in returns
+        assert 'owner_id' not in returns
 
 
 _INTERNAL_NAME = re.compile(r'\bapp\.|MAX_PLAN_DELETES|content_hash')

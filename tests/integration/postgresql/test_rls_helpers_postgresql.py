@@ -1,14 +1,15 @@
 """The row-level security helper functions against a real PostgreSQL server.
 
-The three helpers hand the transaction's bound identity to the policies and the read
+The four helpers hand the transaction's bound identity to the policies and the read
 view. Their SQL-standard bodies carry no SET clause, so the planner inlines every call
 into the expression around it instead of calling a function once per row, and the
 names in the bodies were bound when the migration created them under a search path of
 pg_catalog alone, so no search path a caller sets can change what they read. These
 tests read the helpers' catalog entries, plan a routed read as the request login role
-``mcp_app`` to prove the grants policy evaluates the inlined body, shadow a function and
-an operator the bodies use under a caller's search path, and replace helpers created
-in the earlier ``SET search_path`` form, after which the next boot issues no DDL.
+``mcp_app`` to prove the grants policy evaluates the inlined bodies, its owner arm
+included, shadow a function and an operator the bodies use under a caller's search path,
+and replace helpers created in the earlier ``SET search_path`` form, after which the next
+boot issues no DDL.
 """
 
 import json
@@ -46,7 +47,10 @@ SCHEMA: Final = '"public"'
 VIEW: Final = f'{SCHEMA}.context_entries_readable'
 CAROL: Final = AccessScope('carol', frozenset({'team-x'}))
 SHADOW_PATH: Final = f'SET LOCAL search_path = shadow, {SCHEMA}, pg_catalog'
-# The statements an earlier release created the helpers with: string bodies under a SET clause.
+# What the catalog holds for a helper as the migration creates it: an invoker's function with no
+# SET clause and a SQL-standard body, STABLE and PARALLEL SAFE.
+CURRENT_FACTS: Final = (False, None, True, 's', 's')
+# The statements an earlier release created the first three helpers with: string bodies under a SET clause.
 EARLIER_HELPERS: Final = (
     (
         'mcp_context_principal_id', 'text',
@@ -171,14 +175,18 @@ class TestCatalog:
         conn = await asyncpg.connect(pg_rls_db.admin)
         try:
             facts = await _helper_facts(conn)
-            acl = await conn.fetchval(
-                "SELECT proacl::text FROM pg_proc WHERE oid = to_regprocedure('public.mcp_context_principal_id()')",
-            )
+            acls = [
+                await conn.fetchval('SELECT proacl::text FROM pg_proc WHERE oid = to_regprocedure($1)', helper.anchor)
+                for helper in helper_functions(SCHEMA)
+            ]
         finally:
             await conn.close()
 
-        assert facts == dict.fromkeys(_helper_names(), (False, None, True, 's', 's'))
-        assert 'mcp_context_request=X/' in acl
+        assert sorted(facts) == sorted(
+            ['mcp_context_principal_id', 'mcp_context_groups', 'mcp_context_may_publish', 'mcp_context_may_write'],
+        )
+        assert facts == dict.fromkeys(_helper_names(), CURRENT_FACTS)
+        assert all('mcp_context_request=X/' in str(acl) for acl in acls), acls
 
 
 class TestInlining:
@@ -198,6 +206,7 @@ class TestInlining:
         assert labels(matrix_db, rows) == MATRIX_VISIBILITY[AccessMode.READ]['carol']
         grants_conditions = _grants_conditions(json.loads(document))
         assert any("current_setting('app.principal_id'" in condition for condition in grants_conditions), document
+        assert any('entry_owner_id' in condition for condition in grants_conditions), document
         assert 'mcp_context_principal_id(' not in document
         assert 'mcp_context_groups(' not in document
 
@@ -235,12 +244,14 @@ class TestResolutionBoundAtCreation:
             principal = await app_conn.fetchval(f'SELECT {SCHEMA}.mcp_context_principal_id()')
             groups = await app_conn.fetchval(f'SELECT {SCHEMA}.mcp_context_groups()')
             may_publish = await app_conn.fetchval(f'SELECT {SCHEMA}.mcp_context_may_publish()')
+            may_write = await app_conn.fetchval(f'SELECT {SCHEMA}.mcp_context_may_write()')
 
         assert shadowed is False
         assert cleared == ''
         assert principal is None
         assert groups == []
         assert may_publish is False
+        assert may_write is False
 
 
 class TestUpgrade:
@@ -262,14 +273,17 @@ class TestUpgrade:
         admin = await asyncpg.connect(pg_rls_db.admin)
         try:
             earlier_facts = (False, ['search_path=pg_catalog, pg_temp'], False, 's', 's')
-            assert await _helper_facts(admin) == dict.fromkeys(_helper_names(), earlier_facts)
+            earlier_names = [name for name, _, _ in EARLIER_HELPERS]
+            assert await _helper_facts(admin) == {
+                name: earlier_facts if name in earlier_names else CURRENT_FACTS for name in _helper_names()
+            }
             await install_ddl_log(admin)
 
             with caplog.at_level(logging.INFO, logger='app.migrations.rls'):
                 await apply_rls(matrix_db.seed_backend, rls_settings())
 
             assert await ddl_log(admin) == ['CREATE FUNCTION'] * 3 + ['COMMENT'] * 3
-            assert await _helper_facts(admin) == dict.fromkeys(_helper_names(), (False, None, True, 's', 's'))
+            assert await _helper_facts(admin) == dict.fromkeys(_helper_names(), CURRENT_FACTS)
             for helper in helper_functions(SCHEMA):
                 comment = await admin.fetchval("SELECT obj_description(to_regprocedure($1), 'pg_proc')", helper.anchor)
                 fingerprint = parse_fingerprint(comment)

@@ -18,7 +18,8 @@ from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.ids import normalize_id
 from app.repositories.base import BaseRepository
-from app.repositories.context_repository.records import CONTEXT_ENTRY_COLUMNS
+from app.repositories.context_repository.records import GrepScanRow
+from app.repositories.context_repository.records import entry_columns
 from app.repositories.entry_filters import count_applied_filters
 
 if TYPE_CHECKING:
@@ -59,6 +60,7 @@ class ContextSearchMixin(BaseRepository):
         self,
         *,
         scope: Scope,
+        start: int,
         thread_id: str | None = None,
         source: str | None = None,
         content_type: str | None = None,
@@ -75,7 +77,9 @@ class ContextSearchMixin(BaseRepository):
         so ``search_contexts`` and ``grep_scan_text_contents`` cannot drift. The
         caller is expected to have already emitted ``WHERE 1=1``; the returned SQL
         is a run of `` AND ...`` fragments (``''`` for the system scope with no
-        filters), whose placeholders start at 1.
+        filters), whose placeholders start at ``start``, so a statement that binds
+        values before its WHERE clause (the ownership of its select list) numbers
+        them first.
 
         The scope's read predicate is the LAST fragment, after every client filter:
         no filter placeholder moves, the predicate never counts toward
@@ -84,6 +88,7 @@ class ContextSearchMixin(BaseRepository):
 
         Args:
             scope: The caller's scope; only entries it may read match.
+            start: The position of the clause's first placeholder in the statement.
             thread_id: Filter by thread id (indexed).
             source: Filter by source ('user' or 'agent', indexed).
             content_type: Filter by content type.
@@ -112,7 +117,7 @@ class ContextSearchMixin(BaseRepository):
         validation_errors: list[str] = []
 
         def _next_ph() -> str:
-            return self._placeholder(len(params) + 1)
+            return self._placeholder(start + len(params))
 
         # Indexed scalar filters (thread_id + source use idx_thread_source).
         if thread_id:
@@ -148,7 +153,7 @@ class ContextSearchMixin(BaseRepository):
         else:
             metadata_builder = MetadataQueryBuilder(
                 backend_type='postgresql',
-                param_offset=len(params),
+                param_offset=start - 1 + len(params),
             )
 
         if metadata:
@@ -196,7 +201,7 @@ class ContextSearchMixin(BaseRepository):
                 validation_errors.append(str(e))
                 return '', [], 0, validation_errors
             tag_placeholders = ','.join([
-                self._placeholder(len(params) + i + 1)
+                self._placeholder(start + len(params) + i)
                 for i in range(len(normalized_tags))
             ])
             tag_rows = self._readable('tags', alias='tags')
@@ -218,7 +223,7 @@ class ContextSearchMixin(BaseRepository):
         # The caller's read predicate goes last, after every client filter, so it shifts
         # no filter placeholder and is never counted as a filter.
         read = build_access_predicate(
-            scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=len(params) + 1,
+            scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=start + len(params),
         )
         clauses.append(read.and_clause())
         params.extend(read.params)
@@ -260,7 +265,9 @@ class ContextSearchMixin(BaseRepository):
             scope: The caller's scope; only entries it may read are returned.
 
         Returns:
-            Tuple of (matching rows, query statistics)
+            Tuple of (matching rows, query statistics). Each row carries the entry
+            columns, ``visibility`` among them, and ``is_owner``: 1 when the scope
+            owns the entry, else 0.
             Note: Rows can be sqlite3.Row or asyncpg.Record depending on backend
         """
         import time as time_module
@@ -274,9 +281,13 @@ class ContextSearchMixin(BaseRepository):
                 # Build query with indexed fields first for optimization
                 # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
                 entries = self._readable('context_entries', alias='context_entries')
-                query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM {entries} WHERE 1=1'
-                where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
+                owner = build_access_predicate(
+                    scope, mode=AccessMode.OWNER, backend_type='sqlite', outer='context_entries', start=1,
+                )
+                query = f'SELECT {entry_columns()}, {owner.admits_expression()} AS is_owner FROM {entries} WHERE 1=1'
+                where_sql, filter_params, filter_count, validation_errors = self._build_context_filter_clause(
                     scope=scope,
+                    start=1 + owner.bind_count,
                     thread_id=thread_id,
                     source=source,
                     content_type=content_type,
@@ -300,6 +311,7 @@ class ContextSearchMixin(BaseRepository):
                         'query_plan': None,
                     }
                 query += where_sql
+                params = [*owner.params, *filter_params]
 
                 # Order and pagination - use id as secondary sort for consistency
                 limit_placeholder = self._placeholder(len(params) + 1)
@@ -351,9 +363,13 @@ class ContextSearchMixin(BaseRepository):
             # Build query with indexed fields first for optimization
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             entries = self._readable('context_entries', alias='context_entries')
-            query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM {entries} WHERE 1=1'
-            where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
+            owner = build_access_predicate(
+                scope, mode=AccessMode.OWNER, backend_type='postgresql', outer='context_entries', start=1,
+            )
+            query = f'SELECT {entry_columns()}, {owner.admits_expression()} AS is_owner FROM {entries} WHERE 1=1'
+            where_sql, filter_params, filter_count, validation_errors = self._build_context_filter_clause(
                 scope=scope,
+                start=1 + owner.bind_count,
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
@@ -377,6 +393,7 @@ class ContextSearchMixin(BaseRepository):
                     'query_plan': None,
                 }
             query += where_sql
+            params = [*owner.params, *filter_params]
 
             # Order and pagination - use id as secondary sort for consistency
             limit_placeholder = self._placeholder(len(params) + 1)
@@ -424,14 +441,15 @@ class ContextSearchMixin(BaseRepository):
         max_entries_scanned: int = 1000,
         aggregate_bytes_budget: int = 67108864,
         page_size: int = 200,
-    ) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+    ) -> tuple[list[GrepScanRow], dict[str, Any]]:
         """Scan the ``text_content`` of the entries the scope may read, newest first, for server-side grep.
 
         Exhaustive keyset pagination ordered ``id DESC`` -- deliberately NOT
         ``search_contexts`` (whose ``LIMIT 50`` would cap results and make grep
-        silently non-exhaustive). Returns ``(id, text_content)`` candidate rows
-        (after the portable filters and an optional pure-ASCII substring
-        pre-narrow); the authoritative regex/line/offset matching runs in Python
+        silently non-exhaustive). Returns one :class:`GrepScanRow` per candidate
+        entry (after the portable filters and an optional pure-ASCII substring
+        pre-narrow), carrying its text, its visibility and whether the scope owns
+        it; the authoritative regex/line/offset matching runs in Python
         in the tool layer. The scan is bounded by ``max_entries_scanned`` and an
         aggregate code-point budget so an unscoped thread cannot exhaust memory;
         the first entry that crosses the budget is still returned (so a single
@@ -457,24 +475,35 @@ class ContextSearchMixin(BaseRepository):
             page_size: Rows fetched per keyset page.
 
         Returns:
-            ``(rows, stats)`` where ``rows`` is a list of ``(context_id,
-            text_content)`` with canonical 32-char hex ids, and ``stats`` carries
-            ``scanned`` (int), ``truncated`` (bool), ``backend`` (str), and
-            ``validation_errors`` (list, only when a metadata filter is invalid).
+            ``(rows, stats)`` where ``rows`` is a list of :class:`GrepScanRow` with
+            canonical 32-char hex ids, and ``stats`` carries ``scanned`` (int),
+            ``truncated`` (bool), ``backend`` (str), and ``validation_errors``
+            (list, only when a metadata filter is invalid).
         """
         backend_type = self.backend.backend_type
         entries = self._readable('context_entries', alias='context_entries')
-        where_sql, base_params, _filter_count, validation_errors = self._build_context_filter_clause(
-            scope=scope,
-            thread_id=thread_id,
-            source=source,
-            content_type=content_type,
-            tags=tags,
-            metadata=metadata,
-            metadata_filters=metadata_filters,
-            start_date=start_date,
-            end_date=end_date,
+        # A page reports ownership in its select list, so its OWNER bind comes first in
+        # the text and its filter clause is numbered after it; a lookahead selects no
+        # ownership and numbers its filter clause from 1.
+        owner = build_access_predicate(
+            scope, mode=AccessMode.OWNER, backend_type=backend_type, outer='context_entries', start=1,
         )
+
+        def _filter_clause(start: int) -> tuple[str, list[Any], int, list[str]]:
+            return self._build_context_filter_clause(
+                scope=scope,
+                start=start,
+                thread_id=thread_id,
+                source=source,
+                content_type=content_type,
+                tags=tags,
+                metadata=metadata,
+                metadata_filters=metadata_filters,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+        page_where_sql, page_filter_params, _filter_count, validation_errors = _filter_clause(1 + owner.bind_count)
         if validation_errors:
             return [], {
                 'scanned': 0,
@@ -482,12 +511,14 @@ class ContextSearchMixin(BaseRepository):
                 'validation_errors': validation_errors,
                 'backend': backend_type,
             }
+        where_sql, base_params, _filter_count, _validation_errors = _filter_clause(1)
+        page_select = f'SELECT id, text_content, visibility, {owner.admits_expression()} AS is_owner FROM {entries}'
 
         if backend_type == 'sqlite':
 
-            def _scan_sqlite(conn: sqlite3.Connection) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+            def _scan_sqlite(conn: sqlite3.Connection) -> tuple[list[GrepScanRow], dict[str, Any]]:
                 cursor = conn.cursor()
-                out: list[tuple[str, str]] = []
+                out: list[GrepScanRow] = []
                 scanned = 0
                 total_chars = 0
                 last_id: str | None = None
@@ -513,8 +544,8 @@ class ContextSearchMixin(BaseRepository):
                     return cursor.fetchone() is not None
 
                 while scanned < max_entries_scanned:
-                    page_params: list[Any] = list(base_params)
-                    clause = where_sql
+                    page_params: list[Any] = [*owner.params, *page_filter_params]
+                    clause = page_where_sql
                     if ascii_literal is not None:
                         clause += f" AND text_content LIKE {self._placeholder(len(page_params) + 1)} ESCAPE '\\'"
                         page_params.append(f'%{_escape_like(ascii_literal)}%')
@@ -523,7 +554,7 @@ class ContextSearchMixin(BaseRepository):
                         page_params.append(last_id)
                     page_limit = min(page_size, max_entries_scanned - scanned)
                     query = (
-                        f'SELECT id, text_content FROM {entries} WHERE 1=1{clause} '
+                        f'{page_select} WHERE 1=1{clause} '
                         f'ORDER BY id DESC LIMIT {self._placeholder(len(page_params) + 1)}'
                     )
                     page_params.append(page_limit)
@@ -538,7 +569,9 @@ class ContextSearchMixin(BaseRepository):
                         last_id = str(raw_id)
                         scanned += 1
                         text_str = text_value if text_value is not None else ''
-                        out.append((normalize_id(str(raw_id)), text_str))
+                        out.append(
+                            GrepScanRow(normalize_id(str(raw_id)), text_str, str(row['visibility']), bool(row['is_owner'])),
+                        )
                         total_chars += len(text_str)
                         if total_chars >= aggregate_bytes_budget:
                             budget_hit = True
@@ -563,8 +596,8 @@ class ContextSearchMixin(BaseRepository):
 
             return await self.backend.execute_read(_scan_sqlite, access_scope=scope)
 
-        async def _scan_postgresql(conn: 'asyncpg.Connection') -> tuple[list[tuple[str, str]], dict[str, Any]]:
-            out: list[tuple[str, str]] = []
+        async def _scan_postgresql(conn: 'asyncpg.Connection') -> tuple[list[GrepScanRow], dict[str, Any]]:
+            out: list[GrepScanRow] = []
             scanned = 0
             total_chars = 0
             last_id: Any | None = None
@@ -590,8 +623,8 @@ class ContextSearchMixin(BaseRepository):
                 return look_hit is not None
 
             while scanned < max_entries_scanned:
-                page_params: list[Any] = list(base_params)
-                clause = where_sql
+                page_params: list[Any] = [*owner.params, *page_filter_params]
+                clause = page_where_sql
                 if ascii_literal is not None:
                     clause += f" AND text_content ILIKE {self._placeholder(len(page_params) + 1)} ESCAPE '\\'"
                     page_params.append(f'%{_escape_like(ascii_literal)}%')
@@ -600,7 +633,7 @@ class ContextSearchMixin(BaseRepository):
                     page_params.append(last_id)
                 page_limit = min(page_size, max_entries_scanned - scanned)
                 query = (
-                    f'SELECT id, text_content FROM {entries} WHERE 1=1{clause} '
+                    f'{page_select} WHERE 1=1{clause} '
                     f'ORDER BY id DESC LIMIT {self._placeholder(len(page_params) + 1)}'
                 )
                 page_params.append(page_limit)
@@ -614,7 +647,9 @@ class ContextSearchMixin(BaseRepository):
                     last_id = raw_id
                     scanned += 1
                     text_str = text_value if text_value is not None else ''
-                    out.append((normalize_id(str(raw_id)), text_str))
+                    out.append(
+                        GrepScanRow(normalize_id(str(raw_id)), text_str, str(row['visibility']), bool(row['is_owner'])),
+                    )
                     total_chars += len(text_str)
                     if total_chars >= aggregate_bytes_budget:
                         budget_hit = True

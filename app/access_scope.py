@@ -59,12 +59,19 @@ class AccessScope:
             ``ACCESS_CONTROL_PUBLISH_ROLE``. It is part of the caller's identity,
             not a row filter: the access predicates never read it. Only scopes
             built for the write tools assert it.
+        may_write: Whether the caller may store entries at all; False for the
+            read-only principal. Like ``may_publish`` it is part of the caller's
+            identity and no access predicate reads it; under PostgreSQL row-level
+            security the database refuses an entry inserted without it. Only scopes
+            built for the write tools assert it, so a scope that forgets it fails
+            closed.
     """
 
     principal_id: str
     groups: frozenset[str]
     _: KW_ONLY
     may_publish: bool = False
+    may_write: bool = False
 
     def groups_list(self) -> list[str]:
         """Return the groups sorted, so the bound value is deterministic across processes.
@@ -223,17 +230,20 @@ class PolicyOperands:
             the array: without it, ``= ANY((SELECT ...))`` compares with each row
             of the subquery.
         may_publish: Whether the bound caller may set visibility ``public``.
+        may_write: Whether the bound caller may store entries.
     """
 
     principal: str
     groups: str
     may_publish: str
+    may_write: str
 
 
 # The schema functions that hand the bound identity to the policies.
 PRINCIPAL_FUNCTION: Final = 'mcp_context_principal_id'
 GROUPS_FUNCTION: Final = 'mcp_context_groups'
 MAY_PUBLISH_FUNCTION: Final = 'mcp_context_may_publish'
+MAY_WRITE_FUNCTION: Final = 'mcp_context_may_write'
 
 # The view through which a request backend under row-level security reads
 # context_entries: owned by the table owner, its condition is the READ predicate
@@ -249,12 +259,13 @@ def policy_operands(schema: str) -> PolicyOperands:
             SQL identifier.
 
     Returns:
-        The principal, groups and publish-right operands.
+        The principal, groups, publish-right and write-right operands.
     """
     return PolicyOperands(
         principal=f'(SELECT {schema}.{PRINCIPAL_FUNCTION}())',
         groups=f'(SELECT {schema}.{GROUPS_FUNCTION}())::text[]',
         may_publish=f'(SELECT {schema}.{MAY_PUBLISH_FUNCTION}())',
+        may_write=f'(SELECT {schema}.{MAY_WRITE_FUNCTION}())',
     )
 
 

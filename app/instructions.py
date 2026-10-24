@@ -37,6 +37,9 @@ Persistent context storage for LLM agents. Store, search, and retrieve context e
 | `read_context_range`      | Read a char/line/node slice of one entry                     |
 | `plan_context_sync`       | Diff a corpus manifest against stored ingest state           |
 | `list_ingest_state`       | Page through your stored ingest state                        |
+| `share_context`           | Share your entry with a user or group (read/write)           |
+| `unshare_context`         | Remove a grant from your entry                               |
+| `list_context_grants`     | List the grants on your entry                                |
 
 Batch: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries each).
 
@@ -47,6 +50,7 @@ Batch: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up
 - **text**: Prefer storing context in pure Markdown format.
 - **metadata**: JSON object for structured data. Use metadata_filters for advanced operators (gt, lt, contains, exists, etc.). Include descriptive fields (agent_name, task_name, status, project, references) for discoverability. Link entries into a knowledge graph with references. Store cross-references when creating entries: `metadata: {"references": {"context_ids": ["0190abcdef1234567890abcdef123456", "0190abcdef1234567890abcdef987654"]}}`. Retrieve referenced entries with `get_context_by_ids` to follow the knowledge chain.
 - **tags**: Lowercase labels for categorization (OR logic).
+- **Access**: entries are private to their owner unless public or shared; results carry `visibility` and `is_owner`, and only an entry's owner shares it.
 - **Knowledge bases**: corpora live in threads named `kb:<corpus>`; read them with the search and navigation tools scoped by thread_id; the `ingest` metadata block is maintained by the sync client.
 
 ## Best Practices

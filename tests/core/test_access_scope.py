@@ -417,6 +417,7 @@ def test_policy_operands_are_the_scalar_subqueries_of_the_identity_functions() -
     assert operands.principal == '(SELECT "tenant one".mcp_context_principal_id())'
     assert operands.groups == '(SELECT "tenant one".mcp_context_groups())::text[]'
     assert operands.may_publish == '(SELECT "tenant one".mcp_context_may_publish())'
+    assert operands.may_write == '(SELECT "tenant one".mcp_context_may_write())'
     sql = build_policy_predicate(AccessMode.READ, outer='ce', schema='"tenant one"')
     assert f'ce.owner_id = {operands.principal} ' in sql
     assert f'g.principal_id = ANY({operands.groups})' in sql
@@ -451,7 +452,7 @@ class TestAccessScope:
         assert scope.groups_json() == '[]'
 
     def test_equality_and_hashing(self) -> None:
-        """Scopes compare and hash by principal, group set and publish permission."""
+        """Scopes compare and hash by principal, group set, publish permission and write permission."""
         first = AccessScope('alice', frozenset({'team-x', 'team-y'}))
         same = AccessScope('alice', frozenset({'team-y', 'team-x'}))
 
@@ -461,6 +462,7 @@ class TestAccessScope:
         assert first != AccessScope('bob', frozenset({'team-x', 'team-y'}))
         assert first != AccessScope('alice', frozenset({'team-x'}))
         assert first != AccessScope('alice', frozenset({'team-x', 'team-y'}), may_publish=True)
+        assert first != AccessScope('alice', frozenset({'team-x', 'team-y'}), may_write=True)
 
     def test_may_publish_is_a_keyword_only_flag_that_defaults_to_false(self) -> None:
         """A scope asserts the publish permission only when built with it explicitly."""
@@ -470,13 +472,22 @@ class TestAccessScope:
         assert AccessScope('alice', frozenset()).may_publish is False
         assert AccessScope('alice', frozenset(), may_publish=True).may_publish is True
 
+    def test_may_write_is_a_keyword_only_flag_that_defaults_to_false(self) -> None:
+        """A scope asserts the write permission only when built with it explicitly, so a forgotten flag fails closed."""
+        parameter = inspect.signature(AccessScope).parameters['may_write']
+
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert AccessScope('alice', frozenset()).may_write is False
+        assert AccessScope('alice', frozenset(), may_write=True).may_write is True
+        assert AccessScope('alice', frozenset(), may_publish=True).may_write is False
+
     @pytest.mark.parametrize('mode', list(AccessMode))
     @pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
-    def test_publish_permission_never_changes_the_predicate(self, mode: AccessMode, backend_type: str) -> None:
-        """The access predicates filter rows by identity alone; the publish permission is not a row filter."""
-        publisher = AccessScope('bob', BOB_TEAMS.groups, may_publish=True)
+    def test_publish_and_write_permissions_never_change_the_predicate(self, mode: AccessMode, backend_type: str) -> None:
+        """The access predicates filter rows by identity alone; neither permission is a row filter."""
+        writer = AccessScope('bob', BOB_TEAMS.groups, may_publish=True, may_write=True)
 
-        assert build_access_predicate(publisher, mode=mode, backend_type=backend_type, outer='ce') == (
+        assert build_access_predicate(writer, mode=mode, backend_type=backend_type, outer='ce') == (
             build_access_predicate(BOB_TEAMS, mode=mode, backend_type=backend_type, outer='ce')
         )
 

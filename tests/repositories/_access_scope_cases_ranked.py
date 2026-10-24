@@ -24,10 +24,17 @@ client filters only.
   caller cannot read changes the scores of the rows it can while their membership and page
   stay the same; on PostgreSQL ``ts_rank_cd`` scores each document alone, so the scores
   stay identical.
+
+Every ranked row also reports its stored visibility and whether the caller owns it. The
+read-back variants of R1, R2 and R4 pin that pair for every row returned, unfiltered,
+filtered and across the pages of the page-fill setups, so the owner bind in each select
+list never shifts a filter, query, rank depth or pagination placeholder; on the compressed
+layout the pair comes from the hydration statement.
 """
 
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Iterable
 from collections.abc import Mapping
 from typing import Any
 from unittest.mock import patch
@@ -43,6 +50,7 @@ from tests.repositories._access_scope_cases import AccessCase
 from tests.repositories._access_scope_cases import Layout
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_cases import Source
+from tests.repositories._access_scope_cases import expected_read_back
 from tests.repositories._access_scope_cases import in_seed_order
 from tests.repositories._access_scope_cases import per_scope
 
@@ -51,6 +59,8 @@ type PagesObservable = tuple[tuple[str, ...], tuple[str, ...], int]
 type FtsObservable = tuple[tuple[str, ...], bool, int]
 type RevocationObservable = tuple[tuple[str, ...], bool]
 type ScorePinObservable = tuple[tuple[str, ...], tuple[str, ...], bool, int, bool]
+type ReadBackRows = tuple[tuple[str, object, object], ...]
+type ReadBack = dict[str, tuple[object, object]]
 
 PAGE_SIZE = 2
 
@@ -353,6 +363,117 @@ def _expected_score_pin(score_changes: bool) -> dict[str, ScorePinObservable]:
     }
 
 
+def _row_read_back(db: ScopedDb, rows: list[dict[str, Any]]) -> ReadBackRows:
+    """Pair each returned row's label with the visibility and ownership it reports, in result order."""
+    labels = db.labels_of(str(row['id']) for row in rows)
+    return tuple((label, row['visibility'], row['is_owner']) for label, row in zip(labels, rows, strict=True))
+
+
+async def _vector_read_back(db: ScopedDb, scope: Scope, **arguments: Any) -> ReadBackRows:
+    """Run the vector search as the scope and read back every row it returns, nearest first."""
+    rows, _stats = await db.repos.embeddings.search(query_embedding=QUERY_VECTOR, scope=scope, **arguments)
+    return _row_read_back(db, rows)
+
+
+async def _vector_read_back_unfiltered(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back every ranked row as the scope."""
+    return await _vector_read_back(db, scope, limit=50)
+
+
+async def _vector_read_back_filtered(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back the ranked rows passing the five client filters as the scope."""
+    return await _vector_read_back(db, scope, limit=50, **_FILTERS)
+
+
+async def _vector_read_back_pages(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back the first two filtered pages of :data:`PAGE_SIZE` rows as the scope."""
+    first = await _vector_read_back(db, scope, limit=PAGE_SIZE, offset=0, **_FILTERS)
+    second = await _vector_read_back(db, scope, limit=PAGE_SIZE, offset=PAGE_SIZE, **_FILTERS)
+    return first + second
+
+
+async def _fts_read_back(db: ScopedDb, scope: Scope, **arguments: Any) -> ReadBackRows:
+    """Run the full-text search for :data:`SEED_KEYWORD` as the scope and read back every row it returns, best first."""
+    rows, _stats = await db.repos.fts.search(query=SEED_KEYWORD, scope=scope, **arguments)
+    return _row_read_back(db, rows)
+
+
+def _by_label(rows: ReadBackRows) -> ReadBack:
+    """Key read-back rows by label: the seed rows score alike, so their rank order is the tiebreak's, not the pin's."""
+    return {label: (visibility, is_owner) for label, visibility, is_owner in rows}
+
+
+async def _matches_read_back_unfiltered(db: ScopedDb, scope: Scope) -> ReadBack:
+    """Read back every matched row as the scope, keyed by label."""
+    return _by_label(await _fts_read_back(db, scope, limit=50))
+
+
+async def _matches_read_back_filtered(db: ScopedDb, scope: Scope) -> ReadBack:
+    """Read back the matched rows passing the five client filters as the scope, keyed by label."""
+    return _by_label(await _fts_read_back(db, scope, limit=50, **_FILTERS))
+
+
+async def _fts_read_back_pages(db: ScopedDb, scope: Scope) -> ReadBackRows:
+    """Read back the first two filtered pages of :data:`PAGE_SIZE` matches as the scope."""
+    first = await _fts_read_back(db, scope, limit=PAGE_SIZE, offset=0, **_FILTERS)
+    second = await _fts_read_back(db, scope, limit=PAGE_SIZE, offset=PAGE_SIZE, **_FILTERS)
+    return first + second
+
+
+def _expected_read_back_rows(scope_name: str, labels: Iterable[str]) -> ReadBackRows:
+    """Pair each label with the visibility and ownership the scope reads back from it.
+
+    Seed rows read back as :func:`expected_read_back` says; every fill row belongs to
+    alice, so only alice and the system scope read back ownership of it.
+
+    Args:
+        scope_name: The scope, a key of :data:`READABLE`.
+        labels: The rows the seam returns, in result order.
+
+    Returns:
+        ``(label, visibility, is_owner)`` per label.
+    """
+    owns_fill = scope_name in _OWNER_SCOPES
+    read_back: dict[str, tuple[str, bool]] = dict(expected_read_back(scope_name))
+    read_back.update({label: ('private', owns_fill) for label, _angle in VECTOR_FILL})
+    read_back.update({label: ('private', owns_fill) for label, _count in FTS_FILL})
+    read_back.update({label: ('public', owns_fill) for label, _count in FTS_VISIBLE})
+    return tuple((label, read_back[label][0], read_back[label][1]) for label in labels)
+
+
+def _expected_vector_read_back_pages(scope_name: str) -> ReadBackRows:
+    """The first two pages nearest first: the hidden rows lead for their owner, the seed follows."""
+    first, second, _filter_count = _expected_vector_pages(scope_name, _FILTER_COUNT)
+    return _expected_read_back_rows(scope_name, (*first, *second))
+
+
+def _expected_fts_read_back_pages(scope_name: str) -> ReadBackRows:
+    """The first two pages best first: the hidden rows lead for their owner, the visible ones follow."""
+    first, second, _filter_count = _expected_fts_pages(scope_name, _FILTER_COUNT)
+    return _expected_read_back_rows(scope_name, (*first, *second))
+
+
+def _vector_read_back_cases(case_id: str, layout: Layout) -> tuple[AccessCase, ...]:
+    """The read-back variants of the vector search on one layout."""
+    return (
+        AccessCase(
+            case_id, _vector_read_back_unfiltered,
+            per_scope(lambda name: _expected_read_back_rows(name, READABLE[name])),
+            layout=layout, variant='read-back', reports_write_access=True,
+        ),
+        AccessCase(
+            case_id, _vector_read_back_filtered,
+            per_scope(lambda name: _expected_read_back_rows(name, READABLE[name])),
+            filtered=True, layout=layout, variant='read-back', setup=_add_decoys, reports_write_access=True,
+        ),
+        AccessCase(
+            case_id, _vector_read_back_pages, per_scope(_expected_vector_read_back_pages),
+            filtered=True, layout=layout, variant='read-back-page-fill', setup=_add_decoys_and_vector_fill,
+            reports_write_access=True,
+        ),
+    )
+
+
 def _vector_cases(case_id: str, layout: Layout) -> tuple[AccessCase, ...]:
     """The vector-search variants of one layout."""
     return (
@@ -378,7 +499,9 @@ def _vector_cases(case_id: str, layout: Layout) -> tuple[AccessCase, ...]:
 
 RANKED_CASES: tuple[AccessCase, ...] = (
     *_vector_cases('R1', 'fp32'),
+    *_vector_read_back_cases('R1', 'fp32'),
     *_vector_cases('R2', 'compressed'),
+    *_vector_read_back_cases('R2', 'compressed'),
     AccessCase('R3', _search_revoking_before_hydration, per_scope(_expected_after_revocation)),
     AccessCase('R4', _matches_unfiltered, per_scope(lambda name: (READABLE[name], True, 0))),
     AccessCase(
@@ -396,6 +519,18 @@ RANKED_CASES: tuple[AccessCase, ...] = (
     AccessCase(
         'R4', _fts_pages_filtered, per_scope(lambda name: _expected_fts_pages(name, _FILTER_COUNT)),
         filtered=True, variant='page-fill', setup=_add_decoys_and_fts_fill,
+    ),
+    AccessCase(
+        'R4', _matches_read_back_unfiltered, per_scope(expected_read_back),
+        variant='read-back', reports_write_access=True,
+    ),
+    AccessCase(
+        'R4', _matches_read_back_filtered, per_scope(expected_read_back),
+        filtered=True, variant='read-back', setup=_add_decoys, reports_write_access=True,
+    ),
+    AccessCase(
+        'R4', _fts_read_back_pages, per_scope(_expected_fts_read_back_pages),
+        filtered=True, variant='read-back-page-fill', setup=_add_decoys_and_fts_fill, reports_write_access=True,
     ),
     AccessCase(
         'R4', _scores_around_a_hidden_match, _expected_score_pin(score_changes=True),

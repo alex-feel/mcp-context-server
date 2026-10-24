@@ -47,6 +47,8 @@ class TestSemanticSearchDateFiltering:
                 'source': 'user',
                 'text_content': 'Test entry',
                 'distance': 0.5,
+                'visibility': 'private',
+                'is_owner': 1,
             },
         ], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 1}))
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])

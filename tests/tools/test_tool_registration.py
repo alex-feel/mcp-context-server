@@ -289,6 +289,9 @@ class TestDisabledToolsConfiguration:
                 'get_statistics',
                 'plan_context_sync',
                 'list_ingest_state',
+                'share_context',
+                'unshare_context',
+                'list_context_grants',
             ]
 
             for tool in tools:
@@ -398,7 +401,7 @@ class TestToolAnnotations:
     """Tests for TOOL_ANNOTATIONS dictionary."""
 
     def test_every_tool_has_annotations(self) -> None:
-        """TOOL_ANNOTATIONS describes exactly the eighteen MCP tools the server can register."""
+        """TOOL_ANNOTATIONS describes exactly the twenty-one MCP tools the server can register."""
         from app.tools import TOOL_ANNOTATIONS
 
         assert set(TOOL_ANNOTATIONS) == {
@@ -416,6 +419,9 @@ class TestToolAnnotations:
             'read_context_range',
             'plan_context_sync',
             'list_ingest_state',
+            'share_context',
+            'unshare_context',
+            'list_context_grants',
             'update_context',
             'update_context_batch',
             'delete_context',
@@ -439,6 +445,7 @@ class TestToolAnnotations:
             'read_context_range',
             'plan_context_sync',
             'list_ingest_state',
+            'list_context_grants',
         ]
 
         for tool in read_only_tools:
@@ -519,6 +526,80 @@ class TestToolAnnotations:
 
         assert TOOL_ANNOTATIONS['plan_context_sync'] == {'title': 'Plan Context Sync', 'readOnlyHint': True}
         assert TOOL_ANNOTATIONS['list_ingest_state'] == {'title': 'List Ingest State', 'readOnlyHint': True}
+
+    def test_sharing_tools_annotations(self) -> None:
+        """A share adds a grant and repeats harmlessly, an unshare removes one, and a listing reads."""
+        from app.tools import TOOL_ANNOTATIONS
+
+        assert TOOL_ANNOTATIONS['share_context'] == {
+            'title': 'Share Context',
+            'readOnlyHint': False,
+            'destructiveHint': False,
+            'idempotentHint': True,
+        }
+        assert TOOL_ANNOTATIONS['unshare_context'] == {
+            'title': 'Unshare Context',
+            'readOnlyHint': False,
+            'destructiveHint': True,
+            'idempotentHint': True,
+        }
+        assert TOOL_ANNOTATIONS['list_context_grants'] == {'title': 'List Context Grants', 'readOnlyHint': True}
+
+
+class TestSharingToolRegistration:
+    """register_core_tools registers the three sharing tools with no feature toggle."""
+
+    SHARING_TOOLS = frozenset({'share_context', 'unshare_context', 'list_context_grants'})
+
+    @staticmethod
+    def _registered(mode: str) -> set[str]:
+        """Run register_core_tools with every optional core tool toggled and capture the registered names.
+
+        Args:
+            mode: The value every navigation and sync toggle takes.
+
+        Returns:
+            The names of the functions passed to register_tool.
+        """
+        from app.settings import get_settings
+        from app.startup.tool_registration import register_core_tools
+
+        toggles = dict.fromkeys(
+            ('ENABLE_GREP_CONTEXT', 'ENABLE_CONTEXT_NAVIGATION', 'ENABLE_CONTEXT_RANGE', 'ENABLE_CONTEXT_SYNC'), mode,
+        )
+        with patch.dict('os.environ', toggles):
+            get_settings.cache_clear()
+            settings = get_settings()
+        get_settings.cache_clear()
+
+        registered: set[str] = set()
+
+        def _capture(_mcp: object, func: object, *_args: object, **_kwargs: object) -> bool:
+            registered.add(getattr(func, '__name__', repr(func)))
+            return True
+
+        with patch('app.startup.tool_registration.register_tool', side_effect=_capture):
+            register_core_tools(MagicMock(), settings)
+        return registered
+
+    @pytest.mark.parametrize('mode', ['auto', 'false'])
+    def test_sharing_tools_register_whatever_the_toggles(self, mode: str) -> None:
+        """The sharing tools need no prerequisite and no toggle gates them."""
+        assert self.SHARING_TOOLS.issubset(self._registered(mode))
+
+    def test_disabled_tools_skips_a_sharing_tool(self) -> None:
+        """DISABLED_TOOLS leaves a sharing tool out like any other core tool."""
+        mock_settings = MagicMock()
+        mock_settings.tools.disabled = {'unshare_context'}
+        mcp = MagicMock()
+
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
+            from app.tools.sharing import list_context_grants
+            from app.tools.sharing import unshare_context
+
+            assert register_tool(mcp, unshare_context) is False
+            assert register_tool(mcp, list_context_grants) is True
 
 
 class TestContextSyncRegistration:

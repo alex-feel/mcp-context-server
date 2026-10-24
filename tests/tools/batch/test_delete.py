@@ -19,7 +19,9 @@ from app.backends.base import MAINTENANCE
 from app.repositories.context_repository.records import IdAccess
 from app.settings import get_settings
 from tests.helpers import LOCAL_SCOPE
+from tests.helpers import LOCAL_WRITE_SCOPE
 from tests.helpers import as_principal
+from tests.tools._read_only import read_only_caller
 
 
 async def _owned_access(context_ids: list[str], **_kwargs: object) -> dict[str, IdAccess]:
@@ -107,7 +109,7 @@ class TestBatchDeleteEmbeddingCleanup:
             # transaction: a per-entry loop would cost one write round trip per matched
             # row and hold the single SQLite writer for the entire scan.
             txn = mock_backend.transactions[0]
-            mock_repos.embeddings.delete_all_chunks_bulk.assert_awaited_once_with(snapshot, txn=txn, scope=LOCAL_SCOPE)
+            mock_repos.embeddings.delete_all_chunks_bulk.assert_awaited_once_with(snapshot, txn=txn, scope=LOCAL_WRITE_SCOPE)
 
             # A thread delete names no ids, so it snapshots only the caller's own rows.
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
@@ -115,14 +117,14 @@ class TestBatchDeleteEmbeddingCleanup:
                 thread_ids=['thread-abc'],
                 source=None,
                 older_than_days=None,
-                scope=LOCAL_SCOPE,
+                scope=LOCAL_WRITE_SCOPE,
                 mode=AccessMode.OWNER,
             )
 
             # The destructive step deletes EXACTLY the snapshot ids, on the SAME
             # transaction; it never re-runs the criteria, which would sweep rows
             # committed after the cleanup snapshot and orphan their vec0 embeddings.
-            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_SCOPE, txn=txn)
+            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_WRITE_SCOPE, txn=txn)
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('fp32_cleanup_mode')
@@ -156,7 +158,9 @@ class TestBatchDeleteEmbeddingCleanup:
 
             # The cleanup covered the whole snapshot in ONE bulk call.
             mock_repos.embeddings.delete_all_chunks_bulk.assert_awaited_once()
-            assert mock_repos.embeddings.delete_all_chunks_bulk.await_args.args[0] == snapshot
+            cleanup_call = mock_repos.embeddings.delete_all_chunks_bulk.await_args
+            assert cleanup_call is not None
+            assert cleanup_call.args[0] == snapshot
 
             # The criteria (including the age boundary) are evaluated exactly ONCE,
             # in the snapshot SELECT; the destructive step deletes exactly the
@@ -168,11 +172,11 @@ class TestBatchDeleteEmbeddingCleanup:
                 thread_ids=None,
                 source='agent',
                 older_than_days=30,
-                scope=LOCAL_SCOPE,
+                scope=LOCAL_WRITE_SCOPE,
                 mode=AccessMode.OWNER,
             )
             txn = mock_backend.transactions[0]
-            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_SCOPE, txn=txn)
+            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_WRITE_SCOPE, txn=txn)
 
     @pytest.mark.asyncio
     async def test_delete_batch_postgresql_deletes_the_snapshot_without_cleanup(self):
@@ -208,12 +212,12 @@ class TestBatchDeleteEmbeddingCleanup:
                 thread_ids=['thread-abc'],
                 source=None,
                 older_than_days=None,
-                scope=LOCAL_SCOPE,
+                scope=LOCAL_WRITE_SCOPE,
                 mode=AccessMode.OWNER,
             )
             mock_repos.embeddings.delete_all_chunks_bulk.assert_not_called()
             txn = mock_backend.transactions[0]
-            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_SCOPE, txn=txn)
+            mock_repos.context.delete_by_ids.assert_awaited_once_with(snapshot, scope=LOCAL_WRITE_SCOPE, txn=txn)
 
     @pytest.mark.asyncio
     async def test_delete_batch_with_context_ids_snapshots_readable_rows(self):
@@ -240,7 +244,7 @@ class TestBatchDeleteEmbeddingCleanup:
                 thread_ids=None,
                 source='agent',
                 older_than_days=None,
-                scope=LOCAL_SCOPE,
+                scope=LOCAL_WRITE_SCOPE,
                 mode=AccessMode.READ,
             )
             mock_repos.context.delete_by_ids.assert_not_awaited()
@@ -424,3 +428,24 @@ class TestBatchDeleteAccess:
         assert sorted(await self._surviving('alice', [alice_public, alice_private])) == sorted(
             [alice_public, alice_private],
         )
+
+
+class TestBatchDeleteReadOnlyPrincipal:
+    """The read-only principal is refused before any criteria check, repository access or id resolution."""
+
+    @pytest.mark.asyncio
+    async def test_read_only_principal_is_refused_first(self) -> None:
+        """A call naming no criterion still gets the read-only refusal, and nothing runs."""
+        from app.tools.batch.delete import delete_context_batch
+
+        with (
+            read_only_caller(),
+            patch('app.tools.batch.delete.ensure_repositories', new=AsyncMock()) as ensure,
+            patch('app.tools.batch.delete.resolve_or_normalize_ids', new=AsyncMock()) as resolve,
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await delete_context_batch()
+
+        assert str(exc_info.value) == 'The anonymous principal is read-only: delete_context_batch is not permitted'
+        ensure.assert_not_awaited()
+        resolve.assert_not_awaited()

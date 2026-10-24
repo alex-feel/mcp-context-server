@@ -1,4 +1,4 @@
-"""Real HTTP servers for the end-to-end transport and access tests, and the JWT access scenario.
+"""Real HTTP servers for the end-to-end transport and access tests, and the clients of the JWT scenarios.
 
 The server is ``tests/run_server.py`` spawned with ``subprocess.Popen`` as an HTTP
 server on a free loopback port. Its environment starts from the MCP SDK's
@@ -6,49 +6,45 @@ server on a free loopback port. Its environment starts from the MCP SDK's
 shell (a configured storage backend, credentials, feature toggles) reaches the server;
 generation is disabled, so it starts without any model provider.
 
-``verify_jwt_access_scoping`` is the access scenario both backends run
-(``tests/integration/sqlite/test_http_jwt_access.py`` and
-``tests/integration/postgresql/test_http_jwt_access.py``): three principals with
-minted JWTs -- ``alice`` and ``bob`` in group ``team-x``, ``carol`` in none -- against a
-server that stamps a group read grant for every author group
-(``ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups``). The application writes no user
-grant and no write grant, so the scenario inserts carol's grants straight into the
-server's database with ``insert_grant``. The scenario ends with a corpus sync, which
-manages only the caller's own entries whatever grants reach the others. PostgreSQL runs
-the scenario a second time with row-level security on, where the database enforces the
-same grants.
+The JWT scenarios run against these servers: owners, grantees and sharing in
+:mod:`tests.integration._http_jwt_access`, the read-only anonymous principal in
+:mod:`tests.integration._http_jwt_anonymous`. They share the principals, token minting,
+clients and tool-call helpers here; the read helpers check that every entry a read
+returns reports its visibility and whether the caller owns it, and never the owner's
+id. :func:`serve_jwks` publishes a key pair the way an identity provider's JWKS
+endpoint does.
 """
 
+import json
 import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from collections.abc import AsyncGenerator
 from collections.abc import Generator
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
+from functools import partial
+from http.server import SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Literal
+from typing import override
 
 import httpx
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
+from joserfc.jwk import RSAKey
 from mcp.client.stdio import get_default_environment
 from mcp.types import TextContent
 
-from tests.helpers import insert_grant
 from tests.integration._harness.core import ClientMode
-from tests.integration._harness.sync import ingest_block
-from tests.integration._harness.sync import listed_source_ids
-from tests.integration._harness.sync import managed_entry
-from tests.integration._harness.sync import manifest_item
-from tests.integration._harness.sync import meta_digest
-from tests.integration._harness.sync import plan_shape
-from tests.integration._harness.sync import plan_with
 
 if TYPE_CHECKING:
     import pytest
@@ -71,14 +67,6 @@ ALICE = 'alice'
 BOB = 'bob'
 CAROL = 'carol'
 TEAM = 'team-x'
-SCENARIO_TAG = 'jwt-access'
-SCENARIO_WORD = 'quasarfern'
-GROUP_THREAD = 'jwt_access_group'
-GRANTED_THREAD = 'jwt_access_granted'
-SYNC_THREAD = 'kb:jwt_access'
-# alice's managed sources: carol is granted read on the first and write on the second,
-# and only the group grant reaches the third.
-SYNC_SOURCES = ('granted-read.md', 'granted-write.md', 'team-only.md')
 
 
 def free_port() -> int:
@@ -266,11 +254,48 @@ def running_http_server(env: dict[str, str]) -> Generator[str]:
         terminate(proc)
 
 
+class _QuietFileHandler(SimpleHTTPRequestHandler):
+    """Serve the files of one directory, keeping the request log out of the test output."""
+
+    @override
+    def log_message(self, format: str, *args: Any) -> None:
+        """Log nothing."""
+
+
+@contextmanager
+def serve_jwks(key_pair: RSAKeyPair, kid: str) -> Generator[str]:
+    """Publish the public key of ``key_pair`` as an identity provider's JWKS endpoint.
+
+    The endpoint is a loopback HTTP server in a daemon thread, alive until the block
+    exits; a server started with ``MCP_AUTH_JWT_JWKS_URI`` set to the yielded URL
+    verifies tokens that ``key_pair`` signs with the header ``kid``.
+
+    Args:
+        key_pair: The identity provider's key pair.
+        kid: The key id the JWKS document gives the key.
+
+    Yields:
+        The JWKS URI.
+    """
+    jwk = {**RSAKey.import_key(key_pair.public_key).as_dict(), 'kid': kid, 'use': 'sig', 'alg': 'RS256'}
+    with tempfile.TemporaryDirectory(prefix='jwks_') as directory:
+        (Path(directory) / 'jwks.json').write_text(json.dumps({'keys': [jwk]}), encoding='utf-8')
+        endpoint = ThreadingHTTPServer(('127.0.0.1', 0), partial(_QuietFileHandler, directory=directory))
+        thread = threading.Thread(target=endpoint.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f'http://127.0.0.1:{endpoint.server_port}/jwks.json'
+        finally:
+            endpoint.shutdown()
+            endpoint.server_close()
+            thread.join(timeout=10)
+
+
 @asynccontextmanager
 async def server_database(
     backend: BackendName, database: str, monkeypatch: 'pytest.MonkeyPatch',
 ) -> AsyncGenerator['StorageBackend']:
-    """Open the database a running server serves, to write what no tool writes.
+    """Open the database a running server serves, to read rows no tool reports.
 
     Args:
         backend: The storage backend.
@@ -335,7 +360,7 @@ def jwt_client(base_url: str, token: str, client_mode: ClientMode) -> Client[Any
     return Client(transport, mode=client_mode)
 
 
-async def _content(client: Client[Any], tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+async def tool_content(client: Client[Any], tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Call a tool that must succeed and return its structured content.
 
     Args:
@@ -351,7 +376,7 @@ async def _content(client: Client[Any], tool: str, arguments: dict[str, Any]) ->
     return result.structured_content
 
 
-async def _error(client: Client[Any], tool: str, arguments: dict[str, Any]) -> str:
+async def tool_error(client: Client[Any], tool: str, arguments: dict[str, Any]) -> str:
     """Call a tool that must refuse the call and return its error text.
 
     Args:
@@ -367,7 +392,35 @@ async def _error(client: Client[Any], tool: str, arguments: dict[str, Any]) -> s
     return ' '.join(block.text for block in result.content if isinstance(block, TextContent))
 
 
-async def _ids(client: Client[Any], tool: str, arguments: dict[str, Any]) -> set[str]:
+async def _rows(client: Client[Any], tool: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the entry rows a read, search or grep tool returned.
+
+    Args:
+        client: The calling principal's client.
+        tool: The tool name.
+        arguments: The tool arguments.
+
+    Returns:
+        The rows.
+    """
+    content = await tool_content(client, tool, arguments)
+    return list(content['result'] if tool == 'get_context_by_ids' else content['results'])
+
+
+def _row_id(tool: str, row: dict[str, Any]) -> str:
+    """Return the entry id of one row a read, search or grep tool returned.
+
+    Args:
+        tool: The tool name.
+        row: The row.
+
+    Returns:
+        The entry id.
+    """
+    return str(row['context_id' if tool == 'grep_context' else 'id'])
+
+
+async def tool_ids(client: Client[Any], tool: str, arguments: dict[str, Any]) -> set[str]:
     """Collect the entry ids a read, search or grep tool returned.
 
     Args:
@@ -378,183 +431,74 @@ async def _ids(client: Client[Any], tool: str, arguments: dict[str, Any]) -> set
     Returns:
         The returned ids.
     """
-    content = await _content(client, tool, arguments)
-    rows = content['result'] if tool == 'get_context_by_ids' else content['results']
-    key = 'context_id' if tool == 'grep_context' else 'id'
-    return {str(row[key]) for row in rows}
+    return {_row_id(tool, row) for row in await _rows(client, tool, arguments)}
 
 
-async def _store_alice_entries(alice: Client[Any]) -> dict[str, str]:
-    """Store alice's four entries under the default ``private`` visibility.
+def entry_read_back(entry: dict[str, Any]) -> tuple[str, bool]:
+    """Return the access fields one entry-carrying response reports.
 
     Args:
-        alice: alice's client.
+        entry: A row, or a ``navigate_context`` or ``read_context_range`` result.
 
     Returns:
-        Entry ids keyed ``group`` (alone in its thread), ``read`` and ``write`` (granted to
-        carol below) and ``team`` (readable through the group grant only).
+        The entry's visibility and whether the caller owns it.
     """
-    entries: dict[str, str] = {}
-    threads = {'group': GROUP_THREAD, 'read': GRANTED_THREAD, 'write': GRANTED_THREAD, 'team': GRANTED_THREAD}
-    for label, thread in threads.items():
-        stored = await _content(alice, 'store_context', {
-            'thread_id': thread,
-            'source': 'agent',
-            'text': f'# {label.title()} entry\n\nAlice {label} entry carrying {SCENARIO_WORD}.',
-            'tags': [SCENARIO_TAG],
-        })
-        entries[label] = str(stored['context_id'])
-    return entries
+    assert 'owner_id' not in entry, f'the owner id was reported: {entry}'
+    assert type(entry['is_owner']) is bool, f'is_owner is not a boolean: {entry}'
+    return str(entry['visibility']), entry['is_owner']
 
 
-async def verify_jwt_access_scoping(
-    base_url: str, key_pair: RSAKeyPair, client_mode: ClientMode, database: 'StorageBackend',
-) -> None:
-    """Prove what each JWT principal reads, modifies and deletes on a running server.
+async def read_back(client: Client[Any], tool: str, arguments: dict[str, Any]) -> dict[str, tuple[str, bool]]:
+    """Collect the access fields a read, search or grep tool reported for each returned entry.
 
-    bob reads all of alice's private entries through the group grant ``author_groups``
-    stamped at store time; carol, in no group, reads only the entry granted to her for
-    read and the one granted to her for write. carol's write grant authorizes a text
-    update but neither a visibility change nor a delete; her read grant authorizes no
-    update; and a thread delete by a grantee deletes nothing. A corpus sync by bob or
-    carol counts alice's readable managed entries as foreign and never plans them.
+    A grep in ``content`` mode returns one row per match; every row of one entry must
+    report the same fields.
 
     Args:
-        base_url: Origin of the server started with ``build_access_env``.
-        key_pair: The key pair the server verifies against.
-        client_mode: Protocol era every client negotiates.
-        database: A backend on the server's database, for the grants no tool writes.
+        client: The calling principal's client.
+        tool: The tool name.
+        arguments: The tool arguments.
+
+    Returns:
+        ``(visibility, is_owner)`` keyed by entry id.
     """
-    async with (
-        jwt_client(base_url, mint_token(key_pair, ALICE, [TEAM]), client_mode) as alice,
-        jwt_client(base_url, mint_token(key_pair, BOB, [TEAM]), client_mode) as bob,
-        jwt_client(base_url, mint_token(key_pair, CAROL), client_mode) as carol,
-    ):
-        entry = await _store_alice_entries(alice)
-        await insert_grant(database, entry['read'], 'user', CAROL, 'read', ALICE)
-        await insert_grant(database, entry['write'], 'user', CAROL, 'write', ALICE)
-        all_ids = set(entry.values())
-        carol_ids = {entry['read'], entry['write']}
-
-        for client, expected, threads, totals in (
-            (alice, all_ids, {GROUP_THREAD: 1, GRANTED_THREAD: 3}, (4, 2)),
-            (bob, all_ids, {GROUP_THREAD: 1, GRANTED_THREAD: 3}, (4, 2)),
-            (carol, carol_ids, {GRANTED_THREAD: 2}, (2, 1)),
-        ):
-            assert await _ids(client, 'search_context', {'tags': [SCENARIO_TAG]}) == expected
-            assert await _ids(client, 'get_context_by_ids', {'context_ids': sorted(all_ids)}) == expected
-            assert await _ids(client, 'fts_search_context', {'query': SCENARIO_WORD}) == expected
-            assert await _ids(client, 'grep_context', {'pattern': SCENARIO_WORD}) == expected
-            listed = (await _content(client, 'list_threads', {}))['threads']
-            assert {row['thread_id']: row['entry_count'] for row in listed} == threads
-            stats = await _content(client, 'get_statistics', {})
-            assert (stats['total_entries'], stats['total_threads']) == totals
-
-        hidden_from_carol = f'Context entry not found: {entry["group"]}'
-        assert await _error(carol, 'navigate_context', {'context_id': entry['group']}) == hidden_from_carol
-        assert await _error(carol, 'read_context_range', {
-            'context_id': entry['group'], 'start_line': 1, 'end_line': 1,
-        }) == hidden_from_carol
-        for client, context_id in ((bob, entry['group']), (carol, entry['read']), (carol, entry['write'])):
-            outline = await _content(client, 'navigate_context', {'context_id': context_id})
-            assert outline['context_id'] == context_id
-            span = await _content(client, 'read_context_range', {'context_id': context_id, 'start_line': 1, 'end_line': 1})
-            assert span['text'].startswith('# ')
-
-        new_text = f'Carol rewrote the write entry, still carrying {SCENARIO_WORD}.'
-        updated = await _content(carol, 'update_context', {'context_id': entry['write'], 'text': new_text})
-        assert updated['success'] is True
-        rows = (await _content(alice, 'get_context_by_ids', {'context_ids': [entry['write']]}))['result']
-        assert rows[0]['text_content'] == new_text
-        assert await _error(carol, 'update_context', {'context_id': entry['read'], 'text': 'x'}) == (
-            f'Not authorized to modify context entry with ID {entry["read"]}'
-        )
-        assert await _error(carol, 'update_context', {'context_id': entry['group'], 'text': 'x'}) == (
-            f'Context entry with ID {entry["group"]} not found'
-        )
-        assert await _error(carol, 'update_context', {'context_id': entry['write'], 'visibility': 'public'}) == (
-            f'Only the owner may change the visibility of context {entry["write"]}'
-        )
-        assert await _error(bob, 'update_context', {'context_id': entry['group'], 'text': 'x'}) == (
-            f'Not authorized to modify context entry with ID {entry["group"]}'
-        )
-
-        for client, context_id in ((carol, entry['write']), (bob, entry['group'])):
-            refusal = f'Not authorized to delete context entries: {context_id}'
-            assert await _error(client, 'delete_context', {'context_ids': [context_id]}) == refusal
-            assert await _error(client, 'delete_context_batch', {'context_ids': [context_id]}) == refusal
-        for client in (bob, carol):
-            assert (await _content(client, 'delete_context', {'thread_id': GRANTED_THREAD}))['deleted_count'] == 0
-            assert (await _content(client, 'delete_context_batch', {'thread_ids': [GRANTED_THREAD]}))['deleted_count'] == 0
-        assert await _ids(alice, 'get_context_by_ids', {'context_ids': sorted(all_ids)}) == all_ids
-
-        deleted = await _content(alice, 'delete_context_batch', {'thread_ids': [GROUP_THREAD]})
-        assert deleted['deleted_count'] == 1
-        assert await _ids(bob, 'get_context_by_ids', {'context_ids': [entry['group']]}) == set()
-
-        await _verify_sync_manages_own_entries(alice, bob, carol, database)
+    reported: dict[str, tuple[str, bool]] = {}
+    for row in await _rows(client, tool, arguments):
+        fields = entry_read_back(row)
+        assert reported.setdefault(_row_id(tool, row), fields) == fields, f'{tool} rows of one entry disagree: {row}'
+    return reported
 
 
-async def _verify_sync_manages_own_entries(
-    alice: Client[Any], bob: Client[Any], carol: Client[Any], database: 'StorageBackend',
-) -> None:
-    """Prove a corpus sync plans and lists only the caller's own managed entries.
-
-    alice stores three managed entries of one corpus, each readable to bob through the
-    ``author_groups`` grant; carol is granted read on the first and write on the
-    second. Each principal plans the full manifest: alice finds her entries unchanged,
-    while bob and carol plan every source as a create and count the managed entries
-    they can read as foreign -- a write grant included -- so no plan ever updates or
-    deletes alice's entries, not even an empty one. Only alice's listing shows them.
-    carol may still rewrite the block of the entry she may write; that changes nothing
-    anyone may read or write, and alice's next plan updates the entry's metadata.
+async def share(client: Client[Any], context_id: str, principal_type: str, principal_id: str, permission: str) -> None:
+    """Grant access to an entry through ``share_context``, which must create the grant.
 
     Args:
-        alice: alice's client.
-        bob: bob's client.
-        carol: carol's client.
-        database: A backend on the server's database, for the grants no tool writes.
+        client: The owner's client.
+        context_id: The entry id.
+        principal_type: ``'user'`` or ``'group'``.
+        principal_id: The grantee.
+        permission: ``'read'`` or ``'write'``.
     """
-    digest = meta_digest('jwt-access')
-    texts = {source: f'Alice managed entry {source} of the corpus.' for source in SYNC_SOURCES}
-    stored = await _content(alice, 'store_context_batch', {
-        'entries': [managed_entry(SYNC_THREAD, source, text, digest) for source, text in texts.items()],
-        'atomic': False,
+    shared = await tool_content(client, 'share_context', {
+        'context_id': context_id, 'principal_type': principal_type, 'principal_id': principal_id, 'permission': permission,
     })
-    assert stored['succeeded'] == len(SYNC_SOURCES), stored
-    ids = {SYNC_SOURCES[item['index']]: str(item['context_id']) for item in stored['results']}
-    await insert_grant(database, ids['granted-read.md'], 'user', CAROL, 'read', ALICE)
-    await insert_grant(database, ids['granted-write.md'], 'user', CAROL, 'write', ALICE)
+    assert shared['created'] is True, shared
 
-    manifest = [manifest_item(source, text, digest) for source, text in texts.items()]
-    creates = list(range(len(SYNC_SOURCES)))
-    for client, expected, expected_empty, listed in (
-        (alice, plan_shape(unchanged=3), None, sorted(SYNC_SOURCES)),
-        (bob, plan_shape(creates=creates, foreign=3), plan_shape(foreign=3), []),
-        (carol, plan_shape(creates=creates, foreign=2), plan_shape(foreign=2), []),
-    ):
-        assert await plan_with(client, SYNC_THREAD, manifest) == expected
-        if expected_empty is not None:
-            assert await plan_with(client, SYNC_THREAD, [], allow_empty_manifest=True) == expected_empty
-        assert await listed_source_ids(client, SYNC_THREAD) == listed
 
-    # carol's write grant lets her rewrite the block of alice's entry. The block decides
-    # no access: the rewrite only makes alice's next plan restore her metadata.
-    rewritten = 'granted-write.md'
-    patched = await _content(carol, 'update_context', {
-        'context_id': ids[rewritten],
-        'metadata_patch': {'ingest': ingest_block(SYNC_THREAD, rewritten, meta_digest('rewritten'))},
-    })
-    assert patched['success'] is True
-    assert await plan_with(alice, SYNC_THREAD, manifest) == plan_shape(
-        updates=[{'index': SYNC_SOURCES.index(rewritten), 'context_id': ids[rewritten], 'change': 'metadata'}],
-        unchanged=2,
-    )
-    assert await plan_with(carol, SYNC_THREAD, manifest) == plan_shape(creates=creates, foreign=2)
-    assert await _ids(carol, 'get_context_by_ids', {'context_ids': sorted(ids.values())}) == {
-        ids['granted-read.md'], ids[rewritten],
-    }
-    assert await _error(carol, 'delete_context', {'context_ids': [ids[rewritten]]}) == (
-        f'Not authorized to delete context entries: {ids[rewritten]}'
-    )
-    assert await _ids(bob, 'get_context_by_ids', {'context_ids': sorted(ids.values())}) == set(ids.values())
+async def listed_grants(client: Client[Any], context_id: str) -> list[tuple[str, str, str, str]]:
+    """List the grants of an entry through ``list_context_grants``.
+
+    Args:
+        client: The owner's client.
+        context_id: The entry id.
+
+    Returns:
+        ``(principal_type, principal_id, permission, granted_by)`` per grant, in listing order.
+    """
+    listed = await tool_content(client, 'list_context_grants', {'context_id': context_id})
+    assert (listed['context_id'], listed['count']) == (context_id, len(listed['grants'])), listed
+    assert all(isinstance(grant['created_at'], str) and grant['created_at'] for grant in listed['grants']), listed
+    return [
+        (grant['principal_type'], grant['principal_id'], grant['permission'], grant['granted_by'])
+        for grant in listed['grants']
+    ]

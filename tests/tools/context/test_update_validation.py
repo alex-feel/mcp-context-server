@@ -13,6 +13,7 @@ from fastmcp.exceptions import ToolError
 import app.tools
 from app.repositories.context_repository.records import EntryProbe
 from tests.helpers import LOCAL_WRITE_SCOPE
+from tests.tools._read_only import read_only_caller
 
 # Tools are plain async functions registered at server startup, so tests call them directly.
 update_context = app.tools.update_context
@@ -404,3 +405,26 @@ class TestUpdateContextImageValidation:
                 ],
             )
         assert '1' in str(exc_info.value)
+
+
+class TestUpdateReadOnlyPrincipal:
+    """The read-only principal is refused before any argument check, id resolution or generation."""
+
+    @pytest.mark.asyncio
+    async def test_read_only_principal_is_refused_first(self) -> None:
+        """An update naming no field and no valid id still gets the read-only refusal, and nothing runs."""
+        with (
+            read_only_caller(),
+            patch('app.tools.context.update.ensure_repositories', new=AsyncMock()) as ensure,
+            patch('app.tools.context.update.resolve_or_normalize_id', new=AsyncMock()) as resolve,
+            patch('app.tools.context.update.get_embedding_provider') as embedding_provider,
+            patch('app.tools.context.update.get_summary_provider') as summary_provider,
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await update_context(context_id='not-a-context-id')
+
+        assert str(exc_info.value) == 'The anonymous principal is read-only: update_context is not permitted'
+        ensure.assert_not_awaited()
+        resolve.assert_not_awaited()
+        embedding_provider.assert_not_called()
+        summary_provider.assert_not_called()

@@ -16,6 +16,9 @@ from app.backends.base import StorageBackend
 
 T = TypeVar('T')
 
+# A SQL statement and the values it binds, in placeholder order.
+type Statement = tuple[str, list[object]]
+
 
 def canonical_timestamp(value: object) -> str | None:
     """Render a created_at/updated_at value as a canonical UTC ISO-8601 string.

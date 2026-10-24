@@ -130,10 +130,12 @@ spec:
                   name: {{ .Values.storage.postgresql.migration.existingSecret }}
                   key: {{ .Values.storage.postgresql.migration.existingSecretKey }}
             {{- end }}
-            {{- /* Bearer token and JWT public key. An existing secret is referenced only for
-                   the key the provider reads (the token for simple_token, the public key for
-                   jwt without a JWKS URI), because a reference to a key the secret lacks
-                   fails the pod start. */}}
+            {{- /* Bearer token, JWT public key and anonymous verifier key. An existing secret is
+                   referenced only for the key the provider reads (the token for simple_token,
+                   the public key for jwt without a JWKS URI), because a reference to a key the
+                   secret lacks fails the pod start. The anonymous verifier key, which exists only
+                   beside a JWKS verifier, is an optional reference: a JWKS deployment whose
+                   secret carries no such key starts without the anonymous verifier. */}}
             {{- if .Values.auth.existingSecret }}
             {{- if eq .Values.auth.provider "simple_token" }}
             - name: MCP_AUTH_TOKEN
@@ -147,6 +149,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.auth.existingSecret }}
                   key: {{ .Values.auth.jwt.publicKeySecretKey }}
+            {{- else if eq .Values.auth.provider "jwt" }}
+            - name: MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+                  key: {{ .Values.auth.jwt.anonymousPublicKeySecretKey }}
+                  optional: true
             {{- end }}
             {{- else }}
             {{- if .Values.auth.token }}
@@ -162,6 +171,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "mcp-context-server.fullname" . }}
                   key: mcp-auth-jwt-public-key
+            {{- end }}
+            {{- if and .Values.auth.jwt.anonymousPublicKey (eq .Values.auth.provider "jwt") .Values.auth.jwt.jwksUri }}
+            - name: MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: mcp-auth-anonymous-jwt-public-key
             {{- end }}
             {{- end }}
             {{- /* OpenAI API key -- shared by the openai embedding and openai summary providers

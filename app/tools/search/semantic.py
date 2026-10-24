@@ -112,7 +112,8 @@ async def semantic_search_context(
     Returns:
         Dict with query (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
-        metadata, scores, tags), count (int), model (str), stats (only when
+        metadata, scores, tags, visibility, is_owner (whether the caller owns
+        the entry)), count (int), model (str), stats (only when
         explain_query=True), and rank_depth_limit (only when the requested window
         reaches past the ranked depth).
 

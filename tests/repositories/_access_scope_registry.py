@@ -12,6 +12,7 @@ from tests.repositories._access_scope_cases import AccessCase
 from tests.repositories._access_scope_cases_aggregates import AGGREGATE_CASES
 from tests.repositories._access_scope_cases_dedup import DEDUP_CASES
 from tests.repositories._access_scope_cases_deletes import DELETE_CASES
+from tests.repositories._access_scope_cases_grants import GRANT_CASES
 from tests.repositories._access_scope_cases_ingest import INGEST_CASES
 from tests.repositories._access_scope_cases_ingest import INGEST_OWNER_CASES
 from tests.repositories._access_scope_cases_ranked import RANKED_CASES
@@ -23,7 +24,7 @@ from tests.repositories._access_scope_cases_updates import UPDATE_CASES
 # The registered cases, each proving one seam for every scope it names.
 CASES: tuple[AccessCase, ...] = (
     *DEDUP_CASES, *READ_CASES, *SEARCH_CASES, *UPDATE_CASES, *DELETE_CASES, *RANKED_CASES, *AGGREGATE_CASES,
-    *INGEST_CASES, *INGEST_OWNER_CASES,
+    *INGEST_CASES, *INGEST_OWNER_CASES, *GRANT_CASES,
 )
 
 # The cases that only a database enforcing row-level security runs, beside every case of CASES.

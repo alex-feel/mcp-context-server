@@ -18,6 +18,12 @@ while the same statement naming the base table scans no such index under the pol
 unique-tags count and the top tags of the statistics, which join the tags to the view, carry no
 One-Time Filter and no condition naming the gate. Each runs with the application predicate, as the
 request profile sends it, and without it, as the repositories send it for the system scope.
+
+A caller with grants reads the grants table under its read policy, whose arms are inlined and hold
+no subquery: in the plans of a routed read and of a child-table read, nothing beneath a grants scan
+runs a subquery or reads ``context_entries``. With function statistics on, the same reads call no
+helper function, while they and a direct call are counted once the principal helper takes a form
+the planner cannot inline.
 """
 
 import json
@@ -32,6 +38,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+import app.backends.postgresql_backend as pg_package
 from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessScope
 from app.access_scope import Scope
@@ -39,12 +46,15 @@ from app.backends import StorageBackend
 from app.backends.base import BackendAccess
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
+from app.backends.postgresql_backend.session import quote_pg_identifier
 from app.backends.postgresql_backend.session_profiles import RLS_READ_VIEWS
 from app.backends.postgresql_backend.session_profiles import RlsRequestProfile
 from app.backends.postgresql_backend.session_profiles import SessionProfile
 from app.repositories import RepositoryContainer
 from app.settings import get_settings
 from app.tools.search.hybrid import _prepare_hybrid_fts_query
+from tests.helpers import rebind_package_settings
+from tests.integration.postgresql._rls_matrix import REQUEST_ROLE
 from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_profiles import PinnedIdentityProfile
 from tests.integration.postgresql.conftest import RlsUrls
@@ -55,6 +65,13 @@ from tests.repositories._access_scope_cases import vector_at
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
 ALICE = AccessScope('alice', frozenset())
+# A caller that reads through grants: a user grant and a grant to its group.
+CAROL = AccessScope('carol', frozenset({'team-x'}))
+CAROL_GRANTED_LABEL = 'alice_private_team_read'
+GRANTS_TABLE = 'context_entry_grants'
+SCHEMA = '"public"'
+HELPERS = ('mcp_context_principal_id', 'mcp_context_groups', 'mcp_context_may_publish', 'mcp_context_may_write')
+PRINCIPAL_HELPER = f'{SCHEMA}.{HELPERS[0]}()'
 FIELD = 'status'
 TARGET = 'plan-target'
 FTS_TERM = 'zircon'
@@ -399,3 +416,137 @@ async def test_targets_are_what_the_filters_select(plan_db: ScopedDb, pg_rls_db:
     expected = {'plan_alice_private', 'plan_alice_public'}
     assert set(plan_db.labels_of(str(row['id']) for row in rows)) == expected
     assert set(plan_db.labels_of(str(row['id']) for row in fts_rows)) == expected
+
+
+async def _plan_nodes(backend: PostgreSQLBackend, statement: Captured, scope: AccessScope) -> list[dict[str, object]]:
+    """Plan ``statement`` verbosely as the request role bound to ``scope`` and return its nodes."""
+
+    async def _explain(conn: asyncpg.Connection) -> str:
+        return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.args))
+
+    return _walk(json.loads(await backend.execute_read(_explain, access_scope=scope)))
+
+
+def _conditions(node: dict[str, object]) -> list[str]:
+    return [str(node[key]) for key in CONDITION_KEYS if key in node]
+
+
+async def _grant_reads_as_carol(plan_db: ScopedDb, url: str) -> list[tuple[Captured, list[dict[str, object]]]]:
+    """Run a routed read and a child-table read as carol, then plan each statement that reads grants.
+
+    Returns:
+        Each captured statement with the nodes of its plan.
+    """
+    async with capturing_repositories(url, RlsRequestProfile(read_views=RLS_READ_VIEWS)) as (repos, capturing):
+        await repos.context.search_contexts(limit=50, scope=CAROL)
+        await repos.tags.get_tags_for_context(plan_db.ids[CAROL_GRANTED_LABEL], scope=CAROL)
+        reads = [statement for statement in capturing.statements if 'context_entry_grants' in statement.sql]
+        reads.extend(statement for statement in capturing.statements if statement.sql.startswith('SELECT tag FROM tags'))
+        assert len(reads) == 2, [statement.sql for statement in capturing.statements]
+        return [(statement, await _plan_nodes(capturing.backend, statement, CAROL)) for statement in reads]
+
+
+@pytest.mark.asyncio
+async def test_the_grants_scan_holds_no_subplan_and_reads_no_entries(plan_db: ScopedDb, pg_rls_db: RlsUrls) -> None:
+    """Under the grants read policy, the routed read and the child-table read scan the grants table alone.
+
+    The policy's owner arm compares the grant's recorded entry owner with the inlined
+    identity, so nothing beneath a scan of ``context_entry_grants`` runs a subquery or
+    reads ``context_entries``, and the scan applies the owner arm itself.
+    """
+    owner_arms = 0
+    for statement, nodes in await _grant_reads_as_carol(plan_db, pg_rls_db.app):
+        grant_scans = [node for node in nodes if node.get('Relation Name') == GRANTS_TABLE]
+        assert grant_scans, statement.sql
+        for scan in grant_scans:
+            beneath = [node for node in _walk(scan.get('Plans', [])) if node is not scan]
+            assert all(node.get('Parent Relationship') != 'SubPlan' for node in beneath), statement.sql
+            assert all(node.get('Relation Name') != 'context_entries' for node in beneath), statement.sql
+            for condition in (*_conditions(scan), *(text for node in beneath for text in _conditions(node))):
+                assert 'SubPlan' not in condition, condition
+                assert 'context_entries' not in condition, condition
+            owner_arms += any('entry_owner_id' in condition for condition in _conditions(scan))
+    assert owner_arms > 0
+
+
+async def _helper_calls(admin: asyncpg.Connection) -> dict[str, int]:
+    """Read how often each helper was called, in a fresh statistics snapshot."""
+    await admin.execute('SELECT pg_stat_clear_snapshot()')
+    rows = await admin.fetch(
+        'SELECT p.proname, COALESCE(s.calls, 0) FROM pg_proc p '
+        'LEFT JOIN pg_stat_user_functions s ON s.funcid = p.oid '
+        "WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY($1::text[])",
+        list(HELPERS),
+    )
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
+async def _flush(conn: asyncpg.Connection) -> None:
+    """Ask the session to flush its statistics when its transaction commits."""
+    await conn.execute('SELECT pg_stat_force_next_flush()')
+
+
+async def _call_principal_then_flush(conn: asyncpg.Connection) -> None:
+    """Call the principal helper by name, then ask for the flush at commit."""
+    await conn.fetchval(f'SELECT {PRINCIPAL_HELPER}')
+    await _flush(conn)
+
+
+async def _track_functions(conn: asyncpg.Connection) -> str:
+    return str(await conn.fetchval('SHOW track_functions'))
+
+
+async def _read_then_flush(repos: RepositoryContainer, backend: PostgreSQLBackend, plan_db: ScopedDb) -> None:
+    """Run the routed read and the child-table read as carol, then flush the session's statistics."""
+    await repos.context.search_contexts(limit=50, scope=CAROL)
+    await repos.tags.get_tags_for_context(plan_db.ids[CAROL_GRANTED_LABEL], scope=CAROL)
+    await backend.execute_write(_flush, access_scope=CAROL)
+
+
+@pytest.mark.asyncio
+async def test_routed_and_child_reads_call_no_helper(
+    plan_db: ScopedDb, pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The helpers are inlined into every policy and view condition, so a read calls none of them by name.
+
+    With ``track_functions`` at ``all`` every function call is counted except a SQL function
+    the planner inlines, and a direct call of an inlinable helper is inlined as well. So the
+    control first gives the principal helper a SET clause, which keeps the planner from
+    inlining it: then a direct call and the same reads are counted, which shows the counters
+    work in this session and that the reads reach the helper. With the SET clause reset, the
+    same reads add no call. The request backend holds one connection, so every call, read
+    and flush shares one session, and each flush is forced at its commit, since the
+    counters otherwise reach the shared statistics up to a second later.
+    """
+    settings = get_settings()
+    storage = settings.storage.model_copy(update={'postgresql_pool_min': 1, 'postgresql_pool_max': 1})
+    rebind_package_settings(monkeypatch, pg_package, settings.model_copy(update={'storage': storage}))
+    admin = await asyncpg.connect(pg_rls_db.admin)
+    owner = await asyncpg.connect(pg_rls_db.maintenance)
+    database = quote_pg_identifier(str(await admin.fetchval('SELECT current_database()')))
+    await admin.execute(f"ALTER DATABASE {database} SET track_functions = 'all'")
+    await admin.execute(f'GRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_force_next_flush() TO {REQUEST_ROLE}')
+    try:
+        async with capturing_repositories(pg_rls_db.app, RlsRequestProfile(read_views=RLS_READ_VIEWS)) as (repos, capturing):
+            backend = capturing.backend
+            assert await backend.execute_read(_track_functions, access_scope=CAROL) == 'all'
+            before = await _helper_calls(admin)
+
+            await owner.execute(f'ALTER FUNCTION {PRINCIPAL_HELPER} SET search_path = pg_catalog, pg_temp')
+            await backend.execute_write(_call_principal_then_flush, access_scope=CAROL)
+            direct = await _helper_calls(admin)
+            await _read_then_flush(repos, backend, plan_db)
+            uninlined = await _helper_calls(admin)
+
+            await owner.execute(f'ALTER FUNCTION {PRINCIPAL_HELPER} RESET search_path')
+            await _read_then_flush(repos, backend, plan_db)
+            after = await _helper_calls(admin)
+    finally:
+        await owner.close()
+        await admin.execute(f'ALTER DATABASE {database} RESET track_functions')
+        await admin.close()
+
+    principal = HELPERS[0]
+    assert direct[principal] == before[principal] + 1, (before, direct)
+    assert uninlined[principal] > direct[principal], (direct, uninlined)
+    assert after == uninlined

@@ -22,6 +22,7 @@ import pytest
 import pytest_asyncio
 from numpy.typing import NDArray
 
+from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.backends.base import MAINTENANCE
@@ -290,6 +291,55 @@ async def test_search_compressed_reads_all_candidates_across_batches(
     # every compressed row must still be read and scored.
     assert stats['rows_returned'] == len(cids) == 5
     assert len(results) == 5
+
+
+@pytest.mark.asyncio
+async def test_search_compressed_hydration_reports_visibility_and_ownership(
+    compressed_backend_factory: BackendFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each hydrated row reports its visibility and whether the caller owns it, within the bind-variable limit.
+
+    A hydration batch binds the caller's ownership ahead of its ids and the READ
+    predicate's three binds after them, so a full batch of two ids takes exactly six
+    variables: the cap below fails the statement if a bind is added beyond them, such as
+    the ownership bind twice.
+    """
+    import app.repositories.embedding_repository.compressed_search as compressed_search_mod
+    from tests.repositories._access_scope_layouts import limit_sqlite_variables
+
+    monkeypatch.setattr(compressed_search_mod, 'SQLITE_IN_CLAUSE_BATCH', 2)
+    backend, repos = await compressed_backend_factory('ip', 4)
+    repo = EmbeddingRepository(backend)
+    bob = AccessScope('bob', frozenset(), may_publish=True)
+    rng = np.random.default_rng(SEED)
+    expected: dict[str, tuple[str, int]] = {}
+    for index, (scope, visibility) in enumerate(
+        [(LOCAL_SCOPE, 'private'), (bob, 'public'), (LOCAL_SCOPE, 'public'), (bob, 'private'), (bob, 'public')],
+    ):
+        vector = rng.standard_normal(DIM).astype(np.float32)
+        vector /= np.linalg.norm(vector)
+        context_id, _ = await repos.context.store_with_deduplication(
+            scope=scope, visibility=visibility, thread_id='t-read-back', source='user', content_type='text',
+            text_content=f'read-back-{index}', metadata=None,
+        )
+        await repo.store_chunked(
+            context_id,
+            [ChunkEmbedding(
+                embedding=vector.tolist(), start_index=0, end_index=1,
+                payload=_encode_vector(vector, variant='ip', bits=4),
+            )],
+            model='test-model',
+            scope=scope,
+        )
+        if scope is LOCAL_SCOPE or visibility == 'public':
+            expected[context_id] = (visibility, 1 if scope is LOCAL_SCOPE else 0)
+    query = rng.standard_normal(DIM).astype(np.float32)
+    limit_sqlite_variables(monkeypatch, 6)
+
+    results, _stats = await repo.search_compressed(query_embedding=query.tolist(), limit=10, scope=LOCAL_SCOPE)
+
+    assert {row['id']: (row['visibility'], row['is_owner']) for row in results} == expected
 
 
 # ---------------------------------------------------------------------------

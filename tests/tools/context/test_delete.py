@@ -4,6 +4,8 @@ import base64
 from typing import Literal
 from typing import get_args
 from typing import get_type_hints
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 import pytest
 from annotated_types import MaxLen
@@ -16,6 +18,7 @@ import app.tools
 from tests.helpers import argument_errors
 from tests.helpers import as_principal
 from tests.helpers import insert_grant
+from tests.tools._read_only import read_only_caller
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -230,3 +233,22 @@ class TestDeleteContextAccess:
         assert sorted(await self._surviving('alice', [alice_public, alice_private])) == sorted(
             [alice_public, alice_private],
         )
+
+
+class TestDeleteReadOnlyPrincipal:
+    """The read-only principal is refused before any argument check, repository access or id resolution."""
+
+    @pytest.mark.asyncio
+    async def test_read_only_principal_is_refused_first(self) -> None:
+        """A call naming neither ids nor a thread still gets the read-only refusal, and nothing runs."""
+        with (
+            read_only_caller(),
+            patch('app.tools.context.delete.ensure_repositories', new=AsyncMock()) as ensure,
+            patch('app.tools.context.delete.resolve_or_normalize_ids', new=AsyncMock()) as resolve,
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await delete_context()
+
+        assert str(exc_info.value) == 'The anonymous principal is read-only: delete_context is not permitted'
+        ensure.assert_not_awaited()
+        resolve.assert_not_awaited()

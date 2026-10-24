@@ -82,6 +82,12 @@ class TestPlanRemoval:
     def test_everything_installed_is_dropped_in_reverse_dependency_order(self) -> None:
         assert plan_removal(_installed(), schema=SCHEMA) == _full_removal()
 
+    def test_the_grants_delete_policy_and_the_write_right_helper_are_dropped(self) -> None:
+        statements = plan_removal(_installed(), schema=SCHEMA).statements
+
+        assert f'DROP POLICY IF EXISTS context_entry_grants_delete ON {SCHEMA}.context_entry_grants' in statements
+        assert f'DROP FUNCTION IF EXISTS {SCHEMA}.mcp_context_may_write()' in statements
+
     def test_a_database_without_the_objects_needs_nothing(self) -> None:
         tables = {'context_entries': False, 'tags': False}
         state = RlsState(tables=tables, objects={}, columns=(), view=None, helpers_executable=False)

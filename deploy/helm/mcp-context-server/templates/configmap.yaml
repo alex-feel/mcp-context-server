@@ -48,6 +48,9 @@ data:
   {{- with .Values.auth.jwt.algorithm }}
   MCP_AUTH_JWT_ALGORITHM: {{ . | quote }}
   {{- end }}
+  {{- with .Values.auth.jwt.anonymousAlgorithm }}
+  MCP_AUTH_ANONYMOUS_JWT_ALGORITHM: {{ . | quote }}
+  {{- end }}
   {{- with .Values.auth.groupsClaim }}
   MCP_AUTH_GROUPS_CLAIM: {{ . | quote }}
   {{- end }}
@@ -65,6 +68,9 @@ data:
   {{- end }}
   {{- with .Values.accessControl.publishRole }}
   ACCESS_CONTROL_PUBLISH_ROLE: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.accessControl.anonymousPrincipal }}
+  ACCESS_CONTROL_ANONYMOUS_PRINCIPAL: {{ . | quote }}
   {{- end }}
   {{- if .Values.storage.postgresql.rls.enabled }}
   ENABLE_POSTGRESQL_RLS: "true"

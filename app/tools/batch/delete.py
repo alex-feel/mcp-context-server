@@ -9,7 +9,9 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.access_scope import AccessMode
-from app.auth import resolve_access_scope
+from app.auth import resolve_effective_principal
+from app.auth import resolve_write_scope
+from app.auth.access import reject_read_only_principal
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_ids
 from app.repositories.context_repository.helpers import describe_batch_delete_criteria
@@ -77,6 +79,14 @@ async def delete_context_batch(
             its own, or deletion fails.
     """
     try:
+        # The caller's identity comes first: the read-only principal is refused
+        # before any criteria check, repository access or id resolution. A prefix
+        # resolves over the entries the caller may read, and only the entries the
+        # caller owns are deleted.
+        principal = resolve_effective_principal()
+        reject_read_only_principal(principal, tool='delete_context_batch')
+        scope = resolve_write_scope(principal)
+
         # Validate at least one criterion is provided
         if not any([context_ids, thread_ids, source, older_than_days]):
             raise ToolError(
@@ -108,9 +118,6 @@ async def delete_context_batch(
         reject_unstorable_input(thread_ids=cast('object', thread_ids))
 
         repos = await ensure_repositories()
-        # A prefix resolves over the entries the caller may read, and only the
-        # entries the caller owns are deleted.
-        scope = resolve_access_scope()
 
         # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
         # 8-31 char hex prefixes (uniform with delete_context).

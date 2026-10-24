@@ -138,7 +138,8 @@ async def fts_search_context(
     Returns:
         Dict with query (str), mode (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
-        metadata, scores, highlighted, tags), count (int), language (str),
+        metadata, scores, highlighted, tags, visibility, is_owner (whether the
+        caller owns the entry)), count (int), language (str),
         stats (only when explain_query=True), and rank_depth_limit (only when the
         requested window reaches past the ranked depth).
 

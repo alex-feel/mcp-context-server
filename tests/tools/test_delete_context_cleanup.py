@@ -49,6 +49,7 @@ from app.settings import get_settings
 from app.tools._delete_cleanup import delete_entries_with_cleanup
 from app.tools._transactions import EntryNotAuthorizedError
 from tests.helpers import LOCAL_SCOPE
+from tests.helpers import LOCAL_WRITE_SCOPE
 
 
 @pytest.fixture(autouse=True)
@@ -592,7 +593,7 @@ async def test_delete_context_by_thread_deletes_the_owned_snapshot(
 
     assert result['deleted_count'] == 1
     fake.context.get_ids_matching_batch_criteria.assert_awaited_once_with(
-        thread_ids=['thread-abc'], scope=LOCAL_SCOPE, mode=AccessMode.OWNER,
+        thread_ids=['thread-abc'], scope=LOCAL_WRITE_SCOPE, mode=AccessMode.OWNER,
     )
     txn = fake.context.backend.transactions[0]
-    fake.context.delete_by_ids.assert_awaited_once_with([VALID_ID], scope=LOCAL_SCOPE, txn=txn)
+    fake.context.delete_by_ids.assert_awaited_once_with([VALID_ID], scope=LOCAL_WRITE_SCOPE, txn=txn)

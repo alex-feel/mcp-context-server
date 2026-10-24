@@ -12,7 +12,7 @@ share everything here:
 - The seed: :data:`SEED_ROWS`, eight entries owned by alice and bob covering every
   visibility and grant arrangement the access model distinguishes, written by
   :func:`seed_access_rows` through the repositories, with grants through the raw-SQL
-  ``insert_grant`` helper because no production path writes user or write grants.
+  ``insert_grant`` helper because the seed channel never passes through the seams under test.
 - The two channels of a :class:`ScopedDb`. Cases call the seam under test through the
   request channel (``backend`` and ``repos``). Every row a case does not create through
   that seam (the seed, the rows of a case's ``setup`` and every child row), every raw
@@ -21,7 +21,8 @@ share everything here:
   a request transaction that a database policy would filter. On a single-role database the
   seed channel is a second repository container over the request backend.
 - The scopes the cases run as (:data:`SCOPES`) and the seed rows each scope reads, writes
-  and owns (:data:`READABLE`, :data:`WRITABLE`, :data:`OWNED`, in seed order).
+  and owns (:data:`READABLE`, :data:`WRITABLE`, :data:`OWNED`, in seed order), with the
+  visibility and ownership each scope reads back from them (:func:`expected_read_back`).
 
 Adding a case: write an invoker that calls the seam as the given scope on the seeded
 database and returns a comparable observable, translating entry ids to labels with
@@ -90,8 +91,8 @@ type Invoker = Callable[[ScopedDb, Scope], Awaitable[object]]
 type Setup = Callable[[ScopedDb], Awaitable[None]]
 
 # Case ids of the two-principal suite: context reads and probes (S), ranked search (R),
-# dedup and the fresh insert (K), updates (W), deletes and owner-scoped listings (X) and
-# aggregates (A).
+# dedup and the fresh insert (K), updates (W), deletes and owner-scoped listings (X),
+# aggregates (A) and the grant seams (G).
 KNOWN_CASE_IDS = frozenset({
     'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8',
     'R1', 'R2', 'R3', 'R4',
@@ -99,6 +100,7 @@ KNOWN_CASE_IDS = frozenset({
     'W1', 'W2', 'W3', 'W4', 'W5',
     'X1', 'X2', 'X3',
     'A1', 'A2', 'A3', 'A4', 'A5', 'A6',
+    'G1', 'G2', 'G3', 'G4', 'G5',
 })
 
 EMBEDDING_DIM = 128
@@ -112,14 +114,16 @@ SEED_ANGLE_STEP = 0.1
 # A 1x1 PNG, the smallest image attachment the image repository stores.
 _PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
-# The scopes the cases run as. The cases set no publish role, so every request scope may
-# publish, exactly as the write tools resolve it; under row-level security the database
-# enforces that right, and the access predicates never read it.
+# The scopes the cases run as. The cases set no publish role, so every writing scope may
+# publish and write, exactly as the write tools resolve it; under row-level security the
+# database enforces both rights, and the access predicates never read them. The anonymous
+# scope is the read-only principal's: no groups, no publish right and no write right.
 SCOPES: dict[str, Scope] = {
-    'alice': AccessScope('alice', frozenset(), may_publish=True),
-    'bob': AccessScope('bob', frozenset(), may_publish=True),
-    'carol': AccessScope('carol', frozenset({TEAM_GROUP}), may_publish=True),
-    'dave': AccessScope('dave', frozenset(), may_publish=True),
+    'alice': AccessScope('alice', frozenset(), may_publish=True, may_write=True),
+    'bob': AccessScope('bob', frozenset(), may_publish=True, may_write=True),
+    'carol': AccessScope('carol', frozenset({TEAM_GROUP}), may_publish=True, may_write=True),
+    'dave': AccessScope('dave', frozenset(), may_publish=True, may_write=True),
+    'anonymous': AccessScope('anonymous', frozenset()),
     'system': SYSTEM_SCOPE,
 }
 
@@ -169,6 +173,7 @@ READABLE: dict[str, tuple[str, ...]] = {
     ),
     'carol': ('alice_public', 'alice_private_team_read', 'alice_public_carol_write', 'alice_public_dave_read'),
     'dave': ('alice_public', 'alice_public_carol_write', 'alice_public_dave_read'),
+    'anonymous': ('alice_public', 'alice_public_carol_write', 'alice_public_dave_read'),
     'system': SEED_LABELS,
 }
 
@@ -179,6 +184,7 @@ WRITABLE: dict[str, tuple[str, ...]] = {
     'bob': ('alice_private_bob_write', 'bob_private'),
     'carol': ('alice_public_carol_write',),
     'dave': (),
+    'anonymous': (),
     'system': SEED_LABELS,
 }
 
@@ -188,6 +194,7 @@ OWNED: dict[str, tuple[str, ...]] = {
     'bob': ('bob_private',),
     'carol': (),
     'dave': (),
+    'anonymous': (),
     'system': SEED_LABELS,
 }
 
@@ -620,6 +627,20 @@ def expected_visibility() -> dict[tuple[AccessMode, str], tuple[str, ...]]:
         The seed labels each scope is expected to read, write and own.
     """
     return {(mode, scope_name): table[scope_name] for mode, table in VISIBILITY_TABLES.items() for scope_name in SCOPES}
+
+
+def expected_read_back(scope_name: str) -> dict[str, tuple[str, bool]]:
+    """Return the visibility and ownership a scope reads back from each seed row it may read.
+
+    Args:
+        scope_name: The scope, a key of :data:`SCOPES`.
+
+    Returns:
+        ``(visibility, is_owner)`` keyed by the label of every row in :data:`READABLE` for
+        the scope: the row's stored visibility, and whether the scope owns it.
+    """
+    visibility = {row.label: row.visibility for row in SEED_ROWS}
+    return {label: (visibility[label], label in OWNED[scope_name]) for label in READABLE[scope_name]}
 
 
 async def observe_predicate_visibility(db: ScopedDb) -> dict[tuple[AccessMode, str], tuple[str, ...]]:

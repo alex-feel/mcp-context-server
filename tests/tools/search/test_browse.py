@@ -413,6 +413,25 @@ class TestSearchContextScoping:
         assert [entry['id'] for entry in results['results']] == [public_id, private_id]
 
     @pytest.mark.asyncio
+    async def test_results_report_visibility_and_ownership(self) -> None:
+        """Every result carries its visibility and a bool telling whether the caller owns it, never the owner."""
+        private_id = await self._store_as('alice', 'alice private browse read-back', 'private')
+        public_id = await self._store_as('alice', 'alice public browse read-back', 'public')
+
+        with as_principal('alice'):
+            owned = (await search_context(thread_id='scoped-browse', limit=50))['results']
+        with as_principal('bob'):
+            read = (await search_context(thread_id='scoped-browse', limit=50))['results']
+
+        assert [(entry['id'], entry['visibility'], entry['is_owner']) for entry in owned] == [
+            (public_id, 'public', True), (private_id, 'private', True),
+        ]
+        assert [(entry['id'], entry['visibility'], entry['is_owner']) for entry in read] == [(public_id, 'public', False)]
+        for entry in (*owned, *read):
+            assert type(entry['is_owner']) is bool
+            assert 'owner_id' not in entry
+
+    @pytest.mark.asyncio
     async def test_scope_reaches_the_repository(self) -> None:
         """The caller's principal and groups reach search_contexts as its scope."""
         repos = await app.startup.ensure_repositories()

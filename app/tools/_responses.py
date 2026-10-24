@@ -1,4 +1,30 @@
-"""Success-message text for single-entry and batch store and update responses."""
+"""Response pieces the tools share: the access fields of an entry read and the success messages of writes.
+
+``entry_access_fields`` shapes the ``visibility`` and ``is_owner`` every entry-carrying
+read response reports; the ``build_*_message`` functions write the success-message text
+of single-entry and batch store and update responses.
+"""
+
+from collections.abc import Mapping
+from typing import cast
+
+from app.types import EntryAccessFields
+from app.types import EntryVisibility
+
+
+def entry_access_fields(row: Mapping[str, object]) -> EntryAccessFields:
+    """Shape the access fields of one entry from a repository row.
+
+    The repositories compute ``is_owner`` as an integer (1 or 0) in SQL; the response
+    reports a bool, because clients validate it against the boolean output schema.
+
+    Args:
+        row: A row carrying the entry's ``visibility`` and the caller's ``is_owner``.
+
+    Returns:
+        The entry's ``visibility`` and whether the caller owns it.
+    """
+    return {'visibility': cast(EntryVisibility, str(row['visibility'])), 'is_owner': bool(row['is_owner'])}
 
 
 def build_store_response_message(

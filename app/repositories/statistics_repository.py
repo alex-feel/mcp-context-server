@@ -21,10 +21,10 @@ from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.access_scope import build_readable_parent_predicate
 from app.backends.base import StorageBackend
+from app.discovery_types import ThreadInfoDict
 from app.ids import normalize_id
 from app.repositories._collation import byte_ordered_text
 from app.repositories.base import BaseRepository
-from app.types import ThreadInfoDict
 
 if TYPE_CHECKING:
     import asyncpg

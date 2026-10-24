@@ -771,6 +771,8 @@ When registered (by default, whenever an embedding provider is available), the `
       "text_content": "matching context...",
       "summary": "Summary of the matching context entry with key semantic information.",
       "is_text_content_truncated": true,
+      "visibility": "private",
+      "is_owner": true,
       "scores": {
         "semantic_distance": 0.234,
         "semantic_rank": null,

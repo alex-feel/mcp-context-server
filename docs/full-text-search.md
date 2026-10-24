@@ -159,6 +159,8 @@ When FTS is enabled, a new MCP tool becomes available.
       "text_content": "matching context content...",
       "summary": "Full summary of the matching context content with key entities and decisions.",
       "is_text_content_truncated": true,
+      "visibility": "private",
+      "is_owner": true,
       "metadata": {"status": "completed"},
       "created_at": "2025-12-01T10:00:00Z",
       "updated_at": "2025-12-01T10:00:00Z",

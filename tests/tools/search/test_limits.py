@@ -208,7 +208,7 @@ class TestTagsFilterUpperBound:
         oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock()
-        with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
+        with patch('app.tools.navigation.grep.ensure_repositories', AsyncMock(return_value=repos)):
             result = await app.tools.grep_context(pattern='needle', tags=oversized)
 
         # GrepContextResultDict is total=False; widen for direct key assertions.
@@ -357,7 +357,7 @@ class TestMetadataFilterCapsUpperBound:
         oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock()
-        with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
+        with patch('app.tools.navigation.grep.ensure_repositories', AsyncMock(return_value=repos)):
             result = await app.tools.grep_context(pattern='needle', metadata_filters=oversized)
 
         # GrepContextResultDict is total=False; widen for direct key assertions.

@@ -4,14 +4,16 @@ Row-level security enforces the access model of :mod:`app.access_scope` in the d
 for the NOLOGIN policy role every request login role is a member of. This module renders
 the objects that do it:
 
-- three helper functions that hand the transaction's bound identity to the policies, the
+- four helper functions that hand the transaction's bound identity to the policies, the
   statements that bind the names in their bodies to pg_catalog while they are created,
   and the grant that lets the policy role execute them;
 - per-command PERMISSIVE policies on ``context_entries`` (READ for SELECT, the owner
-  stamp and the publish gate for INSERT, WRITE for UPDATE, OWNER for DELETE), on
-  ``context_entry_grants`` (the caller's own grants; inserts by the entry's owner) and on
-  every child table (reads follow the parent's read policy; inserts and deletes need
-  WRITE on the parent; no update policy, because no child row is ever updated);
+  stamp, the publish gate and the write right for INSERT, WRITE for UPDATE, OWNER for
+  DELETE), on ``context_entry_grants`` (reads of the caller's own grants and of every grant
+  on the caller's entries; inserts and deletes by the entry's owner; no update policy,
+  because no grant is ever updated) and on every child table (reads follow the parent's
+  read policy; inserts and deletes need WRITE on the parent; no update policy, because no
+  child row is ever updated);
 - the guard trigger that keeps ``owner_id`` immutable, visibility changes owner-only and
   publishing gated, which a policy cannot express because WITH CHECK does not see the old
   row;
@@ -50,6 +52,7 @@ from typing import NamedTuple
 
 from app.access_scope import GROUPS_FUNCTION
 from app.access_scope import MAY_PUBLISH_FUNCTION
+from app.access_scope import MAY_WRITE_FUNCTION
 from app.access_scope import PRINCIPAL_FUNCTION
 from app.access_scope import READ_VIEW
 from app.access_scope import AccessMode
@@ -95,7 +98,7 @@ _ACL_PRIVILEGES: Final = frozenset({
 
 # Each helper returns one transaction-local setting the request profile binds. An unset
 # setting reads NULL and a setting cleared by COMMIT or RESET ALL reads '', and NULLIF turns
-# both into no principal, no groups and no publish right.
+# both into no principal, no groups, no publish right and no write right.
 _HELPER_BODIES: Final = (
     (PRINCIPAL_FUNCTION, 'text', "NULLIF(pg_catalog.current_setting('app.principal_id', true), '')"),
     (
@@ -107,6 +110,11 @@ _HELPER_BODIES: Final = (
         MAY_PUBLISH_FUNCTION,
         'boolean',
         "COALESCE(NULLIF(pg_catalog.current_setting('app.may_publish', true), '') = 'on', false)",
+    ),
+    (
+        MAY_WRITE_FUNCTION,
+        'boolean',
+        "COALESCE(NULLIF(pg_catalog.current_setting('app.may_write', true), '') = 'on', false)",
     ),
 )
 # Run before the helpers are created, so every name in their bodies, the operators and casts
@@ -292,8 +300,8 @@ def comment_statement(obj: RlsObject, *, definition: str, preenabled: bool | Non
     return f"COMMENT ON {obj.target} IS '{fingerprint(sha=obj.sha, definition=definition, preenabled=preenabled)}'"
 
 
-def helper_functions(schema: str) -> tuple[RlsObject, RlsObject, RlsObject]:
-    """Return the principal, groups and publish-right helpers the policy operands call.
+def helper_functions(schema: str) -> tuple[RlsObject, RlsObject, RlsObject, RlsObject]:
+    """Return the principal, groups, publish-right and write-right helpers the policy operands call.
 
     They are STABLE and PARALLEL SAFE SQL functions running as the invoker, each with a
     SQL-standard ``RETURN`` body and no SET clause, so the planner inlines every call into
@@ -306,9 +314,9 @@ def helper_functions(schema: str) -> tuple[RlsObject, RlsObject, RlsObject]:
         schema: The schema of the tables, quoted.
 
     Returns:
-        The three helper functions, in that order.
+        The four helper functions, in that order.
     """
-    principal, groups, may_publish = (
+    principal, groups, may_publish, may_write = (
         RlsObject(
             kind=RlsObjectKind.FUNCTION,
             name=name,
@@ -320,7 +328,7 @@ def helper_functions(schema: str) -> tuple[RlsObject, RlsObject, RlsObject]:
         )
         for name, returns, body in _HELPER_BODIES
     )
-    return principal, groups, may_publish
+    return principal, groups, may_publish, may_write
 
 
 def restore_search_path(search_path: str) -> str:
@@ -435,9 +443,7 @@ def policy_names(table: str) -> tuple[str, ...]:
     """
     if table == CONTEXT_TABLE:
         commands: tuple[str, ...] = ('read', 'insert', 'update', 'delete')
-    elif table == GRANTS_TABLE:
-        commands = ('read', 'insert')
-    elif table in CHILD_PARENT_KEYS:
+    elif table == GRANTS_TABLE or table in CHILD_PARENT_KEYS:
         commands = ('read', 'insert', 'delete')
     else:
         raise ValueError(f'{table!r} is not a table row-level security manages')
@@ -514,10 +520,11 @@ def _context_entries_clauses(schema: str) -> tuple[tuple[str, str], ...]:
     read = build_policy_predicate(AccessMode.READ, outer=CONTEXT_TABLE, schema=schema)
     write = build_policy_predicate(AccessMode.WRITE, outer=CONTEXT_TABLE, schema=schema)
     owner = build_policy_predicate(AccessMode.OWNER, outer=CONTEXT_TABLE, schema=schema)
-    may_publish = policy_operands(schema).may_publish
+    operands = policy_operands(schema)
+    insertable = f"{owner} AND ({CONTEXT_TABLE}.visibility <> 'public' OR {operands.may_publish}) AND {operands.may_write}"
     return (
         ('SELECT', f' USING ({read})'),
-        ('INSERT', f" WITH CHECK ({owner} AND ({CONTEXT_TABLE}.visibility <> 'public' OR {may_publish}))"),
+        ('INSERT', f' WITH CHECK ({insertable})'),
         ('UPDATE', f' USING ({write}) WITH CHECK ({write})'),
         ('DELETE', f' USING ({owner})'),
     )
@@ -526,31 +533,38 @@ def _context_entries_clauses(schema: str) -> tuple[tuple[str, str], ...]:
 def _grants_clauses(schema: str) -> tuple[tuple[str, str], ...]:
     """Return the command and clause of each context_entry_grants policy.
 
-    The read policy calls the helpers directly instead of through their scalar subqueries,
-    so it holds no subquery at all. PostgreSQL rejects as infinitely recursive a policy
-    with a subquery that is reached again while its own table's policies expand, and the
-    insert check reaches the read policy again: it reads ``context_entries``, whose read
-    policy reads this table. A read policy without a subquery ends the expansion there.
-    The planner inlines the helper calls, so the policy, evaluated once per grant row, calls
-    no function.
+    Three arms key on the bound identity: a grantee reads the grants naming it or one of its
+    groups, and the entry's owner reads, inserts and deletes every grant on the entry. No
+    policy holds a subquery. Every scoped read reads this table, both through the
+    application's grant arm and through the read policy of ``context_entries``, so a policy
+    here that read ``context_entries`` would reach that table's read policy, which reads this
+    table again, and PostgreSQL rejects such a policy as infinitely recursive. The owner arms
+    therefore compare the grant's own ``entry_owner_id`` with the bound principal: the
+    composite foreign key from ``(context_entry_id, entry_owner_id)`` onto the entry's
+    ``(id, owner_id)`` keeps that column equal to the entry's owner, so a row whose recorded
+    owner is the caller is a grant on the caller's entry. A function looking the owner up
+    could not stand in for the column, because a function that reads a table the caller
+    may not read must run as its owner, and the planner never inlines such a function.
+
+    The policies call the helpers directly rather than through their scalar subqueries, and
+    the planner inlines every call, so a policy evaluated once per grant row calls no
+    function. The insert check also pins the recorded grantor to the bound principal; with
+    no update policy, no request can change a grantor afterwards.
 
     Returns:
-        The SELECT and INSERT commands with their clauses.
+        The SELECT, INSERT and DELETE commands with their clauses.
     """
-    operands = policy_operands(schema)
-    principal, groups, _ = helper_functions(schema)
-    own_grants = (
+    principal, groups, _, _ = helper_functions(schema)
+    own_entry = f'entry_owner_id = {principal.anchor}'
+    readable = (
         f"(principal_type = 'user' AND principal_id = {principal.anchor}) "
-        f"OR (principal_type = 'group' AND principal_id = ANY({groups.anchor}))"
-    )
-    owner = build_policy_predicate(AccessMode.OWNER, outer=_PARENT, schema=schema)
-    granted_entry = (
-        f'EXISTS (SELECT 1 FROM {schema}.{CONTEXT_TABLE} {_PARENT} '
-        f'WHERE {_PARENT}.id = {GRANTS_TABLE}.context_entry_id AND {owner})'
+        f"OR (principal_type = 'group' AND principal_id = ANY({groups.anchor})) "
+        f'OR {own_entry}'
     )
     return (
-        ('SELECT', f' USING ({own_grants})'),
-        ('INSERT', f' WITH CHECK (granted_by = {operands.principal} AND {granted_entry})'),
+        ('SELECT', f' USING ({readable})'),
+        ('INSERT', f' WITH CHECK (granted_by = {principal.anchor} AND {own_entry})'),
+        ('DELETE', f' USING ({own_entry})'),
     )
 
 

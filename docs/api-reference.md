@@ -2,13 +2,14 @@
 
 ## Introduction
 
-The MCP Context Server exposes 18 MCP tools for context management, organized into core operations, search tools, navigation tools (locate / navigate / extract), sync tools, and batch operations.
+The MCP Context Server exposes 21 MCP tools for context management, organized into core operations, search tools, navigation tools (locate / navigate / extract), sync tools, sharing tools, and batch operations.
 
 **Tool Categories:**
 - **Core Operations**: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`
 - **Search Tools**: `semantic_search_context`, `fts_search_context`, `hybrid_search_context`
 - **Navigation Tools**: `grep_context`, `navigate_context`, `read_context_range`
 - **Sync Tools**: `plan_context_sync`, `list_ingest_state`
+- **Sharing Tools**: `share_context`, `unshare_context`, `list_context_grants`
 - **Batch Operations**: `store_context_batch`, `update_context_batch`, `delete_context_batch`
 
 ## Context Identifier Format
@@ -38,10 +39,10 @@ Prefixes shorter than 8 characters or containing non-hex characters are rejected
 
 **Input Format Support by Tool:**
 
-| Parameter Kind                                                                                                                                                                      | Accepts Full UUID (32-hex / 36-hyphenated) | Accepts Prefix (8-31 hex)                 |
-|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------|-------------------------------------------|
-| Single-ID parameters (`update_context.context_id`, `navigate_context.context_id`, `read_context_range.context_id`)                                                                  | Yes                                        | Yes                                       |
-| Bulk / batch list parameters (`get_context_by_ids.context_ids`, `delete_context.context_ids`, `delete_context_batch.context_ids`, each `update_context_batch` entry's `context_id`) | Yes                                        | Yes (each element resolved independently) |
+| Parameter Kind                                                                                                                                                                                           | Accepts Full UUID (32-hex / 36-hyphenated) | Accepts Prefix (8-31 hex)                 |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------|-------------------------------------------|
+| Single-ID parameters (`update_context.context_id`, `navigate_context.context_id`, `read_context_range.context_id`, and the `context_id` of `share_context`, `unshare_context` and `list_context_grants`) | Yes                                        | Yes                                       |
+| Bulk / batch list parameters (`get_context_by_ids.context_ids`, `delete_context.context_ids`, `delete_context_batch.context_ids`, each `update_context_batch` entry's `context_id`)                      | Yes                                        | Yes (each element resolved independently) |
 
 **Bulk Parameter Example:**
 
@@ -57,9 +58,12 @@ get_context_by_ids(context_ids=[
 Every tool call runs as one principal: the verified token subject under `MCP_AUTH_PROVIDER=jwt`, and `ACCESS_CONTROL_DEFAULT_PRINCIPAL` for STDIO, `none` and `simple_token`. Each entry has an owner (the principal that stored it), a `visibility` of `private` (owner plus every grantee) or `public` (everyone), and optional read or write grants for users or groups. The tools apply these rules on SQLite and PostgreSQL alike, and with `ENABLE_POSTGRESQL_RLS=true` PostgreSQL also enforces them in the database; the [Access Model](authentication.md#access-model) explains them in full.
 
 - **Reads**: `get_context_by_ids` omits an ID the caller may not read exactly as it omits a missing one. `search_context`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context` and `grep_context` match, return and count only readable entries, so hidden entries never add to `count`, `total_matches`, `truncated` or the `rows_returned` explain statistic, never consume `grep_context`'s `max_entries_scanned` budget, and never take a slot on a page. With `explain_query=True` on PostgreSQL, the returned query plan still carries row estimates from table-wide planner statistics. With `ENABLE_POSTGRESQL_RLS=true`, these plans also show the read view's copy of the access condition beside the tool's own, the view's role gate in `InitPlan` subplans, and the row-level security policy conditions on the base tables the query reads, such as `tags` (see [Row-level security (PostgreSQL)](database-backends.md#row-level-security-postgresql)). `navigate_context` and `read_context_range` report an unreadable entry as `Context entry not found: {id}`. ID prefixes resolve over readable entries only.
+- **Read-back**: every entry a read tool returns carries its `visibility` (`private` or `public`) and `is_owner`, a boolean that is true when the caller owns the entry: each entry of `get_context_by_ids` and of the four search tools, each `grep_context` result, and the top level of the `navigate_context` and `read_context_range` responses. `is_owner` is false for another principal's `public` entry and for an entry reached through a read or write grant, so it tells a client which entries it may share, publish or delete. No response reports the owner's identity, `granted_by` or the grants of an entry, except `list_context_grants` for the owner. The sync tools carry neither field: they list only the caller's own entries, and the visibility is part of each entry's `meta_digest`.
 - **Discovery**: `list_threads` lists a thread only when the caller may read at least one of its entries, and computes every figure from those entries. `get_statistics` counts only readable entries in every entry, thread, image, tag, embedding, index, summary and node figure; `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` and the configuration fields describe the whole deployment and are the same for every caller.
 - **Updates**: the owner and principals holding a write grant may change text, metadata, tags and images; only the owner may change `visibility`. An entry the caller may not read is reported as not found (`Context entry with ID {id} not found`; in `update_context_batch`, `Context entry {id} not found`). An entry the caller may read but not modify (through a read grant, or a `public` entry it does not own) is refused with `Not authorized to modify context entry with ID {id}` (in `update_context_batch`, `Not authorized to modify context entry {id}`) for every change, a visibility change included. A visibility change by a write grantee who is not the owner is refused with `Only the owner may change the visibility of context {id}`. In atomic mode the not-found and not-authorized batch messages end with "at index {i}" and the whole batch fails.
-- **Deletes**: only the owner may delete an entry. A delete that names IDs (`delete_context` with `context_ids`, `delete_context_batch` with `context_ids`) is refused with `Not authorized to delete context entries: {ids}` and deletes nothing when a named entry the caller may read is not its own; a named ID the caller may not read is skipped and not counted. A thread or criteria delete (`delete_context` with `thread_id`, `delete_context_batch` without `context_ids`) deletes only the caller's own matching entries and leaves the rest in place without an error.
+- **Deletes**: only the owner may delete an entry. A delete that names IDs (`delete_context` with `context_ids`, `delete_context_batch` with `context_ids`) is refused with `Not authorized to delete context entries: {ids}` and deletes nothing when a named entry the caller may read is not its own; a named ID the caller may not read is skipped and not counted. A thread or criteria delete (`delete_context` with `thread_id`, `delete_context_batch` without `context_ids`) deletes only the caller's own matching entries and leaves the rest in place without an error. Deleting an entry deletes its grants.
+- **Sharing**: only the owner of an entry may share it, unshare it or list its grants, with `share_context`, `unshare_context` and `list_context_grants`; a write grant never allows sharing. An entry the caller may not read is reported as `Context entry with ID {id} not found`, and one it may read but does not own is refused explicitly (see [Sharing Tools](#sharing-tools)). Grants change neither an entry's `updated_at` nor the version `update_context` checks, and no update tool adds or removes grants.
+- **Read-only principal**: when `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` names the caller, every tool that writes (`store_context`, `store_context_batch`, `update_context`, `update_context_batch`, `delete_context`, `delete_context_batch`, `share_context`, `unshare_context`) fails with `The anonymous principal is read-only: {tool} is not permitted` before it checks any argument; the read tools serve that principal like any other (see [Anonymous Read Access](authentication.md#anonymous-read-access)).
 - **Sync**: `plan_context_sync` plans only the caller's own managed entries. A managed entry another principal owns that the caller may read is never planned for an update or a delete and only adds to `foreign_count`; one the caller may not read is not counted, so a manifest item for its source plans a create. `list_ingest_state` lists only the caller's own managed entries, and another principal's entries never take a slot on a page.
 - **Deduplication**: when `deduplicate` is true (the default), `store_context` and `store_context_batch` take as the candidate the latest entry of the same thread and source among the entries the caller may read, and merge into it only when the caller owns it and its text is identical; otherwise they insert a new entry owned by the caller. Only opposite-source entries the caller may read mark a new conversational turn. With `deduplicate` false they look for no candidate and always insert a new entry owned by the caller.
 - **Full-text scores on SQLite**: `fts_score` comes from FTS5 `bm25()`, which uses statistics of the whole index, entries the caller cannot read included, so the scores of readable entries and their relative order can shift as other principals' entries change; the matching set and page sizes depend only on readable entries. The same score feeds the full-text leg of `hybrid_search_context`. PostgreSQL's `ts_rank_cd` scores each entry on its own.
@@ -127,7 +131,7 @@ Search context entries with powerful filtering including metadata queries and da
 
 **Date Filtering:** Supports ISO 8601 date filtering. See [Date Filtering](#date-filtering) section below.
 
-**Returns:** List of matching context entries with truncated `text_content`, `summary`, and `is_text_content_truncated` flag, plus optional query statistics
+**Returns:** List of matching context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, and `is_owner` (true when the caller owns the entry), plus optional query statistics
 
 ### get_context_by_ids
 
@@ -137,7 +141,7 @@ Fetch specific context entries by their IDs.
 - `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form (at most 100 IDs per call). Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
 - `include_images` (bool, optional): Include image data (default: True)
 
-**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, and `updated_at`. The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
+**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, `updated_at`, `visibility` (`private` or `public`), and `is_owner` (true when the caller owns the entry; the owner itself is never returned). The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
 
 - When disabled (the default), the `summary` key is omitted entirely; consumers reading `entry.get('summary')` will receive `None`, which is the conventional Python signal for "feature disabled, no value to surface".
 - When enabled and the stored summary is a non-empty string, the value is returned verbatim.
@@ -155,7 +159,7 @@ Provide EXACTLY ONE of them. Supplying both is rejected with an error, and suppl
 
 Note the contrast with `delete_context_batch`, which takes the same two argument names and COMBINES them as criteria: there, `context_ids` plus `thread_id` means "these ids, restricted to that thread".
 
-Only the caller's own entries are deleted. With `context_ids`, an ID of an entry the caller may not read is skipped and not counted, and a named entry the caller may read but does not own refuses the whole call with `Not authorized to delete context entries: {ids}`, deleting nothing. With `thread_id`, the caller's own entries in the thread are deleted and every other entry stays in place without an error.
+Only the caller's own entries are deleted. With `context_ids`, an ID of an entry the caller may not read is skipped and not counted, and a named entry the caller may read but does not own refuses the whole call with `Not authorized to delete context entries: {ids}`, deleting nothing. With `thread_id`, the caller's own entries in the thread are deleted and every other entry stays in place without an error. Deleting an entry also deletes its tags, images, embeddings and grants.
 
 **Returns:** Dictionary with deletion count
 
@@ -237,6 +241,7 @@ update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"r
 **Update Behavior:**
 - Only provided fields are updated (selective updates)
 - Tags and images use full replacement semantics for consistency
+- The entry's grants stay as they are; only `share_context` and `unshare_context` change them
 - Content type automatically switches between 'text' and 'multimodal' based on image presence
 - At least one updatable field must be provided
 - An entry the caller may not read is reported as `Context entry with ID {id} not found`; an entry it may read but not modify is refused with `Not authorized to modify context entry with ID {id}`
@@ -276,7 +281,7 @@ Note: This tool is available by default (`ENABLE_SEMANTIC_SEARCH=auto`) whenever
 
 **Returns:** Dictionary with:
 - Query string
-- List of semantically similar context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, and similarity scores
+- List of semantically similar context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), and similarity scores
 - Result count
 - Model name used for embeddings
 - Query execution statistics (only when `explain_query=True`)
@@ -334,7 +339,7 @@ Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=fal
 
 **Returns:** Dictionary with:
 - Query string and search mode
-- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, relevance scores, and highlighted snippets
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), relevance scores, and highlighted snippets
 - Result count
 - FTS availability status
 
@@ -384,7 +389,7 @@ Note: This tool is available by default (`ENABLE_HYBRID_SEARCH=auto`) when at le
 
 **Returns:** Dictionary with:
 - Query string and fusion method
-- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, combined RRF scores, and individual search rankings
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), combined RRF scores, and individual search rankings
 - Result count and counts from each search method
 - List of search modes actually used
 - Query execution statistics (only when `explain_query=True`)
@@ -470,6 +475,8 @@ All search tools return consistent response structures with common fields and to
 | `summary`                                      | Yes (string)          | Yes (string)               | Yes (string)               | Yes (string)               |
 | `is_text_content_truncated`                    | Yes                   | Yes                        | Yes                        | Yes                        |
 | `metadata`, `tags`, `created_at`, `updated_at` | Yes                   | Yes                        | Yes                        | Yes                        |
+| `visibility`                                   | Yes                   | Yes                        | Yes                        | Yes                        |
+| `is_owner`                                     | Yes                   | Yes                        | Yes                        | Yes                        |
 | `images`                                       | include_images=True   | include_images=True        | include_images=True        | include_images=True        |
 | `scores`                                       | No                    | Yes                        | Yes                        | Yes                        |
 | `highlighted`                                  | No                    | No                         | highlight=True             | No                         |
@@ -494,6 +501,7 @@ All search tools (except `search_context`) return a unified `scores` object with
 **Notes:**
 - `stats` is only included when `explain_query=True` for all search tools
 - All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 chars) with `summary` and `is_text_content_truncated` flag; use `get_context_by_ids` for full content
+- Every result of every search tool reports the entry's `visibility` (`private` or `public`) and `is_owner` (a boolean, true when the caller owns the entry); the owner itself is never returned
 - For standalone FTS and semantic searches, rank fields are always `null` (no cross-method ranking)
 
 ## Navigation Tools (locate / navigate / extract)
@@ -514,7 +522,7 @@ Server-side grep: literal or regular-expression, line-oriented, UNRANKED pattern
 - `max_entries_scanned` (int, optional): Maximum entries the scan visits (clamped to the server cap)
 - `thread_id` / `source` / `tags` / `metadata_filters` / `content_type` (optional): Reuse the store's filters to scope the scan (the ripgrep glob/type analog); scoping with `thread_id` is recommended; `tags` accepts at most 100 tags and `metadata_filters` at most 100 filters per request
 
-**Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. `truncated` is True when matches or the scan were capped.
+**Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. Every result also carries its entry's `visibility` (`private` or `public`) and `is_owner` (true when the caller owns the entry). `truncated` is True when matches or the scan were capped.
 
 ### navigate_context
 
@@ -525,7 +533,7 @@ Build a navigable Markdown-heading outline (index_tree) for one record, computed
 - `max_depth` (int, optional): Deepest Markdown heading level to include (1-6, default 6; deeper headings fold into their section)
 - `include_node_summaries` (bool, optional): Attach stored per-node LLM summaries to descendant nodes when that layer is enabled (default: False)
 
-**Returns:** `{context_id, total_chars, node_count, root}` where `root` is a recursive node `{node_id, level, ordinal, title, char_start, char_end, summary, children}`. `node_id` is a heading-path slug with a sibling ordinal (e.g. `setup/install`, `notes-2`); the root's `summary` mirrors the entry summary by reference.
+**Returns:** `{context_id, total_chars, node_count, root, visibility, is_owner}` where `root` is a recursive node `{node_id, level, ordinal, title, char_start, char_end, summary, children}`. `node_id` is a heading-path slug with a sibling ordinal (e.g. `setup/install`, `notes-2`); the root's `summary` mirrors the entry summary by reference. `visibility` and `is_owner` describe the entry (its visibility, and whether the caller owns it) and appear at the top level only, never on a node.
 
 ### read_context_range
 
@@ -539,7 +547,7 @@ Read part of one record by character range, line range, or outline `node_id`. Sl
 
 Provide exactly ONE addressing mode. Pair with `grep_context` (content mode) by feeding `match_start`/`match_end` into `start_char`/`end_char`, or with `navigate_context` by passing a section's `node_id`.
 
-**Returns:** `{context_id, start_char, end_char, start_line, end_line, text}` echoing the RESOLVED span. Out-of-range offsets are clamped to `[0, len(text)]`, so a stale offset or node_id from a prior turn degrades gracefully.
+**Returns:** `{context_id, start_char, end_char, start_line, end_line, text, visibility, is_owner}` echoing the RESOLVED span, with the entry's visibility and whether the caller owns it. Out-of-range offsets are clamped to `[0, len(text)]`, so a stale offset or node_id from a prior turn degrades gracefully.
 
 ## Sync Tools
 
@@ -576,6 +584,59 @@ List one page of the caller's own managed entries of a thread, ordered by `sourc
 - `cursor` (str, optional): The `next_cursor` of the previous page; omitted reads the first page. A malformed cursor is refused with `invalid cursor`.
 
 **Returns:** `{thread_id, entries, count, next_cursor}`. Each entry is `{context_id, source_id, text_digest, meta_digest, synced_at}`, where `text_digest` is the stored content hash. `next_cursor` is null on the last page, including a page that ends exactly at the last entry. See [Listing Ingest State](knowledge-base.md#listing-ingest-state).
+
+## Sharing Tools
+
+The owner of an entry uses these tools to give other principals access to it, take that access away, and see who holds it. Only the entry's owner may call them on it. An entry the caller may not read gets `Context entry with ID {id} not found`, exactly like an ID no entry carries; an entry the caller may read but does not own (through a read or write grant, or because it is `public`) gets an explicit refusal. A write grant lets its holder edit an entry but never share it. Each call names one entry by its full ID or by an 8-31 character hex prefix, which resolves over the entries the caller may read. All three tools register by default, and `DISABLED_TOOLS` can leave any of them out. [Sharing Entries](authentication.md#sharing-entries) describes how grants combine with visibility.
+
+### share_context
+
+Grant one user or one group `read` or `write` permission on an entry the caller owns.
+
+**Parameters:**
+- `context_id` (str, required): The entry's 32-character hex or 36-character hyphenated ID, or an 8-31 character hex prefix.
+- `principal_type` (str, required): `user` for one principal (a token subject) or `group` for every member of a group.
+- `principal_id` (str, required): The user or group ID, matched verbatim against the token's subject or groups: case-sensitive, any characters, 1 to 256 characters, no leading or trailing whitespace. The server does not check that the user or group exists.
+- `permission` (str, required): `read`, or `write`, which also allows reading and lets the grantee change text, metadata, tags and images (but not visibility, deletion or sharing).
+
+Sharing is idempotent: a grant the entry already holds stays as it is and the response reports `created: false`, a group read grant written by `ACCESS_CONTROL_DEFAULT_GROUP_GRANTS=author_groups` included. `read` and `write` are separate grants, so sharing `read` with a principal that holds `write` stores a second grant. A group grant reaches every member of the group. Grants leave the entry's `updated_at` unchanged and never conflict with a concurrent `update_context`.
+
+**Returns:** `{success, context_id, principal_type, principal_id, permission, created, message}`. `context_id` is the resolved full ID. `message` is `Granted {permission} on context entry {id} to {principal_type} {principal_id}`, or `{principal_type} {principal_id} already holds {permission} on context entry {id}` when `created` is false.
+
+**Errors:**
+- `Context entry with ID {id} not found`: the caller may not read the entry, or no entry has the ID.
+- `Not authorized to share context entry with ID {id}`: the caller may read the entry but does not own it.
+- `Cannot share context entry with ID {id} with its owner`: a `user` grant naming the owner. A group grant to a group the owner belongs to is allowed.
+- `Cannot share context entry with ID {id} with the anonymous principal; set its visibility to 'public' to publish it`: a `user` grant naming the principal that `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL` names. The server refuses it before looking the ID up, and `{id}` is the value the caller passed.
+- `principal_id cannot be empty or whitespace`, `principal_id cannot have leading or trailing whitespace`, `principal_id exceeds 256 characters`, or a `principal_id:` error for text the database cannot store.
+- `The anonymous principal is read-only: share_context is not permitted`.
+
+### unshare_context
+
+Remove exactly one grant from an entry the caller owns.
+
+**Parameters:**
+- `context_id` (str, required): The entry's full ID or an 8-31 character hex prefix.
+- `principal_type` (str, required): `user` or `group`.
+- `principal_id` (str, required): The grantee's ID, under the same rules as for `share_context`.
+- `permission` (str, required): The permission of the grant to remove, `read` or `write`.
+
+The call removes only the named grant: removing `read` from a principal that also holds `write` leaves the `write` grant, which still allows reading. Removing a grant the entry does not hold changes nothing and reports `removed: false`. The owner can remove any grant the entry holds, including one naming the owner or the anonymous principal that reached the database without `share_context`. Grants leave the entry's `updated_at` unchanged.
+
+**Returns:** `{success, context_id, principal_type, principal_id, permission, removed, remaining_permissions, message}`. `remaining_permissions` lists the permissions the same principal type and ID still hold on the entry after the call, read in the same transaction; a group grant can still give that principal access through its membership. `message` is `Removed {permission} on context entry {id} from {principal_type} {principal_id}`, or `No {permission} grant on context entry {id} for {principal_type} {principal_id}` when `removed` is false.
+
+**Errors:** `Context entry with ID {id} not found`; `Not authorized to unshare context entry with ID {id}`; the `principal_id` validation errors of `share_context`; `The anonymous principal is read-only: unshare_context is not permitted`.
+
+### list_context_grants
+
+List every grant of an entry the caller owns, with no paging and no cap.
+
+**Parameters:**
+- `context_id` (str, required): The entry's full ID or an 8-31 character hex prefix.
+
+**Returns:** `{context_id, grants, count}`. Each grant is `{principal_type, principal_id, permission, granted_by, created_at}`, ordered by `principal_type`, then `principal_id`, then `permission`. `granted_by` names the principal that stored the grant, and `created_at` is a UTC timestamp such as `2026-01-01T12:00:00Z`.
+
+**Errors:** `Context entry with ID {id} not found`; `Not authorized to list the grants of context entry with ID {id}`.
 
 ## Batch Operations
 
@@ -629,7 +690,7 @@ Delete multiple context entries by various criteria. **IRREVERSIBLE.**
 - `source` (str, optional): Filter by source ('user' or 'agent') - must combine with another criterion
 - `older_than_days` (int, optional): Delete entries older than N days - must combine with another criterion
 
-At least one criterion must be provided. `source` and `older_than_days` are each insufficient on their own: on any database older than the requested window, either one matches essentially every row, so a single scalar would irreversibly reach the whole table. Combine them with each other, with `thread_ids`, or with `context_ids` (a retention purge is expressible as `older_than_days` plus `source`). Cascading delete removes associated tags, images, and embeddings.
+At least one criterion must be provided. `source` and `older_than_days` are each insufficient on their own: on any database older than the requested window, either one matches essentially every row, so a single scalar would irreversibly reach the whole table. Combine them with each other, with `thread_ids`, or with `context_ids` (a retention purge is expressible as `older_than_days` plus `source`). Cascading delete removes associated tags, images, embeddings, and grants.
 
 Only the caller's own entries are deleted, and an entry the caller may not read is never matched or counted. With `context_ids`, a named entry that matches the other criteria and that the caller may read but does not own refuses the whole call with `Not authorized to delete context entries: {ids}`, deleting nothing. Without `context_ids`, only the caller's own matching entries are deleted and every other matching entry stays in place without an error.
 
@@ -704,5 +765,5 @@ Supported ISO 8601 formats:
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata operators
 - **Knowledge Base**: [Knowledge Base Guide](knowledge-base.md) - document corpora, corpus sync and `mcp-context-ingest`
 - **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - containerized deployment
-- **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
+- **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication, the access model, sharing entries and anonymous read access
 - **Main Documentation**: [README.md](../README.md) - overview and quick start

@@ -233,7 +233,7 @@ auth:
   provider: ""          # MCP_AUTH_PROVIDER: none (server default), simple_token or jwt
   clientId: ""          # MCP_AUTH_CLIENT_ID
   token: ""             # MCP_AUTH_TOKEN, stored in the chart secret
-  existingSecret: ""    # holds the token (simple_token) or the public key (jwt without jwksUri)
+  existingSecret: ""    # holds the token (simple_token), the public key (jwt without jwksUri) or the anonymous key (jwt with jwksUri)
   tokenSecretKey: "mcp-auth-token"
   jwt:
     publicKey: ""       # MCP_AUTH_JWT_PUBLIC_KEY: PEM key or HS* shared secret; set this or jwksUri
@@ -242,6 +242,9 @@ auth:
     issuer: ""          # MCP_AUTH_JWT_ISSUER
     audience: ""        # MCP_AUTH_JWT_AUDIENCE
     algorithm: ""       # MCP_AUTH_JWT_ALGORITHM
+    anonymousPublicKey: ""  # MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY: the anonymous verifier's PEM key or HS* secret
+    anonymousPublicKeySecretKey: "mcp-auth-anonymous-jwt-public-key"
+    anonymousAlgorithm: ""  # MCP_AUTH_ANONYMOUS_JWT_ALGORITHM
   groupsClaim: ""       # MCP_AUTH_GROUPS_CLAIM
   rolesClaim: ""        # MCP_AUTH_ROLES_CLAIM
 
@@ -250,7 +253,12 @@ accessControl:
   defaultVisibility: ""   # ACCESS_CONTROL_DEFAULT_VISIBILITY: private or public
   defaultGroupGrants: ""  # ACCESS_CONTROL_DEFAULT_GROUP_GRANTS: none or author_groups
   publishRole: ""         # ACCESS_CONTROL_PUBLISH_ROLE
+  anonymousPrincipal: ""  # ACCESS_CONTROL_ANONYMOUS_PRINCIPAL: the jwt subject every write tool refuses
 ```
+
+`accessControl.anonymousPrincipal` makes one jwt subject read-only. The server matches it verbatim against the token's `sub`, so a value that differs from the subject you minted leaves that token writable. The server logs `Read-only principal: <id>` at INFO level on startup, and a `store_context` call with the token must answer `The anonymous principal is read-only: store_context is not permitted` before you hand the token out.
+
+On a JWKS deployment your identity provider signs every token the server trusts, so you cannot mint the anonymous token with its key. Set `auth.jwt.anonymousPublicKey` to the public key (or the HS* shared secret) of a key pair you hold, and `auth.jwt.anonymousAlgorithm` when it is not `RS256`: the server then accepts tokens signed with that key for `accessControl.anonymousPrincipal` and for no other subject, under the same `auth.jwt.issuer` and `auth.jwt.audience`. The chart renders the key only with `auth.provider: jwt` and `auth.jwt.jwksUri` set. With `auth.existingSecret`, the key comes from that secret under `auth.jwt.anonymousPublicKeySecretKey` as an optional reference, so a secret without the key starts the server without the anonymous verifier. On a static-key deployment, sign the anonymous token with the private key behind `auth.jwt.publicKey` instead; the chart ignores `auth.jwt.anonymousPublicKey` there. [Anonymous Read Access](../authentication.md#anonymous-read-access) shows how to mint the token and check it.
 
 ### Search Configuration
 

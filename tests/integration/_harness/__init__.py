@@ -48,6 +48,7 @@ from tests.integration._harness.search_ranking import SearchRankingMixin
 from tests.integration._harness.search_semantic import SearchSemanticMixin
 from tests.integration._harness.search_validation import SearchValidationMixin
 from tests.integration._harness.server import ServerMixin
+from tests.integration._harness.sharing import SharingMixin
 from tests.integration._harness.store import StoreMixin
 from tests.integration._harness.store_dedup import StoreDedupMixin
 from tests.integration._harness.summary import SummaryMixin
@@ -99,6 +100,7 @@ class MCPServerIntegrationTest(
     RerankingMixin,
     NavigationMixin,
     SyncMixin,
+    SharingMixin,
 ):
     """Integration test for real MCP Context Storage Server."""
 
@@ -344,6 +346,16 @@ class MCPServerIntegrationTest(
             ('Plan Context Sync Rejects Invalid Manifest', self.test_plan_context_sync_rejects_invalid_manifest),
             ('Plan Context Sync Manifest At Cap', self.test_plan_context_sync_manifest_at_cap),
             ('Ingest Block Rejected', self.test_ingest_block_rejected),
+            # Sharing: registration (ungated), idempotent shares, exact-row unshares, grants
+            # outside the version check, argument refusals, the visibility and ownership
+            # every read reports to the owner, and grants deleted with their entry.
+            ('Sharing Tools Registered', self.test_sharing_tools_registered),
+            ('Share Context Idempotent', self.test_share_context_idempotent),
+            ('Unshare Context Exact Row', self.test_unshare_context_exact_row),
+            ('Grants Leave Version And Updated At', self.test_grants_leave_version_and_updated_at),
+            ('Sharing Rejects Invalid Arguments', self.test_sharing_rejects_invalid_arguments),
+            ('Read-Back On Own Entries', self.test_read_back_on_own_entries),
+            ('Delete Removes Grants', self.test_delete_removes_grants),
             # A second principal served from the same database reaches only the entries
             # the access model lets it read, and changes only those it may modify.
             ('Access Scoping Second Principal', self.test_access_scoping_second_principal),

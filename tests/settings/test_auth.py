@@ -1,9 +1,10 @@
 """Tests for app/settings/auth.py.
 
 Covers AuthSettings (provider selection, the bearer token and client id, the JWT
-fields) and AccessControlSettings (defaults, env-var aliases, the enum constraints
-on visibility and group-grant policy, and the DDL-safe character-set validation
-on the default principal).
+fields, the anonymous verifier's key and algorithm) and AccessControlSettings (defaults, env-var aliases, the enum constraints
+on visibility and group-grant policy, the DDL-safe character-set validation on
+the default principal, and the read-only principal's blank, padding and
+default-principal refusals).
 """
 
 import os
@@ -103,6 +104,44 @@ class TestAccessControlSettings:
         with pytest.raises(ValidationError):
             AccessControlSettings(ACCESS_CONTROL_DEFAULT_PRINCIPAL=principal)
 
+    def test_anonymous_principal_defaults_to_unset(self) -> None:
+        """Without ACCESS_CONTROL_ANONYMOUS_PRINCIPAL no principal is read-only."""
+        assert AccessControlSettings().anonymous_principal is None
+
+    @pytest.mark.parametrize('principal', ['anonymous', 'auth0|public reader', 'x' * 300])
+    def test_anonymous_principal_is_read_verbatim(self, principal: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The read-only principal takes any charset and length, because it must equal a jwt sub verbatim."""
+        monkeypatch.setenv('ACCESS_CONTROL_ANONYMOUS_PRINCIPAL', principal)
+        assert AccessControlSettings().anonymous_principal == principal
+
+    @pytest.mark.parametrize('principal', ['', '   ', ' anonymous', 'anonymous ', '\tanonymous'])
+    def test_blank_or_padded_anonymous_principal_rejected(self, principal: str) -> None:
+        """An empty, whitespace-only or whitespace-padded read-only principal could never match a sub."""
+        with pytest.raises(ValidationError, match='ACCESS_CONTROL_ANONYMOUS_PRINCIPAL'):
+            AccessControlSettings(ACCESS_CONTROL_ANONYMOUS_PRINCIPAL=principal)
+
+    @pytest.mark.parametrize(
+        ('default_principal', 'anonymous_principal'),
+        [('local', 'local'), ('kb-service', 'kb-service')],
+    )
+    def test_anonymous_principal_equal_to_the_default_principal_rejected(
+        self, default_principal: str, anonymous_principal: str,
+    ) -> None:
+        """The default principal owns every stdio, none and simple_token row, so it cannot be read-only."""
+        with pytest.raises(ValidationError, match='ACCESS_CONTROL_DEFAULT_PRINCIPAL'):
+            AccessControlSettings(
+                ACCESS_CONTROL_DEFAULT_PRINCIPAL=default_principal,
+                ACCESS_CONTROL_ANONYMOUS_PRINCIPAL=anonymous_principal,
+            )
+
+    def test_anonymous_principal_distinct_from_the_default_principal_accepted(self) -> None:
+        """A read-only principal other than the default principal validates."""
+        settings = AccessControlSettings(
+            ACCESS_CONTROL_DEFAULT_PRINCIPAL='kb-service',
+            ACCESS_CONTROL_ANONYMOUS_PRINCIPAL='anonymous',
+        )
+        assert settings.anonymous_principal == 'anonymous'
+
     def test_composed_into_app_settings(self) -> None:
         """AppSettings exposes the nested access_control settings."""
         get_settings.cache_clear()
@@ -189,3 +228,48 @@ class TestJwtAuthSettings:
             settings = AuthSettings()
             assert 'hs-shared-secret' not in str(settings.jwt_public_key)
             assert 'hs-shared-secret' not in repr(settings.jwt_public_key)
+
+
+class TestAnonymousVerifierSettings:
+    """The anonymous verifier's key and algorithm on AuthSettings."""
+
+    def test_defaults(self) -> None:
+        """Without configuration there is no anonymous key and the algorithm is RS256."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith('MCP_AUTH')}
+        with patch.dict(os.environ, env, clear=True):
+            settings = AuthSettings()
+        assert settings.anonymous_jwt_public_key is None
+        assert settings.anonymous_jwt_algorithm == 'RS256'
+
+    def test_fields_load_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY and MCP_AUTH_ANONYMOUS_JWT_ALGORITHM map onto their fields."""
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY', 'anonymous-shared-secret')
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_ALGORITHM', 'HS512')
+        settings = AuthSettings()
+        assert settings.anonymous_jwt_public_key is not None
+        assert settings.anonymous_jwt_public_key.get_secret_value() == 'anonymous-shared-secret'
+        assert settings.anonymous_jwt_algorithm == 'HS512'
+
+    def test_key_is_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The anonymous key or shared secret is masked in string representations."""
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY', 'anonymous-shared-secret')
+        settings = AuthSettings()
+        assert 'anonymous-shared-secret' not in str(settings.anonymous_jwt_public_key)
+        assert 'anonymous-shared-secret' not in repr(settings.anonymous_jwt_public_key)
+
+    def test_settings_never_validate_the_combination(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A key with no JWKS URI, no read-only principal and an unknown algorithm still builds settings.
+
+        The auth factory validates these, and it runs only for HTTP transports, so a
+        stdio start never fails over them.
+        """
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY', 'anonymous-shared-secret')
+        monkeypatch.setenv('MCP_AUTH_ANONYMOUS_JWT_ALGORITHM', 'none')
+        monkeypatch.delenv('MCP_AUTH_JWT_JWKS_URI', raising=False)
+        monkeypatch.delenv('ACCESS_CONTROL_ANONYMOUS_PRINCIPAL', raising=False)
+        get_settings.cache_clear()
+        try:
+            settings = get_settings()
+            assert settings.auth.anonymous_jwt_algorithm == 'none'
+        finally:
+            get_settings.cache_clear()

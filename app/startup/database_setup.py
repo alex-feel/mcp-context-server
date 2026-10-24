@@ -19,6 +19,7 @@ from app.migrations import apply_compression_migration
 from app.migrations import apply_content_hash_migration
 from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
+from app.migrations import apply_grant_owner_migration
 from app.migrations import apply_index_tree_migration
 from app.migrations import apply_ingest_index_migration
 from app.migrations import apply_jsonb_merge_patch_migration
@@ -92,6 +93,9 @@ async def prepare_database(backend: StorageBackend, settings: AppSettings, *, re
     await apply_access_control_migration(backend=backend)
     # The ingest index's SQLite key names the access columns, so it follows their migration.
     await apply_ingest_index_migration(backend=backend)
+    # Each grant's entry owner, kept exact by a foreign key onto (id, owner_id), which names
+    # the owner column the access-control migration adds; PostgreSQL only.
+    await apply_grant_owner_migration(backend=backend)
     # Repair duplicate tag rows and install the unique index that prevents new
     # ones. The delete is the only thing that reaches entries already stored with
     # a repeated label, which every reader would otherwise keep returning twice.

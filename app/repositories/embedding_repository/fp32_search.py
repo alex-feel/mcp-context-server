@@ -11,6 +11,7 @@ from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.repositories.base import BaseRepository
+from app.repositories.context_repository.records import entry_columns
 from app.repositories.embedding_repository.records import MetadataFilterValidationError
 from app.repositories.entry_filters import count_applied_filters
 
@@ -27,8 +28,9 @@ class Fp32SearchMixin(BaseRepository):
     ``search_fp32`` filters ``context_entries`` by thread, source, content type,
     tags, dates and metadata, then by the caller's read access, ranks the
     matching chunks by L2 distance with sqlite-vec on SQLite and pgvector on
-    PostgreSQL, and returns the best chunk of each entry together with the
-    search statistics.
+    PostgreSQL, and returns the best chunk of each entry, with the entry's
+    visibility and whether the caller owns it, together with the search
+    statistics.
     """
 
     async def search_fp32(
@@ -73,7 +75,9 @@ class Fp32SearchMixin(BaseRepository):
             scope: The caller's scope; only entries it may read are ranked.
 
         Returns:
-            Tuple of (search results list, statistics dictionary)
+            Tuple of (search results list, statistics dictionary). Each result carries
+            the entry columns, ``visibility`` among them, ``is_owner`` (1 when the scope
+            owns the entry, else 0), and its distance and best chunk boundaries.
         """
         if self.backend.backend_type == 'sqlite':
 
@@ -227,6 +231,9 @@ class Fp32SearchMixin(BaseRepository):
                 chunk_rows = self._readable('embedding_chunks', alias='ec')
                 vector_rows = self._readable('vec_context_embeddings', alias='ve')
                 result_entries = self._readable('context_entries', alias='ce')
+                # The final select reports ownership, so its OWNER bind follows the CTE
+                # filters and the query vector in statement text order.
+                owner = build_access_predicate(scope, mode=AccessMode.OWNER, backend_type='sqlite', outer='ce')
                 query = f'''
                     WITH filtered_contexts AS (
                         SELECT id
@@ -268,15 +275,8 @@ class Fp32SearchMixin(BaseRepository):
                         WHERE rn = 1
                     )
                     SELECT
-                        ce.id,
-                        ce.thread_id,
-                        ce.source,
-                        ce.content_type,
-                        ce.text_content,
-                        ce.metadata,
-                        ce.summary,
-                        ce.created_at,
-                        ce.updated_at,
+                        {entry_columns('ce')},
+                        {owner.admits_expression()} AS is_owner,
                         bc.best_distance as distance,
                         bc.start_index as matched_chunk_start,
                         bc.end_index as matched_chunk_end
@@ -292,7 +292,7 @@ class Fp32SearchMixin(BaseRepository):
                     LIMIT ? OFFSET ?
                 '''
 
-                params = filter_params + [query_blob, limit, offset]
+                params = [*filter_params, query_blob, *owner.params, limit, offset]
 
                 cursor = conn.execute(query, params)
                 rows = cursor.fetchall()
@@ -466,6 +466,13 @@ class Fp32SearchMixin(BaseRepository):
                 filter_params.extend(read.params)
                 param_position += read.bind_count
 
+            # The final select reports ownership; its OWNER bind is numbered after the READ
+            # predicate's, and LIMIT and OFFSET after it.
+            owner = build_access_predicate(
+                scope, mode=AccessMode.OWNER, backend_type='postgresql', outer='ce', start=param_position,
+            )
+            param_position += owner.bind_count
+
             where_clause = ' AND '.join(filter_conditions)
 
             # Count filters applied (shared tally, so every search tool reports the same
@@ -507,15 +514,8 @@ class Fp32SearchMixin(BaseRepository):
                         ORDER BY context_id, distance, start_index
                     )
                     SELECT
-                        ce.id,
-                        ce.thread_id,
-                        ce.source,
-                        ce.content_type,
-                        ce.text_content,
-                        ce.metadata,
-                        ce.summary,
-                        ce.created_at,
-                        ce.updated_at,
+                        {entry_columns('ce')},
+                        {owner.admits_expression()} AS is_owner,
                         bc.best_distance as distance,
                         bc.start_index as matched_chunk_start,
                         bc.end_index as matched_chunk_end
@@ -531,7 +531,7 @@ class Fp32SearchMixin(BaseRepository):
                     LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
                 '''
 
-            filter_params.extend([limit, offset])
+            filter_params.extend([*owner.params, limit, offset])
 
             rows = await conn.fetch(query, *filter_params)
             results = [dict(row) for row in rows]

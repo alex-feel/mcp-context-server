@@ -36,13 +36,14 @@ from tests.helpers import rebind_package_settings
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
-ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True)
+ALICE = AccessScope('alice', frozenset({'team-x'}), may_publish=True, may_write=True)
 CAROL = AccessScope('carol', frozenset({'team-x', 'a,b', 'q"x', '{brace}', 'back\\slash'}))
 
 IDENTITY_SQL = (
     "SELECT current_setting('app.principal_id', true) AS principal_id, "
     "current_setting('app.groups', true) AS groups, "
     "current_setting('app.may_publish', true) AS may_publish, "
+    "current_setting('app.may_write', true) AS may_write, "
     "current_setting('jit') AS jit, "
     'pg_backend_pid() AS pid'
 )
@@ -131,12 +132,14 @@ async def test_identity_holds_inside_the_wrapped_read_and_is_gone_after_commit(
     assert inside['pid'] == before['pid'] == after['pid']
     assert inside['principal_id'] == 'carol'
     assert inside['may_publish'] == 'off'
+    assert inside['may_write'] == 'off'
     assert inside['jit'] == 'off'
     async with backend.get_connection() as conn:
         assert await conn.fetchval('SELECT $1::text::text[]', inside['groups']) == CAROL.groups_list()
     assert after['principal_id'] in ('', None)
     assert after['groups'] in ('', None)
     assert after['may_publish'] in ('', None)
+    assert after['may_write'] in ('', None)
     assert after['jit'] == before['jit']
 
 
@@ -152,9 +155,14 @@ async def test_writes_and_transactions_bind_the_caller(
         transactional = await _identity(txn.connection)
     after = await _unwrapped_identity(backend)
 
-    assert (written['principal_id'], written['may_publish'], written['jit']) == ('alice', 'on', 'off')
-    assert (transactional['principal_id'], transactional['may_publish'], transactional['jit']) == ('carol', 'off', 'off')
+    assert (written['principal_id'], written['may_publish'], written['may_write'], written['jit']) == (
+        'alice', 'on', 'on', 'off',
+    )
+    assert (
+        transactional['principal_id'], transactional['may_publish'], transactional['may_write'], transactional['jit'],
+    ) == ('carol', 'off', 'off', 'off')
     assert after['principal_id'] in ('', None)
+    assert after['may_write'] in ('', None)
 
 
 @pytest.mark.asyncio

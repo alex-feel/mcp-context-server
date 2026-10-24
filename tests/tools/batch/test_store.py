@@ -12,6 +12,7 @@ from app.access_scope import AccessScope
 from app.repositories.context_repository.records import DuplicateCandidate
 from app.tools.discovery import get_statistics
 from tests.helpers import as_principal
+from tests.tools._read_only import read_only_caller
 from tests.tools.batch._mocks import make_mock_txn
 
 
@@ -193,7 +194,7 @@ class TestBatchStoreScope:
                 atomic=atomic,
             )
 
-        expected = AccessScope('bob', frozenset({'team-x'}), may_publish=True)
+        expected = AccessScope('bob', frozenset({'team-x'}), may_publish=True, may_write=True)
         precheck_call = precheck.await_args
         store_call = store.await_args
         assert result['results'][0]['success'] is True
@@ -359,3 +360,26 @@ class TestBatchStoreIngestBlock:
         assert summary_provider.mock_calls == []
         stats = await get_statistics()
         assert stats['total_entries'] == 0
+
+
+class TestBatchStoreReadOnlyPrincipal:
+    """The read-only principal is refused before any entry validation, repository access or generation."""
+
+    @pytest.mark.asyncio
+    async def test_read_only_principal_is_refused_first(self) -> None:
+        """A batch of invalid entries still gets the read-only refusal, and nothing runs."""
+        from app.tools.batch.store import store_context_batch
+
+        with (
+            read_only_caller(),
+            patch('app.tools.batch.store.ensure_repositories', new=AsyncMock()) as ensure,
+            patch('app.tools.batch.store.get_embedding_provider') as embedding_provider,
+            patch('app.tools.batch.store.get_summary_provider') as summary_provider,
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await store_context_batch(entries=[{'thread_id': '', 'source': 'user', 'text': ''}])
+
+        assert str(exc_info.value) == 'The anonymous principal is read-only: store_context_batch is not permitted'
+        ensure.assert_not_awaited()
+        embedding_provider.assert_not_called()
+        summary_provider.assert_not_called()

@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 from typing import Any
+from typing import Final
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -67,6 +68,12 @@ MAX_TAG_LENGTH = 128
 # index tuple.
 MAX_THREAD_ID_LENGTH = 256
 MAX_INDEXED_METADATA_VALUE_LENGTH = 512
+
+# MAX_GRANT_PRINCIPAL_ID_LENGTH bounds the grantee id a share names, counted in code
+# points like the source id of a managed corpus entry. The id is part of the grants
+# table's UNIQUE index entry, so the cap keeps that entry far below the btree
+# index-tuple ceiling and an oversized id gets a clear error instead of a database one.
+MAX_GRANT_PRINCIPAL_ID_LENGTH: Final = 256
 
 
 def normalize_tag_list(tags: list[str]) -> list[str]:

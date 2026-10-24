@@ -277,6 +277,34 @@ class TestPlanOfAnOutOfBandChange:
         assert plan.guard_function is None
         assert plan.drifted == (helper.target, trigger.target)
 
+    def test_a_database_without_the_write_right_and_the_grants_owner_arms_is_brought_up_to_date_silently(self) -> None:
+        """The missing helper and delete policy are created, the policies rendered differently are re-created, none named."""
+        may_write = helper_functions(SCHEMA)[-1]
+        insert = _policy('context_entries', 'insert')
+        read = _policy('context_entry_grants', 'read')
+        grants_insert = _policy('context_entry_grants', 'insert')
+        delete = _policy('context_entry_grants', 'delete')
+        state = _with_object(installed_state(TABLES), may_write, None)
+        state = _with_object(dataclasses.replace(state, helpers_executable=False), delete, None)
+        for policy in (insert, read, grants_insert):
+            earlier = installed(policy)
+            assert earlier.fingerprint is not None
+            stale = dataclasses.replace(earlier.fingerprint, sha=EARLIER_STATEMENT)
+            state = _with_object(state, policy, dataclasses.replace(earlier, fingerprint=stale))
+
+        plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
+
+        assert may_write.name == 'mcp_context_may_write'
+        assert plan.helpers == (may_write,)
+        assert plan.grant_helpers
+        grants_policies = ((read, False), (grants_insert, None), (delete, None))
+        assert plan.tables == (
+            TableRepair(table='context_entries', policies=((insert, None),), enable=False),
+            TableRepair(table='context_entry_grants', policies=grants_policies, enable=False),
+        )
+        assert plan.view is None
+        assert plan.drifted == ()
+
     @pytest.mark.parametrize(
         'change',
         [

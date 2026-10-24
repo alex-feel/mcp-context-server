@@ -21,6 +21,7 @@ from app.access_scope import AccessScope
 from app.backends.base import BackendAccess
 from app.repositories.context_repository.records import DuplicateCandidate
 from tests.helpers import as_principal
+from tests.tools._read_only import read_only_caller
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -275,7 +276,7 @@ class TestStoreScope:
         ):
             result = await store_context(thread_id='scope-thread', source='user', text='Re-sent text')
 
-        expected = AccessScope('bob', frozenset({'team-x'}), may_publish=True)
+        expected = AccessScope('bob', frozenset({'team-x'}), may_publish=True, may_write=True)
         precheck_call = precheck.await_args
         store_call = mock_store.await_args
         assert result['context_id'] == 'dup-id'
@@ -414,3 +415,24 @@ async def _mock_begin_transaction(*, access_scope: BackendAccess) -> AsyncGenera
     """Yield a mock transaction for a mocked backend."""
     _ = access_scope
     yield MagicMock()
+
+
+class TestStoreReadOnlyPrincipal:
+    """The read-only principal is refused before any argument check, repository access or generation."""
+
+    @pytest.mark.asyncio
+    async def test_read_only_principal_is_refused_first(self) -> None:
+        """Blank arguments that would fail validation still get the read-only refusal, and nothing runs."""
+        with (
+            read_only_caller(),
+            patch('app.tools.context.store.ensure_repositories', new=AsyncMock()) as ensure,
+            patch('app.tools.context.store.get_embedding_provider') as embedding_provider,
+            patch('app.tools.context.store.get_summary_provider') as summary_provider,
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await store_context(thread_id='   ', source='agent', text='   ', visibility='public')
+
+        assert str(exc_info.value) == 'The anonymous principal is read-only: store_context is not permitted'
+        ensure.assert_not_awaited()
+        embedding_provider.assert_not_called()
+        summary_provider.assert_not_called()

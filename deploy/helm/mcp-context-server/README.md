@@ -66,7 +66,10 @@ helm install mcp ./deploy/helm/mcp-context-server \
 | `storage.postgresql.rls.enabled`    | PostgreSQL row-level security (`ENABLE_POSTGRESQL_RLS`)          | `false`                                |
 | `storage.postgresql.rls.policyRole` | NOLOGIN role the policies name                                   | `""` (`mcp_context_request`)           |
 | `auth.provider`                     | HTTP authentication (`none`, `simple_token` or `jwt`)            | `""` (`none`)                          |
+| `auth.jwt.anonymousPublicKey`       | Anonymous verifier key, used beside `auth.jwt.jwksUri`           | `""` (no anonymous verifier)           |
+| `auth.jwt.anonymousAlgorithm`       | Signing algorithm of the anonymous verifier                      | `""` (`RS256`)                         |
 | `accessControl.publishRole`         | Role required to publish entries as `public`                     | `""` (any owner may publish)           |
+| `accessControl.anonymousPrincipal`  | Read-only jwt subject every write tool refuses                   | `""` (no principal is read-only)       |
 | `search.fts.enabled`                | Full-text search tool (`true`=auto-register, `false`=off)        | `true`                                 |
 | `search.semantic.enabled`           | Semantic search + embedding subsystem (`true`=auto, `false`=off) | `false`                                |
 | `search.hybrid.enabled`             | Hybrid search tool (`true`=auto-register, `false`=off)           | `true`                                 |

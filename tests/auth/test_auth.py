@@ -5,11 +5,14 @@ using centralized AuthSettings from app.settings.auth.
 """
 
 import os
+import time
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
+from joserfc import jwt
+from joserfc.jwk import RSAKey
 
 from app.settings import get_settings
 
@@ -471,6 +474,23 @@ class TestJwtVerifierClaimsRoundTrip:
             assert await provider.verify_token(token) is None
 
     @pytest.mark.asyncio
+    async def test_token_without_expiry_is_accepted_for_an_ordinary_principal(self, rsa_key_pair: RSAKeyPair) -> None:
+        """A token without exp verifies and never expires; only the read-only principal's is refused, by the tools."""
+        with patch.dict(os.environ, self._verifier_env(rsa_key_pair), clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            provider = create_auth_provider()
+            assert provider is not None
+            claims = {'sub': 'alice', 'iss': 'https://issuer.test', 'aud': 'ctx-server', 'iat': int(time.time())}
+            signing_key = RSAKey.import_key(rsa_key_pair.private_key.get_secret_value())
+            token = jwt.encode({'alg': 'RS256'}, claims, signing_key)
+            access_token = await provider.verify_token(token)
+            assert access_token is not None
+            assert access_token.expires_at is None
+            assert access_token.claims.get('sub') == 'alice'
+
+    @pytest.mark.asyncio
     async def test_wrong_audience_is_rejected(self, rsa_key_pair: RSAKeyPair) -> None:
         """A token minted for another audience is rejected."""
         with patch.dict(os.environ, self._verifier_env(rsa_key_pair), clear=True):
@@ -610,3 +630,23 @@ class TestAuthTransportInteraction:
 
             # This should NOT raise ValueError — auth is skipped on stdio
             main()
+
+    def test_stdio_start_never_builds_the_jwt_verifiers(self) -> None:
+        """On stdio neither the jwt verifier nor the anonymous verifier is built, whatever the jwt settings say."""
+        mock_settings = self._make_mock_settings(transport='stdio', auth_provider='jwt')
+
+        with (
+            patch('app.server.settings', mock_settings),
+            patch('app.server.FastMCP') as mock_fastmcp,
+            patch('app.instructions.resolve_instructions', return_value=None),
+            patch('app.auth._create_jwt_verifier') as create_jwt_verifier,
+            patch('app.auth._create_anonymous_verifier') as create_anonymous_verifier,
+        ):
+            mock_fastmcp.return_value.run.return_value = None
+
+            from app.server import main
+
+            main()
+
+        create_jwt_verifier.assert_not_called()
+        create_anonymous_verifier.assert_not_called()

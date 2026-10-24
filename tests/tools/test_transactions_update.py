@@ -1,6 +1,7 @@
 """Tests for execute_update_in_transaction in app.tools._transactions."""
 
 from typing import Any
+from typing import Literal
 from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -444,6 +445,22 @@ class TestEntryNotAuthorizedError:
         error = EntryNotAuthorizedError(['b' * 32, 'a' * 32], action='delete')
         assert str(error) == f'Not authorized to delete context entries: {"b" * 32}, {"a" * 32}'
         assert error.context_ids == ('b' * 32, 'a' * 32)
+
+    @pytest.mark.parametrize(
+        ('action', 'message'),
+        [
+            ('share', 'Not authorized to share context entry with ID 0190abcdef1234567890abcd00000001'),
+            ('unshare', 'Not authorized to unshare context entry with ID 0190abcdef1234567890abcd00000001'),
+            ('list_grants', 'Not authorized to list the grants of context entry with ID 0190abcdef1234567890abcd00000001'),
+        ],
+    )
+    def test_grant_messages_name_the_entry(
+        self, action: Literal['share', 'unshare', 'list_grants'], message: str,
+    ) -> None:
+        """A refused grant change or listing reads exactly like the sharing tools report it."""
+        error = EntryNotAuthorizedError(['0190abcdef1234567890abcd00000001'], action=action)
+        assert str(error) == message
+        assert error.action == action
 
     def test_is_breaker_exempt_control_flow(self) -> None:
         """A denial is client-input control flow, never a backend fault or a ToolError."""

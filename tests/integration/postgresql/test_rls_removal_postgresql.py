@@ -40,7 +40,7 @@ pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
 SCHEMA_NAME: Final = 'public'
 OUR_FUNCTIONS: Final = (
-    'mcp_context_principal_id', 'mcp_context_groups', 'mcp_context_may_publish',
+    'mcp_context_principal_id', 'mcp_context_groups', 'mcp_context_may_publish', 'mcp_context_may_write',
     'mcp_context_guard_access_columns', 'mcp_context_reject_view_write',
 )
 
@@ -120,6 +120,8 @@ class TestRemoveRls:
     ) -> None:
         tables = [table for table in MANAGED_TABLES if table in await row_security(admin, SCHEMA_NAME)]
         before = await object_oids(admin, SCHEMA_NAME)
+        assert ('context_entry_grants', 'context_entry_grants_delete') in await policies(admin, SCHEMA_NAME)
+        assert await _our_functions(admin) == sorted(OUR_FUNCTIONS)
 
         dry = await remove_rls(installed, rls_settings(), dry_run=True, force=False)
 

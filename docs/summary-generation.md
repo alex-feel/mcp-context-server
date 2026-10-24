@@ -388,6 +388,8 @@ The `summary` field appears in all search tool results when available:
       "text_content": "Agent implemented OAuth2 authentication with JWT tokens for the user management API, resolving rate-limiting issues on the /auth/...",
       "summary": "Agent implemented OAuth2 authentication with JWT tokens for the user management API, resolving rate-limiting issues on the /auth/login endpoint.",
       "is_text_content_truncated": true,
+      "visibility": "private",
+      "is_owner": true,
       "metadata": {"agent_name": "developer", "status": "done"},
       "tags": ["implementation", "auth"]
     }

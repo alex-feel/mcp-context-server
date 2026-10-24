@@ -1,10 +1,14 @@
 """Type definitions for the MCP context server.
 
 This module provides type definitions to replace explicit Any usage
-and ensure strict type safety throughout the codebase.
+and ensure strict type safety throughout the codebase. The response
+types of the discovery tools ``list_threads`` and ``get_statistics``
+live in ``app/discovery_types.py``.
 """
 
+from typing import Literal
 from typing import NotRequired
+from typing import Required
 from typing import TypedDict
 
 # JSON value types - recursive union for JSON-like data structures
@@ -15,6 +19,22 @@ type MetadataValue = str | int | float | bool | None
 
 # Metadata dictionary type for use in models - supports nested JSON structures
 type MetadataDict = dict[str, JsonValue]
+
+# The stored visibility of an entry, as every entry read reports it.
+type EntryVisibility = Literal['private', 'public']
+
+
+class EntryAccessFields(TypedDict):
+    """The access fields every entry-carrying read response reports for one entry.
+
+    ``visibility`` is the entry's stored visibility. ``is_owner`` says whether the
+    caller owns the entry, the only role that may change its visibility or delete
+    it; a principal reading through a grant or a ``public`` visibility sees false.
+    The owner itself is never reported.
+    """
+
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 # API Response TypedDicts for proper return type annotations
@@ -43,7 +63,8 @@ class ImageDict(TypedDict):
 class ContextEntryDict(TypedDict, total=False):
     """Type definition for context entry responses.
 
-    Uses total=False to handle optional fields properly.
+    Uses total=False to handle optional fields properly; ``visibility`` and
+    ``is_owner`` (see :class:`EntryAccessFields`) are required on every entry.
     """
 
     id: str
@@ -58,6 +79,8 @@ class ContextEntryDict(TypedDict, total=False):
     tags: list[str]
     images: list[ImageDict] | None
     is_text_content_truncated: bool | None
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 class ClampedLimitDict(TypedDict):
@@ -99,14 +122,16 @@ class SearchContextResponseDict(TypedDict, total=False):
 
 
 class GrepFileDict(TypedDict):
-    """A grep result row in ``files_with_matches`` mode (locator only)."""
+    """A grep result row in ``files_with_matches`` mode (locator only), with the entry's access fields."""
 
     context_id: str
     match_count: int
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 class GrepContentMatchDict(TypedDict):
-    """A grep result row in ``content`` mode (one per match).
+    """A grep result row in ``content`` mode (one per match), with the access fields of the matched entry.
 
     Offsets are Unicode code-point indices into the entry's ``text_content`` and
     compose directly with ``read_context_range`` (start_char/end_char).
@@ -119,13 +144,17 @@ class GrepContentMatchDict(TypedDict):
     match_end: int
     before: list[str]
     after: list[str]
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 class GrepCountDict(TypedDict):
-    """A grep result row in ``count`` mode (per-entry match tally)."""
+    """A grep result row in ``count`` mode (per-entry match tally), with the entry's access fields."""
 
     context_id: str
     count: int
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 class GrepContextResultDict(TypedDict, total=False):
@@ -153,7 +182,8 @@ class ReadContextRangeDict(TypedDict):
 
     Echoes the RESOLVED span actually returned (after clamping out-of-range
     offsets to ``[0, len]``) so a caller always knows exactly what it received.
-    Offsets are Unicode code-point indices.
+    Offsets are Unicode code-point indices. ``visibility`` and ``is_owner`` are the
+    entry's access fields.
     """
 
     context_id: str
@@ -162,6 +192,8 @@ class ReadContextRangeDict(TypedDict):
     start_line: int
     end_line: int
     text: str
+    visibility: EntryVisibility
+    is_owner: bool
 
 
 class OutlineNodeDict(TypedDict, total=False):
@@ -183,12 +215,18 @@ class OutlineNodeDict(TypedDict, total=False):
 
 
 class NavigateContextResultDict(TypedDict, total=False):
-    """Type definition for the navigate_context response."""
+    """Type definition for the navigate_context response.
+
+    ``visibility`` and ``is_owner`` are the entry's access fields, reported at the
+    top level only, never on an outline node.
+    """
 
     context_id: str
     total_chars: int
     node_count: int
     root: OutlineNodeDict
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 class StoreContextSuccessDict(TypedDict):
@@ -200,258 +238,6 @@ class StoreContextSuccessDict(TypedDict):
     message: str
 
 
-class ThreadInfoDict(TypedDict):
-    """Type definition for individual thread info."""
-
-    thread_id: str
-    entry_count: int
-    source_types: int
-    multimodal_count: int
-    first_entry: str
-    last_entry: str
-    last_id: str
-
-
-class ThreadListDict(TypedDict):
-    """Type definition for thread list response."""
-
-    threads: list[ThreadInfoDict]
-    total_threads: int
-
-
-# Statistics TypedDicts (for get_statistics tool response)
-
-
-class ConnectionMetricsDict(TypedDict, total=False):
-    """Type definition for backend connection metrics.
-
-    This TypedDict is what FastMCP derives the advertised ``connection_metrics``
-    portion of the ``get_statistics`` outputSchema from, so every key either
-    backend can emit MUST be declared here -- a key that is missing is dropped by
-    any client reading the tool through its declared schema, which is exactly how
-    operator-critical health data (circuit-breaker state, failure counters, last
-    error) becomes invisible while the database is unhealthy.
-
-    Fields are the UNION of what both backends return, all optional because the
-    shape is backend-dependent:
-
-    - Emitted by BOTH backends: ``backend_type``, ``pool_size``,
-      ``total_queries``, ``failed_queries``, ``circuit_state``,
-      ``consecutive_failures``, ``last_error``, ``last_error_time``.
-      ``pool_size`` is the asyncpg pool's current size on PostgreSQL and the
-      reader-pool bound on SQLite (which serializes writes onto one writer).
-    - SQLite only: ``total_connections``, ``active_connections``,
-      ``failed_connections``, ``write_queue_size``.
-    - PostgreSQL only: ``pool_idle``, ``pool_min_size``, ``pool_max_size``, and
-      -- once the corresponding detection has run -- ``pgpool_detected``,
-      ``pgpool_version``, ``session_mode_pooler_detected``.
-    """
-
-    backend_type: str
-    pool_size: int
-    total_queries: int
-    failed_queries: int
-    circuit_state: str
-    consecutive_failures: int
-    last_error: str | None
-    last_error_time: float | None
-    # SQLite-only
-    total_connections: int
-    active_connections: int
-    failed_connections: int
-    write_queue_size: int
-    # PostgreSQL-only
-    pool_idle: int
-    pool_min_size: int
-    pool_max_size: int
-    pgpool_detected: bool
-    pgpool_version: str | None
-    session_mode_pooler_detected: bool
-
-
-class MostActiveThreadDict(TypedDict):
-    """One row of ``most_active_threads`` in the stats response."""
-
-    thread_id: str
-    count: int
-
-
-class TopTagDict(TypedDict):
-    """One row of ``top_tags`` in the stats response."""
-
-    tag: str
-    count: int
-
-
-class SemanticSearchStatsDict(TypedDict, total=False):
-    """Type definition for the ``semantic_search`` sub-block in get_statistics.
-
-    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
-    appear only when ``available is True``; when ``available is False`` an
-    optional ``message`` field carries the degradation reason.
-
-    The field name ``embedding_count`` refers to the number of stored
-    embedding rows on disk (one row per text chunk, since the storage layer
-    persists one embedding vector per chunk). The text chunks themselves
-    are NOT persisted; chunking is a transient pre-processing step purely
-    for embedding quality.
-    """
-
-    enabled: bool
-    available: bool
-    backend: str
-    model: str
-    dimensions: int
-    context_count: int  # COUNT(*) from embedding_metadata (entry count)
-    embedding_count: int  # SUM(chunk_count) from embedding_metadata (stored embedding rows)
-    average_chunks_per_entry: float
-    coverage_percentage: float
-    message: str  # Present when available is False
-
-
-class FtsStatsDict(TypedDict, total=False):
-    """Type definition for the ``fts`` sub-block in get_statistics.
-
-    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
-    appear only when ``available is True``; when ``available is False`` an
-    optional ``message`` field carries the degradation reason.
-    """
-
-    enabled: bool
-    available: bool
-    language: str
-    backend: str
-    engine: str
-    indexed_entries: int
-    coverage_percentage: float
-    message: str  # Present when available is False
-
-
-class ChunkingStatsDict(TypedDict):
-    """Type definition for the ``chunking`` sub-block in get_statistics.
-
-    All fields ALWAYS present (no conditional shape).
-    """
-
-    enabled: bool
-    available: bool
-    chunk_size: int
-    chunk_overlap: int
-    aggregation: str
-
-
-class RerankingStatsDict(TypedDict, total=False):
-    """Type definition for the ``reranking`` sub-block in get_statistics.
-
-    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
-    appear only when ``available is True``; when ``available is False`` an
-    optional ``message`` field carries the degradation reason.
-    """
-
-    enabled: bool
-    available: bool
-    provider: str
-    model: str
-    message: str  # Present when available is False
-
-
-class SummaryStatsDict(TypedDict, total=False):
-    """Type definition for the ``summary`` sub-block in get_statistics.
-
-    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
-    appear only when ``available is True``; when ``available is False`` an
-    optional ``message`` field carries the degradation reason.
-    """
-
-    enabled: bool
-    available: bool
-    provider: str
-    model: str
-    summary_count: int
-    coverage_percentage: float
-    min_content_length: int
-    message: str  # Present when available is False
-
-
-class CompressionStatsDict(TypedDict, total=False):
-    """Type definition for the ``compression`` sub-block in get_statistics.
-
-    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
-    appear only when ``available is True``; when ``available is False`` an
-    optional ``message`` field carries the degradation reason. Values
-    originate from the singleton ``compression_metadata`` row (DB-truth)
-    except ``max_concurrent`` which comes from runtime settings.
-    """
-
-    enabled: bool
-    available: bool
-    provider: str
-    bits: int
-    variant: str
-    seed: int
-    dim: int
-    max_concurrent: int
-    message: str  # Present when available is False
-
-
-class IndexTreeStatsDict(TypedDict, total=False):
-    """Type definition for the ``index_tree`` sub-block in get_statistics.
-
-    ``enabled`` reflects ENABLE_INDEX_TREE_NODE_SUMMARIES. ``node_count`` is the
-    total stored per-node summaries when the feature is enabled. It is 0 whenever
-    the feature is off -- reported without querying, mirroring the compression
-    block's enabled-gated pattern, so any residual rows from a previously-enabled
-    run are intentionally NOT counted -- and 0 when the table is absent.
-    """
-
-    enabled: bool
-    node_count: int
-
-
-class StatisticsResponseDict(TypedDict):
-    """Type definition for the get_statistics tool response.
-
-    Top-level fields come from
-    ``StatisticsRepository.get_database_statistics``; sub-blocks
-    (``semantic_search``, ``fts``, ``chunking``, ``reranking``,
-    ``summary``, ``compression``, ``index_tree``) are added by
-    ``app.tools.discovery.get_statistics`` and are always present.
-
-    ``database_size_mb`` reflects the whole database on PostgreSQL
-    (``pg_database_size``) and the on-disk database file on SQLite. It is
-    omitted only for in-memory or missing-file SQLite databases.
-
-    ``embeddings_size_mb`` reflects the active vector payload table and is not
-    byte-comparable across backends (on-disk relation size including indexes on
-    PostgreSQL; raw payload bytes or an fp32 estimate on SQLite). When the
-    SQLite figure is the fp32 estimate, ``embeddings_size_estimated`` is True.
-    """
-
-    total_entries: int
-    by_source: dict[str, int]
-    by_content_type: dict[str, int]
-    total_images: int
-    unique_tags: int
-    total_threads: int
-    avg_entries_per_thread: float
-    most_active_threads: list[MostActiveThreadDict]
-    top_tags: list[TopTagDict]
-    backend: str
-    database_size_mb: NotRequired[float]  # Whole DB on PostgreSQL; on-disk file on SQLite
-    # Embedding vector payload size (not byte-comparable across backends)
-    embeddings_size_mb: NotRequired[float]
-    embeddings_size_estimated: NotRequired[bool]  # True only for the SQLite fp32 estimate
-    connection_metrics: ConnectionMetricsDict
-    semantic_search: SemanticSearchStatsDict
-    fts: FtsStatsDict
-    chunking: ChunkingStatsDict
-    reranking: RerankingStatsDict
-    summary: SummaryStatsDict
-    compression: CompressionStatsDict
-    # Always emitted by get_statistics (both toggle branches set it), so required.
-    index_tree: IndexTreeStatsDict
-
-
 class UpdateContextSuccessDict(TypedDict):
     """Type definition for successful update context response."""
 
@@ -459,6 +245,57 @@ class UpdateContextSuccessDict(TypedDict):
     context_id: str
     updated_fields: list[str]
     message: str
+
+
+# Sharing TypedDicts
+
+
+class ShareContextResultDict(TypedDict):
+    """Response of share_context: the grant it names and whether this call created it."""
+
+    success: bool
+    context_id: str
+    principal_type: Literal['user', 'group']
+    principal_id: str
+    permission: Literal['read', 'write']
+    created: bool
+    message: str
+
+
+class UnshareContextResultDict(TypedDict):
+    """Response of unshare_context: the grant it names, whether this call removed it, and what the grantee keeps.
+
+    ``remaining_permissions`` lists the permissions the same principal type and id
+    still hold on the entry; access through a group the grantee belongs to is not
+    counted.
+    """
+
+    success: bool
+    context_id: str
+    principal_type: Literal['user', 'group']
+    principal_id: str
+    permission: Literal['read', 'write']
+    removed: bool
+    remaining_permissions: list[Literal['read', 'write']]
+    message: str
+
+
+class ContextGrantDict(TypedDict):
+    """One grant on an entry, as list_context_grants reports it to the entry's owner."""
+
+    principal_type: Literal['user', 'group']
+    principal_id: str
+    permission: Literal['read', 'write']
+    granted_by: str
+    created_at: str
+
+
+class ListContextGrantsResultDict(TypedDict):
+    """Response of list_context_grants: every grant of the entry in principal type, id and permission order."""
+
+    context_id: str
+    grants: list[ContextGrantDict]
+    count: int
 
 
 # Bulk operation TypedDicts
@@ -556,6 +393,8 @@ class FtsSearchResultDict(TypedDict, total=False):
     - fts_score: BM25/ts_rank relevance score (HIGHER = better)
     - fts_rank: Always null for standalone FTS (no ranking)
     - rerank_score: Present when reranking is enabled (HIGHER = better)
+
+    ``visibility`` and ``is_owner`` (see :class:`EntryAccessFields`) are required on every result.
     """
 
     id: str
@@ -572,6 +411,8 @@ class FtsSearchResultDict(TypedDict, total=False):
     scores: ScoresDict
     highlighted: str | None
     images: list[ImageDict] | None
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 class FtsSearchResponseDict(TypedDict, total=False):
@@ -600,6 +441,8 @@ class SemanticSearchResultDict(TypedDict, total=False):
     - semantic_distance: LOWER = more similar; L2 Euclidean for fp32/mse, negated inner product (~ -1..0) for the ip variant
     - semantic_rank: Always null for standalone semantic (no ranking)
     - rerank_score: Present when reranking is enabled (HIGHER = better)
+
+    ``visibility`` and ``is_owner`` (see :class:`EntryAccessFields`) are required on every result.
     """
 
     id: str
@@ -615,6 +458,8 @@ class SemanticSearchResultDict(TypedDict, total=False):
     tags: list[str]
     scores: ScoresDict
     images: list[ImageDict] | None
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 class SemanticSearchResponseDict(TypedDict, total=False):
@@ -674,7 +519,8 @@ class HybridSearchResultDict(TypedDict, total=False):
     """Type definition for hybrid search result entry.
 
     Combines fields from both FTS and semantic search results with
-    hybrid-specific scoring information.
+    hybrid-specific scoring information; ``visibility`` and ``is_owner``
+    (see :class:`EntryAccessFields`) are required on every result.
     """
 
     id: str
@@ -691,6 +537,8 @@ class HybridSearchResultDict(TypedDict, total=False):
     scores: HybridScoresDict  # Hybrid scoring breakdown
     rerank_text: str | None  # Internal: chunk text for reranking (removed before API response)
     images: list[ImageDict] | None
+    visibility: Required[EntryVisibility]
+    is_owner: Required[bool]
 
 
 # Hybrid Search Stats TypedDicts (for explain_query parameter)

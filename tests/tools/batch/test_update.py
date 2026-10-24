@@ -12,6 +12,7 @@ from app.access_scope import Scope
 from app.repositories.context_repository.records import EntryProbe
 from app.tools.context.retrieve import get_context_by_ids
 from tests.helpers import LOCAL_WRITE_SCOPE
+from tests.tools._read_only import read_only_caller
 from tests.tools.batch._mocks import make_mock_txn
 
 
@@ -471,3 +472,28 @@ class TestUpdateBatchIngestBlock:
         fetched = {entry.get('id'): entry for entry in await get_context_by_ids(context_ids=[first, second])}
         assert fetched[first].get('text_content') == 'Setup guide'
         assert fetched[second].get('metadata') == {'ingest': _INGEST_BLOCK}
+
+
+class TestBatchUpdateReadOnlyPrincipal:
+    """The read-only principal is refused before any entry validation, id resolution or generation."""
+
+    @pytest.mark.asyncio
+    async def test_read_only_principal_is_refused_first(self) -> None:
+        """A batch naming no valid id and no field still gets the read-only refusal, and nothing runs."""
+        from app.tools.batch.update import update_context_batch
+
+        with (
+            read_only_caller(),
+            patch('app.tools.batch.update.ensure_repositories', new=AsyncMock()) as ensure,
+            patch('app.tools.batch.update.validate_update_entry', new=AsyncMock()) as validate,
+            patch('app.tools.batch.update.get_embedding_provider') as embedding_provider,
+            patch('app.tools.batch.update.get_summary_provider') as summary_provider,
+            pytest.raises(ToolError) as exc_info,
+        ):
+            await update_context_batch(updates=[{'context_id': 'not-a-context-id'}])
+
+        assert str(exc_info.value) == 'The anonymous principal is read-only: update_context_batch is not permitted'
+        ensure.assert_not_awaited()
+        validate.assert_not_awaited()
+        embedding_provider.assert_not_called()
+        summary_provider.assert_not_called()

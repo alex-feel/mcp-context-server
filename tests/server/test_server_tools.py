@@ -140,6 +140,22 @@ class TestSearchContext:
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
+    async def test_search_context_reports_visibility_and_ownership(self) -> None:
+        """Each result reports its visibility and a bool ownership flag, never its owner."""
+        await store_context(thread_id='search_read_back', source='user', text='Private message', visibility='private')
+        await store_context(thread_id='search_read_back', source='agent', text='Public message', visibility='public')
+
+        result = await search_context(limit=50, thread_id='search_read_back')
+
+        assert sorted((entry['visibility'], entry['is_owner']) for entry in result['results']) == [
+            ('private', True), ('public', True),
+        ]
+        for entry in result['results']:
+            assert type(entry['is_owner']) is bool
+            assert 'owner_id' not in entry
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
     async def test_search_context_by_source(self) -> None:
         """Test searching by source."""
         await store_context(thread_id='src_thread', source='user', text='User msg')
@@ -284,6 +300,18 @@ class TestGetContextByIds:
         entry = dict(entries[0])
         assert entry['id'] == context_id
         assert entry['text_content'] == 'Test message'
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_get_context_by_ids_reports_visibility_and_ownership(self) -> None:
+        """A no-token caller owns what it stores, and the entry reports its visibility, never its owner."""
+        result = await store_context(thread_id='ids_read_back', source='user', text='Read-back message', visibility='public')
+
+        entry = dict((await get_context_by_ids(context_ids=[result['context_id']]))[0])
+
+        assert entry['visibility'] == 'public'
+        assert entry['is_owner'] is True
+        assert 'owner_id' not in entry
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')

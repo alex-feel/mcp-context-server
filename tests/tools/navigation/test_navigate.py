@@ -16,9 +16,11 @@ from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummaries
 from app.startup import ensure_repositories
+from app.tools.sharing import unshare_context
 from tests.helpers import as_principal
-from tests.tools._navigation import navigate_as_dict
-from tests.tools._navigation import store_entry
+from tests.helpers import insert_grant
+from tests.tools.navigation._navigation import navigate_as_dict
+from tests.tools.navigation._navigation import store_entry
 
 
 class TestNavigateContext:
@@ -93,6 +95,44 @@ class TestNavigateContextScoping:
             result = await navigate_as_dict(context_id=cid)
 
         assert result['root']['children'][0]['title'] == 'Alice'
+
+
+async def _publish(backend: StorageBackend, context_id: str) -> None:
+    """Make one stored entry public."""
+
+    def _write(conn: sqlite3.Connection) -> None:
+        conn.execute("UPDATE context_entries SET visibility = 'public' WHERE id = ?", (context_id,))
+
+    await backend.execute_write(_write, access_scope=MAINTENANCE)
+
+
+class TestNavigateContextReadBack:
+    """The response reports the entry's visibility and whether the caller owns it at its top level only."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('include_node_summaries', [False, True])
+    async def test_top_level_carries_visibility_and_ownership(
+        self, nav_backend: StorageBackend, include_node_summaries: bool,
+    ) -> None:
+        """Alice owns her public entry, the default principal reads it as not owned; no node carries the fields."""
+        await apply_index_tree_migration(nav_backend, force=True)
+        cid = await store_entry(nav_backend, '# Alice\npublic\n## Part\nmore\n', owner='alice')
+        await _publish(nav_backend, cid)
+
+        with as_principal('alice'):
+            owned = await navigate_as_dict(context_id=cid, include_node_summaries=include_node_summaries)
+        read = await navigate_as_dict(context_id=cid, include_node_summaries=include_node_summaries)
+
+        assert (owned['visibility'], owned['is_owner']) == ('public', True)
+        assert (read['visibility'], read['is_owner']) == ('public', False)
+        for result in (owned, read):
+            assert type(result['is_owner']) is bool
+            assert 'owner_id' not in result
+            nodes = [result['root']]
+            while nodes:
+                node = nodes.pop()
+                assert {'visibility', 'is_owner', 'owner_id'}.isdisjoint(node)
+                nodes.extend(node['children'])
 
 
 class TestNavigateNodeSummaries:
@@ -263,6 +303,49 @@ class TestNavigateNodeSummaries:
         first = result['root']['children'][0]
         assert first['title'] == 'New'
         assert first['summary'] == 'New section abstract.'
+
+    @pytest.mark.asyncio
+    async def test_navigate_unshare_inside_the_window_reports_not_found(self, nav_backend: StorageBackend) -> None:
+        """An unshare revoking the caller's read access between the two reads ends in not found.
+
+        The default principal reads alice's private entry through a read grant. Alice
+        removes that grant after navigate read the text and before it read the node
+        summaries: the closing probe no longer sees the entry, the snapshot is retaken,
+        and the retaken read finds nothing, so neither the outline nor the node
+        summaries read inside the window reach the caller.
+        """
+        await apply_index_tree_migration(nav_backend, force=True)
+        repos = await ensure_repositories()
+        cid = await store_entry(nav_backend, '# Alice\nshared body\n', owner='alice')
+        await insert_grant(nav_backend, cid, 'user', 'local', 'read', 'alice')
+        await repos.index_nodes.replace_nodes_for_context(cid, [
+            IndexNodeRow(
+                node_id='alice', level=1, ordinal=1, title='Alice',
+                node_summary='Shared section abstract.', char_start=0, char_end=20,
+            ),
+        ], scope=MAINTENANCE)
+
+        real_get_nodes = repos.index_nodes.get_nodes_for_context
+        revoked = False
+
+        async def revoking_get_nodes(context_id: str, *, scope: BackendAccess) -> StoredNodeSummaries:
+            nonlocal revoked
+            if not revoked:
+                revoked = True
+                with as_principal('alice'):
+                    await unshare_context(
+                        context_id=context_id, principal_type='user', principal_id='local', permission='read',
+                    )
+            return await real_get_nodes(context_id, scope=scope)
+
+        with (
+            patch.object(repos.index_nodes, 'get_nodes_for_context', revoking_get_nodes),
+            pytest.raises(ToolError) as error,
+        ):
+            await navigate_as_dict(context_id=cid, include_node_summaries=True)
+
+        assert revoked
+        assert str(error.value) == f'Context entry not found: {cid}'
 
     @pytest.mark.asyncio
     async def test_summaries_omitted_by_default(self, nav_backend: StorageBackend) -> None:

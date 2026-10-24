@@ -9,9 +9,10 @@ without embedding storage and a node-summary table switched on later each end wi
 policies on exactly the tables that exist; that a new policy role re-creates every
 policy and the read view while a new member login role changes nothing; that an object
 altered outside the server, a column added to ``context_entries`` and an extra grantee
-on the view are repaired and named; that the FTS language rebuild re-creates the view
-in its own transaction; and that a boot with the flag off over installed objects is
-refused.
+on the view are repaired and named; that the policies and helper an earlier release
+renders differently or lacks are brought up to date without a WARNING; that the FTS
+language rebuild re-creates the view in its own transaction; and that a boot with the
+flag off over installed objects is refused.
 """
 
 import asyncio
@@ -24,6 +25,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from app.access_scope import AccessMode
+from app.access_scope import build_policy_predicate
+from app.access_scope import policy_operands
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.errors import ConfigurationError
@@ -32,10 +36,14 @@ from app.migrations import apply_rls
 from app.migrations import guard_rls_disable_over_enabled
 from app.migrations.rls import read_definition
 from app.migrations.rls_ddl import MANAGED_TABLES
+from app.migrations.rls_ddl import RlsObject
+from app.migrations.rls_ddl import RlsObjectKind
+from app.migrations.rls_ddl import comment_statement
 from app.migrations.rls_ddl import digest
 from app.migrations.rls_ddl import parse_fingerprint
 from app.migrations.rls_ddl import policy_names
 from app.migrations.rls_ddl import read_view
+from app.migrations.rls_ddl import records_preenabled
 from app.repositories import RepositoryContainer
 from app.settings import get_settings
 from app.startup.database_setup import prepare_database
@@ -388,6 +396,28 @@ class TestRepairs:
         assert any('mcp_outsider (SELECT)' in record.getMessage() for record in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_an_altered_grants_delete_policy_is_re_created_and_named(
+        self, booted: StorageBackend, admin: asyncpg.Connection, owner: asyncpg.Connection, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        key = 'policy context_entry_grants.context_entry_grants_delete'
+        before = await object_oids(admin, SCHEMA_NAME)
+        await owner.execute('ALTER POLICY context_entry_grants_delete ON context_entry_grants USING (true)')
+
+        with caplog.at_level(logging.WARNING, logger='app.migrations.rls'):
+            await apply_rls(booted, rls_settings())
+
+        after = await object_oids(admin, SCHEMA_NAME)
+        assert after[key] != before[key]
+        assert {name: oid for name, oid in after.items() if name != key} == {
+            name: oid for name, oid in before.items() if name != key
+        }
+        assert await admin.fetchval(
+            "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy WHERE polname = 'context_entry_grants_delete'",
+        ) != 'true'
+        [warning] = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+        assert f'POLICY context_entry_grants_delete ON {SCHEMA}.context_entry_grants' in warning
+
+    @pytest.mark.asyncio
     async def test_an_extra_grantee_on_the_unchanged_view_is_revoked_and_named(
         self, booted: StorageBackend, admin: asyncpg.Connection, owner: asyncpg.Connection, caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -403,6 +433,87 @@ class TestRepairs:
         [warning] = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
         assert 'mcp_outsider (SELECT)' in warning
         assert f'{POLICY_ROLE} (INSERT)' in warning
+
+
+def _earlier_policies(schema: str, role: str) -> list[RlsObject]:
+    """Return the policies an earlier release renders differently, as that release creates them.
+
+    That release has no write-right helper, so its ``context_entries`` insert check names
+    the owner and the publish right alone, and its grants table has no owner column, so its
+    grants read policy admits the grantee's own rows only, its grants insert check reads the
+    entry's owner through ``context_entries``, and it has no grants delete policy.
+
+    Returns:
+        The three policies in that release's rendering.
+    """
+    owner = build_policy_predicate(AccessMode.OWNER, outer='context_entries', schema=schema)
+    owner_of_parent = build_policy_predicate(AccessMode.OWNER, outer='ce', schema=schema)
+    operands = policy_operands(schema)
+    grants = f'{schema}.context_entry_grants'
+    statements = {
+        ('context_entries_insert', f'{schema}.context_entries'): (
+            f'CREATE POLICY context_entries_insert ON {schema}.context_entries AS PERMISSIVE FOR INSERT TO {role} '
+            f"WITH CHECK ({owner} AND (context_entries.visibility <> 'public' OR {operands.may_publish}))"
+        ),
+        ('context_entry_grants_read', grants): (
+            f'CREATE POLICY context_entry_grants_read ON {grants} AS PERMISSIVE FOR SELECT TO {role} USING '
+            f"((principal_type = 'user' AND principal_id = {schema}.mcp_context_principal_id()) "
+            f"OR (principal_type = 'group' AND principal_id = ANY({schema}.mcp_context_groups())))"
+        ),
+        ('context_entry_grants_insert', grants): (
+            f'CREATE POLICY context_entry_grants_insert ON {grants} AS PERMISSIVE FOR INSERT TO {role} '
+            f'WITH CHECK (granted_by = {operands.principal} AND EXISTS (SELECT 1 FROM {schema}.context_entries ce '
+            f'WHERE ce.id = context_entry_grants.context_entry_id AND {owner_of_parent}))'
+        ),
+    }
+    return [
+        RlsObject(kind=RlsObjectKind.POLICY, name=name, anchor=anchor, statement=statement)
+        for (name, anchor), statement in statements.items()
+    ]
+
+
+class TestUpgrade:
+    """A database an earlier release secured is brought to the current policies at the next boot, silently."""
+
+    @pytest.mark.asyncio
+    async def test_an_earlier_releases_policies_are_repaired_without_a_warning(
+        self, booted: StorageBackend, admin: asyncpg.Connection, owner: asyncpg.Connection, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        role = f'"{POLICY_ROLE}"'
+        earlier = _earlier_policies(SCHEMA, role)
+        await owner.execute(f'DROP POLICY context_entry_grants_delete ON {SCHEMA}.context_entry_grants')
+        for policy in earlier:
+            await owner.execute(policy.drop_statement)
+            await owner.execute(policy.statement)
+            preenabled = False if records_preenabled(policy) else None
+            definition = digest(await read_definition(owner, policy))
+            await owner.execute(comment_statement(policy, definition=definition, preenabled=preenabled))
+        await owner.execute(f'DROP FUNCTION {SCHEMA}.mcp_context_may_write()')
+        before = await object_oids(admin, SCHEMA_NAME)
+        assert 'function mcp_context_may_write' not in before
+        assert 'policy context_entry_grants.context_entry_grants_delete' not in before
+
+        with caplog.at_level(logging.INFO, logger='app.migrations.rls'):
+            await apply_rls(booted, rls_settings())
+
+        after = await object_oids(admin, SCHEMA_NAME)
+        changed = {
+            'function mcp_context_may_write',
+            'policy context_entries.context_entries_insert',
+            'policy context_entry_grants.context_entry_grants_read',
+            'policy context_entry_grants.context_entry_grants_insert',
+            'policy context_entry_grants.context_entry_grants_delete',
+        }
+        assert {name for name in after if after[name] != before.get(name)} == changed
+        assert set(before) - set(after) == set()
+        await _assert_installed(admin)
+        records = [record for record in caplog.records if record.name == 'app.migrations.rls']
+        assert [record.levelno for record in records] == [logging.INFO]
+        assert records[0].getMessage().startswith('Applied row-level security')
+
+        await install_ddl_log(admin)
+        await apply_rls(booted, rls_settings())
+        assert await ddl_log(admin) == []
 
 
 class TestFtsLanguageRebuild:

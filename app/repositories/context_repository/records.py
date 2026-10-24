@@ -1,9 +1,10 @@
 """Record types and the column list shared by the context repository and its callers.
 
 Holds the optimistic-concurrency ``VersionConflictError``, the explicit
-``CONTEXT_ENTRY_COLUMNS`` select list, the ``EntryProbe``, ``IdAccess`` and
-``DuplicateCandidate`` result tuples, and the ``IngestRow`` record of an
-ingest-managed entry.
+``CONTEXT_ENTRY_COLUMNS`` select list with its ``entry_columns`` renderer, the
+``EntryProbe``, ``IdAccess`` and ``DuplicateCandidate`` result tuples, the
+``GrepScanRow`` record of the grep pre-filter scan, and the ``IngestRow`` record
+of an ingest-managed entry.
 """
 
 from dataclasses import dataclass
@@ -33,8 +34,26 @@ class VersionConflictError(ControlFlowError):
 # Explicit column list to avoid exposing internal database columns (e.g., text_search_vector)
 # This constant is used in all SELECT queries that return context entries to ensure
 # only the expected columns are returned, preventing internal PostgreSQL columns from
-# leaking into API responses.
-CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, summary, created_at, updated_at'
+# leaking into API responses. ``visibility`` is reported on every entry read; the owner
+# never is: a statement reports ownership as ``is_owner``, which needs the caller's bind
+# and so is appended per statement.
+CONTEXT_ENTRY_COLUMNS = (
+    'id, thread_id, source, content_type, text_content, metadata, summary, created_at, updated_at, visibility'
+)
+
+
+def entry_columns(alias: str | None = None) -> str:
+    """Render :data:`CONTEXT_ENTRY_COLUMNS` for a select list.
+
+    Args:
+        alias: The alias of the ``context_entries`` relation, or None for bare column names.
+
+    Returns:
+        The column list, with every column qualified by ``alias`` when one is given.
+    """
+    if alias is None:
+        return CONTEXT_ENTRY_COLUMNS
+    return ', '.join(f'{alias}.{column.strip()}' for column in CONTEXT_ENTRY_COLUMNS.split(','))
 
 
 class EntryProbe(NamedTuple):
@@ -83,6 +102,23 @@ class DuplicateCandidate(NamedTuple):
 
     context_id: str
     summary: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GrepScanRow:
+    """One candidate entry of the grep pre-filter scan.
+
+    Attributes:
+        id: The entry id, as canonical 32-character lowercase hex.
+        text_content: The entry's full text; an empty string when none is stored.
+        visibility: The entry's stored visibility, 'private' or 'public'.
+        is_owner: Whether the caller owns the entry.
+    """
+
+    id: str
+    text_content: str
+    visibility: str
+    is_owner: bool
 
 
 @dataclass(frozen=True, slots=True)
